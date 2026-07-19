@@ -36,5 +36,6 @@
         serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
     <postStartupActivity
         implementation="com.hmemcpy.metallurgy.MetallurgyStartupActivity"/>
+    <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
