@@ -14,7 +14,7 @@ import scala.jdk.CollectionConverters._
 )
 final class MetallurgySettings(project: Project) extends PersistentStateComponent[MetallurgySettings.State] {
 
-  private[this] var myState: MetallurgySettings.State = new MetallurgySettings.State
+  private var myState: MetallurgySettings.State = new MetallurgySettings.State
 
   def isGloballyEnabled: Boolean = myState.globallyEnabled
   def setGloballyEnabled(v: Boolean): Unit = myState.globallyEnabled = v
