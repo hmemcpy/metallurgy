@@ -28,7 +28,7 @@ final class CompilerTypeHijack(project: Project) extends Disposable:
       val handler       = new InvocationHandler:
         override def invoke(proxy: AnyRef, method: Method, args: Array[AnyRef]): AnyRef =
           if method.getName == "onCompilerTypeRequest" && args != null && args.nonEmpty then
-            schedule(args(0).asInstanceOf[PsiElement])
+            request(args(0).asInstanceOf[PsiElement])
           null
 
       val listener = Proxy.newProxyInstance(listenerClass.getClassLoader, Array(listenerClass), handler)
@@ -41,7 +41,7 @@ final class CompilerTypeHijack(project: Project) extends Disposable:
       log.info("Subscribed to Scala CompilerType requests")
     catch case error: Exception => log.error("Could not subscribe to Scala CompilerType requests", error)
 
-  private def schedule(element: PsiElement): Unit =
+  private[metallurgy] def request(element: PsiElement): Unit =
     requestFor(element).foreach: request =>
       MetallurgyStatus.publish(project, MetallurgyStatus.Resolving(request.module.getName))
       PcSessionManager

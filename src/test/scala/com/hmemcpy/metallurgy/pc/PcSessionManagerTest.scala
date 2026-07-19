@@ -97,6 +97,18 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val _ = TypeRenderer.render(session, snapshot, source.lastIndexOf("port") + 1)
       assertEquals(1, session.inlineDriverCreationCount)
 
+  def testTypeAtFallsBackToTheInnermostTypedTree(): Unit =
+    withRealPcSession("metallurgy-ordinary-type"): session =>
+      val source   = "object Main:\n  val answer = List(42).head\n"
+      val snapshot = PcSnapshot("file:///OrdinaryType.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("Int"),
+        TypeRenderer.render(session, snapshot, source.lastIndexOf("head"))
+      )
+
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-manager")
     val artifact           = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))

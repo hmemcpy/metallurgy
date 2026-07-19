@@ -4,7 +4,10 @@ import com.intellij.openapi.progress.ProgressManager
 
 import java.io.File
 import java.net.URI
+import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.util
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import scala.jdk.CollectionConverters.*
 
@@ -27,37 +30,48 @@ private[pc] final class PcInlineTypeDriver(
   private val typedDocument = new AtomicReference[Option[TypedDocument]](None)
 
   /** `InteractiveDriver` mutates its compilation state on `run`, so the session admits one writer at a time. */
-  def typeAt(snapshot: PcSnapshot, offset: Int): Option[String] =
+  def typeAt(snapshot: PcSnapshot, offset: Int): Option[String] = synchronized:
     require(
       typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
       "inline type queries require a matching typed document"
     )
-    val uri        = URI.create(snapshot.fileUri)
+    val uri        = compilerUri(snapshot.fileUri)
     val context    = driverClass.getMethod("currentCtx").invoke(driver)
     val sourceFile = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
     val trees      = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
     val span       = spansModule.getClass.getMethod("Span", classOf[Int]).invoke(spansModule, Int.box(offset))
     val position   = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
 
-    firstInlinedType(pathTo(trees, position, context), context)
+    renderType(pathTo(trees, position, context), context)
 
   def retypecheck(snapshot: PcSnapshot): Unit = synchronized:
     ensureTyped(snapshot)
 
   def close(): Unit = synchronized:
-    val close = driverClass.getMethod("close", classOf[URI])
-    typedDocument.getAndSet(None).foreach(document => close.invoke(driver, URI.create(document.fileUri)))
+    typedDocument.getAndSet(None).foreach(closeDocument)
 
   private def ensureTyped(snapshot: PcSnapshot): Unit =
     if !typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)) then run(snapshot)
 
   private def run(snapshot: PcSnapshot): Unit =
     ProgressManager.checkCanceled()
+    typedDocument.get().filterNot(_.fileUri == snapshot.fileUri).foreach(closeDocument)
     driverClass
       .getMethod("run", classOf[URI], classOf[String])
-      .invoke(driver, URI.create(snapshot.fileUri), snapshot.sourceText)
+      .invoke(driver, compilerUri(snapshot.fileUri), snapshot.sourceText)
     ProgressManager.checkCanceled()
     typedDocument.set(Some(TypedDocument(snapshot.fileUri, snapshot.documentVersion)))
+
+  private def closeDocument(document: TypedDocument): Unit =
+    val _ = driverClass.getMethod("close", classOf[URI]).invoke(driver, compilerUri(document.fileUri))
+
+  /** Dotty converts interactive URIs to NIO paths. IntelliJ test and scratch files can use non-file VFS schemes. */
+  private def compilerUri(fileUri: String): URI =
+    val uri = URI.create(fileUri)
+    if uri.getScheme == "file" then uri
+    else
+      val stableName = UUID.nameUUIDFromBytes(fileUri.getBytes(StandardCharsets.UTF_8))
+      Path.of(System.getProperty("java.io.tmpdir"), "metallurgy-pc", s"$stableName.scala").toUri
 
   private def compilerSettings(): AnyRef =
     val options     = Seq(
@@ -87,22 +101,36 @@ private[pc] final class PcInlineTypeDriver(
       .getOrElse(throw new NoSuchMethodException("Interactive.pathTo"))
       .invoke(interactive, arguments*)
 
-  private def firstInlinedType(path: AnyRef, context: AnyRef): Option[String] =
+  private def renderType(path: AnyRef, context: AnyRef): Option[String] =
     val iterator = path.getClass.getMethod("iterator").invoke(path)
     val hasNext  = iterator.getClass.getMethod("hasNext")
     val next     = iterator.getClass.getMethod("next")
-    Iterator
+    val trees    = Iterator
       .continually(iterator)
       .takeWhile(it => hasNext.invoke(it).asInstanceOf[Boolean])
       .map(it => next.invoke(it).asInstanceOf[AnyRef])
-      .find(_.getClass.getSimpleName == "Inlined")
-      .map: tree =>
-        val tpe = tree.getClass.getMethod("tpe").invoke(tree)
-        tpe.getClass.getMethods
-          .find(method => method.getName == "show" && method.getParameterCount == 1)
-          .getOrElse(throw new NoSuchMethodException("Type.show"))
-          .invoke(tpe, context)
-          .toString
-          .replaceAll("\\u001B\\[[;\\d]*m", "")
+      .toList
+    trees.find(_.getClass.getSimpleName == "Inlined") match
+      case Some(inlined) => Some(renderTreeType(inlined, context, widen = false))
+      case None          => trees.headOption.map(renderTreeType(_, context, widen = true))
+
+  private def renderTreeType(tree: AnyRef, context: AnyRef, widen: Boolean): String =
+    val rawType = tree.getClass.getMethod("tpe").invoke(tree)
+    val tpe     =
+      if widen then
+        rawType.getClass.getMethods
+          .find: method =>
+            method.getName == "widen" &&
+              method.getParameterCount == 1 &&
+              method.getParameterTypes.head.isInstance(context)
+          .getOrElse(throw new NoSuchMethodException("Type.widen"))
+          .invoke(rawType, context)
+      else rawType
+    tpe.getClass.getMethods
+      .find(method => method.getName == "show" && method.getParameterCount == 1)
+      .getOrElse(throw new NoSuchMethodException("Type.show"))
+      .invoke(tpe, context)
+      .toString
+      .replaceAll("\\u001B\\[[;\\d]*m", "")
 
 private final case class TypedDocument(fileUri: String, documentVersion: Long)

@@ -78,10 +78,28 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     Option(ModuleUtilCore.findModuleForFile(file, project))
       .flatMap(sessionFor)
       .map: session =>
-        Option(FileDocumentManager.getInstance.getDocument(file)).foreach: document =>
-          val snapshot = PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
-          val _        = session.scheduleRetypecheck(snapshot)
+        snapshotFor(file).foreach(snapshot => session.scheduleRetypecheck(snapshot))
         session
+
+  /** Creates the file's session if necessary and completes only after its exact document version has been published. */
+  private[metallurgy] def prepareFile(file: VirtualFile): CompletableFuture[Option[PcSession]] =
+    val preparation =
+      for
+        module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
+        snapshot <- snapshotFor(file)
+      yield module -> snapshot
+
+    preparation match
+      case None                     => CompletableFuture.completedFuture(None)
+      case Some((module, snapshot)) =>
+        sessionForAsync(module).thenCompose:
+          case None          => CompletableFuture.completedFuture(None)
+          case Some(session) =>
+            session
+              .scheduleRetypecheck(snapshot)
+              .thenApply:
+                case RetypecheckOutcome.Applied => Some(session)
+                case _                          => None
 
   def discard(module: Module): Unit =
     inFlight
@@ -126,6 +144,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   private def isScalaSource(file: VirtualFile): Boolean =
     Set("scala", "sc", "sbt", "mill").contains(file.getExtension)
+
+  private def snapshotFor(file: VirtualFile): Option[PcSnapshot] =
+    Option(FileDocumentManager.getInstance.getDocument(file)).map: document =>
+      PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
 
   private def prepareSession(module: Module, scalaVersion: String): Option[PcSession] =
     fetcher.jarsIfCached(scalaVersion) match

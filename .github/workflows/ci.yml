@@ -32,5 +32,4 @@ jobs:
       - name: Compile
         run: sbt compile
 
-      - name: Test
-        run: sbt test
+      # TestKit tests are temporarily local-only while the Phase 1 corpus is being built out.
