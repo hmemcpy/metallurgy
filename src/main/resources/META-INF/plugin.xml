@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<idea-plugin>
+  <id>com.hmemcpy.metallurgy</id>
+  <name>Metallurgy</name>
+  <vendor email="hmemcpy@gmail.com" url="https://github.com/hmemcpy/metallurgy">Igal Tabachnik</vendor>
+
+  <description><![CDATA[
+    <p><b>Metallurgy</b> augments the bundled Scala plugin for Scala 3.5+ modules by delegating
+    language semantics (type inference, completion, error highlighting, macro expansion) to the
+    real Scala 3 presentation compiler from the Metals project.</p>
+    <p>Where the bundled plugin returns <code>Any</code> for a transparent-inline call, marks
+    a reference unresolved that should resolve, or reports a false-positive error, Metallurgy
+    intercepts and replaces that result with the authoritative answer from <code>pc</code>.
+    Where the bundled plugin is correct, Metallurgy gets out of the way.</p>
+    <p><b>Status:</b> pre-alpha. Phase 0 scaffold only; no features enabled yet.
+    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/design.md">the design doc</a>
+    for the roadmap.</p>
+  ]]></description>
+
+  <change-notes><![CDATA[
+    <b>0.1.0-SNAPSHOT</b> — pre-alpha. Phase 0 scaffold only; no features enabled yet.
+  ]]></change-notes>
+
+  <idea-version since-build="261" until-build="261.*"/>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.java</depends>
+  <depends>org.intellij.scala</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.settings.MetallurgySettings"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.module.ModuleDetectionService"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
+    <postStartupActivity
+        implementation="com.hmemcpy.metallurgy.MetallurgyProjectActivity"/>
+  </extensions>
+</idea-plugin>
