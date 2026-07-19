@@ -29,6 +29,10 @@ out/
 
 ### Plugin build output ###
 build/
+!src/main/scala/com/hmemcpy/metallurgy/build/
+!src/main/scala/com/hmemcpy/metallurgy/build/**
+!src/test/scala/com/hmemcpy/metallurgy/build/
+!src/test/scala/com/hmemcpy/metallurgy/build/**
 *.zip
 !gradle-wrapper.jar
 

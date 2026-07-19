@@ -1,7 +1,8 @@
 package com.hmemcpy.metallurgy.settings
 
+import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.intellij.openapi.components.{PersistentStateComponent, State, Storage}
-import com.intellij.openapi.module.Module
+import com.intellij.openapi.module.{Module, ModuleManager}
 import com.intellij.openapi.project.Project
 
 import scala.beans.{BeanProperty, BooleanBeanProperty}
@@ -15,14 +16,24 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
 
   private var myState: MetallurgySettings.State = new MetallurgySettings.State
 
-  def isGloballyEnabled: Boolean           = myState.globallyEnabled
-  def setGloballyEnabled(v: Boolean): Unit = myState.globallyEnabled = v
+  def isGloballyEnabled: Boolean = myState.globallyEnabled
+
+  def setGloballyEnabled(enabled: Boolean): Unit =
+    myState.globallyEnabled = enabled
+    ModuleManager
+      .getInstance(project)
+      .getModules
+      .foreach: module =>
+        if enabled then ScalacFlagsService.get(project).enableFor(module)
+        else if !myState.enabledModules.contains(module.getName) then ScalacFlagsService.get(project).disableFor(module)
 
   def isEnabled(module: Module): Boolean =
     isGloballyEnabled || myState.enabledModules.asScala.contains(module.getName)
 
   def setEnabled(module: Module, enabled: Boolean): Unit =
     setEnabled(module.getName, enabled)
+    if isEnabled(module) then ScalacFlagsService.get(project).enableFor(module)
+    else ScalacFlagsService.get(project).disableFor(module)
 
   def setEnabled(moduleName: String, enabled: Boolean): Unit =
     val set = myState.enabledModules
@@ -32,12 +43,23 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
   def neverAsk(moduleName: String): Unit     = myState.neverAskModules.add(moduleName)
   def shouldAsk(moduleName: String): Boolean = !myState.neverAskModules.asScala.contains(moduleName)
 
+  def isXsemanticdbEnabled: Boolean = myState.xsemanticdbEnabled
+
+  def setXsemanticdbEnabled(enabled: Boolean): Unit =
+    myState.xsemanticdbEnabled = enabled
+    ModuleManager
+      .getInstance(project)
+      .getModules
+      .filter(isEnabled)
+      .foreach(ScalacFlagsService.get(project).enableFor)
+
   override def getState: MetallurgySettings.State                = myState
   override def loadState(loaded: MetallurgySettings.State): Unit = myState = loaded
 
 object MetallurgySettings:
   class State:
     @BooleanBeanProperty var globallyEnabled: Boolean        = false
+    @BooleanBeanProperty var xsemanticdbEnabled: Boolean     = false
     @BeanProperty var enabledModules: java.util.Set[String]  = new java.util.HashSet[String]()
     @BeanProperty var neverAskModules: java.util.Set[String] = new java.util.HashSet[String]()
 

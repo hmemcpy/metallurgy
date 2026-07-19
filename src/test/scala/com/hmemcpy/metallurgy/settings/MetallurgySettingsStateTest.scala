@@ -16,6 +16,10 @@ class MetallurgySettingsStateTest:
     state.globallyEnabled = true
     assertTrue(state.globallyEnabled)
 
+  @Test def xsemanticdbEnabled_defaultsFalse(): Unit =
+    val state = new MetallurgySettings.State
+    assertFalse(state.xsemanticdbEnabled)
+
   @Test def enabledModules_isMutableAndStartsEmpty(): Unit =
     val state = new MetallurgySettings.State
     assertTrue(state.enabledModules.asScala.isEmpty)

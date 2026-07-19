@@ -37,6 +37,8 @@
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.pc.MtagsFetcher"/>
     <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.build.ScalacFlagsService"/>
+    <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeHijack"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeReportInterceptor"/>

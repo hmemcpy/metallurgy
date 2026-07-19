@@ -13,10 +13,11 @@ object TypeRenderer:
   private val Log = Logger.getInstance("com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer")
 
   def render(session: PcSession, snapshot: PcSnapshot, offset: Int): Option[String] =
-    Try(renderInlineType(session, snapshot, offset)).recover { case e: Exception =>
-      Log.warn(s"Scala 3 typed-tree lookup failed: ${e.getMessage}", e)
-      None
-    }.get
+    session.cachedType(snapshot, offset):
+      Try(renderInlineType(session, snapshot, offset)).recover { case e: Exception =>
+        Log.warn(s"Scala 3 typed-tree lookup failed: ${e.getMessage}", e)
+        None
+      }.get
 
   private def renderInlineType(session: PcSession, snapshot: PcSnapshot, offset: Int): Option[String] =
     val cl             = session.classloader

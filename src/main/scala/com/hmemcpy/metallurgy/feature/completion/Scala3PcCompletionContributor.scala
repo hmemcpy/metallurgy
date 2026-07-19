@@ -42,7 +42,7 @@ final class Scala3PcCompletionContributor extends CompletionContributor:
     PcSessionManager
       .get(project)
       .sessionFor(module)
-      .map(_.complete(vfile.getUrl, document.getText, parameters.getOffset))
+      .map(_.complete(vfile.getUrl, document.getText, document.getModificationStamp, parameters.getOffset))
       .foreach: items =>
         Log.debug(s"PC completion returned ${items.size} items for ${vfile.getName}:${parameters.getOffset}")
         PcCompletionMerger.mergeRemainingContributors(parameters, result, items)

@@ -17,14 +17,19 @@ _Avoid_: "the Metals plugin" (Metals is the VS Code / LSP server; we are not it)
 ### The compiler side
 
 **pc**:
-The Scala 3 presentation compiler — `dotty.tools.dotc.interactive.InteractiveDriver` plus the Metals wrapper `org.scalameta.mtutors.PresentationCompiler`. Runs the compiler frontend (parser → typer + a few post-typer phases like `inlining`) in-memory, with no `.class`/`.tasty` emission. Designed for IDE use: asynchronous, interruptible, partial-result-on-error.
+The Scala 3 presentation compiler — `dotty.tools.dotc.interactive.InteractiveDriver` behind the stable
+`scala.meta.pc.PresentationCompiler` Java API used by Metals. Runs the compiler frontend (parser → typer
+and a few post-typer phases like `inlining`) in-memory, with no `.class`/`.tasty` emission. Designed
+for IDE use: asynchronous, interruptible, partial-result-on-error.
 _Avoid_: "the compiler" (ambiguous — could mean `dotc` itself), "Metals" (Metals is the LSP server; `pc` is the library Metals *uses*).
 
 **`dotc`**:
 The Scala 3 compiler proper. `pc` embeds `dotc` and exposes a subset of its behaviour over a stable, MiMa-enforced interface.
 
-**mtags**:
-The artifact (`org.scalameta:mtags_<scalaBinaryVersion>`) that packages `pc` plus Scala-2/3 cross-built adapters. Loaded via `ServiceLoader`. MiMa-kept binary-compatible across patch versions of the same Scala 3 minor.
+**presentation-compiler distribution**:
+The exact-version `org.scala-lang:scala3-presentation-compiler_3` artifact and its transitive graph.
+`org.scalameta:mtags-interfaces` supplies the parent-loaded Java API; the implementation is loaded through
+`ServiceLoader` in an isolated child-first classloader.
 
 ### The IDE side
 
@@ -38,7 +43,10 @@ A Scala 3.5+ module for which Metallurgy's features are active. The opt-in flag 
 The persistent project-level state service. Holds per-module opt-in flags, the bulk "enable for all Scala 3 modules" toggle, and feature-level toggles (Phase 1 features, Phase 2 diagnostics, etc.). Lives under `Settings | Languages & Frameworks | Metallurgy`. Distinct from the bundled plugin's `ScalaProjectSettings` and from `isUseCompilerTypes` (which we leave alone).
 
 **MtagsFetcher**:
-The component that downloads `mtags_<scalaBinVer>` + its dependencies on first use per Scala 3 minor version. Uses IntelliJ's `Task.Backgroundable` + `ProgressManager` + the platform HTTP client. Caches under `PathManager.getCachePath()/metallurgy/<scala-version>/`. Offline-tolerant: if cached, instant; if not, notification + no-op. See ADR 0003.
+The historically named component that resolves the exact Scala presentation-compiler distribution through
+the bundled Scala plugin's dependency manager. It runs in `Task.Backgroundable` and maintains a validated
+SHA-256 cache under IntelliJ's system cache directory. Offline-tolerant: a valid cache is local-only; a cold
+cache without network leaves the bundled plugin as fallback. See ADR 0003.
 
 **PcSession**:
 A long-lived per-module handle owning a `PresentationCompiler` instance plus its classpath, scalac options, and Scala binary version. Created lazily on first use after `MtagsFetcher` has the artifacts; hot-swapped when classpath changes; closed when the module is removed. Single-writer, multi-reader; in-flight retypecheck can be cancelled.

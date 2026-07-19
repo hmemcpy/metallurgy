@@ -156,7 +156,8 @@ This mirrors the bundled plugin's incremental-highlighting strategy.
                                 │  ServiceLoader (MiMa-binary-compat)
                                 │
               ┌─────────────────┴───────────────────┐
-              │  org.scalameta:mtags_<scalaBinVer>  │
+              │  scala3-presentation-compiler_3     │
+              │  + mtags-interfaces                 │
               │   └── PresentationCompiler (pc)     │
               │        └── dotty.tools.dotc         │
               │             └── Interactive driver  │
@@ -613,29 +614,29 @@ Either way, downstream modules' `pc` sessions see the new artifact on their next
 
 ## 13. Classloader & versioning
 
-### 13.1 Per-minor-version classloader
+### 13.1 Per-session exact-version classloader
 
-One `URLClassLoader` per Scala 3 minor version (3.3, 3.4, 3.5, …) used in the project. Each holds:
+One `URLClassLoader` per active module and exact Scala version in Phase 1. Each holds:
 
-- `mtags_<scalaBinVer>.jar`
-- `scala3-compiler_<scalaFullVer>.jar`
-- `scala3-library_<scalaFullVer>.jar`
-- `scala3-tasty-inspector_<scalaFullVer>.jar`
-- dependencies (with their own versions matching the compiler)
+- `scala3-presentation-compiler_3-<scalaFullVer>.jar`
+- `scala3-compiler_3-<scalaFullVer>.jar`
+- `scala3-library_3-<scalaFullVer>.jar`
+- the POM-declared transitive graph
 
-Parents: IntelliJ platform classloader (so we can call into IntelliJ APIs).
+The loader is child-first for the Scala runtime and compiler implementation, and parent-first for JDK,
+IntelliJ, LSP4J, and `scala.meta.pc` API classes.
 
 ### 13.2 ServiceLoader
 
-`PresentationCompiler` is loaded via `META-INF/services/org.scalameta.metals.PresentationCompiler` from the mtags jar. MiMa keeps the interface binary-compatible across patch releases of the same minor version.
+`PresentationCompiler` is loaded via
+`META-INF/services/scala.meta.pc.PresentationCompiler` from the presentation-compiler jar.
 
 ### 13.3 Version pinning
 
 Per `research/05-macros.md` §4:
 
-- LTS (3.3) and mainline (3.5) are kept on par — all `pc` fixes backport to LTS.
-- We pin mtags to the module's Scala binary version.
-- 3.3 is the floor. 3.2 users get a notification + no-op.
+- We pin the presentation compiler to the module's exact Scala full version.
+- Scala 3.5 is the floor (ADR 0001); older modules remain entirely on the bundled plugin.
 
 ### 13.4 BETASTy caveat
 
@@ -674,13 +675,13 @@ The `.betasty` format is experimental and may change between patch versions. We 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | Bundled plugin's public API changes underneath us | Med | Pin to specific bundled-plugin versions in `plugin.xml`'s `<depends>`. CI against multiple versions. |
-| `pc` API changes underneath us | Low | MiMa-enforced binary compat; pin mtags versions per module. |
+| `pc` API changes underneath us | Low | Parent-load `mtags-interfaces`; pin the implementation to the module's exact Scala version. |
 | Performance regression from running `pc` alongside bundled | Med | Strict gating, debouncing, viewport-scoping. Measure early. |
 | Diagnostic conflicts between bundled and our pass | Med | Conservative suppression rules; allow user to disable our additions. |
 | `.betasty` format change between Scala 3 patches | Med | Don't parse it directly; let `pc` handle it. |
 | PSI identity stability under lazy materialisation | Med | Stable element identity per `(file, range, kind)`; only side-data is versioned. |
 | Stub-index population during project import | Low | Bundled parser's stubs stay authoritative at import time; our `PcSymbolIndex` overlays later. |
-| Classloader isolation between mtags versions and IntelliJ runtime | Med | One URLClassLoader per Scala 3 minor version, parented to the platform classloader. Solved pattern (Metals). |
+| Classloader isolation between compiler versions and IntelliJ runtime | Med | Child-first compiler loader with explicit parent-first JDK/platform/API packages; covered by a real headless PC smoke test. |
 | Per-module `ProblemHighlightFilter` ordering | Med | Filter checks the file's `Module` + our opt-in flag; bundled compiler pass stays on for Scala 2 modules. |
 | `pc` does not fully expand Scala 3 macro annotations on every keystroke | Med | Read from `.betasty`/`.tasty` for already-compiled classes; show "expansion pending" for open files. |
 
@@ -702,7 +703,7 @@ Metallurgy's scope removes each of those cost categories by constraint:
 After applying these constraints, the actual scope is roughly:
 
 1. A `pc` session manager that maps `Module → PresentationCompiler` and feeds it real classpaths from IntelliJ.
-2. A fetch-on-demand mtags layer (ADR 0003).
+2. A fetch-on-demand presentation-compiler layer (historically named `MtagsFetcher`; ADR 0003).
 3. A handful of EP implementations that rank ahead of (or alongside) the bundled plugin's, only for opted-in modules.
 4. A diagnostic bridge from `pc.Diagnostics` → IntelliJ `Annotation` / `HighlightInfo`.
 5. A TASTy / SemanticDB-backed symbol → PSI resolver for navigation, find-usages, and rename.
