@@ -1,0 +1,128 @@
+package com.hmemcpy.metallurgy.feature.completion
+
+import com.hmemcpy.metallurgy.pc.PcCompletion
+import com.intellij.codeInsight.completion.{CompletionParameters, CompletionResult, CompletionResultSet}
+import com.intellij.codeInsight.lookup.{
+  LookupElement,
+  LookupElementBuilder,
+  LookupElementDecorator,
+  LookupElementPresentation,
+  LookupElementRenderer
+}
+
+private[completion] object PcCompletionMerger:
+
+  def mergeRemainingContributors(
+      parameters: CompletionParameters,
+      result: CompletionResultSet,
+      compilerItems: Seq[PcCompletion]
+  ): Unit =
+    var nativeResults = Vector.empty[CompletionResult]
+    result.runRemainingContributors(
+      parameters,
+      (nativeResult: CompletionResult) => nativeResults = nativeResults :+ nativeResult
+    )
+
+    mergeResults(compilerItems, nativeResults).foreach:
+      case Left(compilerItem)  => result.addElement(compilerLookupElement(compilerItem))
+      case Right(nativeResult) => result.passResult(nativeResult)
+
+  def mergeResults(
+      compilerItems: Seq[PcCompletion],
+      nativeResults: Seq[CompletionResult]
+  ): Seq[Either[PcCompletion, CompletionResult]] =
+    merge(compilerItems, nativeResults)(
+      result => result.getLookupElement.getLookupString,
+      (result, compilerItem) => result.withLookupElement(decorate(result.getLookupElement, compilerItem))
+    )
+
+  def mergeLookupElements(
+      compilerItems: Seq[PcCompletion],
+      nativeItems: Seq[LookupElement]
+  ): Seq[LookupElement] =
+    merge(compilerItems, nativeItems)(
+      _.getLookupString,
+      (nativeItem, compilerItem) => decorate(nativeItem, compilerItem)
+    ).map:
+      case Left(compilerItem) => compilerLookupElement(compilerItem)
+      case Right(nativeItem)  => nativeItem
+
+  def compilerLookupElement(item: PcCompletion): LookupElement =
+    decorate(
+      LookupElementBuilder
+        .create(item.lookupName)
+        .withPresentableText(item.lookupName),
+      item
+    )
+
+  private def merge[A](
+      compilerItems: Seq[PcCompletion],
+      nativeItems: Seq[A]
+  )(
+      lookupName: A => String,
+      overrideNative: (A, PcCompletion) => A
+  ): Seq[Either[PcCompletion, A]] =
+    val indexedCompilerItems = compilerItems.zipWithIndex
+    val initialQueues        = indexedCompilerItems.groupMap(_._1.lookupName)(identity).view.mapValues(_.toList).toMap
+
+    val (remainingQueues, mergedNativeItems) =
+      nativeItems.foldLeft((initialQueues, Vector.empty[Either[PcCompletion, A]])):
+        case ((queues, merged), nativeItem) =>
+          queues.getOrElse(lookupName(nativeItem), Nil) match
+            case (compilerItem, _) :: remaining =>
+              val updatedQueues = queues.updated(lookupName(nativeItem), remaining)
+              (updatedQueues, merged :+ Right(overrideNative(nativeItem, compilerItem)))
+            case Nil                            =>
+              (queues, merged :+ Right(nativeItem))
+
+    val unmatchedCompilerItems =
+      remainingQueues.valuesIterator.flatten.toSeq.sortBy(_._2).map((item, _) => Left(item))
+
+    mergedNativeItems ++ unmatchedCompilerItems
+
+  private def decorate(nativeItem: LookupElement, compilerItem: PcCompletion): LookupElement =
+    new LookupElementDecorator[LookupElement](nativeItem):
+      override def renderElement(presentation: LookupElementPresentation): Unit =
+        super.renderElement(presentation)
+        PcCompletionPresentation.render(compilerItem, presentation)
+
+      override def getExpensiveRenderer: LookupElementRenderer[? <: LookupElement] =
+        val renderer = getDelegate.getExpensiveRenderer.asInstanceOf[LookupElementRenderer[LookupElement]]
+        if renderer == null then null
+        else
+          new LookupElementRenderer[LookupElementDecorator[LookupElement]]:
+            override def renderElement(
+                element: LookupElementDecorator[LookupElement],
+                presentation: LookupElementPresentation
+            ): Unit =
+              renderer.renderElement(element.getDelegate, presentation)
+              PcCompletionPresentation.render(compilerItem, presentation)
+
+private[completion] object PcCompletionPresentation:
+
+  private val MethodDetail = "^(\\(.*\\))\\s*:\\s*(.+)$".r
+
+  def render(item: PcCompletion, presentation: LookupElementPresentation): Unit =
+    semanticDetail(item).foreach:
+      case MethodDetail(parameters, resultType) =>
+        presentation.setTailText(parameters, true)
+        presentation.setTypeText(resultType)
+      case resultType                           =>
+        presentation.clearTail()
+        presentation.setTypeText(resultType)
+
+  private def semanticDetail(item: PcCompletion): Option[String] =
+    item.detail
+      .orElse(labelDetail(item))
+      .map(_.trim)
+      .map(stripLookupName(item.lookupName, _))
+      .map(_.stripPrefix(":").trim)
+      .filter(_.nonEmpty)
+
+  private def labelDetail(item: PcCompletion): Option[String] =
+    Option.when(item.label.startsWith(item.lookupName)):
+      item.label.drop(item.lookupName.length)
+
+  private def stripLookupName(lookupName: String, detail: String): String =
+    if detail.startsWith(lookupName) then detail.drop(lookupName.length).trim
+    else detail

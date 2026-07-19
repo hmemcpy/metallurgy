@@ -12,8 +12,8 @@ object PerfTracing {
 
   def trace[T](operation: String)(body: => T): T = {
     if (!isEnabled) return body
-    val start = System.nanoTime()
-    val result = body
+    val start   = System.nanoTime()
+    val result  = body
     val elapsed = (System.nanoTime() - start) / 1_000_000.0
     Log.info(s"[metallurgy] $operation took ${elapsed}ms")
     result

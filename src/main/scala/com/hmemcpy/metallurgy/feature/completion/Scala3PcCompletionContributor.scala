@@ -1,32 +1,48 @@
 package com.hmemcpy.metallurgy.feature.completion
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.hmemcpy.metallurgy.pc.{PcCompletion, PcSessionManager}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.{CompletionContributor, CompletionParameters, CompletionResultSet}
-import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.psi.PsiDocumentManager
 
-final class Scala3PcCompletionContributor extends CompletionContributor {
+final class Scala3PcCompletionContributor extends CompletionContributor:
 
   private val Log = Logger.getInstance(classOf[Scala3PcCompletionContributor])
 
-  override def fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet): Unit = {
-    val project = parameters.getOriginalFile.getProject
-    val file = parameters.getOriginalFile
-    val vfile = file.getVirtualFile
-    if (vfile == null) return
+  override def fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet): Unit =
+    val file    = parameters.getOriginalFile
+    val project = file.getProject
+    Log.debug(s"PC completion invoked for ${file.getName}:${parameters.getOffset}")
+    val vfile   = file.getVirtualFile
+    if vfile == null then
+      Log.debug("PC completion skipped: no virtual file")
+      return
 
-    val module = org.jetbrains.plugins.scala.lang.psi.ScalaPsiUtil.getModule(file) match {
-      case null => return
+    val module = ModuleUtilCore.findModuleForPsiElement(file) match
+      case null =>
+        Log.debug("PC completion skipped: no module")
+        return
       case m    => m
-    }
 
-    if (!ModuleDetectionService.get(project).isEligible(module)) return
-    if (!MetallurgySettings(project).isEnabled(module)) return
+    if !ModuleDetectionService.get(project).isEligible(module) then
+      Log.debug(s"PC completion skipped: ${module.getName} is not eligible")
+      return
+    if !MetallurgySettings(project).isEnabled(module) then
+      Log.debug(s"PC completion skipped: ${module.getName} is not enabled")
+      return
 
-    // Phase 1 completion augmentation will be wired here once PcSession can
-    // actually invoke pc.complete(). For now, this is a no-op that gets out of
-    // the way of the bundled plugin's contributor.
-    super.fillCompletionVariants(parameters, result)
-  }
-}
+    val document = PsiDocumentManager.getInstance(project).getDocument(file)
+    if document == null then
+      Log.debug("PC completion skipped: no document")
+      return
+
+    PcSessionManager
+      .get(project)
+      .sessionFor(module)
+      .map(_.complete(vfile.getUrl, document.getText, parameters.getOffset))
+      .foreach: items =>
+        Log.debug(s"PC completion returned ${items.size} items for ${vfile.getName}:${parameters.getOffset}")
+        PcCompletionMerger.mergeRemainingContributors(parameters, result, items)

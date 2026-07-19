@@ -7,10 +7,9 @@ import org.junit.Test
 
 /** Unit tests for the Scala 3.5+ eligibility predicate.
   *
-  * These tests do NOT exercise the cache or the listener wiring — those need the
-  * testkit backport (issue #11) and a real `Module` fixture. They cover only the
-  * pure predicate `version.isScala3 && version >= Scala_3_5_0`, which is the part
-  * most likely to regress.
+  * These tests do NOT exercise the cache or the listener wiring — those need the testkit backport (issue #11) and a
+  * real `Module` fixture. They cover only the pure predicate `version.isScala3 && version >= Scala_3_5_0`, which is the
+  * part most likely to regress.
   */
 class EligibilityPredicateTest {
 
@@ -48,4 +47,3 @@ class EligibilityPredicateTest {
     // (Version comparison treats RC/pre-release as < stable).
     assertEquals(false, isEligible(new ScalaVersion(ScalaLanguageLevel.Scala_3_5, "0-RC1")))
 }
-

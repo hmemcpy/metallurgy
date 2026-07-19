@@ -1,4 +1,5 @@
 import org.jetbrains.sbtidea.{AutoJbr, JbrPlatform}
+import scala.sys.process.Process
 
 ThisBuild / scalaVersion := "3.7.4"
 ThisBuild / version      := "0.1.0-SNAPSHOT"
@@ -9,8 +10,14 @@ Global / intellijAttachSources := true
 
 addCommandAlias("fmt", "scalafmtAll")
 addCommandAlias("check", "scalafmtCheckAll")
+addCommandAlias("testHeadless", "test")
 
 Global / javacOptions := Seq("--release", "17")
+
+ThisBuild / resolvers ++= Seq(
+  "JetBrains IntelliJ Repository" at "https://www.jetbrains.com/intellij-repository/releases",
+  "JetBrains IntelliJ Dependencies" at "https://cache-redirector.jetbrains.com/intellij-dependencies"
+)
 
 ThisBuild / scalacOptions ++= Seq(
   "-explain",
@@ -25,6 +32,25 @@ ThisBuild / scalacOptions ++= Seq(
 )
 
 lazy val scalaPluginVersion = "2026.1.20"
+lazy val intellijTestFrameworkVersion = "261.26222.65"
+
+lazy val intellijTestFrameworkDependencies = Seq(
+  "com.jetbrains.intellij.platform" % "test-framework-core"         % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.platform" % "test-framework-common"       % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.platform" % "test-framework"              % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.platform" % "test-framework-junit5"       % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.java"     % "java-test-framework-shared"  % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.java"     % "java-test-framework-backend" % intellijTestFrameworkVersion,
+  "com.jetbrains.intellij.java"     % "java-test-framework"         % intellijTestFrameworkVersion
+)
+
+lazy val intellijPluginDependencies = Seq(
+  "com.intellij.java".toPlugin,
+  s"org.intellij.scala:$scalaPluginVersion".toPlugin
+)
+
+lazy val compileTestkit = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
+lazy val prepareIntellijTestSdk = taskKey[Unit]("Prepare SDK resources expected by IntelliJ light fixtures")
 
 lazy val root =
   Project("metallurgy", file("."))
@@ -39,14 +65,37 @@ lazy val root =
           ]]>"""
       },
       libraryDependencies ++= Seq(
+        ("org.scalameta" % "mtags-interfaces" % "1.3.4")
+          .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j")
+          .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j.jsonrpc"),
         "junit"             % "junit"             % "4.13.2"  % Test,
         "com.github.sbt"    % "junit-interface"   % "0.13.3"  % Test,
-        "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0"  % Test
+        "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0"  % Test,
+      ) ++ intellijTestFrameworkDependencies.map(_ % Test),
+      Test / javaOptions ++= Seq(
+        s"-Didea.home.path=${intellijBaseDirectory.value}",
+        "-Didea.is.unit.test=true",
+        "-Didea.is.headless=true"
       ),
+      Test / unmanagedClasspath +=
+        Attributed.blank(baseDirectory.value / "testkit" / "target" / "scala-2.13" / "classes"),
+      prepareIntellijTestSdk := {
+        updateIntellij.value
+        val sdk = intellijBaseDirectory.value
+        val source = sdk / "plugins" / "java" / "lib" / "resources" / "jdkAnnotations.jar"
+        val target = sdk / "lib" / "resources" / "jdkAnnotations.jar"
+        if (!target.exists()) {
+          IO.createDirectory(target.getParentFile)
+          IO.copyFile(source, target)
+        }
+      },
+      compileTestkit := {
+        prepareIntellijTestSdk.value
+        val exitCode = Process(Seq("sbt", "--client", "compile"), baseDirectory.value / "testkit").!
+        if (exitCode != 0) sys.error(s"TestKit compilation failed with exit code $exitCode")
+      },
+      Test / compile := ((Test / compile) dependsOn compileTestkit).value,
       testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-s", "-a", "+c", "+q"),
       buildIntellijOptionsIndex := {},
-      intellijPlugins := Seq(
-        "com.intellij.java".toPlugin,
-        s"org.intellij.scala:$scalaPluginVersion".toPlugin
-      )
+      intellijPlugins := intellijPluginDependencies
     )

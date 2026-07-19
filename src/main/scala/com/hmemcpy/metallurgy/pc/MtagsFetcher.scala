@@ -3,7 +3,6 @@ package com.hmemcpy.metallurgy.pc
 import com.intellij.openapi.progress.{ProgressIndicator, Task}
 import com.intellij.openapi.project.Project
 import com.intellij.util.io.HttpRequests
-import org.jetbrains.plugins.scala.ScalaVersion
 
 import java.io.File
 import java.nio.file.{Files, Path}
@@ -29,9 +28,9 @@ final class MtagsFetcher(project: Project) {
   }
 
   private def fetchAsync(scalaVersion: String): CompletableFuture[Path] = {
-    val future = new CompletableFuture[Path]()
+    val future    = new CompletableFuture[Path]()
     val artifacts = RequiredArtifacts.forVersion(scalaVersion)
-    val target = cacheDirFor(scalaVersion)
+    val target    = cacheDirFor(scalaVersion)
     Files.createDirectories(target)
 
     new Task.Backgroundable(project, s"Downloading Scala $scalaVersion presentation compiler", true) {
@@ -41,9 +40,7 @@ final class MtagsFetcher(project: Project) {
             indicator.setText(s"Downloading ${artifact.jarName}")
             val dest = target.resolve(artifact.jarName)
             if (!Files.exists(dest))
-              HttpRequests.request(artifact.url(scalaVersion)).connect(request =>
-                request.saveToFile(dest, indicator)
-              )
+              HttpRequests.request(artifact.url(scalaVersion)).connect(request => request.saveToFile(dest, indicator))
           }
           future.complete(target)
         } catch {
@@ -72,7 +69,7 @@ object MtagsFetcher {
 
 object RequiredArtifacts {
   case class Artifact(groupId: String, artifactId: String) {
-    def jarName: String = s"$artifactId.jar"
+    def jarName: String              = s"$artifactId.jar"
     def url(version: String): String =
       s"https://repo1.maven.org/maven2/${groupId.replace('.', '/')}/$artifactId/$version/$artifactId-$version.jar"
   }

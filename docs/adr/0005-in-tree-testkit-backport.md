@@ -1,6 +1,8 @@
 # In-tree testkit backport from `JetBrains/intellij-scala` `idea261.x`
 
-Metallurgy's test infrastructure lives in-tree under `src/test/scala/org/jetbrains/plugins/scala/*`, freshly backported from the `idea261.x` branch of `JetBrains/intellij-scala`. It is not extracted into a shared library, not consumed as a published artifact, and not imported from any other project.
+Metallurgy's test infrastructure lives in-tree under `testkit/src/main`, freshly backported from the `idea261.x` branch of `JetBrains/intellij-scala`. It is not extracted into a shared library, not consumed as a published artifact, and not imported from any other project.
+
+The backport remains Scala 2.13 because that is the source dialect used by the bundled plugin's fixtures. It has a small nested sbt build under `testkit/`; the Scala 3 plugin build compiles it before compiling tests and adds only its output directory to the test classpath. Keeping it out of the root sbt project graph also prevents `sbt-idea-plugin` from packaging the fixtures as another IntelliJ plugin node. Run the complete headless suite with `sbt test` (or its `testHeadless` alias).
 
 The two alternatives we rejected:
 

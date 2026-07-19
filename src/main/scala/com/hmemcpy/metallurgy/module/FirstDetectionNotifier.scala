@@ -9,34 +9,47 @@ object FirstDetectionNotifier {
 
   private final val GroupId = "metallurgy.general"
 
-  def notify(module: Module): Unit = {
-    val project = module.getProject
-    val settings = MetallurgySettings(project)
-    val moduleName = module.getName
+  def notify(modules: Seq[Module]): Unit = {
+    val project = modules.headOption.map(_.getProject).orNull
+    if project == null then return
 
-    if (!settings.shouldAsk(moduleName)) return
-    if (settings.isEnabled(module)) return
+    val settings     = MetallurgySettings(project)
+    val modulesToAsk = modules.filter(module => settings.shouldAsk(module.getName) && !settings.isEnabled(module))
+    if modulesToAsk.isEmpty then return
+
+    val moduleNames       = modulesToAsk.map(_.getName)
+    val moduleDescription =
+      if moduleNames.size == 1 then s"<b>${moduleNames.head}</b>"
+      else s"all ${moduleNames.size} detected modules"
 
     val notification = NotificationGroupManager.getInstance
       .getNotificationGroup(GroupId)
       .createNotification(
         "Metallurgy: Scala 3.5+ module detected",
-        s"Enable Metallurgy for accurate types, completion, and error highlighting in <b>$moduleName</b>?",
+        s"Enable Metallurgy for accurate types, completion, and error highlighting in $moduleDescription?",
         NotificationType.INFORMATION
       )
 
-    notification.addAction(NotificationAction.createExpiring("Enable", (_: AnActionEvent, _: Notification) => {
-      settings.setEnabled(moduleName, enabled = true)
-    }))
+    notification.addAction(
+      NotificationAction.createExpiring(
+        "Enable",
+        (_: AnActionEvent, _: Notification) => {
+          modulesToAsk.foreach(settings.setEnabled(_, enabled = true))
+        }
+      )
+    )
 
     notification.addAction(NotificationAction.createExpiring("Not now", (_: AnActionEvent, _: Notification) => ()))
 
-    notification.addAction(NotificationAction.createExpiring("Never ask for this module", (_: AnActionEvent, _: Notification) => {
-      settings.neverAsk(moduleName)
-    }))
+    notification.addAction(
+      NotificationAction.createExpiring(
+        "Never ask for this module",
+        (_: AnActionEvent, _: Notification) => {
+          moduleNames.foreach(settings.neverAsk)
+        }
+      )
+    )
 
     notification.notify(project)
-    // Suppress re-prompting within the session; the setting persists across restarts.
-    settings.neverAsk(moduleName)
   }
 }

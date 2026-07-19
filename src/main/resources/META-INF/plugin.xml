@@ -34,8 +34,22 @@
         serviceImplementation="com.hmemcpy.metallurgy.module.ModuleDetectionService"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.pc.MtagsFetcher"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeHijack"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeReportInterceptor"/>
     <postStartupActivity
-        implementation="com.hmemcpy.metallurgy.MetallurgyStartupActivity"/>
+        implementation="com.hmemcpy.metallurgy.MetallurgyProjectActivity"/>
+    <statusBarWidgetFactory
+        id="Metallurgy"
+        implementation="com.hmemcpy.metallurgy.status.MetallurgyStatusBarWidgetFactory"
+        order="before Position"/>
+    <completion.contributor
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.feature.completion.Scala3PcCompletionContributor"
+        order="before scalaCompletionContrubutor"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
