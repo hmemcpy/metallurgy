@@ -1,0 +1,208 @@
+Backport manifest — Scala plugin testkit from JetBrains/intellij-scala idea261.x
+==============================================================================
+
+Source repo : /Users/hmemcpy/git/intellij-scala
+Source branch: idea261.x
+Source commit: 8dd22d153b65c847f4ced8917dd7e02b83561e5d
+Target repo : /Users/hmemcpy/git/metallurgy
+Target path : src/test/scala/org/jetbrains/plugins/scala/
+ADR         : docs/adr/0005-in-tree-testkit-backport.md
+
+All paths below are relative to the package root
+`src/test/scala/org/jetbrains/plugins/scala/` in the target repo.
+
+Source paths are relative to one of:
+  [scala-impl]      = scala/scala-impl/test/org/jetbrains/plugins/scala/
+  [test-utils-comm] = scala/test-utils-common/test/org/jetbrains/plugins/scala/
+
+
+base/                                                                    [16 files]
+-------------------------------------------------------------------------------
+EditorActionTestBase.scala                       [scala-impl] base/                       unchanged
+FailableTest.scala                               [test-utils-comm] base/                  unchanged
+HelperFixtureEditorOps.scala                     [scala-impl] base/                       unchanged
+InjectableJdk.scala                              [scala-impl] base/                       unchanged
+LibrariesOwner.scala                             [scala-impl] base/                       unchanged
+package.scala                                    [scala-impl] base/                       MODIFIED (1)
+ScalaCodeInsightTestFixture.scala                [scala-impl] base/                       unchanged
+ScalaCodeParsing.scala                           [scala-impl] base/                       unchanged
+ScalaCompletionAutoPopupTestCase.scala           [scala-impl] base/                       unchanged
+ScalaFixtureTestCase.scala                       [scala-impl] base/                       unchanged
+ScalaLightCodeInsightFixtureTestCase.scala       [scala-impl] base/                       unchanged
+ScalaLightProjectDescriptor.scala                [scala-impl] base/                       unchanged
+ScalaSdkOwner.scala                              [scala-impl] base/                       unchanged
+ScalaVersionProvider.scala                       [scala-impl] base/                       unchanged
+SharedTestProjectToken.scala                     [scala-impl] base/                       unchanged
+SimpleTestCase.scala                             [scala-impl] base/                       unchanged
+SourceRootTestUtil.scala                         [scala-impl] base/                       ADDED (2)
+
+base/libraryLoaders/                                                     [9 files]
+-------------------------------------------------------------------------------
+IvyManagedLoader.scala                           [scala-impl] base/libraryLoaders/        unchanged
+LibraryLoader.scala                              [scala-impl] base/libraryLoaders/        unchanged
+LocalJarLibraryLoader.scala                      [scala-impl] base/libraryLoaders/        unchanged (3)
+MockScalaSDKLoader.scala                         [scala-impl] base/libraryLoaders/        unchanged
+PlatformSdkJdkLoader.scala                       [scala-impl] base/libraryLoaders/        unchanged (3)
+ScalaLibraryLoader.scala                         [scala-impl] base/libraryLoaders/        unchanged (3)
+ScalaReflectLibraryLoader.scala                  [scala-impl] base/libraryLoaders/        unchanged
+ScalaSDKLoader.scala                             [scala-impl] base/libraryLoaders/        unchanged
+SmartJDKLoader.scala                             [scala-impl] base/libraryLoaders/        unchanged
+
+util/                                                                    [20 files]
+-------------------------------------------------------------------------------
+AliasExports.scala                               [scala-impl] util/                       unchanged
+Annotations.scala                                [scala-impl] util/                       ADDED (2)
+CompilerTestUtil.scala                           [scala-impl] util/                       unchanged
+ConfigureJavaFile.scala                          [scala-impl] util/                       unchanged
+EditorHintFixtureEx.scala                        [scala-impl] util/                       unchanged
+extensions.scala                                 [scala-impl] util/                       unchanged
+FindCaretOffset.scala                            [scala-impl] util/                       unchanged
+IconUtils.scala                                  [scala-impl] util/                       unchanged
+Markers.scala                                    [scala-impl] util/                       unchanged
+ModificationTrackerTester.scala                  [scala-impl] util/                       unchanged
+NotNothing.scala                                 [scala-impl] util/                       unchanged
+PsiFileTestUtil.scala                            [scala-impl] util/                       unchanged
+PsiSelectionUtil.scala                           [scala-impl] util/                       unchanged
+RevertableChange.scala                           [scala-impl] util/                       unchanged
+ShortCaretMarker.scala                           [scala-impl] util/                       unchanged
+SoftAssert.scala                                 [scala-impl] util/                       unchanged
+TestUtils.scala                                  [scala-impl] util/                       unchanged
+TextRangeUtils.scala                             [scala-impl] util/                       unchanged
+TypeAnnotationSettings.scala                     [scala-impl] util/                       unchanged
+WriteCommandActionEx.scala                       [scala-impl] util/                       unchanged
+
+util/assertions/                                                         [8 files]
+-------------------------------------------------------------------------------
+AssertionMatchers.scala                          [test-utils-comm] util/assertions/      unchanged
+CollectionsAssertions.scala                      [test-utils-comm] util/assertions/      unchanged
+ExceptionAssertions.scala                        [test-utils-comm] util/assertions/      unchanged
+MatcherAssertions.scala                          [test-utils-comm] util/assertions/      unchanged
+MatcherAssertionsExt.scala                       [scala-impl]      util/assertions/      unchanged
+package.scala                                    [test-utils-comm] util/assertions/      unchanged
+PsiAssertions.scala                              [scala-impl]      util/assertions/      unchanged
+StringAssertions.scala                           [test-utils-comm] util/assertions/      unchanged
+
+util/runners/                                                            [7 files]
+-------------------------------------------------------------------------------
+MultipleScalaVersionsJUnit4Runner.scala          [scala-impl] util/runners/              unchanged
+RunWithJdkVersions.java                          [scala-impl] util/runners/              unchanged
+RunWithScalaVersions.java                        [scala-impl] util/runners/              unchanged
+ScalaVersionAwareTestsCollector.scala            [scala-impl] util/runners/              unchanged
+TestJdkVersion.java                              [scala-impl] util/runners/              unchanged
+TestScalaVersion.java                            [scala-impl] util/runners/              MODIFIED (4)
+WithIndexingMode.java                            [scala-impl] util/runners/              unchanged
+
+util/matchers/                                                           [2 files]
+-------------------------------------------------------------------------------
+HamcrestMatchers.scala                           [scala-impl] util/matchers/             unchanged
+ScalaBaseMatcher.scala                           [scala-impl] util/matchers/             unchanged
+
+util/dependencymanager/                                                   [2 files]
+-------------------------------------------------------------------------------
+TestDependencyManagerForSbt.scala                [scala-impl] util/dependencymanager/    unchanged
+TestDependencyManagers.scala                     [scala-impl] util/dependencymanager/    unchanged (5)
+
+codeInspection/                                                          [3 files]
+-------------------------------------------------------------------------------
+ScalaAnnotatorQuickFixTestBase.scala             [scala-impl] codeInspection/            unchanged
+ScalaInspectionTestBase.scala                    [scala-impl] codeInspection/            unchanged
+ScalaQuickFixTestFixture.scala                   [scala-impl] codeInspection/            unchanged
+
+annotator/                                                               [1 file]
+-------------------------------------------------------------------------------
+Message.scala                                    [scala-impl] annotator/                 unchanged
+
+top-level                                                                [1 file]
+-------------------------------------------------------------------------------
+testCategories.scala                             [scala-impl]                            unchanged
+
+TOTAL: 69 source files copied.
+
+
+Files listed in the task brief that do NOT exist as source in idea261.x
+------------------------------------------------------------------------
+The following items from the task brief have no corresponding source file
+in the upstream `idea261.x` branch and were therefore not copied:
+
+  base/libraryLoaders/ThirdPartyLibraryLoader.scala
+    — auto-generated at compile time from @LibraryLoader annotations;
+      no source file in the upstream tree.
+  base/libraryLoaders/SourcesLoader.scala
+    — does not exist in idea261.x (similar functionality is provided by
+      ScalaReflectLibraryLoader / ScalaSDKLoader).
+  util/GeneratedTestSuiteFactory.scala
+    — auto-generated by the upstream build (visible only as .class files
+      under scala-impl/target); no hand-written source.
+  util/dependencymanager/TestDependencyManager.scala
+    — the upstream file is named TestDependencyManagers.scala (plural);
+      that file IS copied above.
+
+
+Modifications made to copied source
+-----------------------------------
+(1) base/package.scala
+    Changed `import junit.framework.TestCase` to
+    `import _root_.junit.framework.TestCase`. The bundled Scala plugin jar
+    `scalaCommunity.junit.jar` ships an (almost empty)
+    `org.jetbrains.plugins.scala.junit` package which shadows the bare `junit`
+    import under Scala's relative-package resolution. The `_root_` qualifier
+    forces absolute resolution to JUnit's `junit.framework.TestCase`. This is
+    the standard fix for this Scala import-shadowing gotcha.
+
+(2) SourceRootTestUtil.scala and util/Annotations.scala
+    Both were not in the task brief but are referenced by other copied files
+    (ScalaLightCodeInsightFixtureTestCase.scala and
+    MultipleScalaVersionsJUnit4Runner.scala respectively), so they had to be
+    brought across as well. Both are unchanged from upstream.
+
+(3) base/libraryLoaders/{LocalJarLibraryLoader,PlatformSdkJdkLoader,ScalaLibraryLoader}.scala
+    Copied verbatim. Not in the original task brief, but the upstream
+    libraryLoaders directory ships them alongside the explicitly-listed
+    loaders; without them the package would not compile (LibraryLoader
+    references them). All three are unchanged.
+
+(4) util/runners/TestScalaVersion.java
+    The `Scala_3_9` enum constant and its switch arm are commented out. The
+    upstream idea261.x source references `LatestScalaVersions.Scala_3_9`, but
+    that constant does not exist in the bundled Scala plugin version 2026.1.20
+    (which only goes up to Scala_3_8). Re-enable both lines when the bundled
+    Scala plugin is upgraded past 2026.1.20.
+
+(5) util/dependencymanager/TestDependencyManagers.scala
+    The task brief listed this file as "TestDependencyManager.scala"; the
+    upstream file is actually named `TestDependencyManagers.scala` (plural).
+    It is copied verbatim under its real upstream name.
+
+
+Build configuration changes
+---------------------------
+In addition to the source files above, the following build configuration
+was modified to make the backport compile against the IntelliJ 261.x
+modular SDK:
+
+  build.sbt
+    - Added `-Ytasty-reader` to scalacOptions. Required because the bundled
+      Scala plugin ships TASTy metadata (e.g. for `project.Version`) that
+      scalac needs to read.
+    - Added `intellijRepositoryReleases` resolver pointing at
+      https://www.jetbrains.com/intellij-repository/releases
+    - Added `intellijDependencies` resolver pointing at
+      https://cache-redirector.jetbrains.com/intellij-dependencies
+      (transitive deps of the test-framework artifacts).
+    - Added `% Test` dependencies on the split IntelliJ test-framework
+      Maven artifacts, because the modular 261.x SDK no longer ships
+      `lib/testFramework.jar` (it has been removed from the IDE distribution
+      and is now published only as separate Maven artifacts keyed by the
+      platform build number 261.26222.65):
+        com.jetbrains.intellij.platform:test-framework-core
+        com.jetbrains.intellij.platform:test-framework-common
+        com.jetbrains.intellij.platform:test-framework
+        com.jetbrains.intellij.platform:test-framework-junit5
+        com.jetbrains.intellij.java:    java-test-framework-shared
+        com.jetbrains.intellij.java:    java-test-framework-backend
+        com.jetbrains.intellij.java:    java-test-framework
+
+This resolution pattern is the same one used by the upstream
+JetBrains/intellij-scala project (see project/dependencies.scala lines
+207-218) — they had to solve the same problem when their build moved past
+the modular-platform break in 2024.2.
