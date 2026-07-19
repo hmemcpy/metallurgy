@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.pc
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
 import org.eclipse.lsp4j.CompletionItem
@@ -56,8 +57,8 @@ final class PcSession private (
           )
       case None           => Seq.empty
 
-  private[metallurgy] def inlineType(snapshot: PcSnapshot, offset: Int): Option[String] =
-    val key = QueryKey.TypeAt(offset)
+  private[metallurgy] def inlineType(snapshot: PcSnapshot, range: TextRange): Option[String] =
+    val key = QueryKey.TypeAt(range)
     snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
       case Some(active) =>
         active
@@ -67,7 +68,7 @@ final class PcSession private (
             else
               active.cachedOrCompute(key, System.nanoTime()):
                 Option(inlineTypeDrivers.get(snapshot.fileUri))
-                  .flatMap(_.use(_.typeAt(snapshot, offset)))
+                  .flatMap(_.use(_.typeAt(snapshot, range)))
                   .flatten
       case None         => None
 

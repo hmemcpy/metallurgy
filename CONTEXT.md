@@ -40,7 +40,7 @@ An IntelliJ `Module` whose `ScalaSdk` has `version.major == 3`. The unit of opt-
 A Scala 3.5+ module for which Metallurgy's features are active. The opt-in flag is `MetallurgySettings.isEnabled(module)` — our own per-module project setting, persisted in `.idea/metallurgy.xml`. Default off. First detection of a Scala 3.5+ module triggers a notification prompting the user to enable. See ADR 0006.
 
 **MetallurgySettings**:
-The persistent project-level state service. Holds per-module opt-in flags, the bulk "enable for all Scala 3 modules" toggle, and feature-level toggles (Phase 1 features, Phase 2 diagnostics, etc.). Lives under `Settings | Languages & Frameworks | Metallurgy`. Distinct from the bundled plugin's `ScalaProjectSettings` and from `isUseCompilerTypes` (which we leave alone).
+The persistent project-level state service. Holds per-module opt-in flags, the bulk "enable for all Scala 3 modules" toggle, and feature-level toggles for compiler types, completion, diagnostics, and related capabilities. Lives under `Settings | Languages & Frameworks | Metallurgy`. Distinct from the bundled plugin's `ScalaProjectSettings` and from `isUseCompilerTypes` (which we leave alone).
 
 **MtagsFetcher**:
 The historically named component that resolves the exact Scala presentation-compiler distribution through
@@ -64,7 +64,10 @@ A copyable `UserData` key on `PsiElement` (`org.jetbrains.plugins.scala.lang.psi
 _Avoid_: "the type slot", "compiler-types" (that's the *setting*, not the slot).
 
 **`isUseCompilerTypes` (bundled setting)**:
-The bundled plugin's existing `ScalaProjectSettings` boolean that turns the bundled scalac-plugin-based transparent-inline pipeline on or off. **Metallurgy does not use this flag.** It is the bundled plugin's, untouched. Users who want belt-and-braces can turn both on; users who only want us turn ours on and theirs off (saving the bundled pipeline's compile-server round-trip cost). See ADR 0006.
+The bundled plugin's existing `ScalaProjectSettings` boolean that enables both its transparent-inline producer and the
+`CompilerType` consumers Metallurgy reuses. It is not Metallurgy's opt-in, and Metallurgy never mutates it. Feature 0
+therefore requires it to be enabled so those bundled consumers read Metallurgy's replacement value; other Metallurgy
+features remain governed by their own settings. See ADR 0006.
 
 **CompilerType.Topic**:
 The IntelliJ `Topic` that fires `onCompilerTypeRequest(e)` when a consumer needs a type the bundled plugin couldn't compute. Today it triggers a full compile-server recompile. This plugin subscribes and answers from `pc` instead — Feature 0. The Topic is published by the bundled plugin; we are a consumer, not a producer.
@@ -110,7 +113,7 @@ Format / fold / surround / smart-enter / typed / backspace / copy-paste / live t
 **Build pipeline**:
 sbt/BSP/JPS import, compile server, nailgun, run configurations, debugger, REPL, worksheet runtime. Owned by the bundled plugin. We add two scalac flags (`-Ybest-effort`, `-Ywith-best-effort-tasty`) to opted-in modules; everything else is piggyback.
 
-### Acceptance corpus
+### Acceptance fixtures
 
-**Phase 1 macro/inline acceptance corpus**:
+**Macro/inline compiler-type acceptance fixtures**:
 Ten canonical fixtures under `testdata/feature/compilertype/` covering transparent-inline → refined type, typeclass derivation (`derives`), inline match, match-type reduction, `compiletime.ops` arithmetic, native tuple `*:` HList, zio-direct `defer`/`run` rewriting, jing structural-type API navigation, and quote/splice macros. Each fixture has a "Metallurgy on" assertion (must pass) and a "Metallurgy off" baseline (must demonstrate the bundled plugin's failure, so our value-add is provably non-zero). See `docs/design.md` §15 and `docs/research/11-canonical-macro-acceptance-tests.md`.

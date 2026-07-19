@@ -16,9 +16,9 @@ import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import scala.util.control.NonFatal
 
 /** Answers the bundled Scala plugin's compiler-type requests without blocking its caller thread. */
-final class CompilerTypeHijack(project: Project) extends Disposable:
+final class CompilerTypeRequestResolver(project: Project) extends Disposable:
 
-  private val log = Logger.getInstance(classOf[CompilerTypeHijack])
+  private val log = Logger.getInstance(classOf[CompilerTypeRequestResolver])
 
   subscribe()
 
@@ -82,12 +82,12 @@ final class CompilerTypeHijack(project: Project) extends Disposable:
       module,
       SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element),
       PcSnapshot(virtualFile.getUrl, document.getModificationStamp, document.getText),
-      elementRange.getStartOffset
+      elementRange
     )
 
   private def resolve(request: TypeRequest, session: PcSession): TypeResolution =
     try
-      TypeRenderer.render(session, request.snapshot, request.offset) match
+      TypeRenderer.render(session, request.snapshot, request.range) match
         case Some(value) => TypeResolution.Resolved(value)
         case None        => TypeResolution.NoType
     catch
@@ -134,7 +134,7 @@ private final case class TypeRequest(
     module: Module,
     element: SmartPsiElementPointer[PsiElement],
     snapshot: PcSnapshot,
-    offset: Int
+    range: com.intellij.openapi.util.TextRange
 )
 
 private enum TypeResolution:
@@ -143,5 +143,5 @@ private enum TypeResolution:
   case Unavailable
   case Failed(message: String)
 
-object CompilerTypeHijack:
-  def apply(project: Project): CompilerTypeHijack = project.getService(classOf[CompilerTypeHijack])
+object CompilerTypeRequestResolver:
+  def apply(project: Project): CompilerTypeRequestResolver = project.getService(classOf[CompilerTypeRequestResolver])

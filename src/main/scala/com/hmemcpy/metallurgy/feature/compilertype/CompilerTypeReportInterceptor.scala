@@ -87,7 +87,7 @@ final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
       MetallurgyStatus.publish(project, MetallurgyStatus.Resolving(input.module.getName))
       PcSessionManager.get(project).sessionFor(input.module) match
         case Some(session) =>
-          TypeRenderer.render(session, input.snapshot, input.offset) match
+          TypeRenderer.render(session, input.snapshot, input.range) match
             case Some(pcType) => replaceReportedType(input, pcType)
             case None         => MetallurgyStatus.publish(project, MetallurgyStatus.NoType(input.module.getName))
         case None          =>
@@ -111,7 +111,7 @@ final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
       module,
       SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element),
       PcSnapshot(virtualFile.getUrl, document.getModificationStamp, document.getText),
-      range.getStartOffset,
+      range,
       report.nativeType
     )
 
@@ -146,7 +146,7 @@ private final case class RenderInput(
     module: Module,
     element: SmartPsiElementPointer[PsiElement],
     snapshot: PcSnapshot,
-    offset: Int,
+    range: TextRange,
     nativeType: String
 )
 

@@ -487,26 +487,26 @@ information more accurately.
 
 ## 7. Migration path
 
-Phase 0 — **No-op refactor**. Split `ElementAnnotator.Instances`
+**Separate syntactic and semantic annotators.** Split `ElementAnnotator.Instances`
 (`ElementAnnotator.scala:27-87`) into two lists: `SyntacticAnnotators` and
-`SemanticAnnotators`. The split is invisible to users but lets the next phase
+`SemanticAnnotators`. The split is invisible to users but lets the next step
 disable just the semantic half.
 
-Phase 1 — **Replace the transport, keep the producer**. Stand up
+**Replace the transport, keep the producer.** Stand up
 `PcHighlightingService` as a sibling of `CompilerHighlightingService`. Route
 Scala 3 files to it. It still shells out to a remote compiler (the existing
 compile server, but invoking `pc` instead of plain `dotc -Ystop-after`). Output
 still flows through `ExternalHighlighting` → `HighlightInfo`. Delete
 `DocumentCompiler.scala` for Scala 3.
 
-Phase 2 — **In-process `pc`**. Ship `scala3-pc` as a library (similar to how
+**Run `pc` in process.** Ship `scala3-pc` as a library (similar to how
 `scala-meta` is bundled). `PcHighlightingPass` calls `pc.diagnose(file)`
 in-process, eliminating the compile-server hop and the
 `DocumentCompilationArguments` serialization
 (`DocumentCompiler.scala:157-177`). The pass reuses `VisibleRange` to scope
 recomputation and `CompilationId`/`DocumentVersion` to discard stale results.
 
-Phase 3 — **TASTy-driven semantics**. Extend `tasty-reader` (§6.3) and feed
+**Use TASTy-driven semantics.** Extend `tasty-reader` (§6.3) and feed
 `ScalaColorSchemeAnnotator` and `ScalaSyntaxHighlightingVisitor` from the
 semantic model. Delete the `intellij-compiler-plugin` round-trip
 (`UpdateCompilerGeneratedStateListener.scala:64-70`, `CompilerType.scala`). At
@@ -514,11 +514,11 @@ this point `HighlightingAdvisor.isTypeAwareHighlightingEnabled`
 (`HighlightingAdvisor.scala:30-54`) can always return `false` for Scala 3
 files: every check that needs type info is either `pc`-driven or TASTy-driven.
 
-Phase 4 — **Annotator cleanup**. Delete the semantic annotators identified in
+**Remove obsolete semantic annotators.** Delete the semantic annotators identified in
 §6.4. The 42-element catalog shrinks to roughly 15 syntactic annotators.
 `ScalaAnnotator.annotate` loses its `typeAware` parameter for Scala 3 files.
 
-Phase 5 — **BETASTy**. With `-Ybest-effort` producing `.betasty` under
+**Recover from errors with BETASTy.** With `-Ybest-effort` producing `.betasty` under
 errors, `PcHighlightingPass` can fall back to type info recovered from
 `.betasty` (with `ERRORtype` placeholders) when `pc` itself fails to
 typecheck a downstream module because an upstream module has errors. `pc`

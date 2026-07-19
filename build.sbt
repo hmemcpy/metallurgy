@@ -12,7 +12,7 @@ Global / intellijAttachSources := true
 addCommandAlias("fmt", "scalafmtAll")
 addCommandAlias("check", "scalafmtCheckAll")
 addCommandAlias("testHeadless", "test")
-addCommandAlias("phase1Corpus", "testOnly com.hmemcpy.metallurgy.compilertype.*Test")
+addCommandAlias("compilerTypeAcceptance", "testOnly com.hmemcpy.metallurgy.compilertype.*Test")
 
 Global / javacOptions := Seq("--release", "17")
 

@@ -4,9 +4,9 @@ A third-party IntelliJ plugin that augments the bundled Scala plugin for Scala 3
 
 ## Status
 
-**Pre-alpha. Phase 0 scaffold only — no user-visible features enabled yet.**
+**Pre-alpha. Compiler-type resolution and completion are available behind module opt-in.**
 
-The plugin loads, detects Scala 3.5+ modules, and surfaces a first-detection notification. No intercept-and-augment features are wired yet. See the [roadmap](./docs/design.md#15-phased-delivery).
+The plugin loads, detects Scala 3.5+ modules, and offers to enable compiler-backed semantics for each module. See the [delivery plan](./docs/design.md#15-capability-delivery-order).
 
 ## What it will do
 

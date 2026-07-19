@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.testkit
 
-import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeHijack
+import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
 import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
@@ -14,6 +14,8 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.JavaCodeInsightTestFixture
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParameterizedTypeElement, ScTypeElement}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScMethodCall, ScReferenceExpression}
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
 import java.nio.charset.StandardCharsets
@@ -75,7 +77,7 @@ abstract class MetallurgyFixtureTestCase extends ScalaLightCodeInsightFixtureTes
 
   private def openFixture(): FixtureContext =
     val source = Files.readString(fixtureDirectory.resolve("source.scala"), StandardCharsets.UTF_8)
-    val file   = configureScala3FromFileText(source)
+    val file   = configureFromFileText(s"$fixtureName.scala", source)
     val doc    = Option(PsiDocumentManager.getInstance(getProject).getDocument(file)).getOrElse:
       abort(s"No document for $fixtureName")
     FixtureContext(file, doc, source)
@@ -151,7 +153,12 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
 
     if expected == "<empty>" then
       assertTrue(s"Expected no compiler type at ${offset.value}, got $actual", actual.isEmpty)
-    else assertEquals(s"Compiler type at ${offset.value}", Some(expected), actual)
+    else
+      assertEquals(
+        s"Compiler type at ${offset.value} for '${element.getText}' (${element.getTextRange})",
+        Some(expected),
+        actual
+      )
 
   private def assertCompletion(offset: SourceOffset, expectedItems: Set[String]): Unit =
     fixture.getEditor.getCaretModel.moveToOffset(offset.value)
@@ -187,12 +194,16 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     )
 
   private def semanticElementAt(file: PsiFile, offset: Int): PsiElement =
-    val leaf = Option(file.findElementAt(offset)).getOrElse:
+    val leaf    = Option(file.findElementAt(offset)).getOrElse:
       throw new AssertionError(s"No PSI element at offset $offset")
-    Iterator
-      .iterate(leaf)(_.getParent)
-      .takeWhile(_ != null)
-      .find(_.getClass.getSimpleName.contains("MethodCall"))
+    val parents = Iterator.iterate(leaf)(_.getParent).takeWhile(_ != null).toList
+    parents
+      .collectFirst { case element: ScMethodCall => element }
+      .orElse(parents.collectFirst { case element: ScParameterizedTypeElement => element })
+      .orElse(parents.collectFirst { case element: ScTypeElement => element })
+      .orElse:
+        parents.collectFirst { case element: ScReferenceExpression if element.getText.contains('.') => element }
+      .orElse(parents.collectFirst { case element: ScReferenceExpression => element })
       .getOrElse(leaf.getParent)
 
   private def requestCompilerType(element: PsiElement): MetallurgyStatus =
@@ -210,7 +221,7 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     )
 
     try
-      CompilerTypeHijack(project).request(element)
+      CompilerTypeRequestResolver(project).request(element)
       PlatformTestUtil.waitForFuture(completion, TimeUnit.SECONDS.toMillis(120))
     finally connection.disconnect()
 

@@ -5,7 +5,7 @@ A third-party IntelliJ plugin that augments the bundled Scala plugin for Scala 3
 - **Design doc:** [`docs/design.md`](docs/design.md)
 - **Glossary:** [`CONTEXT.md`](CONTEXT.md)
 - **Architectural decisions:** [`docs/adr/`](docs/adr/)
-- **Status:** pre-alpha. Phase 0 scaffold only; no features enabled yet.
+- **Status:** pre-alpha. Compiler-type resolution and completion are available behind module opt-in.
 
 ## Agent skills
 

@@ -1,6 +1,5 @@
-# Typesafe config refinement
+# Typesafe config
 
-This isolates the transparent-inline structural type at the heart of the dogfood project's macro. Metallurgy must
-publish the produced `Config` refinement into the bundled plugin's compiler-type slot so `c.name` resolves as `String`.
-The off half proves that slot remains empty without Metallurgy; the full macro remains covered by the dogfood project
-(SCL-21591, SCL-21789).
+Scala 3.5.2 stdlib-only transparent-inline singleton fixture. Metallurgy must publish the compiler's literal type for
+each call; without Metallurgy the slot is empty and the singleton ascription is red. Related: SCL-21591, SCL-20893,
+SCL-18466, SCL-21991, SCL-20963, SCL-21218, and SCL-21789.

@@ -5,6 +5,7 @@ import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.roots.OrderEnumerator
+import com.intellij.openapi.util.TextRange
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertTrue}
@@ -107,6 +108,45 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals(
         Some("Int"),
         TypeRenderer.render(session, snapshot, source.lastIndexOf("head"))
+      )
+
+  def testTypeAtDoesNotSelectAnUnrelatedInlineAncestor(): Unit =
+    withRealPcSession("metallurgy-tuple-head-type"): session =>
+      val source   = "object Main:\n  val tuple = (1, \"two\", true)\n  val selected = tuple.tail.head\n"
+      val snapshot = PcSnapshot("file:///TupleHeadType.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("String"),
+        TypeRenderer.render(session, snapshot, source.lastIndexOf("head"))
+      )
+
+  def testTypeAtResolvesNestedTupleQualifierRange(): Unit =
+    withRealPcSession("metallurgy-nested-tuple-qualifier"): session =>
+      val source   = "object Main:\n  val tuple = (1, \"two\", true)\n  val selected = tuple.tail.head\n"
+      val snapshot = PcSnapshot("file:///NestedTupleQualifier.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+      val start    = source.lastIndexOf("tuple.tail")
+      val end      = start + "tuple.tail".length
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("(String, Boolean)"),
+        TypeRenderer.render(session, snapshot, TextRange.create(start, end))
+      )
+
+  def testTypeAtDealiasesAnExplicitSingletonAlias(): Unit =
+    withRealPcSession("metallurgy-singleton-alias-type"): session =>
+      val source   =
+        "import scala.compiletime.ops.int.*\nobject Main:\n  type Four = 2 + 2\n  val result: Four = 4\n  val selected: 4 = result\n"
+      val snapshot = PcSnapshot("file:///SingletonAliasType.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("(4 : Int)"),
+        TypeRenderer.render(session, snapshot, source.lastIndexOf("result"))
       )
 
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =

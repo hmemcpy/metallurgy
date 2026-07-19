@@ -1,3 +1,3 @@
-# Filled by the exact Scala 3 typed tree, then consumed through CompilerType.
-typeAt:269:Config{val name: String; val age: Int}
-notRed:line:8
+# Transparent inline access is reported as its singleton result type.
+typeAt:178:(8080 : Int)
+notRed:line:6

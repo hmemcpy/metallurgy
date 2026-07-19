@@ -1,0 +1,2 @@
+# Without Metallurgy, this fixture must not populate the bundled plugin's compiler-type slot.
+typeAt:269:<empty>

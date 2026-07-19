@@ -8,7 +8,7 @@ final class ExpectedOutputParserTest:
   @Test def parsesEveryAssertionKindAndComments(): Unit =
     val input =
       """
-        |# the complete Phase 1 oracle vocabulary
+        |# the complete compiler-type oracle vocabulary
         |hover:42:8080
         |typeAt:43:Config { val name: String }
         |completion:77:.asJson,.toJson

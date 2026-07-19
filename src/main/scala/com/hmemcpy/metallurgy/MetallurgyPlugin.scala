@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy
 
-import com.hmemcpy.metallurgy.feature.compilertype.{CompilerTypeHijack, CompilerTypeReportInterceptor}
+import com.hmemcpy.metallurgy.feature.compilertype.{CompilerTypeReportInterceptor, CompilerTypeRequestResolver}
 import com.hmemcpy.metallurgy.module.{FirstDetectionNotifier, ModuleDetectionService}
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleManager
@@ -9,7 +9,7 @@ import com.intellij.openapi.project.{DumbService, Project}
 final class MetallurgyProjectActivity extends ScalaProjectActivity:
   override def execute(project: Project): Unit =
     MetallurgyPlugin.Log.info("Metallurgy loaded")
-    val _ = CompilerTypeHijack(project) // eagerly init the hijack subscription
+    val _ = CompilerTypeRequestResolver(project) // eagerly subscribe to compiler-type requests
     project.getService(classOf[CompilerTypeReportInterceptor])
     DumbService
       .getInstance(project)

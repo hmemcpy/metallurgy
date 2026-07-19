@@ -1,0 +1,3 @@
+# The inline match reduces the Peano value to its singleton integer result.
+typeAt:224:(2 : Int)
+notRed:line:11

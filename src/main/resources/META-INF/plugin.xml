@@ -12,13 +12,13 @@
     a reference unresolved that should resolve, or reports a false-positive error, Metallurgy
     intercepts and replaces that result with the authoritative answer from <code>pc</code>.
     Where the bundled plugin is correct, Metallurgy gets out of the way.</p>
-    <p><b>Status:</b> pre-alpha. Phase 0 scaffold only; no features enabled yet.
+    <p><b>Status:</b> pre-alpha. Compiler-type resolution and completion are available behind module opt-in.
     See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/design.md">the design doc</a>
     for the roadmap.</p>
   ]]></description>
 
   <change-notes><![CDATA[
-    <b>0.1.0-SNAPSHOT</b> — pre-alpha. Phase 0 scaffold only; no features enabled yet.
+    <b>0.1.0-SNAPSHOT</b> — pre-alpha compiler-type resolution build.
   ]]></change-notes>
 
   <idea-version since-build="261" until-build="261.*"/>
@@ -39,7 +39,7 @@
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.build.ScalacFlagsService"/>
     <projectService
-        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeHijack"/>
+        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeReportInterceptor"/>
     <postStartupActivity

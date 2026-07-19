@@ -3,7 +3,7 @@
 > **Name:** **Metallurgy** (a play on Metals — whose backend `pc` is — and the discipline of working with metals).
 > **Goal:** A 3rd-party IntelliJ plugin that **sits alongside the bundled Scala plugin** and **augments** it for Scala 3 modules by delegating to the real Scala 3 presentation compiler (`pc`) from the Metals project. Wherever the bundled plugin returns the wrong answer (typically `Any` for a transparent-inline call, an unresolved reference that should resolve, or a false-positive error) we *intercept and augment* with the answer from `pc`. Where the bundled plugin is correct, we get out of the way.
 > **Non-goal:** Replace the bundled Scala plugin. Disable its compiler pass. Reimplement PSI. Touch Scala 2 modules. Replace the parser, lexer, formatter, build import, run configurations, debugger, REPL, or worksheet runtime.
-> **Status:** Design + scaffolding. Implementation has not started.
+> **Status:** Pre-alpha compiler-type resolution and completion implementation.
 > **Companion docs:** [`../CONTEXT.md`](../CONTEXT.md) (domain glossary), [`./adr/`](./adr/) (architectural decisions), [`./research/`](./research/) (deep-dive reports on the bundled Scala plugin's seams + canonical macro/inline patterns).
 
 ---
@@ -14,7 +14,7 @@
 2. [The detection principle](#2-the-detection-principle)
 3. [Architecture](#3-architecture)
 4. [BETASTy: cross-module error recovery](#4-betasty-cross-module-error-recovery)
-5. [Feature 0 — Hijack `CompilerType`  *(smallest intercept, ship first)*](#5-feature-0--hijack-compilertype--smallest-intercept-ship-first)
+5. [Feature 0 — Resolve `CompilerType` requests  *(smallest intercept, ship first)*](#5-feature-0--resolve-compilertype-requests--smallest-intercept-ship-first)
 6. [Feature 1 — Completion augmentation](#6-feature-1--completion-augmentation)
 7. [Feature 2 — Diagnostics: add missing, suppress wrong](#7-feature-2--diagnostics-add-missing-suppress-wrong)
 8. [Feature 3 — Type info & hover enrichment](#8-feature-3--type-info--hover-enrichment)
@@ -224,7 +224,7 @@ Two implications:
 
 ---
 
-## 5. Feature 0 — Hijack `CompilerType`  *(smallest intercept, ship first)*
+## 5. Feature 0 — Resolve `CompilerType` requests  *(smallest intercept, ship first)*
 
 ### 5.1 The existing hack this replaces
 
@@ -282,15 +282,15 @@ With this one EP subscription, on opted-in Scala 3 modules:
 ### 5.5 What this *does not* get us
 
 - It only fills the `CompilerType` string slot. It doesn't add diagnostics, completions for things the bundled plugin doesn't already attempt, or synthetic members. Those are Features 1–5.
-- The `CompilerType` slot stores a string, not a structured `ScType`. Some callers (e.g. `ScExpression.getType()`'s further use of the value) re-parse the string into `ScType`. We get the same parsing for free; we don't get to bypass it. That's a Phase-4 problem (see § 8.5).
-- We use our own opt-in setting, **`MetallurgySettings.isEnabled(module)`** (see ADR 0006), not the bundled plugin's `isUseCompilerTypes`. The bundled setting is left entirely alone.
-- Later, when we trust our impl, we can recommend users disable `isUseCompilerTypes` (the bundled plugin's redundant stdout-scraping producer falls silent) to reduce compile-server load.
+- The `CompilerType` slot stores a string, not a structured `ScType`. Some callers (e.g. `ScExpression.getType()`'s further use of the value) re-parse the string into `ScType`. We get the same parsing for free; we don't get to bypass it. Structured type consumers require a separate integration (see § 8.5).
+- We use our own opt-in setting, **`MetallurgySettings.isEnabled(module)`** (see ADR 0006), not the bundled plugin's `isUseCompilerTypes`. The bundled setting is left entirely alone, but Feature 0 requires it because the reused `CompilerType` consumers are gated by it.
+- Removing the redundant bundled producer cost later requires a new consumer seam or an upstream split between the producer and consumer settings; disabling `isUseCompilerTypes` today disables the consumers too.
 
 ---
 
 ## 6. Feature 1 — Completion augmentation
 
-**Why this is Feature 1 (not 0):** Self-contained EP. No coordination with bundled highlighting. An existing POC has already proved the completion-contributor seam works at this exact EP. After Feature 0 (the `CompilerType` hijack) lands, this is the next user-visible win.
+**Why this is Feature 1 (not 0):** Self-contained EP. No coordination with bundled highlighting. An existing POC has already proved the completion-contributor seam works at this exact EP. After Feature 0 (the `CompilerType` request resolver) lands, this is the next user-visible win.
 
 ### 5.1 EP
 
@@ -616,7 +616,7 @@ Either way, downstream modules' `pc` sessions see the new artifact on their next
 
 ### 13.1 Per-session exact-version classloader
 
-One `URLClassLoader` per active module and exact Scala version in Phase 1. Each holds:
+One `URLClassLoader` per active module and exact Scala version. Each holds:
 
 - `scala3-presentation-compiler_3-<scalaFullVer>.jar`
 - `scala3-compiler_3-<scalaFullVer>.jar`
@@ -708,15 +708,15 @@ After applying these constraints, the actual scope is roughly:
 4. A diagnostic bridge from `pc.Diagnostics` → IntelliJ `Annotation` / `HighlightInfo`.
 5. A TASTy / SemanticDB-backed symbol → PSI resolver for navigation, find-usages, and rename.
 
-That is roughly 3–5 engineer-years to a usable 1.0, with most of the user-visible value landing in the first ~6 months (the CompilerType hijack + completion augmentation, which is exactly Phase 1).
+That is roughly 3–5 engineer-years to a usable 1.0, with most of the user-visible value coming from compiler-type request resolution and completion augmentation.
 
 ---
 
-## 15. Phased delivery
+## 15. Capability delivery order
 
-This time the phases are *much* smaller than the previous "replace" design, because nothing needs to be ripped out first. Each phase is independently useful.
+Each capability is independently useful and builds on the integrations before it.
 
-### Phase 0 — Skeleton (days–weeks)
+### Plugin foundation
 
 - Gradle IntelliJ Plugin 2.x project.
 - `plugin.xml` declaring `<depends>org.intellij.scala</depends>`.
@@ -726,7 +726,7 @@ This time the phases are *much* smaller than the previous "replace" design, beca
 
 **Exit criterion:** Plugin loads in a dev IDE with the bundled Scala plugin present; the notification fires.
 
-### Phase 1 — Hijack `CompilerType` (weeks)
+### Resolve `CompilerType` requests
 
 The smallest possible intercept. See § 5 for the full design.
 
@@ -736,9 +736,9 @@ The smallest possible intercept. See § 5 for the full design.
 
 **Exit criterion:** On a project with a transparent-inline-heavy library (e.g. circe, quill), hover / inlay / completion on a transparent-inline call site shows the real type instead of `Any`, with latency under 50ms p95. The bundled scalac plugin can stay installed and produce its stdout markers — our listener wins the race.
 
-This phase alone is a complete, shippable plugin. Everything after is gravy.
+This capability alone makes the plugin useful; later integrations broaden its coverage.
 
-### Phase 2 — Completion augmentation (1–2 months)
+### Completion augmentation
 
 - One `completion.contributor` EP registered with `order="after scalaCompletionContrubutor"`.
 - Trigger logic from §6.2.
@@ -747,7 +747,7 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 
 **Exit criterion:** On a project with transparent-inline-heavy code (e.g. using `quill`, `tapir`, `circe`), completions return correct items where the bundled plugin returns none or wrong ones. No regressions on Scala 2 modules.
 
-### Phase 3 — Diagnostics augmentation (2–3 months, overlapping Phase 2)
+### Diagnostics augmentation
 
 - `externalAnnotator` for "add missing" (§7.2).
 - `problemHighlightFilter` for "suppress wrong" (§7.3), conservative.
@@ -756,7 +756,7 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 
 **Exit criterion:** All `CompilerDiagnosticsTest_3.scala` bundled tests still pass. New tests showing bundled false-positives being suppressed. New tests showing bundled-missed errors being added.
 
-### Phase 4 — Hover, inlay hints, parameter info (1–2 months)
+### Hover, inlay hints, and parameter info
 
 - `psiTargetProvider order="before …"` for hover.
 - `codeInsight.declarativeInlayProvider` for type hints, implicit params, inline summaries.
@@ -765,7 +765,7 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 
 **Exit criterion:** Hovering a transparent-inline call shows the real type. Inlay hints show implicit parameter names. Parameter info is correct for `pc`-resolved overloads.
 
-### Phase 5 — Synthetic members + macro-expansion view (1–2 months)
+### Synthetic members and macro-expansion view
 
 - `syntheticMemberInjector order="last"` backed by `pc`.
 - `PcExpansionGutterProvider` showing macro/inline expansion.
@@ -773,7 +773,7 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 
 **Exit criterion:** `MyType.derived` is completable, hoverable, and find-usages-able. Macro expansion view works on `pc`-expanded transparent-inline calls.
 
-### Phase 6 — Navigation & find-usages augmentation (1–2 months)
+### Navigation and find-usages augmentation
 
 - `gotoDeclarationHandler order="before …"`.
 - `externalReferenceSearcher` backed by `pc.findReferences`.
@@ -781,14 +781,14 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 
 **Exit criterion:** Go-to-declaration works on references the bundled plugin can't resolve. Find-usages returns sites the bundled plugin misses (transparent-inline call sites, synthetic member uses).
 
-### Phase 7 — Polish & performance (ongoing)
+### Performance and feature controls
 
 - Profile and optimise.
 - Add per-feature toggles in settings.
 - Cover more diagnostic codes with quick fixes.
 - Community-driven feature requests.
 
-**Total to a useful 1.0 (Phases 0–4):** ~6 months part-time / ~3 months full-time for one strong engineer. No risky PSI-replacement work is on the path. **Phase 1 alone delivers a usable plugin** in a few weeks.
+The compiler-type, completion, diagnostics, hover, and hint capabilities amount to roughly six months part-time or three months full-time for one strong engineer. No risky PSI-replacement work is on the path. Compiler-type resolution alone delivers a usable plugin.
 
 ---
 
@@ -808,7 +808,7 @@ This phase alone is a complete, shippable plugin. Everything after is gravy.
 - [`research/08-build-integration.md`](./research/08-build-integration.md) — BSP / sbt / scala-cli integration.
 - [`research/09-scala3-feature-gaps.md`](./research/09-scala3-feature-gaps.md) — Feature-by-feature audit (21 features).
 - [`research/10-extension-points.md`](./research/10-extension-points.md) — Full plugin.xml + EP inventory.
-- [`research/11-canonical-macro-acceptance-tests.md`](./research/11-canonical-macro-acceptance-tests.md) — 80+ YouTrack tickets + 10 library patterns; source for Phase 1 acceptance corpus.
+- [`research/11-canonical-macro-acceptance-tests.md`](./research/11-canonical-macro-acceptance-tests.md) — 80+ YouTrack tickets + 10 library patterns; source for compiler-backed acceptance fixtures.
 
 ### External
 

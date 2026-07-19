@@ -3,7 +3,7 @@
 A targeted catalog of **real-world Scala 3 patterns the bundled JetBrains
 Scala plugin does not handle natively**, with a minimal fixture for each
 and a pointer to the YouTrack ticket / library doc that proves the
-deficiency. The output is intended as input to the Metallurgy Phase 1
+deficiency. The output is intended as input to the Metallurgy compiler-semantics
 implementer, who needs concrete, named fixtures to write and assert
 `pc`-backed behaviour against.
 
@@ -33,7 +33,7 @@ Frequency: <Common | Rare>                          <- how often users hit it
 Acceptance: <what Metallurgy must do>               <- the test oracle
 ```
 
-At the end of each of the nine categories, a single **canonical Phase 1
+At the end of each of the nine categories, a single **canonical acceptance
 fixture** is nominated — the one pattern that, if it works, proves the
 seam for the whole category.
 
@@ -77,7 +77,7 @@ Acceptance: Hover on `Codec` in `derives Codec` shows
 completion inside `Person(...).asJson` fields enumerates the derived
 encoder.
 
-### 1.2 (Canonical Phase 1 fixture) **`derives` on a recursive ADT**
+### 1.2 (Canonical acceptance fixture) **`derives` on a recursive ADT**
 
 This is the *minimal* fixture that exposes every defect at once:
 (1) `Mirror.Sum` synthesis, (2) `Mirror.Product` synthesis for the
@@ -109,7 +109,7 @@ Acceptance: `m.MirroredElemTypes` resolves to
 
 ## Category 2 — Transparent inline returning a refined / singleton type
 
-### 2.1 The "Kordyjan typesafe-config" pattern
+### 2.1 The typesafe-config pattern
 
 Status: Without compiler-based highlighting (CBH), every
 `transparent inline` call resolves to `Any`. With CBH on, the bundled
@@ -149,7 +149,7 @@ The ascription `val p: 8080 = Config.port` is not red. Completion on
 `Config.port.` (member access on the singleton literal) offers `Int`
 members because dotc successfully widens.
 
-### 2.2 (Canonical Phase 1 fixture) **Iron-style refined type via transparent inline**
+### 2.2 (Canonical acceptance fixture) **Iron-style refined type via transparent inline**
 
 Iron is the most widely used Scala 3 refined-types library; the entire
 public API is `transparent inline` macros returning
@@ -213,7 +213,7 @@ val dn: None.type    = defaultValue[Any]
 Acceptance: `defaultValue[Int]` hovers as `Some[Int]` (not `Option[Any]`);
 `defaultValue[Any]` hovers as `None.type`. No red on the ascriptions.
 
-### 3.2 (Canonical Phase 1 fixture) **Peano `toInt` via inline match**
+### 3.2 (Canonical acceptance fixture) **Peano `toInt` via inline match**
 
 This is the example in the Scala 3 reference and the *minimal* shape
 that proves inline-match reduction works end-to-end:
@@ -307,7 +307,7 @@ Sources: https://docs.scala-lang.org/scala3/reference/metaprogramming/macros.htm
 Acceptance: No red on the type variable `t`; "Go to" on `$x` resolves
 to the outer parameter.
 
-### 4.3 (Canonical Phase 1 fixture) **`powerCode` round-trip**
+### 4.3 (Canonical acceptance fixture) **`powerCode` round-trip**
 
 The fixture in §4.1 is the *exact example* used in the Scala 3
 reference; it is short, exercises all three of splice, quote, and
@@ -359,7 +359,7 @@ Acceptance:
 - "Find usages" on `given Typeclass[Int]` shows the `summonInline` call as a usage.
 - `constValue[2]` hovers as `2` (singleton literal type).
 
-### 5.2 (Canonical Phase 1 fixture) **`summonAll` tuple walk**
+### 5.2 (Canonical acceptance fixture) **`summonAll` tuple walk**
 
 The §5.1 fixture is canonical because it is *the* pattern used inside
 every Scala 3 typeclass-derivation library. If `summonInline[head]`
@@ -405,7 +405,7 @@ Adjust as needed.)
 Acceptance: Hover on `Quadruple[3]` shows `12`; hover on
 `Length["hello"]` shows `5`; the ascription lines are not red.
 
-### 6.2 (Canonical Phase 1 fixture) **`compiletime.ops.int.+` reduction**
+### 6.2 (Canonical acceptance fixture) **`compiletime.ops.int.+` reduction**
 
 Use the simplest possible reduction that is still non-trivial:
 
@@ -456,7 +456,7 @@ Acceptance:
 - `summon[Codec[Tree[Int]]]` resolves without red.
 - "Find Usages" on the `derives Codec` clause shows the synthetic encoder as a usage target.
 
-### 7.2 (Canonical Phase 1 fixture) **`enum … derives Codec` cross-module**
+### 7.2 (Canonical acceptance fixture) **`enum … derives Codec` cross-module**
 
 Put the enum in *module A* and the consumer in *module B*. The
 bundled plugin's defect in SCL-21785 is exactly this: it cannot
@@ -503,9 +503,9 @@ Acceptance: No red on `@logCalls`; the macro implementation
 `apply(using Quotes)(...)` resolves; the annotated `def add` is
 *navigable*.
 
-### 8.2 (Canonical Phase 1 fixture) **Out of scope for Phase 1**
+### 8.2 **Macro annotations are out of scope**
 
-Macro annotations are a Phase 3+ concern. Phase 1 should simply not
+Macro annotations require the synthetic-members and diagnostics integrations. Compiler-type resolution should not
 make them *worse* — i.e., Metallurgy must not flag the annotation
 itself as an error.
 
@@ -670,7 +670,7 @@ resolve overloaded insertValue method of Quill" (unresolved).
 Sources: SCL-22082 "Incorrect 'No implicits found' for code using
 Chisel v7.0.0" (unresolved) — same `summonInline` root cause.
 
-### 9.11 (Canonical Phase 1 fixture for libraries) **Circe `Codec.AsObject.derived`**
+### 9.11 (Canonical library acceptance fixture) **Circe `Codec.AsObject.derived`**
 
 Circe is the single most-deployed Scala 3 JSON library, the pattern
 is two lines, and SCL-21785 explicitly calls out the
@@ -678,10 +678,10 @@ cross-module-defect path. Use §9.1 as the fixture.
 
 ---
 
-## Appendix A — Phase 1 acceptance-test matrix
+## Appendix A — Compiler-semantics acceptance-test matrix
 
 A condensed checklist for the implementer. Each row is one fixture
-file under `testData/macros/phase1/`. The "expected behaviour" column
+file under `src/test/testdata/feature/compilertype/`. The "expected behaviour" column
 is the oracle the test asserts.
 
 | #  | Fixture file                        | Category        | Pattern                                            | Expected behaviour (Metallurgy on)                                              | Default behaviour (Metallurgy off)                 |
@@ -697,7 +697,7 @@ is the oracle the test asserts.
 | 9  | `circe_codec_asobject.sc`           | 9 (library)     | `case class Foo(...) derives Codec.AsObject`       | `.asJson` autocompletes; `summon[Codec[Foo]]` resolves                          | `.asJson` does not autocomplete                    |
 | 10 | `zio_zlayer_derive.sc`              | 9 (library)     | `given ZLayer[Any, Nothing, Config] = ZLayer.derive` | No red on `ZLayer.derive`; hover shows the refined ZLayer type                | Red on `ZLayer.derive` (SCL-21863)                 |
 
-(Each row maps to one of the canonical Phase 1 fixtures nominated in
+(Each row maps to one of the canonical acceptance fixtures nominated in
 the category sections above.)
 
 ---
@@ -801,7 +801,7 @@ ms; `null` = open at time of writing).
 
 ---
 
-## Appendix D — Anti-patterns (do *not* use as Phase 1 fixtures)
+## Appendix D — Anti-patterns for compiler-type fixtures
 
 The implementer should avoid the following as fixtures, even though
 they look superficially similar:
@@ -809,8 +809,8 @@ they look superficially similar:
 1. **Scala 2 macro annotations** (`@deriving`, `@JsonCodec`, `@newtype`,
    `@typeclass`). These are handled by the bundled plugin's
    `SyntheticMembersInjector` EPs (Monocle, Scalaz, Circe, NewType,
-   Simulacrum, Derevo, Scio) and are explicitly out of scope. Phase 1
-   is Scala 3 only.
+   Simulacrum, Derevo, Scio) and are explicitly out of scope. Metallurgy
+   supports Scala 3 only.
 
 2. **scala.meta macro expansion**. The bundled plugin's
    `MacroExpansionLineMarkerProvider` is gated by the `ScalaMetaMode`
@@ -821,10 +821,10 @@ they look superficially similar:
    Out of scope; `pc` does not run staging.
 
 4. **Capture-checking and erased definitions**. Experimental, not yet
-   stable in 3.3 / 3.4; defer to Phase 3+.
+   stable in 3.3 / 3.4; defer until diagnostics support is available.
 
 5. **TASTy inspection from `.tasty` files** (`scala.tasty.Inspector`).
-   Relevant to Metallurgy Phase 2 (cross-module BETASTy), not Phase 1.
+   Relevant to cross-module BETASTy support, not compiler-type requests.
 
 ---
 
@@ -843,11 +843,11 @@ The nine categories collapse to **three root causes**:
    `Any` (SCL-22004, SCL-21785).
 
 All three root causes share a single fix: **delegate to `pc`**. The
-Phase 1 acceptance matrix (Appendix A) is the smallest set of
+The acceptance matrix (Appendix A) is the smallest set of
 fixtures that proves the delegation works for each root cause
 individually and for their composition.
 
-When all ten fixtures in Appendix A pass, Metallurgy Phase 1 is
+When all ten fixtures in Appendix A pass, Metallurgy's compiler-backed semantics are
 shippable: every common Scala 3 macro / transparent-inline pattern in
 the wild — Circe derivation, Iron refinement, ZIO `ZLayer.derive`,
 shapeless-3 derivation, basic quote/splice navigation — produces the

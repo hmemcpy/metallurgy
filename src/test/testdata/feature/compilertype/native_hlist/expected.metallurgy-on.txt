@@ -1,0 +1,10 @@
+# Tuple operations retain their precise element types.
+typeAt:84:Int
+typeAt:114:(String, Boolean)
+typeAt:119:String
+typeAt:154:(String, Boolean)
+typeAt:159:Boolean *: EmptyTuple
+typeAt:164:Boolean
+notRed:line:3
+notRed:line:4
+notRed:line:5

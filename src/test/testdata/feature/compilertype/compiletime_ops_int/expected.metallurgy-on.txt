@@ -1,0 +1,3 @@
+# The compile-time integer operation reduces at the alias use site.
+typeAt:72:(4 : Int)
+notRed:line:4

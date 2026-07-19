@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.util.TextRange
 
 import java.io.File
 import java.net.URI
@@ -30,7 +31,7 @@ private[pc] final class PcInlineTypeDriver(
   private val typedDocument = new AtomicReference[Option[TypedDocument]](None)
 
   /** `InteractiveDriver` mutates its compilation state on `run`, so the session admits one writer at a time. */
-  def typeAt(snapshot: PcSnapshot, offset: Int): Option[String] = synchronized:
+  def typeAt(snapshot: PcSnapshot, range: TextRange): Option[String] = synchronized:
     require(
       typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
       "inline type queries require a matching typed document"
@@ -39,10 +40,18 @@ private[pc] final class PcInlineTypeDriver(
     val context    = driverClass.getMethod("currentCtx").invoke(driver)
     val sourceFile = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
     val trees      = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
-    val span       = spansModule.getClass.getMethod("Span", classOf[Int]).invoke(spansModule, Int.box(offset))
+    val span       = querySpan(range)
     val position   = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
 
     renderType(pathTo(trees, position, context), context)
+
+  private def querySpan(range: TextRange): AnyRef =
+    if range.isEmpty then
+      spansModule.getClass.getMethod("Span", classOf[Int]).invoke(spansModule, Int.box(range.getStartOffset))
+    else
+      spansModule.getClass
+        .getMethod("Span", classOf[Int], classOf[Int])
+        .invoke(spansModule, Int.box(range.getStartOffset), Int.box(range.getEndOffset))
 
   def retypecheck(snapshot: PcSnapshot): Unit = synchronized:
     ensureTyped(snapshot)
@@ -88,6 +97,19 @@ private[pc] final class PcInlineTypeDriver(
   private def spansModule: AnyRef =
     Class.forName("dotty.tools.dotc.util.Spans$", true, classloader).getField("MODULE$").get(null)
 
+  private def spanStart(span: AnyRef): Int = spanExtension("start$extension", span)
+
+  private def spanEnd(span: AnyRef): Int = spanExtension("end$extension", span)
+
+  private def hasSameExtent(left: AnyRef, right: AnyRef): Boolean =
+    val leftSpan  = left.getClass.getMethod("span").invoke(left)
+    val rightSpan = right.getClass.getMethod("span").invoke(right)
+    spanStart(leftSpan) == spanStart(rightSpan) && spanEnd(leftSpan) == spanEnd(rightSpan)
+
+  private def spanExtension(methodName: String, span: AnyRef): Int =
+    val module = Class.forName("dotty.tools.dotc.util.Spans$Span$", true, classloader).getField("MODULE$").get(null)
+    module.getClass.getMethod(methodName, java.lang.Long.TYPE).invoke(module, span).asInstanceOf[Int]
+
   private def pathTo(trees: AnyRef, position: AnyRef, context: AnyRef): AnyRef =
     val interactive = Class
       .forName("dotty.tools.dotc.interactive.Interactive$", true, classloader)
@@ -102,30 +124,38 @@ private[pc] final class PcInlineTypeDriver(
       .invoke(interactive, arguments*)
 
   private def renderType(path: AnyRef, context: AnyRef): Option[String] =
+    selectTree(pathTrees(path)).map(selection => renderTreeType(selection, context))
+
+  private def selectTree(trees: List[AnyRef]): Option[TypedTreeSelection] =
+    trees.headOption.map: closest =>
+      sameExtentTree(trees, closest, TypedTreeKind.Inlined)
+        .map(TypedTreeSelection(_, TypeRendering.Exact))
+        .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.TypeApply)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .getOrElse(TypedTreeSelection(closest, TypeRendering.Widened))
+
+  private def sameExtentTree(trees: List[AnyRef], closest: AnyRef, kind: TypedTreeKind): Option[AnyRef] =
+    trees.reverse.find(tree => kind.matches(tree) && hasSameExtent(tree, closest))
+
+  private def pathTrees(path: AnyRef): List[AnyRef] =
     val iterator = path.getClass.getMethod("iterator").invoke(path)
     val hasNext  = iterator.getClass.getMethod("hasNext")
     val next     = iterator.getClass.getMethod("next")
-    val trees    = Iterator
+    Iterator
       .continually(iterator)
       .takeWhile(it => hasNext.invoke(it).asInstanceOf[Boolean])
       .map(it => next.invoke(it).asInstanceOf[AnyRef])
       .toList
-    trees.find(_.getClass.getSimpleName == "Inlined") match
-      case Some(inlined) => Some(renderTreeType(inlined, context, widen = false))
-      case None          => trees.headOption.map(renderTreeType(_, context, widen = true))
 
-  private def renderTreeType(tree: AnyRef, context: AnyRef, widen: Boolean): String =
-    val rawType = tree.getClass.getMethod("tpe").invoke(tree)
-    val tpe     =
-      if widen then
-        rawType.getClass.getMethods
-          .find: method =>
-            method.getName == "widen" &&
-              method.getParameterCount == 1 &&
-              method.getParameterTypes.head.isInstance(context)
-          .getOrElse(throw new NoSuchMethodException("Type.widen"))
-          .invoke(rawType, context)
-      else rawType
+  private def renderTreeType(selection: TypedTreeSelection, context: AnyRef): String =
+    val rawType    = selection.tree.getClass.getMethod("tpe").invoke(selection.tree)
+    val base       = selection.rendering match
+      case TypeRendering.Exact   => rawType
+      case TypeRendering.Widened => invokeContextual(rawType, "widenTermRefExpr", context)
+    val dealiased  = invokeContextual(base, "dealias", context)
+    val normalized = invokeContextual(dealiased, "normalized", context)
+    val tpe        = invokeContextual(normalized, "simplified", context)
     tpe.getClass.getMethods
       .find(method => method.getName == "show" && method.getParameterCount == 1)
       .getOrElse(throw new NoSuchMethodException("Type.show"))
@@ -133,4 +163,25 @@ private[pc] final class PcInlineTypeDriver(
       .toString
       .replaceAll("\\u001B\\[[;\\d]*m", "")
 
+  private def invokeContextual(receiver: AnyRef, methodName: String, context: AnyRef): AnyRef =
+    receiver.getClass.getMethods
+      .find: method =>
+        method.getName == methodName &&
+          method.getParameterCount == 1 &&
+          method.getParameterTypes.head.isInstance(context)
+      .getOrElse(throw new NoSuchMethodException(s"Type.$methodName"))
+      .invoke(receiver, context)
+
 private final case class TypedDocument(fileUri: String, documentVersion: Long)
+
+private final case class TypedTreeSelection(tree: AnyRef, rendering: TypeRendering)
+
+private enum TypeRendering:
+  case Exact
+  case Widened
+
+private enum TypedTreeKind(simpleName: String):
+  case Inlined   extends TypedTreeKind("Inlined")
+  case TypeApply extends TypedTreeKind("TypeApply")
+
+  def matches(tree: AnyRef): Boolean = tree.getClass.getSimpleName == simpleName

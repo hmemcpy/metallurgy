@@ -10,7 +10,7 @@ final class PcSnapshotTest:
   @Test
   def queryValuesAreWriteOnceAndScopedToDocumentVersion(): Unit =
     val snapshot = PcSnapshot.atTime("file:///Main.scala", 1L, "val value = 1", 0L)
-    val key      = QueryKey.TypeAt(4)
+    val key      = QueryKey.TypeAt(com.intellij.openapi.util.TextRange.from(4, 0))
 
     assertTrue(snapshot.cached[Option[String]](key, 1L).isEmpty)
     assertEquals(Some("Int"), snapshot.cache(key, Some("Int"), 2L))

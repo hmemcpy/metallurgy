@@ -1,0 +1,3 @@
+# The match type reduces at its applied type site.
+typeAt:98:Int
+notRed:line:6
