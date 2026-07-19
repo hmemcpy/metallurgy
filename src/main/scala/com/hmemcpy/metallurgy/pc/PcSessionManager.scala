@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.module.BundledPluginBridge
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.OrderEnumerator
@@ -11,16 +12,25 @@ import scala.jdk.CollectionConverters._
 
 final class PcSessionManager(project: Project):
 
+  private val log      = Logger.getInstance(classOf[PcSessionManager])
+  private val fetcher  = MtagsFetcher(project)
   private val sessions = new ConcurrentHashMap[String, PcSession]()
 
   def sessionFor(module: Module): Option[PcSession] =
     Option(BundledPluginBridge.getScalaVersion(module)).flatMap { scalaVersion =>
-      val sessionKey = s"${module.getName}:$scalaVersion"
-      Option(sessions.computeIfAbsent(sessionKey, _ => createSession(module, scalaVersion)))
+      fetcher.jarsIfCached(scalaVersion) match
+        case Some(_) =>
+          val sessionKey = s"${module.getName}:$scalaVersion"
+          Option(sessions.computeIfAbsent(sessionKey, _ => createSession(module, scalaVersion)))
+        case None    =>
+          fetcher
+            .jarsFor(scalaVersion)
+            .whenComplete: (_, error) =>
+              if error != null then log.warn(s"Could not prepare the Scala $scalaVersion presentation compiler", error)
+          None
     }
 
   private def createSession(module: Module, scalaVersion: String): PcSession =
-    val fetcher   = MtagsFetcher(project)
     val classpath = buildClasspath(module)
     PcSession.create(scalaVersion, classpath, module, fetcher)
 
