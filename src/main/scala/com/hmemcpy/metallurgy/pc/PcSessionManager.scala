@@ -25,7 +25,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   private val log      = Logger.getInstance(classOf[PcSessionManager])
   private val sessions = new ConcurrentHashMap[Module, SessionEntry]()
-  private val inFlight = new ConcurrentHashMap[Module, CompletableFuture[Void]]()
+  private val inFlight = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
 
   locally:
     val connection = project.getMessageBus.connect(this)
@@ -53,10 +53,30 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           .map(_.session)
           .orElse(prepareSession(module, scalaVersion))
 
+  /** Returns the current session or prepares one asynchronously, including a cold artifact fetch. */
+  def sessionForAsync(module: Module): CompletableFuture[Option[PcSession]] =
+    if !isManaged(module) then
+      discard(module)
+      CompletableFuture.completedFuture(None)
+    else
+      Option(BundledPluginBridge.getScalaVersion(module)) match
+        case None               => CompletableFuture.completedFuture(None)
+        case Some(scalaVersion) =>
+          Option(sessions.get(module))
+            .filter(_.scalaVersion == scalaVersion)
+            .map(entry => CompletableFuture.completedFuture(Some(entry.session)))
+            .getOrElse(scheduleCreation(module, scalaVersion))
+
   def sessionForFile(file: VirtualFile): Option[PcSession] =
     Option(ModuleUtilCore.findModuleForFile(file, project)).flatMap(sessionFor)
 
   def discard(module: Module): Unit =
+    inFlight
+      .entrySet()
+      .asScala
+      .filter(_.getKey.module == module)
+      .foreach: entry =>
+        if inFlight.remove(entry.getKey, entry.getValue) then entry.getValue.cancel(true)
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -80,10 +100,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private def prepareSession(module: Module, scalaVersion: String): Option[PcSession] =
     fetcher.jarsIfCached(scalaVersion) match
       case None    =>
-        fetcher
-          .jarsFor(scalaVersion)
-          .whenComplete: (_, error) =>
-            if error != null then log.warn(s"Could not prepare the Scala $scalaVersion presentation compiler", error)
+        scheduleCreation(module, scalaVersion)
         None
       case Some(_) =>
         if applicationIsDispatchThread then
@@ -91,21 +108,19 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           None
         else ensureSession(module, scalaVersion)
 
-  private def scheduleCreation(module: Module, scalaVersion: String): Unit =
+  private def scheduleCreation(module: Module, scalaVersion: String): CompletableFuture[Option[PcSession]] =
+    val key    = SessionKey(module, scalaVersion)
     val future = inFlight.computeIfAbsent(
-      module,
+      key,
       _ =>
-        CompletableFuture.runAsync(
-          () =>
-            ensureSession(module, scalaVersion)
-            ()
-          ,
-          AppExecutorUtil.getAppExecutorService
-        )
+        fetcher
+          .jarsFor(scalaVersion)
+          .thenApplyAsync(_ => ensureSession(module, scalaVersion), AppExecutorUtil.getAppExecutorService)
     )
     future.whenComplete: (_, error) =>
-      inFlight.remove(module, future)
+      inFlight.remove(key, future)
       if error != null then log.warn(s"Could not create a presentation compiler for ${module.getName}", error)
+    future
 
   private def ensureSession(module: Module, scalaVersion: String): Option[PcSession] =
     Option.when(isManaged(module)):
@@ -164,6 +179,8 @@ private final case class SessionEntry(
     compilerOptions: Seq[String],
     session: PcSession
 )
+
+private final case class SessionKey(module: Module, scalaVersion: String)
 
 object PcSessionManager:
   def get(project: Project): PcSessionManager = project.getService(classOf[PcSessionManager])

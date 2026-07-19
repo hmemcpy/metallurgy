@@ -83,9 +83,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
 
       settings.setEnabled(getModule, enabled = true)
-      fetcher.jarsFor(testScalaVersion.minor).get(5, TimeUnit.SECONDS)
-
-      val first  = onPooledThread(manager.sessionFor(getModule)).get
+      val first  = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
       val second = onPooledThread(manager.sessionFor(getModule)).get
       assertSame(first, second)
       assertTrue(ScalacFlagsService.RequiredFlags.forall(first.compilerOptions.contains))

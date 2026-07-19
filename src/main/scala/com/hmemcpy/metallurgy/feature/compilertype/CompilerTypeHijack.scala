@@ -1,90 +1,147 @@
 package com.hmemcpy.metallurgy.feature.compilertype
 
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
-import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
+import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager, PcSnapshot}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.MetallurgyStatus
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.{ApplicationManager, ModalityState, ReadAction}
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
-import com.intellij.util.messages.MessageBusConnection
+import com.intellij.psi.{PsiDocumentManager, PsiElement, SmartPointerManager, SmartPsiElementPointer}
+import com.intellij.util.concurrency.AppExecutorUtil
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
+import scala.util.control.NonFatal
 
+/** Answers the bundled Scala plugin's compiler-type requests without blocking its caller thread. */
 final class CompilerTypeHijack(project: Project) extends Disposable:
 
-  private val Log = Logger.getInstance("com.hmemcpy.metallurgy.CompilerTypeHijack")
+  private val log = Logger.getInstance(classOf[CompilerTypeHijack])
 
-  Log.info("CompilerTypeHijack: constructor started")
+  subscribe()
 
-  try
-    val connection: MessageBusConnection = project.getMessageBus.connect(this)
-    val topic                            = BundledPluginBridge.compilerTypeTopic
-    val listenerClass                    = BundledPluginBridge.listenerClass
-    Log.info(s"CompilerTypeHijack: topic=$topic, listenerClass=$listenerClass")
-
-    val handler = new InvocationHandler:
-      override def invoke(proxy: AnyRef, method: Method, args: Array[AnyRef]): AnyRef =
-        if method.getName == "onCompilerTypeRequest" && args != null && args.nonEmpty then
-          handleRequest(args(0).asInstanceOf[PsiElement])
-        null
-
-    val listener = Proxy.newProxyInstance(listenerClass.getClassLoader, Array(listenerClass), handler)
-    connection.subscribe(topic.asInstanceOf[com.intellij.util.messages.Topic[AnyRef]], listener.asInstanceOf[AnyRef])
-    Log.info("CompilerTypeHijack: subscribed to CompilerType.Topic")
-  catch
-    case e: Exception =>
-      Log.error("CompilerTypeHijack: failed to subscribe", e)
-
-  private def handleRequest(element: PsiElement): Unit =
+  private def subscribe(): Unit =
     try
-      val module = ModuleUtilCore.findModuleForPsiElement(element)
-      if module == null then return
-      if !ModuleDetectionService.get(project).isEligible(module) then return
-      if !MetallurgySettings(project).isEnabled(module) then return
-      if !BundledPluginBridge.usesCompilerTypes(project) then return
+      val listenerClass = BundledPluginBridge.listenerClass
+      val handler       = new InvocationHandler:
+        override def invoke(proxy: AnyRef, method: Method, args: Array[AnyRef]): AnyRef =
+          if method.getName == "onCompilerTypeRequest" && args != null && args.nonEmpty then
+            schedule(args(0).asInstanceOf[PsiElement])
+          null
 
-      Log.info(
-        s"CompilerTypeHijack: request for element at offset ${element.getTextRange.getStartOffset} in ${module.getName}"
+      val listener = Proxy.newProxyInstance(listenerClass.getClassLoader, Array(listenerClass), handler)
+      project.getMessageBus
+        .connect(this)
+        .subscribe(
+          BundledPluginBridge.compilerTypeTopic.asInstanceOf[com.intellij.util.messages.Topic[AnyRef]],
+          listener.asInstanceOf[AnyRef]
+        )
+      log.info("Subscribed to Scala CompilerType requests")
+    catch case error: Exception => log.error("Could not subscribe to Scala CompilerType requests", error)
+
+  private def schedule(element: PsiElement): Unit =
+    requestFor(element).foreach: request =>
+      MetallurgyStatus.publish(project, MetallurgyStatus.Resolving(request.module.getName))
+      PcSessionManager
+        .get(project)
+        .sessionForAsync(request.module)
+        .whenComplete: (session, error) =>
+          if error != null then finish(request, failed(error))
+          else
+            session match
+              case Some(value) => query(request, value)
+              case None        => finish(request, TypeResolution.Unavailable)
+
+  private def query(request: TypeRequest, session: PcSession): Unit =
+    if project.isDisposed then return
+    try
+      ReadAction
+        .nonBlocking(() => resolve(request, session))
+        .inSmartMode(project)
+        .expireWith(this)
+        .finishOnUiThread(
+          ModalityState.defaultModalityState(),
+          result => applyResult(request, result)
+        )
+        .submit(AppExecutorUtil.getAppExecutorService)
+    catch case NonFatal(error) => finish(request, failed(error))
+
+  private def requestFor(element: PsiElement): Option[TypeRequest] =
+    for
+      module       <- Option(ModuleUtilCore.findModuleForPsiElement(element))
+      if ModuleDetectionService.get(project).isEligible(module)
+      if MetallurgySettings(project).isEnabled(module)
+      if BundledPluginBridge.usesCompilerTypes(project)
+      file         <- Option(element.getContainingFile)
+      virtualFile  <- Option(file.getVirtualFile)
+      document     <- Option(PsiDocumentManager.getInstance(project).getDocument(file))
+      elementRange <- Option(element.getTextRange)
+    yield TypeRequest(
+      module,
+      SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element),
+      PcSnapshot(virtualFile.getUrl, document.getModificationStamp, document.getText),
+      elementRange.getStartOffset
+    )
+
+  private def resolve(request: TypeRequest, session: PcSession): TypeResolution =
+    try
+      TypeRenderer.render(session, request.snapshot, request.offset) match
+        case Some(value) => TypeResolution.Resolved(value)
+        case None        => TypeResolution.NoType
+    catch
+      case NonFatal(error) =>
+        log.warn(s"Compiler type request failed for ${request.module.getName}", error)
+        failed(error)
+
+  private def failed(error: Throwable): TypeResolution.Failed =
+    TypeResolution.Failed(Option(error.getMessage).getOrElse(error.getClass.getSimpleName))
+
+  private def finish(request: TypeRequest, result: TypeResolution): Unit =
+    if !project.isDisposed then
+      ApplicationManager.getApplication.invokeLater(
+        () => if !project.isDisposed then applyResult(request, result),
+        ModalityState.defaultModalityState()
       )
 
-      val existing = BundledPluginBridge.getCompilerType(element)
-      if existing != null then Log.info(s"CompilerTypeHijack: replacing existing compiler type '$existing'")
+  private def applyResult(request: TypeRequest, result: TypeResolution): Unit =
+    val moduleName = request.module.getName
+    result match
+      case TypeResolution.Resolved(value) =>
+        Option(request.element.getElement)
+          .filter(isCurrent(request, _))
+          .foreach: element =>
+            BundledPluginBridge.setCompilerType(element, value)
+            BundledPluginBridge.clearScalaTypeCaches(project, element)
+            MetallurgyStatus.publish(project, MetallurgyStatus.Resolved(moduleName, value))
+            log.debug(s"Set compiler type '$value' in $moduleName")
+      case TypeResolution.NoType          =>
+        MetallurgyStatus.publish(project, MetallurgyStatus.NoType(moduleName))
+      case TypeResolution.Unavailable     =>
+        MetallurgyStatus.publish(project, MetallurgyStatus.Unavailable(moduleName))
+      case TypeResolution.Failed(message) =>
+        MetallurgyStatus.publish(project, MetallurgyStatus.Failed(moduleName, message))
 
-      val file = element.getContainingFile
-      if file == null || file.getVirtualFile == null then return
+  private def isCurrent(request: TypeRequest, element: PsiElement): Boolean =
+    Option(element.getContainingFile)
+      .flatMap(file => Option(PsiDocumentManager.getInstance(project).getDocument(file)))
+      .exists(_.getModificationStamp == request.snapshot.documentVersion)
 
-      val snapshot   = PcSnapshot.forFile(file.getVirtualFile, file.getModificationStamp)
-      val offset     = element.getTextRange.getStartOffset
-      val moduleName = module.getName
+  override def dispose(): Unit = ()
 
-      MetallurgyStatus.publish(project, MetallurgyStatus.Resolving(moduleName))
-      PcSessionManager.get(project).sessionFor(module) match
-        case Some(session) =>
-          TypeRenderer.render(session, snapshot, offset) match
-            case Some(tpe) =>
-              BundledPluginBridge.setCompilerType(element, tpe)
-              MetallurgyStatus.publish(project, MetallurgyStatus.Resolved(moduleName, tpe))
-              Log.info(s"CompilerTypeHijack: set type '$tpe'")
-            case None      =>
-              MetallurgyStatus.publish(project, MetallurgyStatus.NoType(moduleName))
-              Log.info("CompilerTypeHijack: pc returned no type")
-        case None          =>
-          MetallurgyStatus.publish(project, MetallurgyStatus.Unavailable(moduleName))
-          Log.info(s"CompilerTypeHijack: no pc session for $moduleName")
-    catch
-      case e: Exception =>
-        val module     = ModuleUtilCore.findModuleForPsiElement(element)
-        val moduleName = Option(module).fold("unknown module")(_.getName)
-        MetallurgyStatus.publish(
-          project,
-          MetallurgyStatus.Failed(moduleName, Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
-        )
-        Log.warn(s"CompilerTypeHijack: error handling request: ${e.getMessage}")
+private final case class TypeRequest(
+    module: Module,
+    element: SmartPsiElementPointer[PsiElement],
+    snapshot: PcSnapshot,
+    offset: Int
+)
 
-  override def dispose(): Unit = {}
+private enum TypeResolution:
+  case Resolved(value: String)
+  case NoType
+  case Unavailable
+  case Failed(message: String)
 
 object CompilerTypeHijack:
   def apply(project: Project): CompilerTypeHijack = project.getService(classOf[CompilerTypeHijack])
