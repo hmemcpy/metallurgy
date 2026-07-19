@@ -35,6 +35,6 @@
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
     <postStartupActivity
-        implementation="com.hmemcpy.metallurgy.MetallurgyProjectActivity"/>
+        implementation="com.hmemcpy.metallurgy.MetallurgyStartupActivity"/>
   </extensions>
 </idea-plugin>
