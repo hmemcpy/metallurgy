@@ -54,7 +54,7 @@ final class MtagsFetcherTest:
         assertEquals(1, calls.get())
       finally
         release.countDown()
-        executor.shutdownNow()
+        val _ = executor.shutdownNow()
 
   @Test
   def corruptCachedArtifactIsResolvedAgain(): Unit =

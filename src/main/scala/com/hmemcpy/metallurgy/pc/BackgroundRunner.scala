@@ -25,7 +25,10 @@ private[pc] object BackgroundRunner:
         val result = new CompletableFuture[Path]()
         new Task.Backgroundable(project, title, true):
           override def run(indicator: ProgressIndicator): Unit =
-            try result.complete(work())
-            catch case NonFatal(error) => result.completeExceptionally(error)
+            try
+              val _ = result.complete(work())
+            catch
+              case NonFatal(error) =>
+                val _ = result.completeExceptionally(error)
         .queue()
         result

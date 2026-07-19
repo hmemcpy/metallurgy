@@ -1,9 +1,6 @@
 package com.hmemcpy.metallurgy.feature.completion
 
-import com.intellij.codeInsight.completion.{CompletionParameters, CompletionResultSet}
 import com.intellij.codeInsight.lookup.{LookupElement, LookupElementBuilder}
-
-import scala.collection.mutable
 
 object CompletionDedup {
 

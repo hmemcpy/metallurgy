@@ -7,7 +7,6 @@ import com.intellij.ProjectTopics
 import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener}
 import com.intellij.openapi.vfs.VirtualFile
 
-import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
 final class ModuleDetectionService(project: Project) extends Disposable:

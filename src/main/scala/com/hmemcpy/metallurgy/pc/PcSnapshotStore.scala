@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.pc
 
 import java.time.Duration
 import java.util.LinkedHashMap
-import scala.jdk.CollectionConverters.*
 
 /** Bounded, access-ordered snapshot ownership for one presentation-compiler session. */
 private[pc] final class PcSnapshotStore(
@@ -40,10 +39,6 @@ private[pc] final class PcSnapshotStore(
   private[pc] def size: Int = synchronized:
     evictExpired()
     snapshots.size()
-
-  private[pc] def fileUris: Seq[String] = synchronized:
-    evictExpired()
-    snapshots.keySet().asScala.toSeq
 
   private def evictExpired(): Unit =
     val cutoff   = nanoTime() - timeToIdle.toNanos

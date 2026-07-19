@@ -38,9 +38,9 @@ final class PcSnapshotTest:
       now += 1
       store.accept(PcSnapshot.atTime(s"file:///$index.scala", 1L, "", now))
 
-    store.current("file:///1.scala")
+    val _ = store.current("file:///1.scala")
     now += 1
-    store.accept(PcSnapshot.atTime("file:///11.scala", 1L, "", now))
+    val _ = store.accept(PcSnapshot.atTime("file:///11.scala", 1L, "", now))
 
     assertEquals(10, store.size)
     assertTrue(store.current("file:///1.scala").isDefined)
@@ -50,7 +50,7 @@ final class PcSnapshotTest:
   def idleSnapshotsExpire(): Unit =
     var now   = 0L
     val store = new PcSnapshotStore(timeToIdle = Duration.ofNanos(10), nanoTime = () => now)
-    store.accept(PcSnapshot.atTime("file:///Main.scala", 1L, "", now))
+    val _     = store.accept(PcSnapshot.atTime("file:///Main.scala", 1L, "", now))
 
     now = 11L
 

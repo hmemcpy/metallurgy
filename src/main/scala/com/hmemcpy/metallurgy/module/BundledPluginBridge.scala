@@ -127,4 +127,4 @@ object BundledPluginBridge:
     val modTrackerClass = Class.forName("org.jetbrains.plugins.scala.caches.ModTracker$", true, bundledClassLoader)
     val modTracker      = modTrackerClass.getField("MODULE$").get(null)
     val tracker         = modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)
-    tracker.getClass.getMethod("incModificationCount").invoke(tracker)
+    val _               = tracker.getClass.getMethod("incModificationCount").invoke(tracker)

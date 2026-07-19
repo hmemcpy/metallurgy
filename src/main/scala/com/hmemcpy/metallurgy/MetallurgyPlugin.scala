@@ -9,7 +9,7 @@ import com.intellij.openapi.project.{DumbService, Project}
 final class MetallurgyProjectActivity extends ScalaProjectActivity:
   override def execute(project: Project): Unit =
     MetallurgyPlugin.Log.info("Metallurgy loaded")
-    CompilerTypeHijack(project) // eagerly init the hijack subscription
+    val _ = CompilerTypeHijack(project) // eagerly init the hijack subscription
     project.getService(classOf[CompilerTypeReportInterceptor])
     DumbService
       .getInstance(project)

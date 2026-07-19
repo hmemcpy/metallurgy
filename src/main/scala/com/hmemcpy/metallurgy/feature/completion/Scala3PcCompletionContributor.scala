@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.feature.completion
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.pc.{PcCompletion, PcSessionManager}
+import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.{CompletionContributor, CompletionParameters, CompletionResultSet}
 import com.intellij.openapi.diagnostic.Logger

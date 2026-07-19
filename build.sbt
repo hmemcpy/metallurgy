@@ -1,10 +1,11 @@
 import org.jetbrains.sbtidea.{AutoJbr, JbrPlatform}
+import org.jetbrains.sbtidea.packaging.artifact.DistBuilder
 import scala.sys.process.Process
 
-ThisBuild / scalaVersion := "3.7.4"
-ThisBuild / version      := "0.1.0-SNAPSHOT"
+ThisBuild / scalaVersion       := "3.7.4"
+ThisBuild / version            := "0.1.0-SNAPSHOT"
 ThisBuild / intellijPluginName := "metallurgy"
-ThisBuild / intellijBuild := "261.26222.65"
+ThisBuild / intellijBuild      := "261.26222.65"
 
 Global / intellijAttachSources := true
 
@@ -25,13 +26,16 @@ ThisBuild / scalacOptions ++= Seq(
   "-unchecked",
   "-feature",
   "-Xfatal-warnings",
+  "-Wunused:all",
+  "-Wvalue-discard",
+  "-Wnonunit-statement",
   "-language:implicitConversions",
   "-language:reflectiveCalls",
   "-language:existentials",
   "-language:unsafeNulls"
 )
 
-lazy val scalaPluginVersion = "2026.1.20"
+lazy val scalaPluginVersion           = "2026.1.20"
 lazy val intellijTestFrameworkVersion = "261.26222.65"
 
 lazy val intellijTestFrameworkDependencies = Seq(
@@ -49,28 +53,27 @@ lazy val intellijPluginDependencies = Seq(
   s"org.intellij.scala:$scalaPluginVersion".toPlugin
 )
 
-lazy val compileTestkit = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
+lazy val compileTestkit         = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
 lazy val prepareIntellijTestSdk = taskKey[Unit]("Prepare SDK resources expected by IntelliJ light fixtures")
 
 lazy val root =
   Project("metallurgy", file("."))
     .enablePlugins(SbtIdeaPlugin)
     .settings(
-      name := "metallurgy",
-      patchPluginXml := pluginXmlOptions { xml =>
+      name                      := "metallurgy",
+      patchPluginXml            := pluginXmlOptions { xml =>
         xml.version = version.value
-        xml.changeNotes =
-          """<![CDATA[
+        xml.changeNotes = """<![CDATA[
           <b>Metallurgy</b> — pre-alpha.
           ]]>"""
       },
       libraryDependencies ++= Seq(
-        ("org.scalameta" % "mtags-interfaces" % "1.3.4")
+        ("org.scalameta"    % "mtags-interfaces"  % "1.3.4")
           .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j")
           .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j.jsonrpc"),
-        "junit"             % "junit"             % "4.13.2"  % Test,
-        "com.github.sbt"    % "junit-interface"   % "0.13.3"  % Test,
-        "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0"  % Test,
+        "junit"             % "junit"             % "4.13.2" % Test,
+        "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
+        "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test
       ) ++ intellijTestFrameworkDependencies.map(_ % Test),
       Test / javaOptions ++= Seq(
         s"-Didea.home.path=${intellijBaseDirectory.value}",
@@ -79,9 +82,9 @@ lazy val root =
       ),
       Test / unmanagedClasspath +=
         Attributed.blank(baseDirectory.value / "testkit" / "target" / "scala-2.13" / "classes"),
-      prepareIntellijTestSdk := {
+      prepareIntellijTestSdk    := {
         updateIntellij.value
-        val sdk = intellijBaseDirectory.value
+        val sdk    = intellijBaseDirectory.value
         val source = sdk / "plugins" / "java" / "lib" / "resources" / "jdkAnnotations.jar"
         val target = sdk / "lib" / "resources" / "jdkAnnotations.jar"
         if (!target.exists()) {
@@ -89,13 +92,22 @@ lazy val root =
           IO.copyFile(source, target)
         }
       },
-      compileTestkit := {
+      packageArtifact           := {
+        val mappings        = packageMappings.value
+        val outputDirectory = packageOutputDir.value
+        val buildTarget     = target.value
+        IO.delete(outputDirectory / "lib" / s"${intellijPluginName.value}.jar")
+        IO.delete(buildTarget / "sbtidea.cache")
+        new DistBuilder(streams.value, buildTarget).produceArtifact(mappings)
+        outputDirectory
+      },
+      compileTestkit            := {
         prepareIntellijTestSdk.value
         val exitCode = Process(Seq("sbt", "--client", "compile"), baseDirectory.value / "testkit").!
         if (exitCode != 0) sys.error(s"TestKit compilation failed with exit code $exitCode")
       },
-      Test / compile := ((Test / compile) dependsOn compileTestkit).value,
+      Test / compile            := ((Test / compile) dependsOn compileTestkit).value,
       testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-s", "-a", "+c", "+q"),
       buildIntellijOptionsIndex := {},
-      intellijPlugins := intellijPluginDependencies
+      intellijPlugins           := intellijPluginDependencies
     )

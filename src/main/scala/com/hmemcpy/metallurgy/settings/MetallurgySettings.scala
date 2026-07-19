@@ -37,10 +37,12 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
 
   def setEnabled(moduleName: String, enabled: Boolean): Unit =
     val set = myState.enabledModules
-    if enabled then set.add(moduleName) else set.remove(moduleName)
-    myState.neverAskModules.remove(moduleName)
+    val _   = if enabled then set.add(moduleName) else set.remove(moduleName)
+    val _   = myState.neverAskModules.remove(moduleName)
 
-  def neverAsk(moduleName: String): Unit     = myState.neverAskModules.add(moduleName)
+  def neverAsk(moduleName: String): Unit =
+    val _ = myState.neverAskModules.add(moduleName)
+
   def shouldAsk(moduleName: String): Boolean = !myState.neverAskModules.asScala.contains(moduleName)
 
   def isXsemanticdbEnabled: Boolean = myState.xsemanticdbEnabled

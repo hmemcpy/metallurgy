@@ -6,6 +6,9 @@ import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.event.{DocumentEvent, DocumentListener}
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.{ModuleListener, Project}
 import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener, OrderEnumerator}
@@ -28,12 +31,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val inFlight = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
 
   locally:
-    val connection = project.getMessageBus.connect(this)
+    val connection       = project.getMessageBus.connect(this)
     connection.subscribe(
       ModuleRootListener.TOPIC,
       new ModuleRootListener:
         override def rootsChanged(event: ModuleRootEvent): Unit =
-          sessions.keySet().asScala.foreach(discard)
+          managedModules.foreach(discard)
     )
     connection.subscribe(
       ModuleListener.TOPIC,
@@ -41,6 +44,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         override def beforeModuleRemoved(project: Project, module: Module): Unit =
           discard(module)
     )
+    val documentListener = new DocumentListener:
+      override def documentChanged(event: DocumentEvent): Unit =
+        scheduleRetypecheck(event)
+    EditorFactory.getInstance.getEventMulticaster.addDocumentListener(documentListener, this)
 
   def sessionFor(module: Module): Option[PcSession] =
     if !isManaged(module) then
@@ -68,7 +75,13 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             .getOrElse(scheduleCreation(module, scalaVersion))
 
   def sessionForFile(file: VirtualFile): Option[PcSession] =
-    Option(ModuleUtilCore.findModuleForFile(file, project)).flatMap(sessionFor)
+    Option(ModuleUtilCore.findModuleForFile(file, project))
+      .flatMap(sessionFor)
+      .map: session =>
+        Option(FileDocumentManager.getInstance.getDocument(file)).foreach: document =>
+          val snapshot = PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
+          val _        = session.scheduleRetypecheck(snapshot)
+        session
 
   def discard(module: Module): Unit =
     inFlight
@@ -76,7 +89,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       .asScala
       .filter(_.getKey.module == module)
       .foreach: entry =>
-        if inFlight.remove(entry.getKey, entry.getValue) then entry.getValue.cancel(true)
+        if inFlight.remove(entry.getKey, entry.getValue) then
+          val _ = entry.getValue.cancel(true)
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -97,14 +111,30 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       ModuleDetectionService.get(project).isEligible(module) &&
       MetallurgySettings(project).isEnabled(module)
 
+  private def managedModules: Set[Module] =
+    sessions.keySet().asScala.toSet ++ inFlight.keySet().asScala.map(_.module)
+
+  private def scheduleRetypecheck(event: DocumentEvent): Unit =
+    for
+      file    <- Option(FileDocumentManager.getInstance.getFile(event.getDocument))
+      module  <- Option(ModuleUtilCore.findModuleForFile(file, project))
+      if isManaged(module) && isScalaSource(file)
+      session <- Option(sessions.get(module)).map(_.session)
+    do
+      val snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
+      val _        = session.scheduleRetypecheck(snapshot)
+
+  private def isScalaSource(file: VirtualFile): Boolean =
+    Set("scala", "sc", "sbt", "mill").contains(file.getExtension)
+
   private def prepareSession(module: Module, scalaVersion: String): Option[PcSession] =
     fetcher.jarsIfCached(scalaVersion) match
       case None    =>
-        scheduleCreation(module, scalaVersion)
+        val _ = scheduleCreation(module, scalaVersion)
         None
       case Some(_) =>
         if applicationIsDispatchThread then
-          scheduleCreation(module, scalaVersion)
+          val _ = scheduleCreation(module, scalaVersion)
           None
         else ensureSession(module, scalaVersion)
 

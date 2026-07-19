@@ -80,7 +80,7 @@ private object BundledCompilerSettingsBridge:
     val rebuilt = settingsModule.getClass
       .getMethod("fromState", state.getClass)
       .invoke(settingsModule, state)
-    profile.getClass.getMethods
+    val _       = profile.getClass.getMethods
       .find(method => method.getName == "setSettings" && method.getParameterCount == 1)
       .getOrElse(throw new NoSuchMethodException("ScalaCompilerSettingsProfile.setSettings"))
       .invoke(profile, rebuilt)

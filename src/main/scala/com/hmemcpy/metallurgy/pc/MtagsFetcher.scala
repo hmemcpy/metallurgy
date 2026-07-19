@@ -30,7 +30,7 @@ final class MtagsFetcher private[pc] (
       .getOrElse:
         val future = inFlight.computeIfAbsent(scalaVersion, version => resolveAndCache(version))
         future.whenComplete: (_, _) =>
-          inFlight.remove(scalaVersion, future)
+          val _ = inFlight.remove(scalaVersion, future)
         future
 
   /** Returns a validated warm-cache directory without starting network or background work. */

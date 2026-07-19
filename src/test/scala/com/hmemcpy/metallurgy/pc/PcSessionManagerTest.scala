@@ -1,12 +1,13 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.roots.OrderEnumerator
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.junit.Assert.{assertFalse, assertNotSame, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertTrue}
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
@@ -54,7 +55,12 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
           ScalacFlagsService.get(getProject).compilerOptions(getModule),
           fetcher
         )
-        try session.complete("file:///Main.scala", source, 1L, source.length)
+        try
+          val outcome = session
+            .scheduleRetypecheck(PcSnapshot("file:///Main.scala", 1L, source))
+            .get(5, TimeUnit.SECONDS)
+          assertEquals(RetypecheckOutcome.Applied, outcome)
+          session.complete("file:///Main.scala", source, 1L, source.length)
         finally session.close()
 
       assertTrue(
@@ -64,6 +70,32 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     finally
       settings.setEnabled(getModule, enabled = false)
       deleteRecursively(temporaryDirectory)
+
+  def testRetypecheckIsLatestWins(): Unit = withRealPcSession("metallurgy-latest-wins"): session =>
+    val staleSource   = "object Main:\n  transparent inline def port = 8080\n  val selected = port\n"
+    val currentSource = staleSource.replace("8080", "9090")
+    val superseded    = session.scheduleRetypecheck(PcSnapshot("file:///TransparentInline.scala", 1L, staleSource))
+    val applied       = session.scheduleRetypecheck(PcSnapshot("file:///TransparentInline.scala", 2L, currentSource))
+
+    assertEquals(RetypecheckOutcome.Superseded, superseded.get(5, TimeUnit.SECONDS))
+    assertEquals(RetypecheckOutcome.Applied, applied.get(5, TimeUnit.SECONDS))
+    val rendered = TypeRenderer.render(
+      session,
+      PcSnapshot("file:///TransparentInline.scala", 2L, currentSource),
+      currentSource.lastIndexOf("port")
+    )
+    assertTrue(rendered.toString, rendered.exists(_.contains("9090")))
+
+  def testPublishedInlineTypeDriverIsReusedByQueries(): Unit =
+    withRealPcSession("metallurgy-inline-driver"): session =>
+      val source   = "object Main:\n  transparent inline def port = 8080\n  val selected = port\n"
+      val snapshot = PcSnapshot("file:///TransparentInline.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      val _ = TypeRenderer.render(session, snapshot, source.lastIndexOf("port"))
+      val _ = TypeRenderer.render(session, snapshot, source.lastIndexOf("port") + 1)
+      assertEquals(1, session.inlineDriverCreationCount)
 
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-manager")
@@ -107,6 +139,31 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     ApplicationManager.getApplication
       .executeOnPooledThread(() => body)
       .get(120, TimeUnit.SECONDS)
+
+  private def withRealPcSession(prefix: String)(test: PcSession => Unit): Unit =
+    val temporaryDirectory = Files.createTempDirectory(prefix)
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      PresentationCompilerResolver.bundled,
+      BackgroundRunner.direct
+    )
+    val settings           = MetallurgySettings(getProject)
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      val _ = onPooledThread(fetcher.jarsFor(testScalaVersion.minor).get(120, TimeUnit.SECONDS))
+      onPooledThread:
+        val session = PcSession.create(
+          testScalaVersion.minor,
+          moduleClasspath,
+          ScalacFlagsService.get(getProject).compilerOptions(getModule),
+          fetcher
+        )
+        try test(session)
+        finally session.close()
+    finally
+      settings.setEnabled(getModule, enabled = false)
+      deleteRecursively(temporaryDirectory)
 
   private def moduleClasspath =
     OrderEnumerator

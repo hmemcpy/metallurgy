@@ -57,7 +57,7 @@ final class CompilerTypeHijack(project: Project) extends Disposable:
   private def query(request: TypeRequest, session: PcSession): Unit =
     if project.isDisposed then return
     try
-      ReadAction
+      val _ = ReadAction
         .nonBlocking(() => resolve(request, session))
         .inSmartMode(project)
         .expireWith(this)
