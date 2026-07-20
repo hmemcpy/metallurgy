@@ -4,6 +4,7 @@ import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
+import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import java.nio.file.Path
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
@@ -217,6 +218,7 @@ final class Scala3GapTriageTest extends ScalaLightCodeInsightFixtureTestCase:
     println(f"[derive] SUMMARY: $red%d of ${results.size}%d still red")
 
   def testMeasureBundledRedAcrossGaps(): Unit =
+    println(f"[triage] Metallurgy enabled for module: ${MetallurgySettings(getProject).isEnabled(getModule)}")
     val results = cases.map { (label, src, line) =>
       myFixture.configureByText("Triage.scala", src)
       val doc    = PsiDocumentManager.getInstance(getProject).getDocument(myFixture.getFile)
