@@ -1,54 +1,51 @@
 # Metallurgy
 
-A third-party IntelliJ plugin that augments the bundled Scala plugin for Scala 3.5+ modules by delegating language semantics to the real Scala 3 presentation compiler (`pc`) from the [Metals](https://scalameta.org/metals/) project.
+A third-party IntelliJ plugin that fills Scala 3 semantic gaps using the presentation compiler from [Metals](https://scalameta.org/metals/).
 
 ## Status
 
-**Pre-alpha. Compiler-type resolution and completion are available behind module opt-in.**
+**Pre-alpha. Compiler-backed types, completion, and false-error suppression are available behind module opt-in.**
 
-The plugin loads, detects Scala 3.5+ modules, and offers to enable compiler-backed semantics for each module. See the [delivery plan](./docs/design.md#15-capability-delivery-order).
+## Examples
 
-## Current example
+| Capability | IntelliJ out of the box | With Metallurgy |
+| --- | --- | --- |
+| Generated structural APIs (`api.paths.`) | Jing's `` `/pet` `` path is missing from completion and valid access is marked as an error. | Completion offers `` `/pet` `` and reports its exact `HttpEndpoint` type. |
+| Direct-style macros (`a.run`, `await(first)`) | ZIO Direct and Kyo locals are unresolved or marked as errors. | Rewritten locals have their compiler types (`Int`, `User`) and valid code is not red. |
+| Recursive derivation (`mirror.MirroredElemTypes`) | The derived recursive tuple is not understood and its valid assignment is red. | The full tuple type is available, including singleton enum cases. |
+| Inline matches (`toInt(Succ(Succ(Zero)))`) | The reduced singleton result is unavailable and `val intTwo: 2` is red. | The result is reported as `(2 : Int)`. |
+| Match types (`Elem[List[Int]]`) | The applied match type is not reduced through the compiler-type path. | The applied type is reported as `Int`. |
+| Compile-time operations (`2 + 2`) | The reduced singleton type is unavailable. | The result is reported as `(4 : Int)`. |
+| Tuple chains (`h.tail.tail.head`) | Deep tuple operations lose precision and valid code can be red. | Each intermediate tuple and final `Boolean` type remains precise. |
+| Error filtering | Macro-related false errors remain visible. | False errors are removed only from a matching fresh compiler snapshot; real errors remain visible. |
 
-Consider a transparent-inline API that returns a structural type:
+See the [delivery plan](./docs/design.md#15-capability-delivery-order) for planned capabilities.
 
-```scala
-val c = typesafeConfig("name" -> "John", "age" -> 42)
-c.na
-```
+## Roadmap
 
-| Bundled Scala plugin | Bundled Scala plugin with Metallurgy |
+| Capability | Status |
 | --- | --- |
-| The result is widened to `Any` or `Config`, losing the generated members. Completion cannot offer `name` or `age`; only the generic `selectDynamic` API remains visible. | The compiler-reported type is `Config { val name: String; val age: Int }`. Completion offers `name: String` and `age: Int` using IntelliJ's native completion presentation. |
-
-Paired acceptance fixtures verify the type difference with Metallurgy enabled and disabled, while completion tests verify that compiler-only structural members reach IntelliJ's native lookup.
-
-## Current support and direction
-
-When a Scala 3.5+ module is opted in, Metallurgy intercepts the bundled Scala plugin's results wherever they're wrong or incomplete and replaces them with the authoritative answer from `pc`:
-
-- Transparent-inline calls show the real expanded type instead of `Any`.
-- Completion offers the items the bundled plugin misses.
-
-Compiler-backed diagnostics, enriched hover and inlay hints, synthetic members, and navigation are planned next. The [delivery plan](./docs/design.md#15-capability-delivery-order) tracks their order and scope.
-
-Where the bundled plugin is correct, Metallurgy gets out of the way. It never disables the bundled plugin.
+| Compiler-backed type resolution | ✅ Complete |
+| Completion augmentation | ✅ Complete |
+| False-positive error suppression | ✅ Complete |
+| Missing compiler diagnostics | Planned |
+| Hover, inlay hints, and parameter info | Planned |
+| Synthetic members and macro expansion | Planned |
+| Navigation and find usages | Planned |
 
 ## Requirements
 
 - IntelliJ IDEA 2026.1+
-- Scala 3.5.0+ (the floor that ships [BETASTy](https://www.scala-lang.org/api/3.5.2/docs/docs/internals/best-effort-compilation.html))
-- The bundled Scala plugin (installed by default with IDEA's Scala support)
+- Scala 3.5.0+
+- The bundled Scala plugin
 
 ## Installation
-
-Until the first stable release, build from source:
 
 ```sh
 sbt packageArtifactZip
 ```
 
-The plugin zip is written to `target/metallurgy-<version>.zip`. Install via `Settings | Plugins | ⚙ | Install plugin from disk…`, then restart IDEA.
+Install the zip from `target/` via `Settings | Plugins | Install plugin from disk…`.
 
 ## Development
 
@@ -60,14 +57,13 @@ sbt fmt             # format source (scalafmt)
 sbt check           # check formatting (CI uses this)
 ```
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for branch / PR conventions.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution guidelines.
 
 ## Documentation
 
-- [`docs/design.md`](./docs/design.md) — full architecture and phased roadmap
+- [`docs/design.md`](./docs/design.md) — architecture and delivery plan
 - [`CONTEXT.md`](./CONTEXT.md) — domain glossary
-- [`docs/adr/`](./docs/adr/) — seven architectural decisions
-- [`docs/research/`](./docs/research/) — deep-dive reports on the bundled Scala plugin's seams
+- [`docs/adr/`](./docs/adr/) — architectural decisions
 
 ## License
 
@@ -75,4 +71,4 @@ Apache License 2.0 — see [`LICENSE`](./LICENSE).
 
 ## Reporting issues
 
-Use [GitHub Issues](https://github.com/hmemcpy/metallurgy/issues). Bug reports should include the IDEA version, the Scala version, the bundled Scala plugin version, and the smallest reproducer you can manage.
+Use [GitHub Issues](https://github.com/hmemcpy/metallurgy/issues).
