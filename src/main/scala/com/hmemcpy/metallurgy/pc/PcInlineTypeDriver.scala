@@ -5,10 +5,7 @@ import com.intellij.openapi.util.TextRange
 
 import java.io.File
 import java.net.URI
-import java.nio.charset.StandardCharsets
-import java.nio.file.Path
 import java.util
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import scala.jdk.CollectionConverters.*
 
@@ -36,7 +33,7 @@ private[pc] final class PcInlineTypeDriver(
       typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
       "inline type queries require a matching typed document"
     )
-    val uri        = compilerUri(snapshot.fileUri)
+    val uri        = PcSourceUri.normalize(snapshot.fileUri)
     val context    = driverClass.getMethod("currentCtx").invoke(driver)
     val sourceFile = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
     val trees      = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
@@ -44,6 +41,17 @@ private[pc] final class PcInlineTypeDriver(
     val position   = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
 
     renderType(pathTo(trees, position, context), context)
+
+  def diagnostics(snapshot: PcSnapshot): Seq[PcDiagnostic] = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "diagnostic queries require a matching typed document"
+    )
+    val context  = driverClass.getMethod("currentCtx").invoke(driver)
+    val reporter = context.getClass.getMethod("reporter").invoke(context)
+    val errors   = diagnosticList(reporter.getClass.getMethod("allErrors").invoke(reporter), isError = true)
+    val warnings = diagnosticList(reporter.getClass.getMethod("allWarnings").invoke(reporter), isError = false)
+    errors ++ warnings
 
   private def querySpan(range: TextRange): AnyRef =
     if range.isEmpty then
@@ -67,20 +75,12 @@ private[pc] final class PcInlineTypeDriver(
     typedDocument.get().filterNot(_.fileUri == snapshot.fileUri).foreach(closeDocument)
     driverClass
       .getMethod("run", classOf[URI], classOf[String])
-      .invoke(driver, compilerUri(snapshot.fileUri), snapshot.sourceText)
+      .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText)
     ProgressManager.checkCanceled()
     typedDocument.set(Some(TypedDocument(snapshot.fileUri, snapshot.documentVersion)))
 
   private def closeDocument(document: TypedDocument): Unit =
-    val _ = driverClass.getMethod("close", classOf[URI]).invoke(driver, compilerUri(document.fileUri))
-
-  /** Dotty converts interactive URIs to NIO paths. IntelliJ test and scratch files can use non-file VFS schemes. */
-  private def compilerUri(fileUri: String): URI =
-    val uri = URI.create(fileUri)
-    if uri.getScheme == "file" then uri
-    else
-      val stableName = UUID.nameUUIDFromBytes(fileUri.getBytes(StandardCharsets.UTF_8))
-      Path.of(System.getProperty("java.io.tmpdir"), "metallurgy-pc", s"$stableName.scala").toUri
+    val _ = driverClass.getMethod("close", classOf[URI]).invoke(driver, PcSourceUri.normalize(document.fileUri))
 
   private def compilerSettings(): AnyRef =
     val options     = Seq(
@@ -131,6 +131,9 @@ private[pc] final class PcInlineTypeDriver(
       sameExtentTree(trees, closest, TypedTreeKind.Inlined)
         .map(TypedTreeSelection(_, TypeRendering.Exact))
         .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.Apply)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .orElse:
           sameExtentTree(trees, closest, TypedTreeKind.TypeApply)
             .map(TypedTreeSelection(_, TypeRendering.Widened))
         .getOrElse(TypedTreeSelection(closest, TypeRendering.Widened))
@@ -147,6 +150,17 @@ private[pc] final class PcInlineTypeDriver(
       .takeWhile(it => hasNext.invoke(it).asInstanceOf[Boolean])
       .map(it => next.invoke(it).asInstanceOf[AnyRef])
       .toList
+
+  private def diagnosticList(diagnostics: AnyRef, isError: Boolean): List[PcDiagnostic] =
+    pathTrees(diagnostics).flatMap: diagnostic =>
+      val position = diagnostic.getClass.getMethod("position").invoke(diagnostic)
+      val present  = position.getClass.getMethod("isPresent").invoke(position).asInstanceOf[Boolean]
+      Option.when(present):
+        val sourcePosition = position.getClass.getMethod("get").invoke(position)
+        val start          = sourcePosition.getClass.getMethod("start").invoke(sourcePosition).asInstanceOf[Int]
+        val end            = sourcePosition.getClass.getMethod("end").invoke(sourcePosition).asInstanceOf[Int]
+        val message        = diagnostic.getClass.getMethod("message").invoke(diagnostic).toString
+        PcDiagnostic(TextRange(math.max(0, start), math.max(start, end)), isError, message)
 
   private def renderTreeType(selection: TypedTreeSelection, context: AnyRef): String =
     val rawType    = selection.tree.getClass.getMethod("tpe").invoke(selection.tree)
@@ -182,6 +196,7 @@ private enum TypeRendering:
 
 private enum TypedTreeKind(simpleName: String):
   case Inlined   extends TypedTreeKind("Inlined")
+  case Apply     extends TypedTreeKind("Apply")
   case TypeApply extends TypedTreeKind("TypeApply")
 
   def matches(tree: AnyRef): Boolean = tree.getClass.getSimpleName == simpleName

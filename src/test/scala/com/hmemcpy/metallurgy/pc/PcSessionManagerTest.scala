@@ -149,6 +149,44 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         TypeRenderer.render(session, snapshot, source.lastIndexOf("result"))
       )
 
+  def testTypeAtSelectsTheAppliedResultOfAContextualExtension(): Unit =
+    withRealPcSession("metallurgy-contextual-extension-type"): session =>
+      val source   =
+        "import scala.quoted.*\nobject Main:\n  def read(n: Expr[Int])(using Quotes): Int = n.valueOrError\n"
+      val snapshot = PcSnapshot("file:///ContextualExtensionType.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("Int"),
+        TypeRenderer.render(
+          session,
+          snapshot,
+          TextRange.from(source.lastIndexOf("n.valueOrError"), "n.valueOrError".length)
+        )
+      )
+
+  def testCompletionNormalizesNonFileUris(): Unit =
+    withRealPcSession("metallurgy-non-file-completion"): session =>
+      val source   = "object Main:\n  val values = List(1)\n  values."
+      val snapshot = PcSnapshot("temp:///src/Completion.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      val items = session.complete(snapshot.fileUri, source, snapshot.documentVersion, source.length)
+      assertTrue(items.toString, items.exists(item => item.lookupName == "map" || item.label.startsWith("map")))
+
+  def testDiagnosticsAreBoundToThePublishedDocumentVersion(): Unit =
+    withRealPcSession("metallurgy-pc-diagnostics"): session =>
+      val source   = "object Main:\n  val value: String = 1\n"
+      val snapshot = PcSnapshot("temp:///src/Diagnostics.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      val diagnostics = session.diagnostics(snapshot)
+      assertTrue(diagnostics.toString, diagnostics.exists(_.exists(_.isError)))
+      assertTrue(session.diagnostics(PcSnapshot(snapshot.fileUri, 2L, source)).isEmpty)
+
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-manager")
     val artifact           = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))

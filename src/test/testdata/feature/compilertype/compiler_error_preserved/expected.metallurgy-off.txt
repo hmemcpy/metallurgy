@@ -1,0 +1,2 @@
+# The bundled plugin reports the same real type error when Metallurgy is disabled.
+red:line:2

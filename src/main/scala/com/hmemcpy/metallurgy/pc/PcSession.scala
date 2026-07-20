@@ -72,6 +72,28 @@ final class PcSession private (
                   .flatten
       case None         => None
 
+  /** Return compiler diagnostics only for the currently published document version. A failed compiler request is
+    * distinct from a successful, clean result so callers never suppress bundled diagnostics on uncertainty.
+    */
+  private[metallurgy] def diagnostics(snapshot: PcSnapshot): Option[Seq[PcDiagnostic]] =
+    val key = QueryKey.Diagnose(TextRange(0, snapshot.sourceText.length))
+    snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
+      case Some(active) =>
+        active
+          .cached[Option[Seq[PcDiagnostic]]](key, System.nanoTime())
+          .getOrElse:
+            if applicationIsDispatchThread then None
+            else
+              active.cachedOrCompute(key, System.nanoTime()):
+                try
+                  Option(inlineTypeDrivers.get(snapshot.fileUri))
+                    .flatMap(_.use(_.diagnostics(snapshot)))
+                catch
+                  case NonFatal(error) =>
+                    Log.warn(s"PC diagnostics failed for ${snapshot.fileUri}", error)
+                    None
+      case None         => None
+
   private[metallurgy] def snapshotCount: Int = snapshots.size
 
   /** Debounces edits per session. A newer edit supersedes the scheduled result; typed state is published only after a
@@ -111,7 +133,7 @@ final class PcSession private (
 
   private def queryCompletion(snapshot: PcSnapshot, offset: Int): Option[Seq[PcCompletion]] =
     ProgressManager.checkCanceled()
-    val future = compiler.complete(PcOffsetParams(URI.create(snapshot.fileUri), snapshot.sourceText, offset))
+    val future = compiler.complete(PcOffsetParams(PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText, offset))
     try
       val completionList = future.get(5, TimeUnit.SECONDS)
       ProgressManager.checkCanceled()
@@ -223,6 +245,8 @@ private[metallurgy] final case class PcCompletion(
     label: String,
     detail: Option[String]
 )
+
+private[metallurgy] final case class PcDiagnostic(range: TextRange, isError: Boolean, message: String)
 
 private final case class PcOffsetParams(uri: URI, text: String, offset: Int) extends OffsetParams:
   override def token(): CancelToken = PcCancelToken

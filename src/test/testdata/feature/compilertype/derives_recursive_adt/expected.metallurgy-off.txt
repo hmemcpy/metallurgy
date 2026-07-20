@@ -1,0 +1,7 @@
+# The bundled type slot is empty without compiler-backed semantics.
+typeAt:169:<empty>
+typeAt:197:<empty>
+typeAt:208:<empty>
+typeAt:209:<empty>
+typeAt:229:<empty>
+red:line:9

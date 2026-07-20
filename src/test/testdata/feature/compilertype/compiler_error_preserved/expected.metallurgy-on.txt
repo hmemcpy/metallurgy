@@ -1,0 +1,2 @@
+# A matching compiler error must preserve the bundled error highlight.
+red:line:2

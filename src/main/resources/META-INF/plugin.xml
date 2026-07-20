@@ -52,6 +52,8 @@
         language="Scala"
         implementationClass="com.hmemcpy.metallurgy.feature.completion.Scala3PcCompletionContributor"
         order="before scalaCompletionContrubutor"/>
+    <daemon.highlightInfoFilter
+        implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>

@@ -15,7 +15,7 @@ import com.intellij.testFramework.fixtures.JavaCodeInsightTestFixture
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParameterizedTypeElement, ScTypeElement}
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScMethodCall, ScReferenceExpression}
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
 import java.nio.charset.StandardCharsets
@@ -199,6 +199,7 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     val parents = Iterator.iterate(leaf)(_.getParent).takeWhile(_ != null).toList
     parents
       .collectFirst { case element: ScMethodCall => element }
+      .orElse(parents.collectFirst { case element: ScGenericCall => element })
       .orElse(parents.collectFirst { case element: ScParameterizedTypeElement => element })
       .orElse(parents.collectFirst { case element: ScTypeElement => element })
       .orElse:
