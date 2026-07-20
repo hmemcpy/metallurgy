@@ -2,7 +2,7 @@
 typeAt:169:(Lst.Cns[Int], (Lst.Nl : Lst[Nothing]))
 typeAt:197:(Lst.Cns[Int], (Lst.Nl : Lst[Nothing]))
 typeAt:208:(Lst.Cns[Int], (Lst.Nl : Lst[Nothing]))
-typeAt:209:Lst.Cns[Int]
-typeAt:229:Lst[Nothing]
+typeAt:213:Lst.Cns[Int]
+typeAt:233:Lst[Nothing]
 notRed:line:7
 notRed:line:9

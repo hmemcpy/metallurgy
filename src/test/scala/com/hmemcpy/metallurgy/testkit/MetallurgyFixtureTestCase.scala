@@ -21,6 +21,7 @@ import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import java.util.concurrent.{CompletableFuture, TimeUnit}
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
 
 /** Headless Scala-plugin fixture that runs one source/oracle pair with Metallurgy either enabled or disabled. */
@@ -198,14 +199,21 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
       throw new AssertionError(s"No PSI element at offset $offset")
     val parents = Iterator.iterate(leaf)(_.getParent).takeWhile(_ != null).toList
     parents
-      .collectFirst { case element: ScMethodCall => element }
-      .orElse(parents.collectFirst { case element: ScGenericCall => element })
-      .orElse(parents.collectFirst { case element: ScParameterizedTypeElement => element })
+      .collectFirst { case element: ScParameterizedTypeElement => element }
       .orElse(parents.collectFirst { case element: ScTypeElement => element })
       .orElse:
-        parents.collectFirst { case element: ScReferenceExpression if element.getText.contains('.') => element }
-      .orElse(parents.collectFirst { case element: ScReferenceExpression => element })
+        parents.collectFirst:
+          case reference: ScReferenceExpression => enclosingApplication(reference)
+          case element: ScMethodCall            => element
+          case element: ScGenericCall           => element
       .getOrElse(leaf.getParent)
+
+  @tailrec
+  private def enclosingApplication(element: PsiElement): PsiElement =
+    element.getParent match
+      case call: ScGenericCall if call.referencedExpr == element => enclosingApplication(call)
+      case call: ScMethodCall if call.getInvokedExpr == element  => enclosingApplication(call)
+      case _                                                     => element
 
   private def requestCompilerType(element: PsiElement): MetallurgyStatus =
     val project    = element.getProject
