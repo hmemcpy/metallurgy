@@ -1,0 +1,3 @@
+# Without Metallurgy, the bundled plugin resolves the Mirror instance but cannot resolve its
+# type members -> "Cannot resolve symbol MirroredElemLabels".
+red:line:6

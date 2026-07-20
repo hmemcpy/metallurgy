@@ -1,0 +1,2 @@
+# pc runs the real typer: mirror.MirroredElemLabels resolves to ("name", "age"), no error.
+notRed:line:6

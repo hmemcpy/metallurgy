@@ -91,7 +91,9 @@ abstract class MetallurgyFixtureTestCase extends ScalaLightCodeInsightFixtureTes
       case Left(error)       => abort(s"Invalid $fixtureName/$name oracle: $error")
 
   private def fixtureDirectory: Path =
-    Path.of(getTestDataPath, "feature", "compilertype", fixtureName)
+    Path.of(getTestDataPath, "feature", featureDir, fixtureName)
+
+  protected def featureDir: String = "compilertype"
 
   private def configureBundledCompilerTypes(enabled: Boolean): Unit =
     setBundledCompilerTypes(enabled, enabled)
