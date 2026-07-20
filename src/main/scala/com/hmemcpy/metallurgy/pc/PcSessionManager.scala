@@ -200,7 +200,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       updated.session
 
   private def buildClasspath(module: Module): Seq[File] =
-    OrderEnumerator
+    val roots = OrderEnumerator
       .orderEntries(module)
       .recursively
       .compileOnly
@@ -210,8 +210,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       .getPathList
       .asScala
       .map(new File(_))
-      .distinct
       .toSeq
+    PcSessionManager.exposeBestEffortTastyRoots(roots)
 
   private def hashClasspath(classpath: Seq[File]): String =
     val digest = MessageDigest.getInstance("SHA-256")
@@ -236,3 +236,15 @@ private final case class SessionKey(module: Module, scalaVersion: String)
 
 object PcSessionManager:
   def get(project: Project): PcSessionManager = project.getService(classOf[PcSessionManager])
+
+  /** `.betasty` must sit at a classpath root to be read by `-Ywith-best-effort-tasty`. For each directory root that
+    * carries a `META-INF/best-effort` subdir — an upstream module compiled with `-Ybest-effort` while broken — expose
+    * that subdir as an additional classpath root. No-op for roots without it (clean modules, jars). Mirrors scala3's
+    * `compileWithBestEffortTasty` (`-classpath …:<out>/META-INF/best-effort`).
+    */
+  private[pc] def exposeBestEffortTastyRoots(roots: Seq[File]): Seq[File] =
+    val betastyRoots = roots
+      .collect:
+        case root if root.isDirectory => File(root, "META-INF/best-effort")
+      .filter(_.isDirectory)
+    (roots ++ betastyRoots).distinct

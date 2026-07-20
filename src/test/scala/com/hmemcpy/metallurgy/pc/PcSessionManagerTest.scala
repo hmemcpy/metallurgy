@@ -262,6 +262,19 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       settings.setEnabled(getModule, enabled = false)
       deleteRecursively(temporaryDirectory)
 
+  def testBuildClasspathExposesBestEffortTastyRoots(): Unit =
+    // A directory root carrying META-INF/best-effort gets that subdir appended as a classpath root.
+    val broken      = Files.createTempDirectory("brokenOut")
+    val bestEffort  = Files.createDirectories(broken.resolve("META-INF").resolve("best-effort"))
+    val _           = Files.createFile(bestEffort.resolve("Person.betasty"))
+    val withBetasty = PcSessionManager.exposeBestEffortTastyRoots(Seq(broken.toFile))
+    assertTrue(withBetasty.mkString(", "), withBetasty.exists(_.getPath.endsWith("best-effort")))
+
+    // A clean directory root (no betasty) is left unchanged.
+    val clean          = Files.createTempDirectory("cleanOut").toFile
+    val withoutBetasty = PcSessionManager.exposeBestEffortTastyRoots(Seq(clean))
+    assertEquals(Seq(clean), withoutBetasty)
+
   private def onPooledThread[A](body: => A): A =
     ApplicationManager.getApplication
       .executeOnPooledThread(() => body)
