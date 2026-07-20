@@ -11,12 +11,10 @@ A third-party IntelliJ plugin that fills Scala 3 semantic gaps using the present
 | Capability | IntelliJ out of the box | With Metallurgy |
 | --- | --- | --- |
 | Generated structural APIs (`api.paths.`) | Jing's `` `/pet` `` path is missing from completion and valid access is marked as an error. | Completion offers `` `/pet` `` and reports its exact `HttpEndpoint` type. |
-| Direct-style macros (`a.run`, `await(first)`) | ZIO Direct and Kyo locals are unresolved or marked as errors. | Rewritten locals have their compiler types (`Int`, `User`) and valid code is not red. |
 | Recursive derivation (`mirror.MirroredElemTypes`) | The derived recursive tuple is not understood and its valid assignment is red. | The full tuple type is available, including singleton enum cases. |
 | Inline matches (`toInt(Succ(Succ(Zero)))`) | The reduced singleton result is unavailable and `val intTwo: 2` is red. | The result is reported as `(2 : Int)`. |
 | Match types (`Elem[List[Int]]`) | The applied match type is not reduced through the compiler-type path. | The applied type is reported as `Int`. |
 | Compile-time operations (`2 + 2`) | The reduced singleton type is unavailable. | The result is reported as `(4 : Int)`. |
-| Tuple chains (`h.tail.tail.head`) | Deep tuple operations lose precision and valid code can be red. | Each intermediate tuple and final `Boolean` type remains precise. |
 | Error filtering | Macro-related false errors remain visible. | False errors are removed only from a matching fresh compiler snapshot; real errors remain visible. |
 
 See the [delivery plan](./docs/design.md#15-capability-delivery-order) for planned capabilities.
