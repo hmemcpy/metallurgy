@@ -13,7 +13,7 @@ import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.completion3.base.ScalaCompletionTestFixture
 import org.jetbrains.plugins.scala.lang.completion3.base.ScalaCompletionTestFixture.createPresentation
-import org.junit.Assert.{assertEquals, assertNotNull}
+import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
 import java.nio.file.Path
 
@@ -23,7 +23,10 @@ final class FixedPcCompletionContributor extends CompletionContributor:
     PcCompletionMerger.mergeRemainingContributors(
       parameters,
       result,
-      Seq(PcCompletion("name", "name", Some(": String")))
+      Seq(
+        PcCompletion("name", "name", Some(": String")),
+        PcCompletion("`/pet`", "`/pet`: Int", Some("Int"))
+      )
     )
 
 final class PcCompletionContributorTest extends ScalaLightCodeInsightFixtureTestCase:
@@ -65,3 +68,13 @@ final class PcCompletionContributorTest extends ScalaLightCodeInsightFixtureTest
     val presentation = createPresentation(nameItems.head)
     assertEquals("String", presentation.getTypeText)
     assertNotNull(presentation.getIcon)
+
+  def testBacktickedCompilerItemUsesScalaPrefixMatching(): Unit =
+    val fixture = new ScalaCompletionTestFixture(myFixture)
+    val items   = fixture.completeBasic(
+      """val value: Any = ???
+        |value.`<caret>
+        |""".stripMargin
+    )
+
+    assertTrue(items.exists(_.getLookupString == "`/pet`") || myFixture.getFile.getText.contains("value.`/pet`"))

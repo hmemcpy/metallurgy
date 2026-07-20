@@ -53,6 +53,25 @@ private[pc] final class PcInlineTypeDriver(
     val warnings = diagnosticList(reporter.getClass.getMethod("allWarnings").invoke(reporter), isError = false)
     errors ++ warnings
 
+  def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion] = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "structural completion queries require a matching typed document"
+    )
+    val dotOffset = snapshot.sourceText.lastIndexOf('.', math.max(0, offset - 1))
+    if dotOffset <= 0 then Seq.empty
+    else
+      val uri        = PcSourceUri.normalize(snapshot.fileUri)
+      val context    = driverClass.getMethod("currentCtx").invoke(driver)
+      val sourceFile = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
+      val trees      = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
+      val span       = querySpan(TextRange.from(dotOffset - 1, 1))
+      val position   = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
+      val path       = pathTrees(pathTo(trees, position, context))
+      selectTree(path).toSeq.flatMap: selection =>
+        val tpe = treeType(selection, context)
+        refinementCompletions(tpe, context)
+
   private def querySpan(range: TextRange): AnyRef =
     if range.isEmpty then
       spansModule.getClass.getMethod("Span", classOf[Int]).invoke(spansModule, Int.box(range.getStartOffset))
@@ -131,6 +150,10 @@ private[pc] final class PcInlineTypeDriver(
       sameExtentTree(trees, closest, TypedTreeKind.Inlined)
         .map(TypedTreeSelection(_, TypeRendering.Exact))
         .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.TypeApply)
+            .filter(isRuntimeTypeCast)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .orElse:
           sameExtentTree(trees, closest, TypedTreeKind.Apply)
             .map(TypedTreeSelection(_, TypeRendering.Widened))
         .orElse:
@@ -140,6 +163,11 @@ private[pc] final class PcInlineTypeDriver(
 
   private def sameExtentTree(trees: List[AnyRef], closest: AnyRef, kind: TypedTreeKind): Option[AnyRef] =
     trees.reverse.find(tree => kind.matches(tree) && hasSameExtent(tree, closest))
+
+  private def isRuntimeTypeCast(tree: AnyRef): Boolean =
+    val function = tree.getClass.getMethod("fun").invoke(tree)
+    Option(function.getClass.getMethod("name").invoke(function))
+      .exists(_.toString.contains("asInstanceOf"))
 
   private def pathTrees(path: AnyRef): List[AnyRef] =
     val iterator = path.getClass.getMethod("iterator").invoke(path)
@@ -163,13 +191,46 @@ private[pc] final class PcInlineTypeDriver(
         PcDiagnostic(TextRange(math.max(0, start), math.max(start, end)), isError, message)
 
   private def renderTreeType(selection: TypedTreeSelection, context: AnyRef): String =
+    renderCompilerType(treeType(selection, context), context)
+
+  private def treeType(selection: TypedTreeSelection, context: AnyRef): AnyRef =
     val rawType    = selection.tree.getClass.getMethod("tpe").invoke(selection.tree)
     val base       = selection.rendering match
       case TypeRendering.Exact   => rawType
       case TypeRendering.Widened => invokeContextual(rawType, "widenTermRefExpr", context)
     val dealiased  = invokeContextual(base, "dealias", context)
     val normalized = invokeContextual(dealiased, "normalized", context)
-    val tpe        = invokeContextual(normalized, "simplified", context)
+    invokeContextual(normalized, "simplified", context)
+
+  private def refinementCompletions(tpe: AnyRef, context: AnyRef): List[PcCompletion] =
+    Iterator
+      .iterate(Option(tpe)):
+        case Some(refined) if isRefinedType(refined) =>
+          Option(refined.getClass.getMethod("parent").invoke(refined))
+        case _                                       => None
+      .takeWhile(_.nonEmpty)
+      .flatMap: candidate =>
+        candidate
+          .filter(isRefinedType)
+          .flatMap: refined =>
+            val name = refined.getClass.getMethod("refinedName").invoke(refined)
+            val term = name.getClass.getMethod("isTermName").invoke(name).asInstanceOf[Boolean]
+            Option.when(term):
+              val lookup = escapedIdentifier(name.toString)
+              val info   = refined.getClass.getMethod("refinedInfo").invoke(refined)
+              val detail = renderCompilerType(info, context)
+              PcCompletion(lookup, s"$lookup: $detail", Some(detail))
+      .toList
+      .distinctBy(_.lookupName)
+
+  private def isRefinedType(tpe: AnyRef): Boolean =
+    val methods = tpe.getClass.getMethods.iterator.map(_.getName).toSet
+    Set("parent", "refinedName", "refinedInfo").subsetOf(methods)
+
+  private def escapedIdentifier(name: String): String =
+    if name.matches("[A-Za-z_$][A-Za-z0-9_$]*") then name else s"`$name`"
+
+  private def renderCompilerType(tpe: AnyRef, context: AnyRef): String =
     tpe.getClass.getMethods
       .find(method => method.getName == "show" && method.getParameterCount == 1)
       .getOrElse(throw new NoSuchMethodException("Type.show"))

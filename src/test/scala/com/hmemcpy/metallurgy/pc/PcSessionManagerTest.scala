@@ -166,6 +166,43 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         )
       )
 
+  def testTypeAtUsesTheResultOfACompilerGeneratedStructuralCast(): Unit =
+    withRealPcSession("metallurgy-structural-selection-type"): session =>
+      val source   =
+        "import scala.reflect.Selectable.reflectiveSelectable\nobject Main:\n  val structural: { val answer: Int } = new { val answer = 42 }\n  val selected = structural.answer\n"
+      val snapshot = PcSnapshot("file:///StructuralSelectionType.scala", 1L, source)
+      val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
+
+      assertEquals(RetypecheckOutcome.Applied, outcome)
+      assertEquals(
+        Some("Int"),
+        TypeRenderer.render(
+          session,
+          snapshot,
+          TextRange.from(source.lastIndexOf("structural.answer"), "structural.answer".length)
+        )
+      )
+
+  def testStructuralCompletionIncludesBacktickedMembers(): Unit =
+    withRealPcSession("metallurgy-structural-completion"): session =>
+      val source   =
+        """import scala.reflect.Selectable.reflectiveSelectable
+          |object Main:
+          |  val structural: { val `/pet`: Int } = new { val `/pet` = 42 }
+          |  val selected = structural.`
+          |""".stripMargin
+      val snapshot = PcSnapshot("file:///StructuralCompletion.scala", 1L, source)
+      val driver   = new PcInlineTypeDriver(session.classloader, session.compilerClasspath, session.compilerOptions)
+
+      try
+        driver.retypecheck(snapshot)
+        val completions = driver.structuralCompletions(snapshot, source.length - 1)
+        assertTrue(
+          completions.toString,
+          completions.exists(item => item.lookupName == "`/pet`" && item.detail.contains("Int"))
+        )
+      finally driver.close()
+
   def testCompletionNormalizesNonFileUris(): Unit =
     withRealPcSession("metallurgy-non-file-completion"): session =>
       val source   = "object Main:\n  val values = List(1)\n  values."

@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.feature.completion
 
 import com.hmemcpy.metallurgy.pc.PcCompletion
-import com.intellij.codeInsight.completion.{CompletionParameters, CompletionResult, CompletionResultSet}
+import com.intellij.codeInsight.completion.{CompletionParameters, CompletionResult, CompletionResultSet, PrefixMatcher}
 import com.intellij.codeInsight.lookup.{
   LookupElement,
   LookupElementBuilder,
@@ -17,15 +17,16 @@ private[completion] object PcCompletionMerger:
       result: CompletionResultSet,
       compilerItems: Seq[PcCompletion]
   ): Unit =
+    val scalaResult   = result.withPrefixMatcher(ScalaBacktickPrefixMatcher(result.getPrefixMatcher))
     var nativeResults = Vector.empty[CompletionResult]
-    result.runRemainingContributors(
+    scalaResult.runRemainingContributors(
       parameters,
       (nativeResult: CompletionResult) => nativeResults = nativeResults :+ nativeResult
     )
 
     mergeResults(compilerItems, nativeResults).foreach:
-      case Left(compilerItem)  => result.addElement(compilerLookupElement(compilerItem))
-      case Right(nativeResult) => result.passResult(nativeResult)
+      case Left(compilerItem)  => scalaResult.addElement(compilerLookupElement(compilerItem))
+      case Right(nativeResult) => scalaResult.passResult(nativeResult)
 
   def mergeResults(
       compilerItems: Seq[PcCompletion],
@@ -97,6 +98,32 @@ private[completion] object PcCompletionMerger:
             ): Unit =
               renderer.renderElement(element.getDelegate, presentation)
               PcCompletionPresentation.render(compilerItem, presentation)
+
+private final class ScalaBacktickPrefixMatcher private (delegate: PrefixMatcher)
+    extends PrefixMatcher(delegate.getPrefix):
+
+  private val prefixWithoutBackticks  = stripBackticks(getPrefix)
+  private val matcherWithoutBackticks = delegate.cloneWithPrefix(prefixWithoutBackticks)
+
+  override def prefixMatches(name: String): Boolean =
+    if getPrefix == "`" then name.startsWith("`")
+    else matcherWithoutBackticks.prefixMatches(stripBackticks(name))
+
+  override def isStartMatch(name: String): Boolean =
+    if getPrefix == "`" then name.startsWith("`")
+    else matcherWithoutBackticks.isStartMatch(stripBackticks(name))
+
+  override def cloneWithPrefix(prefix: String): PrefixMatcher =
+    ScalaBacktickPrefixMatcher(delegate.cloneWithPrefix(prefix))
+
+  private def stripBackticks(value: String): String =
+    Option(value)
+      .filter(_.length > 1)
+      .map(_.stripPrefix("`").stripSuffix("`"))
+      .getOrElse(value)
+
+private object ScalaBacktickPrefixMatcher:
+  def apply(delegate: PrefixMatcher): ScalaBacktickPrefixMatcher = new ScalaBacktickPrefixMatcher(delegate)
 
 private[completion] object PcCompletionPresentation:
 

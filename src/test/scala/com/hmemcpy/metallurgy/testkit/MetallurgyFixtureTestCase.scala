@@ -6,6 +6,7 @@ import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
+import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.module.ModuleManager
@@ -133,7 +134,8 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     assertion match
       case OracleAssertion.Hover(offset, expected)           => assertTypeAt(context, session, offset, expected)
       case OracleAssertion.TypeAt(offset, expected)          => assertTypeAt(context, session, offset, expected)
-      case OracleAssertion.Completion(offset, expectedItems) => assertCompletion(offset, expectedItems)
+      case OracleAssertion.Completion(offset, expectedItems) =>
+        assertCompletion(context, session, offset, expectedItems)
       case OracleAssertion.NotRed(line)                      => assertHighlighting(context, line, expectError = false)
       case OracleAssertion.Red(line)                         => assertHighlighting(context, line, expectError = true)
       case OracleAssertion.Resolve(symbol, target)           => assertResolve(context, symbol, target)
@@ -161,13 +163,35 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
         actual
       )
 
-  private def assertCompletion(offset: SourceOffset, expectedItems: Set[String]): Unit =
+  private def assertCompletion(
+      context: FixtureContext,
+      session: Option[PcSession],
+      offset: SourceOffset,
+      expectedItems: Set[String]
+  ): Unit =
+    val compilerItems      = session.toSeq
+      .flatMap(
+        _.complete(
+          context.file.getVirtualFile.getUrl,
+          context.document.getText,
+          context.document.getModificationStamp,
+          offset.value
+        )
+      )
+      .map(_.lookupName)
+      .toSet
+    val memberStart        = context.document.getText.lastIndexOf('.', math.max(0, offset.value - 1)) + 1
     fixture.getEditor.getCaretModel.moveToOffset(offset.value)
-    val actual             = Option(fixture.completeBasic()).toSeq.flatten.map(_.getLookupString).toSet
+    val actual             = Option(fixture.complete(CompletionType.BASIC, 2)).toSeq.flatten.map(_.getLookupString).toSet
     val normalizedExpected = expectedItems.map(_.stripPrefix("."))
+    val inserted           = Option.when(memberStart > 0):
+      val caret = fixture.getEditor.getCaretModel.getOffset
+      context.document.getText.substring(memberStart, caret)
     assertTrue(
-      s"Missing completion items ${normalizedExpected.diff(actual).toSeq.sorted.mkString(", ")}",
-      normalizedExpected.subsetOf(actual)
+      s"Missing completion items ${normalizedExpected.diff(actual ++ inserted).toSeq.sorted.mkString(", ")}; " +
+        s"compiler items: ${compilerItems.toSeq.sorted.mkString(", ")}; " +
+        s"visible items: ${actual.toSeq.sorted.mkString(", ")}; inserted item: ${inserted.getOrElse("<none>")}",
+      normalizedExpected.subsetOf(actual ++ inserted)
     )
 
   private def assertHighlighting(context: FixtureContext, line: LineNumber, expectError: Boolean): Unit =

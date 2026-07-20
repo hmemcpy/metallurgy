@@ -137,12 +137,24 @@ final class PcSession private (
     try
       val completionList = future.get(5, TimeUnit.SECONDS)
       ProgressManager.checkCanceled()
-      Some(completionList.getItems.asScala.flatMap(decodeItem).toSeq)
+      val items          = completionList.getItems.asScala.flatMap(decodeItem).toSeq
+      val refinements    = structuralCompletions(snapshot, offset)
+      Some((items ++ refinements).distinctBy(_.lookupName))
     catch
       case NonFatal(error) =>
         val _ = future.cancel(true)
         Log.warn(s"PC completion failed for ${snapshot.fileUri} at $offset", error)
         None
+
+  private def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion] =
+    try
+      Option(inlineTypeDrivers.get(snapshot.fileUri))
+        .flatMap(_.use(_.structuralCompletions(snapshot, offset)))
+        .getOrElse(Seq.empty)
+    catch
+      case NonFatal(error) =>
+        Log.warn(s"Structural completion failed for ${snapshot.fileUri} at $offset", error)
+        Seq.empty
 
   private def runRetypecheck(
       snapshot: PcSnapshot,

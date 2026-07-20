@@ -1,0 +1,3 @@
+typeAt:242:jing.openapi.model.HttpEndpoint[Void, ("200" : String) :: Unit]
+completion:268:`/pet`
+notRed:line:14
