@@ -116,7 +116,22 @@ top-level                                                                [1 file
 -------------------------------------------------------------------------------
 testCategories.scala                             [scala-impl]                            unchanged
 
-TOTAL: 69 source files copied.
+compiler/                                                               [4 files]
+-------------------------------------------------------------------------------
+compiler/CompileServerTestUtil.scala             [scala-impl] compiler/                unchanged
+compiler/ScalaCompilerTestBase.scala            [scala-impl] compiler/                unchanged
+compiler/highlighting/ScalaCompilerHighlightingTestBase.scala [scala-impl] compiler/highlighting/ unchanged
+compiler/highlighting/CompilerDiagnosticsTestBase.scala [scala-impl] compiler/highlighting/  unchanged
+
+Backported to enable headless compiler-based-highlighting (CBH) triage: these
+stand up the Scala compile server in tests (`useCompileServer`, JDK save,
+index wait, `waitUntilFileIsHighlighted`). All their dependencies are already
+shipped (`CompileServerLauncher`, `CompilerTester`, `JavaModuleTestCase`,
+`DependencyManagerBase`, `IncrementalityType` in compiler-shared.jar,
+`CompilerHighlightingEditorFocusListener`, `ProjectExt`) or backported
+(`ScalaSdkOwner`, `CompilerTestUtil`, `HeavyJDKLoader`, matchers, `CompilerHighlightingTests`).
+
+TOTAL: 73 source files copied.
 
 
 Files listed in the task brief that do NOT exist as source in idea261.x
