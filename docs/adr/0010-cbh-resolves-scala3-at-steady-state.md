@@ -41,3 +41,10 @@ false-positive fix. There is no steady-state false-positive target for simple or
 - Re-opens the prioritisation: provenance (does CBH-with-flags already cover it?) must precede building, not
   follow it. The earlier CBH-off / `compiler.make()` triages that suggested gaps were measuring the wrong thing
   (the hand-rolled engine / compilation, not CBH highlighting).
+
+> **Refined by [docs/research/15](../research/15-scala3-type-resolution-gaps.md) and ADR 0011.** The
+> "clean at steady state" finding here holds for the **simple stdlib + circe** set the triages measured. A
+> YouTrack dive (SCL) shows the bundled plugin still lags on **type-level computation** (`compiletime.ops`,
+> match types, named tuples → `Any`), **macro/typeclass derivation** (shapeless, frameless, chisel, refined),
+> **macro annotations**, and **new 3.5+ features**. Those are real, voted, open gaps — the refocused
+> Metallurgy opportunity is type-resolution/completion for that set, not red suppression.
