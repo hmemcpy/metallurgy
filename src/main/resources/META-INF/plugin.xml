@@ -42,6 +42,8 @@
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeReportInterceptor"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.diagnostics.PcDiagnosticSetCache"/>
     <postStartupActivity
         implementation="com.hmemcpy.metallurgy.MetallurgyProjectActivity"/>
     <statusBarWidgetFactory
