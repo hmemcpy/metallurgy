@@ -4,6 +4,7 @@ import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.OrderEnumerator
 import com.intellij.openapi.util.TextRange
 import org.jetbrains.plugins.scala.ScalaVersion
@@ -242,6 +243,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
 
       settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true) // ADR 0008: Metallurgy requires CBH
       val first  = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
       val second = onPooledThread(manager.sessionFor(getModule)).get
       assertSame(first, second)
@@ -254,12 +256,18 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertNotSame(first, replacement)
       assertFalse(replacement.isClosed)
 
+      // ADR 0008: without CBH, Metallurgy is a no-op even when enabled.
+      setCompilerBasedHighlighting(enabled = false)
+      assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      setCompilerBasedHighlighting(enabled = true)
+
       settings.setEnabled(getModule, enabled = false)
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
       assertTrue(replacement.isClosed)
     finally
       manager.dispose()
       settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
       deleteRecursively(temporaryDirectory)
 
   def testBuildClasspathExposesBestEffortTastyRoots(): Unit =
@@ -279,6 +287,13 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     ApplicationManager.getApplication
       .executeOnPooledThread(() => body)
       .get(120, TimeUnit.SECONDS)
+
+  private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
+    val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
+    val s   = cls.getMethod("getInstance", classOf[Project]).invoke(null, getProject)
+    val on  = java.lang.Boolean.valueOf(enabled)
+    val _   = cls.getMethod("setCompilerHighlightingScala3", classOf[Boolean]).invoke(s, on)
+    val _   = cls.getMethod("setUseCompilerTypes", classOf[Boolean]).invoke(s, on)
 
   private def withRealPcSession(prefix: String)(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory(prefix)

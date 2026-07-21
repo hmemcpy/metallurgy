@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.feature.completion
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.PcSessionManager
-import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.{CompletionContributor, CompletionParameters, CompletionResultSet}
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleUtilCore
@@ -27,11 +26,8 @@ final class Scala3PcCompletionContributor extends CompletionContributor:
         return
       case m    => m
 
-    if !ModuleDetectionService.get(project).isEligible(module) then
-      Log.debug(s"PC completion skipped: ${module.getName} is not eligible")
-      return
-    if !MetallurgySettings(project).isEnabled(module) then
-      Log.debug(s"PC completion skipped: ${module.getName} is not enabled")
+    if !ModuleDetectionService.get(project).isActive(module) then
+      Log.debug(s"PC completion skipped: ${module.getName} is not active (Scala 3.5+ opt-in + CBH)")
       return
 
     val document = PsiDocumentManager.getInstance(project).getDocument(file)

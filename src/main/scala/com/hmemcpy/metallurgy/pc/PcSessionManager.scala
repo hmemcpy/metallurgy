@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
-import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -125,9 +124,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     sessions.clear()
 
   private def isManaged(module: Module): Boolean =
-    !module.isDisposed &&
-      ModuleDetectionService.get(project).isEligible(module) &&
-      MetallurgySettings(project).isEnabled(module)
+    !module.isDisposed && ModuleDetectionService.get(project).isActive(module)
 
   private def managedModules: Set[Module] =
     sessions.keySet().asScala.toSet ++ inFlight.keySet().asScala.map(_.module)

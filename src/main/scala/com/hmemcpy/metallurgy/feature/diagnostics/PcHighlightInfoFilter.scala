@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.feature.diagnostics
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.daemon.impl.{HighlightInfo, HighlightInfoFilter}
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.application.ApplicationManager
@@ -24,8 +23,7 @@ final class PcHighlightInfoFilter extends HighlightInfoFilter:
       val current =
         for
           candidate   <- module
-          if ModuleDetectionService.get(project).isEligible(candidate)
-          if MetallurgySettings(project).isEnabled(candidate)
+          if ModuleDetectionService.get(project).isActive(candidate)
           sourceFile  <- vFile
           document    <- Option(FileDocumentManager.getInstance.getDocument(sourceFile))
           session     <- PcSessionManager.get(project).sessionFor(candidate)

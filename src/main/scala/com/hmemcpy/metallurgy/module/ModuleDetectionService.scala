@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.module
 
+import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.Project
@@ -39,6 +40,15 @@ final class ModuleDetectionService(project: Project) extends Disposable:
 
   def isEligibleFile(file: VirtualFile): Boolean =
     Option(ModuleUtilCore.findModuleForFile(file, project)).exists(isEligible)
+
+  /** Metallurgy is active for a module iff it is a Scala 3.5+ module the user opted into AND compiler-based
+    * highlighting is on. `pc` piggybacks on the compile server's compiled artifacts, so without CBH Metallurgy is a
+    * complete no-op (ADR 0008).
+    */
+  def isActive(module: Module): Boolean =
+    isEligible(module) &&
+      MetallurgySettings(project).isEnabled(module) &&
+      BundledPluginBridge.usesCompilerTypes(project)
 
   override def dispose(): Unit = cache.clear()
 
