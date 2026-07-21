@@ -6,12 +6,12 @@ import org.jetbrains.plugins.scala.compiler.highlighting.ScalaCompilerHighlighti
 import org.jetbrains.plugins.scala.util.CompilerTestUtil.runWithErrorsFromCompiler
 import org.junit.Assert.assertTrue
 
-/** Proves the backported compile-server test chain fires CBH headlessly. Valid Scala 3 code under
-  * CBH-on (Metallurgy off) must produce no error highlights — the prerequisite for trustworthy triage.
+/** Proves the backported compile-server test chain fires CBH headlessly. Valid Scala 3 code under CBH-on (Metallurgy
+  * off) must produce no error highlights — the prerequisite for trustworthy triage.
   *
-  * NOTE: the `runWithErrorsFromCompiler` body is routed through a non-`test*` helper. JUnit reflects
-  * `test*` methods, and Scala 3 encodes the by-name body as a method that inherits the `test` prefix —
-  * putting it inline makes JUnit try to invoke the closure as a test.
+  * NOTE: the `runWithErrorsFromCompiler` body is routed through a non-`test*` helper. JUnit reflects `test*` methods,
+  * and Scala 3 encodes the by-name body as a method that inherits the `test` prefix — putting it inline makes JUnit try
+  * to invoke the closure as a test.
   */
 final class CbhSmokeTest extends ScalaCompilerHighlightingTestBase:
 
@@ -22,7 +22,7 @@ final class CbhSmokeTest extends ScalaCompilerHighlightingTestBase:
 
   private def checkValidCodeNotRed(): Unit =
     runWithErrorsFromCompiler(getProject):
-      val file = addFileToProjectSources("Smoke.scala", "object Smoke:\n  val answer: Int = 42\n")
+      val file   = addFileToProjectSources("Smoke.scala", "object Smoke:\n  val answer: Int = 42\n")
       waitUntilFileIsHighlighted(file)
       val errors = fetchHighlightInfos(file).filter(_.getSeverity == HighlightSeverity.ERROR)
       assertTrue(
