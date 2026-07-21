@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.feature.diagnostics
 import com.hmemcpy.metallurgy.pc.PcDiagnostic
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 
 import java.util.concurrent.ConcurrentHashMap
@@ -78,3 +79,6 @@ final class PcDiagnosticSetCache extends Disposable:
       val _ = ref.updateAndGet:
         case SnapshotState.Pending(v) if v == version => next
         case other                                    => other
+
+object PcDiagnosticSetCache:
+  def get(project: Project): PcDiagnosticSetCache = project.getService(classOf[PcDiagnosticSetCache])

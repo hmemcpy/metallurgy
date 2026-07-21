@@ -2,17 +2,21 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
+import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, SnapshotState}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.OrderEnumerator
+import com.intellij.openapi.util.Computable
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.util.TextRange
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertTrue, fail}
 
 import java.nio.file.{Files, Path}
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{CompletableFuture, TimeUnit}
 import scala.jdk.CollectionConverters.*
 
 final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
@@ -224,6 +228,52 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val diagnostics = session.diagnostics(snapshot)
       assertTrue(diagnostics.toString, diagnostics.exists(_.exists(_.isError)))
       assertTrue(session.diagnostics(PcSnapshot(snapshot.fileUri, 2L, source)).isEmpty)
+
+  def testWriterMirrorsRetypecheckOutcomeToCache(): Unit =
+    val temporaryDirectory = Files.createTempDirectory("metallurgy-writer")
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      PresentationCompilerResolver.bundled,
+      BackgroundRunner.direct
+    )
+    val manager            = new PcSessionManager(getProject, fetcher)
+    val settings           = MetallurgySettings(getProject)
+    val cache              = PcDiagnosticSetCache.get(getProject)
+
+    def assertPublishedState(file: VirtualFile, expectError: Boolean): Unit =
+      val prepare: Computable[CompletableFuture[Option[PcSession]]] = () => manager.prepareFile(file)
+      val prepared                                                  =
+        onPooledThread(ApplicationManager.getApplication.runReadAction(prepare).get(60, TimeUnit.SECONDS))
+      assertTrue(s"session was not prepared for $file", prepared.isDefined)
+      val readStamp: Computable[java.lang.Long]                     =
+        () => FileDocumentManager.getInstance.getDocument(file).getModificationStamp
+      val version                                                   = onPooledThread(ApplicationManager.getApplication.runReadAction(readStamp).longValue())
+      cache.stateFor(file.getUrl, version) match
+        case SnapshotState.CurrentSuccess(_, diagnostics) =>
+          val hasError = diagnostics.exists(_.isError)
+          if expectError then assertTrue(s"expected an error diagnostic, got: $diagnostics", hasError)
+          else assertTrue(s"expected no errors, got: $diagnostics", !hasError)
+        case other                                        => fail(s"expected CurrentSuccess for $file, got: $other")
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true) // ADR 0008
+      val _ = onPooledThread(fetcher.jarsFor(testScalaVersion.minor).get(120, TimeUnit.SECONDS))
+
+      // pc flags this as a type error → the cache publishes CurrentSuccess carrying it.
+      val errorFile =
+        myFixture.addFileToProject("WriterError.scala", "object WriterError:\n  val value: String = 1\n").getVirtualFile
+      assertPublishedState(errorFile, expectError = true)
+
+      // a clean source → empty CurrentSuccess (PC-authoritative "clean").
+      val cleanFile =
+        myFixture.addFileToProject("WriterClean.scala", "object WriterClean:\n  val value: Int = 1\n").getVirtualFile
+      assertPublishedState(cleanFile, expectError = false)
+    finally
+      manager.dispose()
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+      deleteRecursively(temporaryDirectory)
 
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-manager")

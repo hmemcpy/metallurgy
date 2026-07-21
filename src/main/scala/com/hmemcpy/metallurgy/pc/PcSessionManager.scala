@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.feature.diagnostics.PcDiagnosticSetCache
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -25,9 +26,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   def this(project: Project) = this(project, MtagsFetcher(project))
 
-  private val log      = Logger.getInstance(classOf[PcSessionManager])
-  private val sessions = new ConcurrentHashMap[Module, SessionEntry]()
-  private val inFlight = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
+  private val log         = Logger.getInstance(classOf[PcSessionManager])
+  private val sessions    = new ConcurrentHashMap[Module, SessionEntry]()
+  private val inFlight    = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
+  private val moduleFiles = new ConcurrentHashMap[Module, java.util.Set[String]]()
+
+  private def cache: PcDiagnosticSetCache = PcDiagnosticSetCache.get(project)
 
   locally:
     val connection       = project.getMessageBus.connect(this)
@@ -74,11 +78,13 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             .getOrElse(scheduleCreation(module, scalaVersion))
 
   def sessionForFile(file: VirtualFile): Option[PcSession] =
-    Option(ModuleUtilCore.findModuleForFile(file, project))
-      .flatMap(sessionFor)
-      .map: session =>
-        snapshotFor(file).foreach(snapshot => session.scheduleRetypecheck(snapshot))
-        session
+    for
+      module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
+      session  <- sessionFor(module)
+      snapshot <- snapshotFor(file)
+    yield
+      val _ = analyze(session, module, snapshot)
+      session
 
   /** Creates the file's session if necessary and completes only after its exact document version has been published. */
   private[metallurgy] def prepareFile(file: VirtualFile): CompletableFuture[Option[PcSession]] =
@@ -94,8 +100,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         sessionForAsync(module).thenCompose:
           case None          => CompletableFuture.completedFuture(None)
           case Some(session) =>
-            session
-              .scheduleRetypecheck(snapshot)
+            analyze(session, module, snapshot)
               .thenApply:
                 case RetypecheckOutcome.Applied => Some(session)
                 case _                          => None
@@ -108,6 +113,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       .foreach: entry =>
         if inFlight.remove(entry.getKey, entry.getValue) then
           val _ = entry.getValue.cancel(true)
+    Option(moduleFiles.remove(module)).foreach(_.forEach(url => cache.markUnavailable(url)))
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -120,6 +126,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   override def dispose(): Unit =
     inFlight.values().asScala.foreach(_.cancel(true))
     inFlight.clear()
+    moduleFiles.clear()
     sessions.values().asScala.foreach(_.session.close())
     sessions.clear()
 
@@ -135,9 +142,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       module  <- Option(ModuleUtilCore.findModuleForFile(file, project))
       if isManaged(module) && isScalaSource(file)
       session <- Option(sessions.get(module)).map(_.session)
-    do
-      val snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
-      val _        = session.scheduleRetypecheck(snapshot)
+      snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
+    do analyze(session, module, snapshot)
 
   private def isScalaSource(file: VirtualFile): Boolean =
     Set("scala", "sc", "sbt", "mill").contains(file.getExtension)
@@ -145,6 +151,31 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private def snapshotFor(file: VirtualFile): Option[PcSnapshot] =
     Option(FileDocumentManager.getInstance.getDocument(file)).map: document =>
       PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
+
+  /** Schedule a debounced retypecheck and mirror its outcome into the diagnostic-set cache: `Pending` while in flight,
+    * `CurrentSuccess`/`Failed` when it settles. A superseded outcome leaves the newer pending state intact (the cache
+    * drops it).
+    */
+  private def analyze(session: PcSession, module: Module, snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
+    cache.markPending(snapshot.fileUri, snapshot.documentVersion)
+    trackFile(module, snapshot.fileUri)
+    session
+      .scheduleRetypecheck(snapshot)
+      .whenComplete: (outcome, error) =>
+        if error != null then cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+        else publishOutcome(session, snapshot, outcome)
+
+  private def publishOutcome(session: PcSession, snapshot: PcSnapshot, outcome: RetypecheckOutcome): Unit =
+    outcome match
+      case RetypecheckOutcome.Applied    =>
+        session.diagnostics(snapshot) match
+          case Some(diagnostics) => cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
+          case None              => cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+      case RetypecheckOutcome.Failed(_)  => cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+      case RetypecheckOutcome.Superseded => ()
+
+  private def trackFile(module: Module, fileUrl: String): Unit =
+    val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)
 
   private def prepareSession(module: Module, scalaVersion: String): Option[PcSession] =
     fetcher.jarsIfCached(scalaVersion) match
