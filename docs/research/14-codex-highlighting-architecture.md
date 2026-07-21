@@ -1,5 +1,10 @@
 # 14 — Codex consultation: the "good code red" architecture
 
+> **Update — see [ADR 0009](../adr/0009-direct-write-highlighting-pass.md).** The rendering mechanism sketched
+> below (an `ExternalAnnotator` add-side) is **superseded**: pc diagnostics are rendered via a **direct-write
+> highlighting pass** mirroring `ExternalHighlightersService`, which solves the async-refresh crux the
+> annotator+restart approach could not. The cache/FSM/`HighlightInfoFilter` design below stands unchanged.
+
 Non-interactive consultation with Codex (`codex exec`, gpt-5.6-sol, read-only sandbox) on the most
 elegant architecture for Metallurgy to eliminate Scala 3 "good code red," given the empirical finding
 that the compile server (CBH) is correct and the pain lives in the highlighting layer. Codex grounded
