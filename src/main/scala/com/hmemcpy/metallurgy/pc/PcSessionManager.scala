@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
-import com.hmemcpy.metallurgy.feature.diagnostics.PcDiagnosticSetCache
+import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -31,7 +31,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val inFlight    = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
   private val moduleFiles = new ConcurrentHashMap[Module, java.util.Set[String]]()
 
-  private def cache: PcDiagnosticSetCache = PcDiagnosticSetCache.get(project)
+  private def cache: PcDiagnosticSetCache   = PcDiagnosticSetCache.get(project)
+  private def renderer: PcHighlightRenderer = PcHighlightRenderer.get(project)
 
   locally:
     val connection       = project.getMessageBus.connect(this)
@@ -113,7 +114,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       .foreach: entry =>
         if inFlight.remove(entry.getKey, entry.getValue) then
           val _ = entry.getValue.cancel(true)
-    Option(moduleFiles.remove(module)).foreach(_.forEach(url => cache.markUnavailable(url)))
+    Option(moduleFiles.remove(module)).foreach(_.forEach { url =>
+      cache.markUnavailable(url)
+      renderer.blank(url)
+    })
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -158,6 +162,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     */
   private def analyze(session: PcSession, module: Module, snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
     cache.markPending(snapshot.fileUri, snapshot.documentVersion)
+    renderer.blank(snapshot.fileUri) // clear the pc layer from the previous version while the new one is in flight
     trackFile(module, snapshot.fileUri)
     session
       .scheduleRetypecheck(snapshot)
@@ -169,9 +174,15 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     outcome match
       case RetypecheckOutcome.Applied    =>
         session.diagnostics(snapshot) match
-          case Some(diagnostics) => cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
-          case None              => cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
-      case RetypecheckOutcome.Failed(_)  => cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+          case Some(diagnostics) =>
+            cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
+            renderer.render(snapshot.fileUri, diagnostics)
+          case None              =>
+            cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+            renderer.blank(snapshot.fileUri)
+      case RetypecheckOutcome.Failed(_)  =>
+        cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+        renderer.blank(snapshot.fileUri)
       case RetypecheckOutcome.Superseded => ()
 
   private def trackFile(module: Module, fileUrl: String): Unit =

@@ -1,40 +1,29 @@
 package com.hmemcpy.metallurgy.feature.diagnostics
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
 import com.intellij.codeInsight.daemon.impl.{HighlightInfo, HighlightInfoFilter}
 import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.psi.PsiFile
 
-/** Keeps bundled errors only when the current compiler snapshot reports an overlapping error. On stale or unavailable
-  * compiler data, the bundled result is left untouched.
+/** Suppresses the bundled semantic annotator's errors once pc has spoken for the current document version
+  * (PC-authoritative: an empty `CurrentSuccess` means clean), and blanks them while pc analysis is in flight
+  * (blank-while-pending). Parser errors, warnings, and anything from a non-active module are left untouched. pc's own
+  * diagnostics are rendered on a separate markup layer by [[PcHighlightRenderer]] (ADR 0009); this filter only removes
+  * the bundled annotator's competing semantic red.
   */
 final class PcHighlightInfoFilter extends HighlightInfoFilter:
 
   override def accept(info: HighlightInfo, file: PsiFile): Boolean =
-    if !isAnnotatorError(info) || ApplicationManager.getApplication.isDispatchThread then true
+    if !isSemanticError(info) then true
     else
       val project = file.getProject
-      val module  = Option(ModuleUtilCore.findModuleForPsiElement(file))
-      val vFile   = Option(file.getVirtualFile)
-      val current =
-        for
-          candidate   <- module
-          if ModuleDetectionService.get(project).isActive(candidate)
-          sourceFile  <- vFile
-          document    <- Option(FileDocumentManager.getInstance.getDocument(sourceFile))
-          session     <- PcSessionManager.get(project).sessionFor(candidate)
-          diagnostics <- session.diagnostics(
-                           PcSnapshot(sourceFile.getUrl, document.getModificationStamp, document.getText)
-                         )
-        yield diagnostics
+      Option(ModuleUtilCore.findModuleForPsiElement(file)) match
+        case Some(module) if ModuleDetectionService.get(project).isActive(module) =>
+          PcDiagnosticSetCache.get(project).stateForFile(file.getVirtualFile) match
+            case SnapshotState.Pending(_) | SnapshotState.CurrentSuccess(_, _) => false
+            case SnapshotState.Failed(_) | SnapshotState.Unavailable           => true
+        case _                                                                    => true
 
-      current.fold(true): diagnostics =>
-        diagnostics.exists: diagnostic =>
-          diagnostic.isError && diagnostic.range.intersectsStrict(info.getStartOffset, info.getEndOffset)
-
-  private def isAnnotatorError(info: HighlightInfo): Boolean =
+  private def isSemanticError(info: HighlightInfo): Boolean =
     info.getSeverity == HighlightSeverity.ERROR && info.isFromAnnotator
