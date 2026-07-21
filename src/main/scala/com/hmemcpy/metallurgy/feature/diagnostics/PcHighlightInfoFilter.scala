@@ -20,9 +20,12 @@ final class PcHighlightInfoFilter extends HighlightInfoFilter:
       val project = file.getProject
       Option(ModuleUtilCore.findModuleForPsiElement(file)) match
         case Some(module) if ModuleDetectionService.get(project).isActive(module) =>
-          PcDiagnosticSetCache.get(project).stateForFile(file.getVirtualFile) match
-            case SnapshotState.Pending(_) | SnapshotState.CurrentSuccess(_, _) => false
-            case SnapshotState.Failed(_) | SnapshotState.Unavailable           => true
+          val virtualFile = file.getVirtualFile
+          if virtualFile == null then true
+          else
+            PcDiagnosticSetCache.get(project).stateForFile(virtualFile) match
+              case SnapshotState.Pending(_) | SnapshotState.CurrentSuccess(_, _) => false
+              case SnapshotState.Failed(_) | SnapshotState.Unavailable           => true
         case _                                                                    => true
 
   private def isSemanticError(info: HighlightInfo): Boolean =

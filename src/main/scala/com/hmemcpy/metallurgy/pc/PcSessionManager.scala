@@ -116,7 +116,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           val _ = entry.getValue.cancel(true)
     Option(moduleFiles.remove(module)).foreach(_.forEach { url =>
       cache.markUnavailable(url)
-      renderer.blank(url)
+      renderer.erase(url)
     })
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
@@ -162,7 +162,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     */
   private def analyze(session: PcSession, module: Module, snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
     cache.markPending(snapshot.fileUri, snapshot.documentVersion)
-    renderer.blank(snapshot.fileUri) // clear the pc layer from the previous version while the new one is in flight
+    renderer.blank(
+      snapshot.fileUri,
+      snapshot.documentVersion
+    ) // clear the pc layer from the previous version while the new one is in flight
     trackFile(module, snapshot.fileUri)
     session
       .scheduleRetypecheck(snapshot)
@@ -176,13 +179,13 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         session.diagnostics(snapshot) match
           case Some(diagnostics) =>
             cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
-            renderer.render(snapshot.fileUri, diagnostics)
+            renderer.render(snapshot.fileUri, snapshot.documentVersion, diagnostics)
           case None              =>
             cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
-            renderer.blank(snapshot.fileUri)
+            renderer.blank(snapshot.fileUri, snapshot.documentVersion)
       case RetypecheckOutcome.Failed(_)  =>
         cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
-        renderer.blank(snapshot.fileUri)
+        renderer.blank(snapshot.fileUri, snapshot.documentVersion)
       case RetypecheckOutcome.Superseded => ()
 
   private def trackFile(module: Module, fileUrl: String): Unit =
