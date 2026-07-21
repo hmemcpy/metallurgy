@@ -20,9 +20,11 @@ sbt runIDE         # launch a dev IDEA with the plugin loaded
 
 ## Code style
 
-- Scala 2.13.16 for plugin code (binary compatibility with the bundled Scala plugin).
+- Plugin code is **Scala 3.7.4**. The in-tree testkit backport (`testkit/`, ADR 0005) is **Scala 2.13.16** to match the bundled Scala plugin it mirrors.
 - `sbt fmt` applies `scalafmt`; `sbt check` verifies formatting (CI gates on this).
-- Idiomatic Scala; when in doubt, follow the patterns in the bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin (canonical reference).
+- Prefer idiomatic Scala 3. **Java-isms are fine where the IntelliJ / bundled-Scala-plugin APIs force them** — don't fight the platform for purity.
+- **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the definitive reference.** Before writing an implementation, helper, or test fixture, check it (the GitHub repo, or your local checkout) for an existing one to mirror.
+- When running tests, always bound the timeout — a hung compile-server test should not stall the suite.
 
 ## Branches
 
