@@ -122,7 +122,30 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         "import io.circe.{Codec, Encoder}\ncase class Person(name: String, age: Int) derives Codec.AsObject\nval enc = summon[Encoder[Person]]\n",
         "enc",
         Set("Codec", "Person")
-      )
+      ),
+    "given summon"                     -> ("given Int = 42\nval n = summon[Int]\n", "n", Set("Int")),
+    "export clause"                    -> (
+      "object B:\n  def x: String = \"\"\nobject S:\n  export B.x\nimport S.x\nval v = x\n",
+      "v",
+      Set("String")
+    ),
+    "path-dependent type"              -> (
+      "trait Box:\n  type T\nobject IntBox extends Box:\n  type T = Int\nval t: IntBox.T = 1\n",
+      "t",
+      Set("Int")
+    ),
+    "parameterized type alias"         -> ("type Pair[T] = (T, T)\nval p: Pair[Int] = (1, 2)\n", "p", Set("Int")),
+    "overloaded method eta-expansion"  -> (
+      "object O:\n  def f(x: Int): Int = x\n  def f(s: String): String = s\nval g: Int => Int = O.f\nval r = g(42)\n",
+      "r",
+      Set("Int")
+    ),
+    "nested generic application"       -> (
+      "val r = List(Option(1)).collect { case Some(x) => x }\n",
+      "r",
+      Set("Int")
+    ),
+    "implicit Conversion"              -> ("given Conversion[String, Int] = _.toInt\nval r: Int = \"42\"\n", "r", Set("Int"))
   )
 
   def testPcTypeResolution(): Unit = withSession: session =>
