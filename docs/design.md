@@ -446,15 +446,19 @@ For transparent-inline calls, `pc.expandInline(uri, range)` returns the expansio
 
 ### 8.1 Inlay hints
 
-`codeInsight.declarativeInlayProvider` (preferred over the legacy `InlayProvider`) for:
+A `TextEditorHighlightingPass` (registered via `highlightingPassFactory`, run after the bundled annotator) — the
+same pass-based shape the bundled Scala plugin uses for all its hints — renders type hints backed by `pc`. The pass
+awaits the current document version's retypecheck, reads each value definition's type from the presentation
+compiler, and shows it as an inline hint after the binding name. Existing hints are disposed and rebuilt in a
+single bulk edit per run; only hints for active modules are produced.
 
-- Inferred type of `val`/`var`/`def` without annotation (only where bundled does not already show one — we can read the existing hints via `InlayModel`)
+Planned hint surfaces:
+
+- Inferred type of `val`/`var` without a declared annotation
 - Lambda parameter types
 - Implicit / using parameter names at call sites
 - Transparent-inline call expansion summaries
 - Macro-derived member annotations
-
-`pc.inlayHints(uri)` provides all of these in a single round-trip. Conversion to IntelliJ `InlineInlayInfo` is mechanical.
 
 ### 8.2 Semantic tokens (highlight enrichment)
 
@@ -759,7 +763,7 @@ This capability alone makes the plugin useful; later integrations broaden its co
 ### Hover, inlay hints, and parameter info
 
 - `psiTargetProvider order="before …"` for hover.
-- `codeInsight.declarativeInlayProvider` for type hints, implicit params, inline summaries.
+- A `TextEditorHighlightingPass` for type hints, implicit params, inline summaries (see §8.1).
 - `parameterInfoEnhancer`.
 - `PcTypeService` exposed as a project service.
 
