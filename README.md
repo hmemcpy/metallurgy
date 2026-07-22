@@ -1,72 +1,95 @@
 # Metallurgy
 
-A third-party IntelliJ plugin that fills Scala 3 semantic gaps using the presentation compiler from [Metals](https://scalameta.org/metals/).
+An IntelliJ plugin that uses the real Scala 3 presentation compiler ([pc](https://scalameta.org/metals/), from Metals)
+to enrich the type information available to IntelliJ — a more faithful representation of the actual type, completion
+members, inline hints, and more, for Scala 3.5+.
 
-## Status
+> **Pre-alpha.** Type resolution, inline type hints, and completion are available behind per-module opt-in and require
+> compiler-based highlighting to be on. The plugin is a hard no-op without it.
 
-**Pre-alpha. Compiler-backed types, completion, and false-error suppression are available behind module opt-in.**
+## What it does
 
-## Examples
+The Before/After columns below are the **measured output** of the [test fixtures](src/test/testdata/feature/compilertype/)
+— the compiler-type slot and red-state, with the plugin off vs on. (Cells are placeholders for screenshots.)
 
-| Capability | IntelliJ out of the box | With Metallurgy |
-| --- | --- | --- |
-| Generated structural APIs (`api.paths.`) | Jing's `` `/pet` `` path is missing from completion and valid access is marked as an error. | Completion offers `` `/pet` `` and reports its exact `HttpEndpoint` type. |
-| Recursive derivation (`mirror.MirroredElemTypes`) | The derived recursive tuple is not understood and its valid assignment is red. | The full tuple type is available, including singleton enum cases. |
-| Inline matches (`toInt(Succ(Succ(Zero)))`) | The reduced singleton result is unavailable and `val intTwo: 2` is red. | The result is reported as `(2 : Int)`. |
-| Match types (`Elem[List[Int]]`) | The applied match type is not reduced through the compiler-type path. | The applied type is reported as `Int`. |
-| Compile-time operations (`2 + 2`) | The reduced singleton type is unavailable. | The result is reported as `(4 : Int)`. |
-| Error filtering | Macro-related false errors remain visible. | False errors are removed only from a matching fresh compiler snapshot; real errors remain visible. |
+### Type resolution (hover / inspect)
 
-See the [delivery plan](./docs/design.md#15-capability-delivery-order) for planned capabilities.
+| Before | After |
+|---|---|
+| `val result: TwoPlusTwo = 4`<br>type: *(empty)* | `val result: TwoPlusTwo = 4`<br>type: `(4 : Int)` |
+| `val p: 8080 = Config.port`<br>type: *(empty)* · line red | `val p: 8080 = Config.port`<br>type: `(8080 : Int)` · not red |
+| `val e1: Elem[List[Int]] = 42`<br>type: *(empty)* | `val e1: Elem[List[Int]] = 42`<br>type: `Int` |
+| `val intTwo: 2 = natTwo`<br>type: *(empty)* · line red | `val intTwo: 2 = natTwo`<br>type: `(2 : Int)` · not red |
+| `val head = h.head`<br>type: *(empty)* · line red | `val head = h.head`<br>type: `Int` · not red |
+| `val selectedName = c.name`<br>type: *(empty)* | `val selectedName = c.name`<br>type: `Config{val name: String; val age: Int}` |
 
-## Roadmap
+…also match types, named tuples, polymorphic and context functions, the Aux pattern, union/opaque types, and quoted
+types — see the [type-resolution tests](src/test/scala/com/hmemcpy/metallurgy/pc/PcTypeResolutionTest.scala).
 
-| Capability | Status |
-| --- | --- |
-| Compiler-backed type resolution | ✅ Complete |
-| Completion augmentation | ✅ Complete |
-| False-positive error suppression | ✅ Complete |
-| Missing compiler diagnostics | Planned |
-| Hover, inlay hints, and parameter info | Planned |
-| Synthetic members and macro expansion | Planned |
-| Navigation and find usages | Planned |
+### Inline type hints
+
+The plugin shows the compiler's inferred type as an inline hint after each `val`/`var`.
+
+| Before | After |
+|---|---|
+| `val result = id(42)` | `val result: Int = id(42)` |
+
+### Completion
+
+The plugin offers completion for extension methods and structural-refinement members, with their real type.
+
+| Before | After |
+|---|---|
+| `api.paths.` — no `` `/pet` `` offered, line red | `api.paths.`` `/pet` `` offered, type `HttpEndpoint[…]`, not red |
+
+### Cross-module robustness
+
+The plugin applies `-Ybest-effort -Ywith-best-effort-tasty` to the compile server, enabling cross-module type
+resolution against upstream `.betasty` artifacts.
+
+## How it works
+
+The plugin runs the real Scala 3 presentation compiler — the same `pc` (dotc's `InteractiveDriver`) that powers
+[Metals](https://scalameta.org/metals/) — in an isolated classloader and queries it for types and completions.
+Those answers enrich IntelliJ's own type information (the compiler-type slot, inline hints, and the completion
+list) for Scala 3.5+ modules, on top of compiler-based highlighting.
+
+The idea — running the Scala presentation compiler directly inside IntelliJ, without LSP — comes from
+[Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SNc7xeHrKnQ&t=3931s) (*The best Scala IDE
+inside your favourite Scala IDE*).
 
 ## Requirements
 
-- IntelliJ IDEA 2026.1+
-- Scala 3.5.0+
-- The bundled Scala plugin
+- IntelliJ IDEA **2026.1+**
+- **Scala 3.5.0+**
+- The Scala plugin, with **compiler-based highlighting** enabled
 
-## Installation
+## Install
 
 ```sh
 sbt packageArtifactZip
 ```
 
-Install the zip from `target/` via `Settings | Plugins | Install plugin from disk…`.
+Then `Settings | Plugins | Install plugin from disk…` → the zip in `target/`. Opt a module in via its settings.
 
-## Development
+## Develop
 
 ```sh
 sbt compile         # build
 sbt test            # run tests
-sbt runIDE          # launch a dev IDEA with the plugin loaded
-sbt fmt             # format source (scalafmt)
-sbt check           # check formatting (CI uses this)
+sbt runIDE          # dev IDEA with the plugin loaded
+sbt fmt | sbt check # format / verify (CI gate)
 ```
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution guidelines.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`AGENTS.md`](./AGENTS.md).
 
-## Documentation
+## Docs
 
-- [`docs/design.md`](./docs/design.md) — architecture and delivery plan
-- [`CONTEXT.md`](./CONTEXT.md) — domain glossary
-- [`docs/adr/`](./docs/adr/) — architectural decisions
+- [`docs/design.md`](docs/design.md) — architecture
+- [`CONTEXT.md`](CONTEXT.md) — glossary
+- [`docs/adr/`](docs/adr/) — decisions (0008 CBH gate, 0010 native-clean, 0011 scope)
+- [`docs/research/15`](docs/research/15-scala3-type-resolution-gaps.md) — the gap analysis
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](./LICENSE).
-
-## Reporting issues
-
-Use [GitHub Issues](https://github.com/hmemcpy/metallurgy/issues).
+Apache License 2.0 — see [`LICENSE`](LICENSE).
