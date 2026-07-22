@@ -28,12 +28,13 @@ semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.i
 - **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
   *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
   "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
-- **Run every external command through GNU `gtimeout`.** This includes read-only commands (`git`, `gh`, `rg`, `find`),
-  formatting, builds, and tests. Use `/opt/homebrew/bin/gtimeout --kill-after=5s <limit> <command>` so the command's
-  process group is terminated at the deadline and escalated to `SIGKILL` after five seconds. Never rely on a tool's
-  output-yield deadline, a shell/Python alarm, or killing only the launcher process. If a command yields a session,
-  retain and poll that session through its real exit. Use a deliberately chosen limit (normally 30s for read-only
-  commands and 120s for focused builds/tests); raise it only when the operation is known to require more time.
+- **Run commands that can hang or spawn long-lived children through GNU `gtimeout`.** This includes `sbt`, Java/IntelliJ,
+  builds, tests, and downloads. Use `/opt/homebrew/bin/gtimeout --kill-after=5s <limit> <command>` so the command's process
+  group is terminated at the deadline and escalated to `SIGKILL` after five seconds. Never rely on a tool's output-yield
+  deadline, a shell/Python alarm, or killing only the launcher process. If a command yields a session, retain and poll
+  that session through its real exit. Choose the limit deliberately (normally 120s for focused builds/tests) and raise
+  it only when the operation is known to require more time. Routine bounded commands such as `git`, `gh`, `rg`, and
+  `sed` do not require a timeout.
 - No `Thread.sleep` for timing in production code — use latches/futures.
 
 ## Build & test
