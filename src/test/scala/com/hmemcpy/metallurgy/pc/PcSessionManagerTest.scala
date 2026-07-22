@@ -28,7 +28,7 @@ import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertNull, a
 
 import java.nio.file.attribute.FileTime
 import java.nio.file.{Files, Path}
-import java.util.concurrent.{CompletableFuture, TimeUnit}
+import java.util.concurrent.{CompletableFuture, CountDownLatch, Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.jdk.CollectionConverters.*
 
@@ -509,12 +509,20 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
     try
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      assertEquals(PcBackendAvailability.Inactive, manager.availabilityFor(getModule))
+      assertEquals(0, manager.availabilityEntryCount)
 
       settings.setEnabled(getModule, enabled = true)
       setCompilerBasedHighlighting(enabled = true) // Metallurgy requires CBH
       val first  = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
       val second = onPooledThread(manager.sessionFor(getModule)).get
       assertSame(first, second)
+      manager.availabilityFor(getModule) match
+        case PcBackendAvailability.Available(scalaVersion, capabilities) =>
+          assertEquals(testScalaVersion.minor, scalaVersion)
+          assertFalse(capabilities.bestEffortConsumption.isAvailable)
+        case availability                                                =>
+          throw new AssertionError(s"expected available backend, got $availability")
       assertFalse(first.compilerOptions.contains(ScalacFlagsService.BestEffortConsumerFlag))
       assertFalse(first.compilerOptions.contains(ScalacFlagsService.BestEffortProducerFlag))
 
@@ -528,6 +536,8 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       // without CBH, Metallurgy is a no-op even when enabled.
       setCompilerBasedHighlighting(enabled = false)
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      assertEquals(PcBackendAvailability.Inactive, manager.availabilityFor(getModule))
+      assertEquals(0, manager.availabilityEntryCount)
       assertFalse(
         ScalacFlagsService.get(getProject).additionalOptions(getModule).exists(ScalacFlagsService.ManagedFlags.contains)
       )
@@ -538,6 +548,79 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertTrue(replacement.isClosed)
     finally
       manager.dispose()
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+      deleteRecursively(temporaryDirectory)
+
+  def testArtifactResolutionFailureReturnsUnavailableWithoutEscaping(): Unit =
+    val temporaryDirectory = Files.createTempDirectory("metallurgy-session-unavailable")
+    val failure            = new IllegalStateException("fixture repository unavailable")
+    val resolver           = new PresentationCompilerResolver:
+      override def resolve(scalaVersion: String): Either[ArtifactResolutionError, Seq[Path]] =
+        Left(ArtifactResolutionError.DependencyResolution(scalaVersion, failure))
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      resolver,
+      BackgroundRunner.direct
+    )
+    val manager            = new PcSessionManager(getProject, fetcher)
+    val settings           = MetallurgySettings(getProject)
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true)
+
+      assertTrue(manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).isEmpty)
+      manager.availabilityFor(getModule) match
+        case PcBackendAvailability.Unavailable(
+              PcBackendUnavailableReason.ArtifactPreparation(scalaVersion, detail)
+            ) =>
+          assertEquals(testScalaVersion.minor, scalaVersion)
+          assertEquals("fixture repository unavailable", detail)
+        case availability => throw new AssertionError(s"expected artifact unavailable state, got $availability")
+      assertEquals(0, manager.activeSessionCount)
+    finally
+      manager.dispose()
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+      deleteRecursively(temporaryDirectory)
+
+  def testDeactivationDuringArtifactResolutionPublishesNoSessionOrAvailabilityState(): Unit =
+    val temporaryDirectory = Files.createTempDirectory("metallurgy-session-deactivation")
+    val artifact           = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))
+    val entered            = new CountDownLatch(1)
+    val release            = new CountDownLatch(1)
+    val executor           = Executors.newSingleThreadExecutor()
+    val resolver           = new PresentationCompilerResolver:
+      override def resolve(scalaVersion: String): Either[ArtifactResolutionError, Seq[Path]] =
+        entered.countDown()
+        release.await(5, TimeUnit.SECONDS)
+        Right(Seq(artifact))
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      resolver,
+      BackgroundRunner.fromExecutor(executor)
+    )
+    val manager            = new PcSessionManager(getProject, fetcher)
+    val settings           = MetallurgySettings(getProject)
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true)
+      val preparing = manager.sessionForAsync(getModule)
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+
+      settings.setEnabled(getModule, enabled = false)
+      release.countDown()
+
+      assertTrue(preparing.get(5, TimeUnit.SECONDS).isEmpty)
+      assertEquals(0, manager.activeSessionCount)
+      assertEquals(0, manager.availabilityEntryCount)
+      assertEquals(PcBackendAvailability.Inactive, manager.availabilityFor(getModule))
+    finally
+      release.countDown()
+      manager.dispose()
+      val _ = executor.shutdownNow()
       settings.setEnabled(getModule, enabled = false)
       setCompilerBasedHighlighting(enabled = false)
       deleteRecursively(temporaryDirectory)

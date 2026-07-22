@@ -340,6 +340,12 @@ consumption, completion, hover, and future experimental facilities are advertise
 succeed. Stable, RC/EAP, nightly, and vendor artifacts use the same discovery path. Failure returns a typed unavailable
 reason and cannot select a nearby compiler or a hardcoded manifest entry.
 
+`PcSessionManager` records the active backend lifecycle as `Undiscovered`, `Pending(exactVersion)`,
+`Available(exactVersion, capabilities)`, or `Unavailable(reason)`. Artifact preparation and session construction are
+different unavailable reasons and complete asynchronous callers with no session rather than leaking an exception into
+an IntelliJ feature callback. Inactive modules allocate no lifecycle entry; an explicit status query derives `Inactive`
+from the module gate. The fallback therefore remains observable without adding work or state to the false-gate path.
+
 The supporting source studies are archived as non-normative evidence under `docs/archive/research/`.
 
 ### 5.4 Wrap and reimplementation map

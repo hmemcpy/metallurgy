@@ -39,6 +39,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val log                        = Logger.getInstance(classOf[PcSessionManager])
   private val sessions                   = new ConcurrentHashMap[Module, SessionEntry]()
   private val inFlight                   = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
+  private val availability               = new ConcurrentHashMap[Module, PcBackendAvailability]()
   private val backendInFlight            =
     new ConcurrentHashMap[BackendPreparationKey, CompletableFuture[Option[PcSession]]]()
   private val moduleFiles                = new ConcurrentHashMap[Module, java.util.Set[String]]()
@@ -75,12 +76,16 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       deactivate(module)
       None
     else
-      Option(ScalaPluginSemanticBridge.getScalaVersion(module)).flatMap: scalaVersion =>
-        Option(sessions.get(module))
-          .filter(_.scalaVersion == scalaVersion)
-          .filter(sessionEntryIsCurrent(module, _))
-          .map(_.session)
-          .orElse(prepareSession(module, scalaVersion))
+      Option(ScalaPluginSemanticBridge.getScalaVersion(module)) match
+        case None               =>
+          availability.put(module, PcBackendAvailability.Unavailable(PcBackendUnavailableReason.MissingScalaVersion))
+          None
+        case Some(scalaVersion) =>
+          Option(sessions.get(module))
+            .filter(_.scalaVersion == scalaVersion)
+            .filter(sessionEntryIsCurrent(module, _))
+            .map(_.session)
+            .orElse(prepareSession(module, scalaVersion))
 
   /** Returns the current session or prepares one asynchronously, including a cold artifact fetch. */
   def sessionForAsync(module: Module): CompletableFuture[Option[PcSession]] =
@@ -89,7 +94,9 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       CompletableFuture.completedFuture(None)
     else
       Option(ScalaPluginSemanticBridge.getScalaVersion(module)) match
-        case None               => CompletableFuture.completedFuture(None)
+        case None               =>
+          availability.put(module, PcBackendAvailability.Unavailable(PcBackendUnavailableReason.MissingScalaVersion))
+          CompletableFuture.completedFuture(None)
         case Some(scalaVersion) =>
           Option(sessions.get(module))
             .filter(_.scalaVersion == scalaVersion)
@@ -175,6 +182,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       renderer.erase(url)
     })
     backend.clear(module)
+    availability.remove(module)
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -188,12 +196,19 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   private[metallurgy] def activeSessionCount: Int = sessions.size()
 
+  private[metallurgy] def availabilityEntryCount: Int = availability.size()
+
+  private[metallurgy] def availabilityFor(module: Module): PcBackendAvailability =
+    if !isManaged(module) then PcBackendAvailability.Inactive
+    else Option(availability.get(module)).getOrElse(PcBackendAvailability.Undiscovered)
+
   override def dispose(): Unit =
     inFlight.values().asScala.foreach(_.cancel(true))
     inFlight.clear()
     backendInFlight.values().asScala.foreach(_.cancel(true))
     backendInFlight.clear()
     moduleFiles.clear()
+    availability.clear()
     sessions.values().asScala.foreach(_.session.close())
     sessions.clear()
 
@@ -302,17 +317,42 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     val future = inFlight.computeIfAbsent(
       key,
       _ =>
+        val _ = availability.put(module, PcBackendAvailability.Pending(scalaVersion))
         fetcher
           .jarsFor(scalaVersion)
-          .thenApplyAsync(_ => ensureSession(module, scalaVersion), AppExecutorUtil.getAppExecutorService)
+          .handleAsync(
+            (_, error) =>
+              if error != null then
+                val detail = failureMessage(error)
+                recordUnavailable(
+                  module,
+                  PcBackendUnavailableReason.ArtifactPreparation(scalaVersion, detail),
+                  s"Could not prepare a presentation compiler for ${module.getName}: $detail"
+                )
+                None
+              else
+                try ensureSession(module, scalaVersion)
+                catch
+                  case NonFatal(sessionError) =>
+                    val detail = failureMessage(sessionError)
+                    recordUnavailable(
+                      module,
+                      PcBackendUnavailableReason.SessionCreation(scalaVersion, detail),
+                      s"Could not create a presentation compiler for ${module.getName}: $detail"
+                    )
+                    None,
+            AppExecutorUtil.getAppExecutorService
+          )
     )
-    future.whenComplete: (_, error) =>
-      inFlight.remove(key, future)
-      if error != null then log.warn(s"Could not create a presentation compiler for ${module.getName}", error)
+    future.whenComplete: (_, _) =>
+      val _ = inFlight.remove(key, future)
     future
 
   private def ensureSession(module: Module, scalaVersion: String): Option[PcSession] =
-    Option.when(isManaged(module)):
+    if !isManaged(module) then
+      val _ = availability.remove(module)
+      None
+    else
       val classpath     = buildClasspath(module)
       val classpathHash = PcSessionManager.fingerprintClasspath(classpath)
       val compilerFlags = ScalacFlagsService.get(project).presentationCompilerOptions(module)
@@ -348,7 +388,30 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
               session
             )
       )
-      updated.session
+      if isManaged(module) then
+        availability.put(module, PcBackendAvailability.Available(scalaVersion, updated.session.capabilities))
+        Some(updated.session)
+      else
+        Option(sessions.remove(module)).foreach(_.session.close())
+        backend.clear(module)
+        ScalacFlagsService.get(project).disableFor(module)
+        availability.remove(module)
+        None
+
+  private def recordUnavailable(
+      module: Module,
+      reason: PcBackendUnavailableReason,
+      message: String
+  ): Unit =
+    if isManaged(module) then
+      val _ = availability.put(module, PcBackendAvailability.Unavailable(reason))
+      log.warn(message)
+    else
+      val _ = availability.remove(module)
+
+  private def failureMessage(error: Throwable): String =
+    val cause = Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq.lastOption.getOrElse(error)
+    Option(cause.getMessage).getOrElse(cause.getClass.getSimpleName)
 
   private def buildClasspath(module: Module): Seq[File] =
     val roots = OrderEnumerator
@@ -391,6 +454,18 @@ private final case class SessionEntry(
 )
 
 private final case class SessionKey(module: Module, scalaVersion: String)
+
+private[metallurgy] enum PcBackendAvailability:
+  case Undiscovered
+  case Inactive
+  case Pending(scalaVersion: String)
+  case Available(scalaVersion: String, capabilities: Scala3PcBridgeCapabilities)
+  case Unavailable(reason: PcBackendUnavailableReason)
+
+private[metallurgy] enum PcBackendUnavailableReason:
+  case MissingScalaVersion
+  case ArtifactPreparation(scalaVersion: String, detail: String)
+  case SessionCreation(scalaVersion: String, detail: String)
 
 private final case class BackendPreparationKey(module: Module, fileUri: String, documentVersion: Long)
 

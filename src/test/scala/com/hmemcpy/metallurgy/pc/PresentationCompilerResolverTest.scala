@@ -9,15 +9,20 @@ import java.util.concurrent.atomic.AtomicReference
 final class PresentationCompilerResolverTest:
 
   @Test
-  def forwardsExactCompilerCoordinateWithoutVersionClassification(): Unit =
+  def stableRcNightlyAndVendorCoordinatesUseTheSameExactPath(): Unit =
     val artifact     = Path.of("compiler.jar")
     val fetcher      = RecordingArtifactFetcher(Seq(artifact))
     val repositories = Seq("https://example.test/releases", "https://example.test/experiments")
     val resolver     = new CoursierPresentationCompilerResolver(fetcher, () => repositories)
-    val version      = "3.9.0-RC1-bin-20260722-deadbeef-NIGHTLY"
+    val versions     = Seq(
+      "3.7.4",
+      "3.8.0-RC1",
+      "3.9.0-RC1-bin-20260722-deadbeef-NIGHTLY",
+      "3.7.4-bin-vendor"
+    )
 
-    assertEquals(Right(Seq(artifact)), resolver.resolve(version))
-    assertEquals(Seq(ArtifactFetch(version, repositories)), fetcher.requests)
+    versions.foreach(version => assertEquals(version, Right(Seq(artifact)), resolver.resolve(version)))
+    assertEquals(versions.map(ArtifactFetch(_, repositories)), fetcher.requests)
 
   @Test
   def mapsPublicResolverFailureToTypedResolutionError(): Unit =

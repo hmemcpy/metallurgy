@@ -454,6 +454,27 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.unavailableRoots.nonEmpty)
     assertFalse(discovery.canInstall)
 
+  def testStableEapAndNightlyPluginShapesUseTheSameStructuralDiscovery(): Unit =
+    val discoveries = Seq("stable", "eap", "nightly").map: variant =>
+      variant -> CompilerBackendShimDiscovery.discoverClassBytes(compatiblePluginShape(variant))
+
+    discoveries.foreach: (variant, discovery) =>
+      assertTrue(s"$variant: ${discovery.unavailableRoots.mkString(", ")}", discovery.canInstall)
+      assertTrue(variant, discovery.compilerTypeTarget.nonEmpty)
+      assertTrue(variant, discovery.patternImplementations.exists(_.className.endsWith(s".$variant.PatternImpl")))
+      val roles = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
+      assertTrue(
+        variant,
+        Set(
+          CompilerBackendRole.DeclaredType,
+          CompilerBackendRole.Definition,
+          CompilerBackendRole.FunctionResult,
+          CompilerBackendRole.Parameter,
+          CompilerBackendRole.Pattern,
+          CompilerBackendRole.PatternExpected
+        ).subsetOf(roles)
+      )
+
   def testInactiveBackendSelectorAllocationAndLatency(): Unit =
     val (typeElement, _) = declaredString("FastPath.scala")
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
@@ -490,6 +511,79 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       .publishState(typeElement, CompilerBackendRole.DeclaredType, version, state)
 
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  private def compatiblePluginShape(variant: String): Vector[Array[Byte]] =
+    val eitherDescriptor = "()Lscala/util/Either;"
+    val roots            = Seq(
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/ScValueOrVariable"  -> ("type", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/ScFunction"         -> ("returnType", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/params/ScParameter" -> ("type", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern"       -> ("type", eitherDescriptor)
+    )
+    val classes          = Vector.newBuilder[Array[Byte]]
+    classes += syntheticClass(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement",
+      Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT,
+      methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "type", eitherDescriptor))
+    )
+    roots.foreach: (root, method) =>
+      classes += syntheticClass(
+        root,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, method._1, method._2))
+      )
+      val simpleName = root.substring(root.lastIndexOf('/') + 1).stripPrefix("Sc")
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/${simpleName}Impl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(root),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, method._1, method._2))
+      )
+    classes += syntheticClass(
+      s"org/jetbrains/plugins/scala/generated/$variant/ExpectedTypes",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+          "expectedType$extension",
+          "(Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern;)Lscala/Option;"
+        )
+      )
+    )
+    classes += syntheticClass(
+      "org/jetbrains/plugins/scala/lang/psi/impl/CompilerType$",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PUBLIC,
+          "apply",
+          "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
+        )
+      )
+    )
+    classes.result()
+
+  private def syntheticClass(
+      internalName: String,
+      access: Int,
+      superName: String = "java/lang/Object",
+      interfaces: Array[String] = Array.empty,
+      methods: Seq[SyntheticMethod]
+  ): Array[Byte] =
+    val writer = new ClassWriter(0)
+    writer.visit(Opcodes.V17, access, internalName, null, superName, interfaces)
+    methods.foreach: method =>
+      val visitor = writer.visitMethod(method.access, method.name, method.descriptor, null, null)
+      if (method.access & Opcodes.ACC_ABSTRACT) == 0 then
+        visitor.visitCode()
+        visitor.visitInsn(Opcodes.ACONST_NULL)
+        visitor.visitInsn(Opcodes.ARETURN)
+        visitor.visitMaxs(1, 2)
+      visitor.visitEnd()
+    writer.visitEnd()
+    writer.toByteArray
+
+  private final case class SyntheticMethod(access: Int, name: String, descriptor: String)
 
   private def declaredString(fileName: String): (ScTypeElement, Long) =
     val file        = myFixture.configureByText(fileName, "val value: String = \"text\"")
