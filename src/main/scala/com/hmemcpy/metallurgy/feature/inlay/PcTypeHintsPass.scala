@@ -5,6 +5,7 @@ import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.intellij.codeHighlighting.EditorBoundHighlightingPass
 import com.intellij.codeInsight.daemon.impl.HintRenderer
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.progress.ProgressIndicator
@@ -16,7 +17,7 @@ import com.intellij.util.DocumentUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypedPatternLike
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 
-import java.util.concurrent.{TimeoutException, TimeUnit}
+import java.util.concurrent.{CancellationException, ExecutionException, TimeoutException, TimeUnit}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -106,10 +107,21 @@ object PcTypeHintsPass:
       future: java.util.concurrent.CompletableFuture[Option[com.hmemcpy.metallurgy.pc.PcSession]],
       indicator: ProgressIndicator
   ): Boolean =
-    val deadline = System.nanoTime() + AwaitTimeoutNanos
-    while !future.isDone && System.nanoTime() < deadline do
-      indicator.checkCanceled()
-      try
-        val _ = future.get(PollIntervalMillis, TimeUnit.MILLISECONDS)
-      catch case _: TimeoutException => ()
-    future.isDone && future.get(0L, TimeUnit.MILLISECONDS).nonEmpty
+    try
+      val deadline = System.nanoTime() + AwaitTimeoutNanos
+      while !future.isDone && System.nanoTime() < deadline do
+        indicator.checkCanceled()
+        try
+          val _ = future.get(PollIntervalMillis, TimeUnit.MILLISECONDS)
+        catch case _: TimeoutException => ()
+      future.isDone && future.get(0L, TimeUnit.MILLISECONDS).nonEmpty
+    catch
+      case canceled: ControlFlowException => throw canceled
+      case error: ExecutionException =>
+        error.getCause match
+          case canceled: ControlFlowException => throw canceled
+          case _                              => false
+      case _: CancellationException  => false
+      case _: InterruptedException   =>
+        Thread.currentThread().interrupt()
+        false

@@ -11,6 +11,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
+import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
@@ -354,17 +355,24 @@ final class Scala3CompilerBackend(project: Project):
       renderedType: String
   ): Option[CompilerBackendState.Current] =
     try
-      ScalaPsiElementFactory
-        .createTypeFromText(renderedType, element, null)
-        .filter(parsed => acceptsRecoveredType(role) || !isFallbackType(renderedType, parsed.canonicalText))
-        .map: parsed =>
-          val result: TypeResult = Right(parsed)
-          CompilerBackendState.Current(renderedType, result)
+      val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
+      Option(typeElement).flatMap: syntax =>
+        if PsiTreeUtil.hasErrorElements(syntax) && acceptsPresentationOnlyType(role) then
+          Some(CompilerBackendState.Current(renderedType, syntax.`type`()))
+        else
+          ScalaPsiElementFactory
+            .createTypeFromText(renderedType, element, null)
+            .filter: parsed =>
+              !PsiTreeUtil.hasErrorElements(syntax) ||
+                (hasBalancedDelimiters(renderedType) && !isFallbackType(renderedType, parsed.canonicalText))
+            .map: parsed =>
+              val result: TypeResult = Right(parsed)
+              CompilerBackendState.Current(renderedType, result)
     catch
       case control: ControlFlowException => throw control
       case NonFatal(_) => None
 
-  private def acceptsRecoveredType(role: CompilerBackendRole): Boolean =
+  private def acceptsPresentationOnlyType(role: CompilerBackendRole): Boolean =
     role match
       case CompilerBackendRole.Function | CompilerBackendRole.Parameter | CompilerBackendRole.Pattern => true
       case _                                                                                          => false
@@ -374,6 +382,16 @@ final class Scala3CompilerBackend(project: Project):
     val rendered      = renderedType.trim.stripPrefix("_root_.").stripPrefix("scala.")
     val canonical     = canonicalText.trim.stripPrefix("_root_.").stripPrefix("scala.")
     fallbackTypes.contains(canonical) && rendered != canonical
+
+  private def hasBalancedDelimiters(renderedType: String): Boolean =
+    val pairs = Map(')' -> '(', ']' -> '[', '}' -> '{')
+    renderedType
+      .foldLeft(Option(List.empty[Char])):
+        case (Some(stack), char @ ('(' | '[' | '{'))                      => Some(char :: stack)
+        case (Some(head :: tail), char) if pairs.get(char).contains(head) => Some(tail)
+        case (Some(_), char) if pairs.contains(char)                      => None
+        case (state, _)                                                   => state
+      .contains(Nil)
 
   private def resolveMapping(
       file: PsiFile,

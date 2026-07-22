@@ -22,11 +22,13 @@ import org.jetbrains.plugins.scala.annotator.{
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.editor.documentationProvider.ScalaDocQuickInfoGenerator
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpression, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertFalse, assertTrue}
 
 import scala.annotation.nowarn
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixtureTestCase:
@@ -97,6 +99,52 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       lookupStrings.contains("substring")
     )
 
+  def testCompletionExpectedContextUsesCurrentInitializerType(): Unit =
+    val source           =
+      """def same[A](first: A)(second: A): A = second
+        |val expected = List(1).head
+        |same(expected)(completionTarget)""".stripMargin
+    val file             = myFixture.configureByText("ExpectedCompletion.scala", source)
+    val expression       = expressionWithText(file, "List(1).head")
+    val completionTarget = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScReferenceExpression])
+      .asScala
+      .find(_.refName == "completionTarget")
+      .get
+    publish(expression, "String")
+
+    val expectedTypes = completionTarget.expectedTypes().map(_.canonicalText)
+
+    assertTrue(
+      s"completion expected types did not contain String: $expectedTypes",
+      expectedTypes.exists(_.contains("String"))
+    )
+    assertFalse(s"completion retained the bundled Int context: $expectedTypes", expectedTypes.contains("Int"))
+
+  def testQuickInfoUsesRealBulkCompilerSnapshot(): Unit =
+    val source     =
+      """val id = [A] => (value: A) => value
+        |val result = id(42)""".stripMargin
+    val file       = myFixture.configureByText("BulkQuickInfo.scala", source)
+    val _          = PlatformTestUtil.waitForFuture(
+      com.hmemcpy.metallurgy.pc.PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    val definition = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .asScala
+      .find(_.bindings.exists(_.name == "result"))
+      .get
+    val binding    = definition.bindings.head
+    val backend    = Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(binding, getModule, CompilerBackendRole.Binding)
+
+    val quickInfo = ScalaDocQuickInfoGenerator.getQuickNavigateInfo(binding, binding).getOrElse("")
+
+    assertTrue(s"real bulk snapshot did not publish result: $backend", backend.toString.contains("Current(Int,"))
+    assertTrue(quickInfo, quickInfo.contains("Int"))
+
   private def publish(expression: ScExpression, renderedType: String): Unit =
     val backend                                   = Scala3CompilerBackend.get(getProject)
     val file                                      = expression.getContainingFile
@@ -138,9 +186,9 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
     holder.errors
 
   private final class RecordingAnnotationHolder(file: PsiFile) extends ScalaAnnotationHolder:
-    private var recordedErrors = Vector.empty[String]
+    private val recordedErrors = mutable.ArrayBuffer.empty[String]
 
-    def errors: Vector[String] = recordedErrors
+    def errors: Vector[String] = recordedErrors.toVector
 
     @nowarn("cat=deprecation")
     override def getCurrentAnnotationSession: AnnotationSession = new AnnotationSession(file)
@@ -164,7 +212,7 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
           enforcedAttributes: TextAttributesKey,
           fixes: Seq[CommonIntentionAction]
       ): Unit =
-        if severity == HighlightSeverity.ERROR then recordedErrors :+= Option(message).getOrElse("")
+        if severity == HighlightSeverity.ERROR then recordedErrors += Option(message).getOrElse("")
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")

@@ -81,7 +81,9 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
               error match
                 case _: CancellationException      =>
                   val _ = completion.complete(CompilerBackendCommit.Rejected)
-                case control: ControlFlowException => throw control
+                case control: ControlFlowException =>
+                  val _ = completion.completeExceptionally(control)
+                  throw control
                 case _                             =>
                   log.warn(s"Compiler-backend PSI mapping failed for ${snapshot.fileUri}", error)
                   backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
