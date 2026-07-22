@@ -1,8 +1,7 @@
 # Metallurgy
 
-An IntelliJ plugin that brings Scala 3 support closer to parity with the real Scala 3 compiler — running the actual
-presentation compiler ([pc](https://scalameta.org/metals/), from Metals) and enriching IntelliJ's type information
-with what the compiler really knows: the actual type, completion members, and inline hints, for Scala 3.5+.
+An IntelliJ plugin that brings Scala 3 support closer to parity with the real Scala 3 compiler — using [the same compiler Metals uses](https://scalameta.org/metals/) to surface the actual inferred type,
+completion members, and inline hints, for Scala 3.5+.
 
 > **Pre-alpha.** Type resolution, inline type hints, and completion are available behind per-module opt-in and require
 > compiler-based highlighting to be on. The plugin is a hard no-op without it.
@@ -10,7 +9,7 @@ with what the compiler really knows: the actual type, completion members, and in
 ## What it does
 
 The Before/After columns below are the **measured output** of the [test fixtures](src/test/testdata/feature/compilertype/)
-— what the compiler-type slot holds, with the plugin off vs on. (Cells are placeholders for screenshots.)
+— the inferred type, with the plugin off vs on. (Cells are placeholders for screenshots.)
 
 ### Type resolution (hover / inspect)
 
@@ -28,7 +27,7 @@ types — see the [type-resolution tests](src/test/scala/com/hmemcpy/metallurgy/
 
 ### Inline type hints
 
-The plugin shows the compiler's inferred type as an inline hint after each `val`/`var`.
+The plugin shows the inferred type as an inline hint after each `val`/`var`.
 
 | Before | After |
 |---|---|
@@ -36,7 +35,7 @@ The plugin shows the compiler's inferred type as an inline hint after each `val`
 
 ### Completion
 
-The plugin offers completion for extension methods and structural-refinement members, with their real type.
+The plugin offers completion for extension methods and members of structural types, with their real type.
 
 | Before | After |
 |---|---|
@@ -49,12 +48,11 @@ to the real compiler across module boundaries (reading upstream `.betasty` artif
 
 ## How it works
 
-The plugin runs the real Scala 3 presentation compiler — the same `pc` (dotc's `InteractiveDriver`) that powers
-[Metals](https://scalameta.org/metals/) — in an isolated classloader and queries it for types and completions.
-Those answers enrich IntelliJ's own type information (the compiler-type slot, inline hints, and the completion
-list) for Scala 3.5+ modules, on top of compiler-based highlighting.
+The plugin runs the real Scala 3 compiler — the same one [Metals](https://scalameta.org/metals/) uses — and asks it
+for the type and completions at each position, then feeds those answers back into IntelliJ. The inferred type,
+inline hints, and completion list then reflect what the compiler actually knows, for Scala 3.5+ modules.
 
-The idea — running the Scala presentation compiler directly inside IntelliJ, without LSP — comes from
+The idea — running the Scala compiler directly inside IntelliJ, without LSP — comes from
 [Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SNc7xeHrKnQ&t=3931s) (*The best Scala IDE
 inside your favourite Scala IDE*).
 
