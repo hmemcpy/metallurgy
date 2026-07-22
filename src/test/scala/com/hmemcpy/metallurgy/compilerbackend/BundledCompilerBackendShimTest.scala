@@ -16,10 +16,16 @@ import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
-import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{
+  ScFunction,
+  ScFunctionDefinition,
+  ScValueOrVariableDefinition
+}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScGivenDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
+import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
 
 import java.lang.management.ManagementFactory
 import java.util.Arrays
@@ -141,6 +147,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         |  def literal = 1
         |  def polymorphic[A](value: A): A = value
         |  def parameters(byName: => String, repeated: Int*): Unit = ()
+        |  var mutable = "three"
         |  val (number, text) = (1, "two")
         |""".stripMargin
     val file   = myFixture.configureByText("SemanticRoots.scala", source)
@@ -152,12 +159,24 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
     UIUtil.dispatchAllInvocationEvents()
 
-    val functions  = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
-    val parameters = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).stream().toList
-    val bindings   = PsiTreeUtil.findChildrenOfType(file, classOf[ScBindingPattern]).stream().toList
+    val functions   = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
+    val parameters  = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).stream().toList
+    val bindings    = PsiTreeUtil.findChildrenOfType(file, classOf[ScBindingPattern]).stream().toList
+    val definitions = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .stream()
+      .toList
 
-    assertEquals("Int", rendered(functions.stream().filter(_.name == "literal").findFirst().orElseThrow().returnType))
-    assertEquals("A", rendered(functions.stream().filter(_.name == "polymorphic").findFirst().orElseThrow().returnType))
+    val literal     = functions.stream().filter(_.name == "literal").findFirst().orElseThrow()
+    val polymorphic = functions.stream().filter(_.name == "polymorphic").findFirst().orElseThrow()
+    assertEquals("Int", rendered(literal.returnType))
+    assertEquals("A", rendered(polymorphic.returnType))
+    Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(polymorphic, getModule, CompilerBackendRole.Function) match
+      case CompilerBackendState.Rendered(renderedType) =>
+        assertEquals("(Main.polymorphic : [A](value: A): A)", renderedType)
+      case state                                       => throw new AssertionError(s"expected rendered polymorphic method type, got $state")
 
     val byName   = parameters.stream().filter(_.name == "byName").findFirst().orElseThrow()
     val repeated = parameters.stream().filter(_.name == "repeated").findFirst().orElseThrow()
@@ -166,10 +185,69 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertEquals("Int", rendered(repeated.`type`()))
     assertEquals("scala.Seq[Int]", rendered(repeated.outsideParamType))
 
-    val number = bindings.stream().filter(_.name == "number").findFirst().orElseThrow()
-    val text   = bindings.stream().filter(_.name == "text").findFirst().orElseThrow()
+    val number  = bindings.stream().filter(_.name == "number").findFirst().orElseThrow()
+    val text    = bindings.stream().filter(_.name == "text").findFirst().orElseThrow()
+    val mutable = definitions
+      .stream()
+      .filter(_.bindings.exists(_.name == "mutable"))
+      .findFirst()
+      .orElseThrow()
     assertEquals("Int", rendered(number.`type`()))
     assertEquals("_root_.scala.Predef.String", rendered(text.`type`()))
+    assertEquals("Int", number.expectedType.map(_.canonicalText).orNull)
+    assertEquals("_root_.scala.Predef.String", text.expectedType.map(_.canonicalText).orNull)
+    assertEquals("_root_.scala.Predef.String", rendered(mutable.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(mutable.bindings.head.`type`()))
+
+  def testRealSnapshotPreservesSingletonOverrideAndGivenResults(): Unit =
+    val source =
+      """trait Base:
+        |  def overridden: Any
+        |object Main extends Base:
+        |  override def overridden = "text"
+        |  val singleton: "literal" = "literal"
+        |  given ordering: Ordering[Int] = Ordering.Int
+        |  given structural: Ordering[String] with
+        |    def compare(left: String, right: String): Int = left.compareTo(right)
+        |""".stripMargin
+    val file   = myFixture.configureByText("ExactSemanticRoots.scala", source)
+
+    val _ = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val functions  = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
+    val overridden = functions
+      .stream()
+      .filter(function => function.name == "overridden" && function.isInstanceOf[ScFunctionDefinition])
+      .findFirst()
+      .orElseThrow()
+    val givenAlias = functions.stream().filter(_.name == "ordering").findFirst().orElseThrow()
+    val singleton  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeElement])
+      .stream()
+      .filter(_.getText == "\"literal\"")
+      .findFirst()
+      .orElseThrow()
+    val structural = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScGivenDefinition])
+      .stream()
+      .filter(_.name == "structural")
+      .findFirst()
+      .orElseThrow()
+
+    Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(overridden, getModule, CompilerBackendRole.FunctionResult) match
+      case CompilerBackendState.Current(renderedType, _) => assertEquals("Any", renderedType)
+      case state                                         => throw new AssertionError(s"expected current compiler result, got $state")
+    assertEquals("Any", rendered(overridden.returnType))
+    assertEquals("\"literal\"", rendered(singleton.`type`()))
+    assertEquals("scala.Ordering[Int]", rendered(givenAlias.returnType))
+    assertEquals("scala.Ordering[_root_.scala.Predef.String]", rendered(structural.givenType()))
 
   def testPendingBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Pending)
@@ -196,6 +274,57 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
 
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  def testInactiveModuleFallsThroughAtEverySemanticRoot(): Unit =
+    val source =
+      """object Main:
+        |  val definition: String = "text"
+        |  def function: String = "text"
+        |  def owner(parameter: String): Unit = ()
+        |  val (pattern, _) = (1, "text")
+        |""".stripMargin
+    val file   = myFixture.configureByText("InactiveSemanticRoots.scala", source)
+
+    val definition = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .stream()
+      .filter(_.bindings.exists(_.name == "definition"))
+      .findFirst()
+      .orElseThrow()
+    val function   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .stream()
+      .filter(_.name == "function")
+      .findFirst()
+      .orElseThrow()
+    val parameter  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParameter])
+      .stream()
+      .filter(_.name == "parameter")
+      .findFirst()
+      .orElseThrow()
+    val pattern    = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .stream()
+      .filter(_.name == "pattern")
+      .findFirst()
+      .orElseThrow()
+
+    publish(definition, CompilerBackendRole.Definition, "Int")
+    publish(function, CompilerBackendRole.FunctionResult, "Int")
+    publish(parameter, CompilerBackendRole.Parameter, "Int")
+    publish(pattern, CompilerBackendRole.Pattern, "String")
+    assertEquals("Int", rendered(definition.`type`()))
+    assertEquals("Int", rendered(function.returnType))
+    assertEquals("Int", rendered(parameter.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(pattern.`type`()))
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals("_root_.scala.Predef.String", rendered(definition.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(function.returnType))
+    assertEquals("_root_.scala.Predef.String", rendered(parameter.`type`()))
+    assertEquals("Int", rendered(pattern.`type`()))
 
   def testInactiveModuleRejectsPublication(): Unit =
     val (typeElement, version) = declaredString("RejectedPublication.scala")
@@ -286,6 +415,10 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.unavailableRoots.mkString(", "), discovery.unavailableRoots.isEmpty)
     assertTrue(discovery.compilerTypeTarget.nonEmpty)
     assertTrue(discovery.patternImplementations.size >= 17)
+    discovery.patternImplementations.foreach: pattern =>
+      assertEquals(pattern.className, 64, pattern.bytecodeFingerprint.length)
+      assertTrue(pattern.className, pattern.bytecodeFingerprint.forall(Character.digit(_, 16) >= 0))
+      assertTrue(pattern.className, pattern.hookClassName.nonEmpty)
     assertTrue(
       CompilerBackendRole.values.forall(role =>
         roles.contains(role) || role == CompilerBackendRole.Binding ||
@@ -299,6 +432,30 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
     assertFalse(discovery.canInstall)
     assertTrue(discovery.unavailableRoots.nonEmpty)
+
+  def testPartiallyCompatiblePluginCannotInstall(): Unit =
+    val writer = new ClassWriter(0)
+    writer.visit(
+      Opcodes.V17,
+      Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+      "org/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement",
+      null,
+      "java/lang/Object",
+      Array.empty
+    )
+    val method = writer.visitMethod(Opcodes.ACC_PUBLIC, "type", "()Lscala/util/Either;", null, null)
+    method.visitCode()
+    method.visitInsn(Opcodes.ACONST_NULL)
+    method.visitInsn(Opcodes.ARETURN)
+    method.visitMaxs(1, 1)
+    method.visitEnd()
+    writer.visitEnd()
+
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(Vector(writer.toByteArray))
+
+    assertTrue(discovery.semanticTargets.nonEmpty)
+    assertTrue(discovery.unavailableRoots.nonEmpty)
+    assertFalse(discovery.canInstall)
 
   def testInactiveBackendSelectorAllocationAndLatency(): Unit =
     val (typeElement, _) = declaredString("FastPath.scala")

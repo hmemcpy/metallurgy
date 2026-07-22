@@ -26,17 +26,18 @@ private[metallurgy] object BundledCompilerBackendShim:
   private val BridgeInternalName = BridgeClassName.replace('.', '/')
 
   private val installation = new AtomicReference[Installation](Installation.NotStarted)
+  private val installLock  = new Object
 
   def install(): CompilerBackendShimStatus =
-    installation.get() match
-      case Installation.Finished(status) => status
-      case Installation.Installing       => CompilerBackendShimStatus.Disabled("installation already in progress")
-      case Installation.NotStarted       =>
-        if installation.compareAndSet(Installation.NotStarted, Installation.Installing) then
+    installLock.synchronized:
+      installation.get() match
+        case Installation.Finished(status) => status
+        case Installation.Installing       => CompilerBackendShimStatus.Disabled("recursive installation")
+        case Installation.NotStarted       =>
+          installation.set(Installation.Installing)
           val status = attemptInstall()
           installation.set(Installation.Finished(status))
           status
-        else install()
 
   private def attemptInstall(): CompilerBackendShimStatus =
     CompilerBackendShimDiscovery.discover(classOf[ScTypeElement]) match
@@ -97,14 +98,17 @@ private[metallurgy] object BundledCompilerBackendShim:
           missingMethods.map(key => s"untransformed $key") ++
           Option.when(discovery.compilerTypeTarget.nonEmpty && !compilerTypeHooked.get())("CompilerType.apply")
       ).distinct
-      if semanticMethods.isEmpty then
+      if semanticMethods.isEmpty || unavailable.nonEmpty then
         uninstallBackend(bridge)
-        CompilerBackendShimStatus.Disabled("no compatible Scala PSI type roots were found")
+        val reason =
+          if unavailable.nonEmpty then s"incompatible Scala PSI type roots: ${unavailable.mkString(", ")}"
+          else "no compatible Scala PSI type roots were found"
+        CompilerBackendShimStatus.Disabled(reason)
       else
         bridge.getMethod("enable").invoke(null)
         CompilerBackendShimStatus.Enabled(
           semanticMethods.size() + Option.when(compilerTypeHooked.get())(1).sum,
-          unavailable
+          Vector.empty
         )
     catch
       case NonFatal(error) =>

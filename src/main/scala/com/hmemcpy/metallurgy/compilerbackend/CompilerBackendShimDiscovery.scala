@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.compilerbackend
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
 import java.nio.file.{Files, Path}
+import java.security.MessageDigest
 import java.util.jar.JarFile
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -29,13 +30,19 @@ private[compilerbackend] final case class CompilerTypeShimTarget(
 ):
   val internalName: String = className.replace('.', '/')
 
+private[compilerbackend] final case class CompilerBackendPatternImplementation(
+    className: String,
+    bytecodeFingerprint: String,
+    hookClassName: Option[String]
+)
+
 private[compilerbackend] final case class CompilerBackendShimDiscoveryResult(
     semanticTargets: Vector[CompilerBackendShimTarget],
     compilerTypeTarget: Option[CompilerTypeShimTarget],
-    patternImplementations: Vector[String],
+    patternImplementations: Vector[CompilerBackendPatternImplementation],
     unavailableRoots: Vector[String]
 ):
-  def canInstall: Boolean = semanticTargets.nonEmpty
+  def canInstall: Boolean = semanticTargets.nonEmpty && unavailableRoots.isEmpty
 
 /** Discovers semantic type roots from the installed Scala plugin's bytecode. Compatibility is structural: a stable,
   * EAP, or nightly build is accepted when it exposes the required PSI ancestry and JVM method descriptors.
@@ -51,7 +58,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       superName: Option[String],
       interfaces: Vector[String],
       access: Int,
-      methods: Vector[MethodShape]
+      methods: Vector[MethodShape],
+      bytecodeFingerprint: String
   ):
     def isConcrete: Boolean     = (access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) == 0
     def parents: Vector[String] = superName.toVector ++ interfaces
@@ -158,11 +166,16 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     val targets         = combineTargets(ordinaryTargets ++ expectedTargets)
     val patterns        = shapes.valuesIterator
       .filter(shape => shape.isConcrete && derivesFrom(shape.internalName, PatternRoot, shapes))
-      .map(_.internalName.replace('/', '.'))
+      .map: shape =>
+        val hookOwner = concreteMethodOwner(shape.internalName, "type", EitherDescriptor, shapes)
+        CompilerBackendPatternImplementation(
+          shape.internalName.replace('/', '.'),
+          shape.bytecodeFingerprint,
+          hookOwner.map(_.replace('/', '.'))
+        )
       .toVector
-      .sorted
-    val uncovered       = patterns.filter: className =>
-      !hasConcreteMethod(className.replace('.', '/'), "type", EitherDescriptor, shapes)
+      .sortBy(_.className)
+    val uncovered       = patterns.filter(_.hookClassName.isEmpty)
     val unavailable     = rootSpecs.collect:
       case spec if !targets.exists(_.methods.exists(_.role == spec.role)) => spec.label
     val expectedMissing = Option.when(!targets.exists(_.methods.exists(_.role == CompilerBackendRole.PatternExpected)))(
@@ -172,8 +185,9 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       semanticTargets = targets,
       compilerTypeTarget = compilerTypeTarget(shapes),
       patternImplementations = patterns,
-      unavailableRoots =
-        unavailable ++ expectedMissing.toVector ++ uncovered.map(name => s"pattern implementation $name")
+      unavailableRoots = unavailable ++ expectedMissing.toVector ++ uncovered.map(pattern =>
+        s"pattern implementation ${pattern.className}"
+      )
     )
 
   private def targetsFor(spec: RootSpec, shapes: Map[String, ClassShape]): Vector[CompilerBackendShimTarget] =
@@ -222,23 +236,25 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       .toVector
       .sortBy(_.className)
 
-  private def hasConcreteMethod(
+  private def concreteMethodOwner(
       internalName: String,
       methodName: String,
       descriptor: String,
       shapes: Map[String, ClassShape],
       visited: Set[String] = Set.empty
-  ): Boolean =
-    if visited(internalName) then false
+  ): Option[String] =
+    if visited(internalName) then None
     else
       shapes
         .get(internalName)
-        .exists: shape =>
-          shape.methods
-            .exists(method => method.hasBody && method.name == methodName && method.descriptor == descriptor) ||
-            shape.parents.exists(parent =>
-              hasConcreteMethod(parent, methodName, descriptor, shapes, visited + internalName)
-            )
+        .flatMap: shape =>
+          if shape.methods
+              .exists(method => method.hasBody && method.name == methodName && method.descriptor == descriptor)
+          then Some(internalName)
+          else
+            shape.parents.iterator
+              .flatMap(parent => concreteMethodOwner(parent, methodName, descriptor, shapes, visited + internalName))
+              .nextOption()
 
   private def derivesFrom(
       internalName: String,
@@ -282,6 +298,7 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
 
   private def readShape(bytes: Array[Byte]): ClassShape =
     var result: Option[ClassShape] = None
+    val fingerprint                = MessageDigest.getInstance("SHA-256").digest(bytes).map("%02x".format(_)).mkString
     new ClassReader(bytes).accept(
       new ClassVisitor(Opcodes.ASM9):
         override def visit(
@@ -292,7 +309,7 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
             superName: String,
             interfaces: Array[String]
         ): Unit =
-          result = Some(ClassShape(name, Option(superName), interfaces.toVector, access, Vector.empty))
+          result = Some(ClassShape(name, Option(superName), interfaces.toVector, access, Vector.empty, fingerprint))
 
         override def visitMethod(
             access: Int,

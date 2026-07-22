@@ -3,9 +3,11 @@ package com.hmemcpy.metallurgy.compilerbackend
 import com.hmemcpy.metallurgy.pc.{PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.intention.CommonIntentionAction
+import com.intellij.codeInsight.daemon.impl.HintRenderer
 import com.intellij.lang.annotation.{AnnotationSession, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.colors.TextAttributesKey
+import com.intellij.openapi.progress.{EmptyProgressIndicator, ProgressIndicator}
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.{Computable, TextRange}
 import com.intellij.psi.{PsiElement, PsiFile, SmartPointerManager}
@@ -20,7 +22,10 @@ import org.jetbrains.plugins.scala.annotator.{
   ScalaAnnotationBuilder
 }
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.codeInsight.hints.ScalaHintsSettings
+import org.jetbrains.plugins.scala.codeInsight.implicits.ImplicitHint
 import org.jetbrains.plugins.scala.editor.documentationProvider.ScalaDocQuickInfoGenerator
+import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpression, ScReferenceExpression}
@@ -29,6 +34,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
 
+import java.util.concurrent.{Callable, TimeUnit}
 import scala.annotation.nowarn
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
@@ -195,6 +201,63 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       assertTrue(s"quick info did not use String for '${element.getText}': $quickInfo", quickInfo.contains("String"))
       assertFalse(s"quick info retained Int for '${element.getText}': $quickInfo", quickInfo.contains(": Int"))
 
+  def testBundledTypeHintsUseCompilerTypesForEverySemanticRoot(): Unit =
+    val source =
+      """object Main:
+        |  val definition = 1
+        |  def function = 1
+        |  List(1).map(parameter => parameter)
+        |  1 match
+        |    case pattern => pattern
+        |""".stripMargin
+    val file   = myFixture.configureByText("SemanticTypeHints.scala", source)
+
+    val definition = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .asScala
+      .find(_.bindings.exists(_.name == "definition"))
+      .get
+    val function   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .asScala
+      .find(_.name == "function")
+      .get
+    val parameter  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParameter])
+      .asScala
+      .find(_.name == "parameter")
+      .get
+    val pattern    = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .asScala
+      .find(_.name == "pattern")
+      .get
+
+    publishType(definition, CompilerBackendRole.Definition, "String")
+    publishType(function, CompilerBackendRole.FunctionResult, "String")
+    publishType(parameter, CompilerBackendRole.Parameter, "String")
+    publishType(pattern, CompilerBackendRole.Pattern, "String")
+    runBundledTypeHints(file.asInstanceOf[ScalaFile])
+
+    val inlays = myFixture.getEditor.getInlayModel
+      .getInlineElementsInRange(0, source.length)
+      .asScala
+      .filter(ImplicitHint.isImplicitHint)
+    Seq(
+      (definition, definition.pList, ": String"),
+      (function, function.parameterList, ": String"),
+      (parameter, parameter, "(: String)"),
+      (pattern, pattern, ": String")
+    ).foreach: (semanticElement, hintAnchor, expectedText) =>
+      val texts = inlays
+        .filter(ImplicitHint.elementOf(_) == hintAnchor)
+        .flatMap(inlay => Option(inlay.getRenderer).collect { case renderer: HintRenderer => renderer.getText })
+      assertEquals(
+        s"bundled type hint for '${semanticElement.getText}'",
+        expectedText,
+        texts.mkString
+      )
+
   private def publish(expression: ScExpression, renderedType: String): Unit =
     val backend                                   = Scala3CompilerBackend.get(getProject)
     val file                                      = expression.getContainingFile
@@ -222,6 +285,36 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
         .get(getProject)
         .publish(element, role, myFixture.getEditor.getDocument.getModificationStamp, renderedType)
     )
+
+  private def runBundledTypeHints(file: ScalaFile): Unit =
+    val passClass                 = Class.forName("org.jetbrains.plugins.scala.codeInsight.implicits.ImplicitHintsPass")
+    val constructor               = passClass.getDeclaredConstructors
+      .find(_.getParameterCount == 4)
+      .getOrElse(throw new AssertionError("bundled ImplicitHintsPass constructor was not found"))
+    constructor.setAccessible(true)
+    val collect                   = passClass.getDeclaredMethod("doCollectInformation", classOf[ProgressIndicator])
+    val applyHints                = passClass.getDeclaredMethod("doApplyInformationToEditor")
+    collect.setAccessible(true)
+    applyHints.setAccessible(true)
+    val prepare: Callable[Object] = () =>
+      val pass             = constructor.newInstance(
+        myFixture.getEditor,
+        file,
+        new ScalaHintsSettings.CodeInsightSettingsAdapter,
+        java.lang.Boolean.FALSE
+      )
+      val previousXRayMode = ScalaHintsSettings.xRayMode
+      ScalaHintsSettings.xRayMode = true
+      try
+        val action: Runnable = () =>
+          val _ = collect.invoke(pass, new EmptyProgressIndicator)
+        ApplicationManager.getApplication.runReadAction(action)
+        pass
+      finally ScalaHintsSettings.xRayMode = previousXRayMode
+    val pass                      = ApplicationManager.getApplication
+      .executeOnPooledThread(prepare)
+      .get(30L, TimeUnit.SECONDS)
+    val _                         = applyHints.invoke(pass)
 
   private def expressionWithText(file: PsiElement, text: String): ScExpression =
     PsiTreeUtil
