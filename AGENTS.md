@@ -28,7 +28,13 @@ semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.i
 - **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
   *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
   "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
-- **Bound every test/compile run with a timeout.** No `Thread.sleep` for timing in production code — use latches/futures.
+- **Run every external command through GNU `gtimeout`.** This includes read-only commands (`git`, `gh`, `rg`, `find`),
+  formatting, builds, and tests. Use `/opt/homebrew/bin/gtimeout --kill-after=5s <limit> <command>` so the command's
+  process group is terminated at the deadline and escalated to `SIGKILL` after five seconds. Never rely on a tool's
+  output-yield deadline, a shell/Python alarm, or killing only the launcher process. If a command yields a session,
+  retain and poll that session through its real exit. Use a deliberately chosen limit (normally 30s for read-only
+  commands and 120s for focused builds/tests); raise it only when the operation is known to require more time.
+- No `Thread.sleep` for timing in production code — use latches/futures.
 
 ## Build & test
 
@@ -36,7 +42,9 @@ Runtime is **JBR 25**; it must be `JAVA_HOME` for builds and tests:
 
 ```sh
 JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
-JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt -batch -no-colors "scalafmtAll" "testOnly <fully.qualified.Test>"
+/opt/homebrew/bin/gtimeout --kill-after=5s 120s \
+  env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" \
+  sbt -batch -no-colors "scalafmtAll" "testOnly <fully.qualified.Test>"
 ```
 
 - sbt **1.11.7**, plugin code **Scala 3.7.4**, the in-tree testkit backport (`testkit/`) is **Scala 2.13.16** to match
