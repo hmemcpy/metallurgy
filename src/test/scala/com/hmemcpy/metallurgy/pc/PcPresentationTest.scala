@@ -9,7 +9,6 @@ import com.intellij.psi.{PsiElement, PsiFile}
 import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.assertTrue
@@ -36,32 +35,38 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
     "compiletime.ops singleton"    -> (
       """import scala.compiletime.ops.int.*
         |type Two = 2 + 2
-        |val r: Two = 4""".stripMargin,
-      "r",
+        |val r = scala.compiletime.constValue[Two]""".stripMargin,
+      "scala.compiletime.constValue[Two]",
       "(4 : Int)"
     ),
     "match type"                   -> (
       """type Elem[X] = X match
         |  case List[t] => t
-        |val reduced: Elem[List[Int]] = 42""".stripMargin,
-      "reduced",
+        |def elemValue(): Elem[List[Int]] = 42
+        |val reduced = elemValue()""".stripMargin,
+      "elemValue()",
       "Int"
     ),
     "polymorphic function"         -> (
       """val id = [A] => (x: A) => x
         |val result = id(42)""".stripMargin,
-      "result",
+      "id(42)",
       "Int"
     ),
     "opaque type"                  -> (
       """object Ports:
         |  opaque type Port = Int
         |  def apply(n: Int): Port = n
-        |val p: Ports.Port = Ports(8080)""".stripMargin,
-      "p",
+        |val p = Ports(8080)""".stripMargin,
+      "Ports(8080)",
       "Ports.Port"
     ),
-    "union type"                   -> ("""val u: Int | String = 1""", "u", "Int | String"),
+    "union type"                   -> (
+      """def unionValue(): Int | String = 1
+        |val u = unionValue()""".stripMargin,
+      "unionValue()",
+      "Int | String"
+    ),
     "transparent inline singleton" -> (
       """transparent inline def port: Int = 8080
         |val p: 8080 = port""".stripMargin,
@@ -89,7 +94,7 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
         TimeUnit.SECONDS.toMillis(60)
       )
       val offset    = source.lastIndexOf(needle)
-      val element   = typedElementAt(file, offset)
+      val element   = typedElementAt(file, offset, needle.length)
       val presented = presentedType(element)
       val ok        = presented.exists(t => normalize(t) == normalize(expected))
       println(f"[present] ${if ok then "OK  " else "FAIL"} $label%-30s -> ${presented.getOrElse("<none>")}")
@@ -123,13 +128,14 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
     finally connection.disconnect()
     Option(ScalaPluginSemanticBridge.getCompilerType(element)).filter(_.nonEmpty)
 
-  private def typedElementAt(file: PsiFile, offset: Int): PsiElement =
+  private def typedElementAt(file: PsiFile, offset: Int, needleLength: Int): PsiElement =
     val leaf    = file.findElementAt(offset)
     val parents = Iterator.iterate(leaf: PsiElement)(_.getParent).takeWhile(_ != null).toList
+    val needle  = com.intellij.openapi.util.TextRange.from(offset, needleLength)
     parents
-      .collectFirst { case e: ScTypeElement => e }
-      .orElse(parents.collectFirst { case e: ScExpression => e })
-      .getOrElse(leaf)
+      .collect { case e: ScExpression if e.getTextRange.contains(needle) => e }
+      .minByOption(_.getTextRange.getLength)
+      .getOrElse(throw new AssertionError(s"No typed PSI element at offset $offset (${leaf.getText})"))
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
