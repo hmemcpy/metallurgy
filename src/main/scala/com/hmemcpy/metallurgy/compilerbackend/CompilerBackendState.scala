@@ -4,6 +4,7 @@ import org.jetbrains.plugins.scala.lang.psi.types.result.TypeResult
 
 private[metallurgy] enum CompilerBackendState:
   case Current(renderedType: String, result: TypeResult)
+  case Rendered(renderedType: String)
   case Pending
   case Unavailable
   case Failed

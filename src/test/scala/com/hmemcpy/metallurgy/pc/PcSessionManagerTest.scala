@@ -265,7 +265,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         PcTypedTreeRole.Function,
         "(Main.function : (parameter: Int): String)"
       )
-      assertSnapshotEntry(source, extracted, "parameter: Int", PcTypedTreeRole.Parameter, "(parameter : Int)")
+      assertSnapshotEntry(source, extracted, "parameter: Int", PcTypedTreeRole.Parameter, "Int")
       assertSnapshotEntry(source, extracted, "val inferred = function(42)", PcTypedTreeRole.Inferred, "String")
       assertSnapshotEntry(source, extracted, "String", PcTypedTreeRole.Declared, "String")
       val inferredStart = source.indexOf("function(42)")
@@ -295,8 +295,8 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val source    = "object Main:\n  val pair = (1, \"two\")\n  val (number, text) = pair\n"
       val extracted = extractTypedTreeSnapshot(session, "TypedTreePatterns", source)
 
-      assertSnapshotEntry(source, extracted, "number", PcTypedTreeRole.Pattern, "(number : Int)")
-      assertSnapshotEntry(source, extracted, "text", PcTypedTreeRole.Pattern, "(text : String)")
+      assertSnapshotEntry(source, extracted, "number", PcTypedTreeRole.Pattern, "Int")
+      assertSnapshotEntry(source, extracted, "text", PcTypedTreeRole.Pattern, "String")
       val patterns = extracted.entries.filter(_.role == PcTypedTreeRole.Pattern)
       assertTrue(patterns.nonEmpty)
       assertTrue(patterns.forall(_.symbol.nonEmpty))

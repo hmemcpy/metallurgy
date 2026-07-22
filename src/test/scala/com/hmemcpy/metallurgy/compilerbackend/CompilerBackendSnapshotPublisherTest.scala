@@ -61,15 +61,15 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val declared  = children[ScTypeElement](file).find(_.getText == "String").get
     val entries   = Seq(
       entry(function, PcTypedTreeRole.Function, "(Main.function : (parameter: Int): String)"),
-      entry(parameter, PcTypedTreeRole.Parameter, "(parameter : Int)"),
+      entry(parameter, PcTypedTreeRole.Parameter, "Int"),
       entry(declared, PcTypedTreeRole.Declared, "String")
     )
     val snapshot  = typedTreeSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, entries)
 
     publishSynchronously(snapshot)
 
-    assertCurrent(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
-    assertCurrent(parameter, CompilerBackendRole.Parameter, "(parameter : Int)")
+    assertRendered(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
+    assertCurrent(parameter, CompilerBackendRole.Parameter, "Int")
     assertCurrent(declared, CompilerBackendRole.DeclaredType, "String")
 
   def testSnapshotMapsInferredDefinitionBindingAndExpression(): Unit =
@@ -131,14 +131,14 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val call       = children[ScExpression](file).find(_.getText == "function(42)").get
     val patterns   = children[ScBindingPattern](file).filter(pattern => Set("number", "text").contains(pattern.getText))
 
-    assertCurrent(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
-    assertCurrent(parameter, CompilerBackendRole.Parameter, "(parameter : Int)")
+    assertRendered(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
+    assertCurrent(parameter, CompilerBackendRole.Parameter, "Int")
     assertCurrent(declared, CompilerBackendRole.DeclaredType, "String")
     assertCurrent(definition, CompilerBackendRole.Definition, "String")
     assertCurrent(definition.bindings.head, CompilerBackendRole.Binding, "String")
     assertCurrent(call, CompilerBackendRole.ExpressionExact, "String")
     patterns.foreach: pattern =>
-      val expected = if pattern.getText == "number" then "(number : Int)" else "(text : String)"
+      val expected = if pattern.getText == "number" then "Int" else "String"
       assertCurrent(pattern, CompilerBackendRole.Binding, expected)
       assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
 
@@ -625,6 +625,11 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     Scala3CompilerBackend.get(getProject).stateForActiveModule(element, getModule, role) match
       case CompilerBackendState.Current(actual, _) => assertEquals(renderedType, actual)
       case state                                   => throw new AssertionError(s"expected Current for ${element.getText} / $role, got $state")
+
+  private def assertRendered(element: PsiElement, role: CompilerBackendRole, renderedType: String): Unit =
+    Scala3CompilerBackend.get(getProject).stateForActiveModule(element, getModule, role) match
+      case CompilerBackendState.Rendered(actual) => assertEquals(renderedType, actual)
+      case state                                 => throw new AssertionError(s"expected Rendered for ${element.getText} / $role, got $state")
 
   private def definitionStateFixture(
       fileName: String

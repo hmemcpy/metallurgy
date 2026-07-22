@@ -142,7 +142,9 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
 
     val quickInfo = ScalaDocQuickInfoGenerator.getQuickNavigateInfo(binding, binding).getOrElse("")
 
-    assertTrue(s"real bulk snapshot did not publish result: $backend", backend.toString.contains("Current(Int,"))
+    backend match
+      case CompilerBackendState.Current("Int", _) => ()
+      case state                                  => throw new AssertionError(s"expected exact bulk Int state, got $state")
     assertTrue(quickInfo, quickInfo.contains("Int"))
 
   private def publish(expression: ScExpression, renderedType: String): Unit =

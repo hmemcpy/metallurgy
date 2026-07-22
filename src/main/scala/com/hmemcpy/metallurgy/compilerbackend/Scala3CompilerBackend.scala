@@ -12,7 +12,7 @@ import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
 import com.intellij.psi.util.PsiTreeUtil
-import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
@@ -353,12 +353,12 @@ final class Scala3CompilerBackend(project: Project):
       element: PsiElement,
       role: CompilerBackendRole,
       renderedType: String
-  ): Option[CompilerBackendState.Current] =
+  ): Option[CompilerBackendState] =
     try
       val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
       Option(typeElement).flatMap: syntax =>
         if PsiTreeUtil.hasErrorElements(syntax) && acceptsPresentationOnlyType(role) then
-          Some(CompilerBackendState.Current(renderedType, syntax.`type`()))
+          Some(CompilerBackendState.Rendered(renderedType))
         else
           ScalaPsiElementFactory
             .createTypeFromText(renderedType, element, null)
@@ -373,9 +373,7 @@ final class Scala3CompilerBackend(project: Project):
       case NonFatal(_) => None
 
   private def acceptsPresentationOnlyType(role: CompilerBackendRole): Boolean =
-    role match
-      case CompilerBackendRole.Function | CompilerBackendRole.Parameter | CompilerBackendRole.Pattern => true
-      case _                                                                                          => false
+    role == CompilerBackendRole.Function
 
   private def isFallbackType(renderedType: String, canonicalText: String): Boolean =
     val fallbackTypes = Set("Any", "Unit", "Nothing")
@@ -425,8 +423,9 @@ final class Scala3CompilerBackend(project: Project):
 
   private def comparable(state: Option[CompilerBackendState]): Option[(String, String)] =
     state.map:
-      case CompilerBackendState.Current(renderedType, _) => "current" -> renderedType
-      case other                                         => "state"   -> other.productPrefix
+      case CompilerBackendState.Current(renderedType, _) => "current"  -> renderedType
+      case CompilerBackendState.Rendered(renderedType)   => "rendered" -> renderedType
+      case other                                         => "state"    -> other.productPrefix
 
   private def ownedCompilerTypeSlots(state: FileState): Set[ElementKey] =
     state.compilerTypeSlots ++ state.entries.collect:
@@ -514,8 +513,10 @@ final class Scala3CompilerBackend(project: Project):
         element.isInstanceOf[ScTypeElement]
       case CompilerBackendRole.Definition                                              =>
         element.isInstanceOf[ScValueOrVariableDefinition]
-      case CompilerBackendRole.Binding | CompilerBackendRole.Pattern                   =>
+      case CompilerBackendRole.Binding                                                 =>
         element.isInstanceOf[ScBindingPattern]
+      case CompilerBackendRole.Pattern                                                 =>
+        element.isInstanceOf[ScPattern]
       case CompilerBackendRole.Function                                                =>
         element.isInstanceOf[ScFunction]
       case CompilerBackendRole.Parameter                                               =>

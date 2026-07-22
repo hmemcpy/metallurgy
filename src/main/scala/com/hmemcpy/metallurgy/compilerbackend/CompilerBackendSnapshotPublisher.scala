@@ -17,7 +17,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiFile, PsiManager, SmartPointerManager}
 import com.intellij.util.concurrency.AppExecutorUtil
-import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
@@ -179,12 +179,13 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
           .map(mapping(_, CompilerBackendRole.Function, entry.renderedType, symbolId))
           .toSeq
       case PcTypedTreeRole.Pattern           =>
-        exactAncestor[ScBindingPattern](file, entry.range).toSeq
-          .flatMap: pattern =>
+        exactAncestor[ScPattern](file, entry.range).toSeq.flatMap:
+          case binding: ScBindingPattern =>
             Seq(
-              mapping(pattern, CompilerBackendRole.Binding, entry.renderedType, symbolId),
-              mapping(pattern, CompilerBackendRole.Pattern, entry.renderedType, symbolId)
+              mapping(binding, CompilerBackendRole.Binding, entry.renderedType, symbolId),
+              mapping(binding, CompilerBackendRole.Pattern, entry.renderedType, symbolId)
             )
+          case pattern                   => Seq(mapping(pattern, CompilerBackendRole.Pattern, entry.renderedType, symbolId))
 
   private def mapping(
       element: PsiElement,

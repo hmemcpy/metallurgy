@@ -424,8 +424,10 @@ private[pc] final class PcInlineTypeDriver(
     try
       val rawType   = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
       val rendering = candidate.role match
-        case PcTypedTreeRole.ExpressionWidened | PcTypedTreeRole.Inferred => TypeRendering.Widened
-        case _                                                            => TypeRendering.Exact
+        case PcTypedTreeRole.ExpressionWidened | PcTypedTreeRole.Inferred | PcTypedTreeRole.Parameter |
+            PcTypedTreeRole.Pattern =>
+          TypeRendering.Widened
+        case _ => TypeRendering.Exact
       val rendered  = renderCompilerType(normalizedType(rawType, rendering, context), context)
       Option.when(rendered.nonEmpty && rendered != "<empty>" && !rendered.contains("<error")):
         PcTypedTreeEntry(
