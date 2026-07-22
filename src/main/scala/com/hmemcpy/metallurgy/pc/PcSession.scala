@@ -263,7 +263,7 @@ final class PcSession private (
   private def createCompiler(): PresentationCompiler =
     val prototype = PresentationCompilerDiscovery
       .load(classloader, compilerDistribution)
-      .fold(reason => throw new IllegalStateException(reason), identity)
+      .fold(reason => throw new IllegalStateException(reason.message), identity)
 
     try
       prototype.newInstance(

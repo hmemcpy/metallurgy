@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.pc
 
-import org.junit.Assert.{assertFalse, assertNotSame, assertSame, assertThrows, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertThrows, assertTrue}
 import org.junit.Test
 import scala.meta.pc.PresentationCompiler
 
@@ -121,6 +121,16 @@ final class PcClassLoaderTest:
       assertTrue(capabilities.unavailableReasons.nonEmpty)
     finally loader.close()
 
+  @Test
+  def missingPresentationCompilerProviderHasAStructuredReason(): Unit =
+    val loader = new PcClassLoader(Array.empty, getClass.getClassLoader)
+    try
+      assertEquals(
+        Left(PresentationCompilerDiscoveryError.ProviderUnavailable),
+        PresentationCompilerDiscovery.load(loader, Seq.empty)
+      )
+    finally loader.close()
+
   private def compilerLoader(scalaVersion: String): PcClassLoader =
     val artifacts = PresentationCompilerResolver.publicCoursier
       .resolve(scalaVersion)
@@ -138,4 +148,4 @@ final class PcClassLoaderTest:
       .fold(error => throw error.toException, identity)
     PresentationCompilerDiscovery
       .load(loader, artifacts.map(_.toFile))
-      .fold(reason => throw new AssertionError(s"$reason for Scala $scalaVersion"), identity)
+      .fold(reason => throw new AssertionError(s"${reason.message} for Scala $scalaVersion"), identity)

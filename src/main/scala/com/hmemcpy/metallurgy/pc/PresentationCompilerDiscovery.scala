@@ -21,10 +21,13 @@ private[pc] object PresentationCompilerDiscovery:
 
   private val PresentationCompilerInternalName = classOf[PresentationCompiler].getName.replace('.', '/')
 
-  def load(classloader: ClassLoader, compilerArtifacts: Seq[File]): Either[String, PresentationCompiler] =
+  def load(
+      classloader: ClassLoader,
+      compilerArtifacts: Seq[File]
+  ): Either[PresentationCompilerDiscoveryError, PresentationCompiler] =
     serviceProvider(classloader)
       .orElse(structuralProvider(classloader, compilerArtifacts))
-      .toRight("No compatible Scala presentation compiler provider found")
+      .toRight(PresentationCompilerDiscoveryError.ProviderUnavailable)
 
   private def serviceProvider(classloader: ClassLoader): Option[PresentationCompiler] =
     try
@@ -111,3 +114,9 @@ private[pc] object PresentationCompilerDiscovery:
       ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
     )
     result.getOrElse(throw new IllegalArgumentException("class file has no header"))
+
+private[pc] enum PresentationCompilerDiscoveryError:
+  case ProviderUnavailable
+
+  def message: String = this match
+    case ProviderUnavailable => "No compatible Scala presentation compiler provider found"
