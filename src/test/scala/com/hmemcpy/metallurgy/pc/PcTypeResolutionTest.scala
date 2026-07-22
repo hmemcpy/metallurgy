@@ -145,7 +145,27 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
       "r",
       Set("Int")
     ),
-    "implicit Conversion"              -> ("given Conversion[String, Int] = _.toInt\nval r: Int = \"42\"\n", "r", Set("Int"))
+    "implicit Conversion"              -> ("given Conversion[String, Int] = _.toInt\nval r: Int = \"42\"\n", "r", Set("Int")),
+    "higher-kinded type parameter"     -> (
+      "class Box[F[_]](val f: F[Int])\nval box = new Box(List(1, 2))\n",
+      "box",
+      Set("Box", "List")
+    ),
+    "quoted Type summon"               -> (
+      "import scala.quoted.*\ndef makeType(using Quotes): Type[Int] =\n  val quotedType: Type[Int] = Type.of[Int]\n  quotedType\n",
+      "quotedType",
+      Set("Type", "Int")
+    ),
+    "intersection with refinement"     -> (
+      "trait Reader:\n  def read: String\nval reader: Reader { def read: String } = new Reader:\n  def read: String = \"x\"\n",
+      "reader",
+      Set("Reader")
+    ),
+    "Aux pattern"                      -> (
+      "trait Foo:\n  type Out\n  def out: Out\nobject Foo:\n  type Aux[O] = Foo { type Out = O }\n  def apply[O](v: O): Aux[O] = new Foo:\n    type Out = O\n    def out: Out = v\nval fooInstance = Foo(42)\nval resolved: Int = fooInstance.out\n",
+      "resolved",
+      Set("Int")
+    )
   )
 
   def testPcTypeResolution(): Unit = withSession: session =>
