@@ -58,11 +58,12 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val document  = myFixture.getEditor.getDocument
     val function  = child[ScFunction](file)
     val parameter = child[ScParameter](file)
+    val paramType = parameter.typeElement.get
     val declared  = children[ScTypeElement](file).find(_.getText == "String").get
     val entries   = Seq(
       entry(function, PcTypedTreeRole.Function, "(Main.function : (parameter: Int): String)"),
       entry(function, PcTypedTreeRole.FunctionResult, "String"),
-      entry(parameter, PcTypedTreeRole.Parameter, "Int"),
+      entry(paramType, PcTypedTreeRole.Declared, "Int"),
       entry(declared, PcTypedTreeRole.Declared, "String")
     )
     val snapshot  = typedTreeSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, entries)

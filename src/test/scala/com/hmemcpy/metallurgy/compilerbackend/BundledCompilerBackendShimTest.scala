@@ -5,10 +5,12 @@ import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
@@ -22,7 +24,6 @@ import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, a
 import java.lang.management.ManagementFactory
 import java.util.Arrays
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -134,6 +135,42 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertEquals("_root_.scala.Predef.String", rendered(pattern.`type`()))
     assertEquals("Boolean", pattern.expectedType.map(_.canonicalText).orNull)
 
+  def testRealSnapshotDrivesFunctionsParametersAndDestructuredBindings(): Unit =
+    val source =
+      """object Main:
+        |  def literal = 1
+        |  def polymorphic[A](value: A): A = value
+        |  def parameters(byName: => String, repeated: Int*): Unit = ()
+        |  val (number, text) = (1, "two")
+        |""".stripMargin
+    val file   = myFixture.configureByText("SemanticRoots.scala", source)
+
+    val _ = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val functions  = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
+    val parameters = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).stream().toList
+    val bindings   = PsiTreeUtil.findChildrenOfType(file, classOf[ScBindingPattern]).stream().toList
+
+    assertEquals("Int", rendered(functions.stream().filter(_.name == "literal").findFirst().orElseThrow().returnType))
+    assertEquals("A", rendered(functions.stream().filter(_.name == "polymorphic").findFirst().orElseThrow().returnType))
+
+    val byName   = parameters.stream().filter(_.name == "byName").findFirst().orElseThrow()
+    val repeated = parameters.stream().filter(_.name == "repeated").findFirst().orElseThrow()
+    assertEquals("_root_.scala.Predef.String", rendered(byName.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(byName.insideParamType))
+    assertEquals("Int", rendered(repeated.`type`()))
+    assertEquals("scala.Seq[Int]", rendered(repeated.outsideParamType))
+
+    val number = bindings.stream().filter(_.name == "number").findFirst().orElseThrow()
+    val text   = bindings.stream().filter(_.name == "text").findFirst().orElseThrow()
+    assertEquals("Int", rendered(number.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(text.`type`()))
+
   def testPendingBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Pending)
 
@@ -240,38 +277,28 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
 
-  def testCorruptBundledClassFingerprintIsRejected(): Unit =
-    val corrupted           = BundledCompilerBackendShim.supportedClassBytes().clone()
-    corrupted(corrupted.length - 1) = (corrupted.last ^ 1).toByte
-    val installationReached = new AtomicBoolean(false)
-    val status              = BundledCompilerBackendShim.installIfCompatible(corrupted): (_, _) =>
-      installationReached.set(true)
-      CompilerBackendShimStatus.Enabled("unexpected", "unexpected")
+  def testDiscoveryCoversInstalledSemanticRoots(): Unit =
+    val discovery = CompilerBackendShimDiscovery
+      .discover(classOf[ScTypeElement])
+      .fold(reason => throw new AssertionError(reason), identity)
+    val roles     = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
 
-    assertFalse(status.isEnabled)
-    assertFalse(installationReached.get())
-
-  def testSemanticManifestMatchesSupportedBundledPlugin(): Unit =
-    val patternImplementations = CompilerBackendShimManifest.targets.filter: target =>
-      target.className.contains(".base.patterns.") && target.className.endsWith("Impl")
-
-    assertEquals(17, patternImplementations.size)
-    CompilerBackendShimManifest.targets.foreach: target =>
-      assertEquals(
-        target.className,
-        Right(()),
-        BundledCompilerBackendShim.semanticCompatibility(
-          target,
-          BundledCompilerBackendShim.supportedSemanticClassBytes(target)
-        )
+    assertTrue(discovery.unavailableRoots.mkString(", "), discovery.unavailableRoots.isEmpty)
+    assertTrue(discovery.compilerTypeTarget.nonEmpty)
+    assertTrue(discovery.patternImplementations.size >= 17)
+    assertTrue(
+      CompilerBackendRole.values.forall(role =>
+        roles.contains(role) || role == CompilerBackendRole.Binding ||
+          role == CompilerBackendRole.ExpressionExact || role == CompilerBackendRole.ExpressionWidened ||
+          role == CompilerBackendRole.Function
       )
+    )
 
-  def testCorruptSemanticClassFingerprintIsRejected(): Unit =
-    val target    = CompilerBackendShimManifest.targets.head
-    val corrupted = BundledCompilerBackendShim.supportedSemanticClassBytes(target).clone()
-    corrupted(corrupted.length - 1) = (corrupted.last ^ 1).toByte
+  def testStructurallyIncompatiblePluginCannotInstall(): Unit =
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(Vector.empty)
 
-    assertTrue(BundledCompilerBackendShim.semanticCompatibility(target, corrupted).isLeft)
+    assertFalse(discovery.canInstall)
+    assertTrue(discovery.unavailableRoots.nonEmpty)
 
   def testInactiveBackendSelectorAllocationAndLatency(): Unit =
     val (typeElement, _) = declaredString("FastPath.scala")

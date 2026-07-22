@@ -7,8 +7,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 
 import java.lang.instrument.{ClassFileTransformer, Instrumentation}
 import java.lang.invoke.MethodHandles
-import java.security.{MessageDigest, ProtectionDomain}
-import java.util.HexFormat
+import java.security.ProtectionDomain
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import java.util.function.{BiFunction, Function}
@@ -22,22 +21,9 @@ private[metallurgy] object BundledCompilerBackendShim:
     case Installing
     case Finished(status: CompilerBackendShimStatus)
 
-  private val TargetClassName          = "org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement"
-  private val TargetInternalName       = TargetClassName.replace('.', '/')
-  private val TargetMethodName         = "type"
-  private val TargetDescriptor         = "()Lscala/util/Either;"
-  private val CompilerTypeClassName    = "org.jetbrains.plugins.scala.lang.psi.impl.CompilerType$"
-  private val CompilerTypeInternalName = CompilerTypeClassName.replace('.', '/')
-  private val CompilerTypeMethodName   = "apply"
-  private val CompilerTypeDescriptor   = "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
-  private val BridgeClassName          =
+  private val BridgeClassName    =
     "org.jetbrains.plugins.scala.lang.psi.api.base.types.MetallurgyCompilerBackendBridge"
-  private val BridgeInternalName       = BridgeClassName.replace('.', '/')
-
-  private val ExpectedClassFingerprint             = "01319ef4eee957a62ee8b2af4e901888e3a858a3c998c172efd45565455772ce"
-  private val ExpectedMethodFingerprint            = "31a4333ea0baf3429ff80a60cade86aee60af3e66e313e3a45f69ddfce3f84ab"
-  private val ExpectedCompilerTypeClassFingerprint =
-    "31463582b1c591ddc175e59edc2c5bb4c7ae589f45e069df1cb0a3b91da6aa3a"
+  private val BridgeInternalName = BridgeClassName.replace('.', '/')
 
   private val installation = new AtomicReference[Installation](Installation.NotStarted)
 
@@ -53,128 +39,101 @@ private[metallurgy] object BundledCompilerBackendShim:
         else install()
 
   private def attemptInstall(): CompilerBackendShimStatus =
-    try
-      val targetClass       = classOf[ScTypeElement]
-      val original          = classBytes(targetClass)
-      val compilerTypeClass = Class.forName(CompilerTypeClassName, true, targetClass.getClassLoader)
-      val compilerTypeBytes = classBytes(compilerTypeClass)
-      val semanticTargets   = CompilerBackendShimManifest.targets.map: target =>
-        target -> Class.forName(target.className, false, targetClass.getClassLoader)
-      val semanticMismatch  = semanticTargets.collectFirst:
-        case (target, semanticClass) if semanticCompatibility(target, classBytes(semanticClass)).isLeft =>
-          semanticCompatibility(target, classBytes(semanticClass)).swap.toOption.get
-      if sha256(compilerTypeBytes) != ExpectedCompilerTypeClassFingerprint then
+    CompilerBackendShimDiscovery.discover(classOf[ScTypeElement]) match
+      case Left(reason)                              => CompilerBackendShimStatus.Disabled(reason)
+      case Right(discovery) if !discovery.canInstall =>
         CompilerBackendShimStatus.Disabled(
-          s"unsupported $CompilerTypeClassName bytecode: class=${sha256(compilerTypeBytes)}"
+          s"no compatible Scala PSI type roots were found: ${discovery.unavailableRoots.mkString(", ")}"
         )
-      else if semanticMismatch.nonEmpty then semanticMismatch.get
-      else
-        installIfCompatible(original): (classHash, methodHash) =>
-          val bridge          = defineBridge(targetClass)
+      case Right(discovery)                          =>
+        try
           val instrumentation = ByteBuddyAgent.install()
           if !instrumentation.isRetransformClassesSupported then
             CompilerBackendShimStatus.Disabled("JVM does not support class retransformation")
-          else
-            installTransformer(
-              instrumentation,
-              targetClass,
-              compilerTypeClass,
-              semanticTargets,
-              bridge,
-              classHash,
-              methodHash
-            )
-    catch case NonFatal(error) => CompilerBackendShimStatus.Disabled(error.toString)
+          else installDiscovered(instrumentation, classOf[ScTypeElement], discovery)
+        catch case NonFatal(error) => CompilerBackendShimStatus.Disabled(error.toString)
 
-  private[compilerbackend] def installIfCompatible(
-      classBytes: Array[Byte]
-  )(installCompatible: (String, String) => CompilerBackendShimStatus): CompilerBackendShimStatus =
-    compatibility(classBytes) match
-      case Left(disabled)                 => disabled
-      case Right((classHash, methodHash)) => installCompatible(classHash, methodHash)
-
-  private[compilerbackend] def compatibility(
-      classBytes: Array[Byte]
-  ): Either[CompilerBackendShimStatus.Disabled, (String, String)] =
-    val classHash  = sha256(classBytes)
-    val methodHash = methodFingerprint(classBytes)
-    if classHash == ExpectedClassFingerprint && methodHash == ExpectedMethodFingerprint then
-      Right(classHash -> methodHash)
-    else
-      Left(
-        CompilerBackendShimStatus.Disabled(
-          s"unsupported $TargetClassName bytecode: class=$classHash method=$methodHash"
-        )
-      )
-
-  private[compilerbackend] def supportedClassBytes(): Array[Byte] = classBytes(classOf[ScTypeElement])
-
-  private[compilerbackend] def supportedSemanticClassBytes(target: CompilerBackendShimTarget): Array[Byte] =
-    classBytes(Class.forName(target.className, false, classOf[ScTypeElement].getClassLoader))
-
-  private[compilerbackend] def semanticCompatibility(
-      target: CompilerBackendShimTarget,
-      bytes: Array[Byte]
-  ): Either[CompilerBackendShimStatus.Disabled, Unit] =
-    val actual = sha256(bytes)
-    Either.cond(
-      actual == target.classFingerprint,
-      (),
-      CompilerBackendShimStatus.Disabled(s"unsupported ${target.className} bytecode: class=$actual")
-    )
-
-  private def installTransformer(
+  private def installDiscovered(
       instrumentation: Instrumentation,
-      targetClass: Class[?],
-      compilerTypeClass: Class[?],
-      semanticTargets: Vector[(CompilerBackendShimTarget, Class[?])],
-      bridge: Class[?],
-      classHash: String,
-      methodHash: String
+      anchorClass: Class[?],
+      discovery: CompilerBackendShimDiscoveryResult
   ): CompilerBackendShimStatus =
-    val declaredTypeTransformed = new AtomicBoolean(false)
-    val compilerTypeTransformed = new AtomicBoolean(false)
-    val semanticMethods         = ConcurrentHashMap.newKeySet[String]()
-    val transformer             = transformerFor(
-      targetClass.getClassLoader,
-      declaredTypeTransformed,
-      compilerTypeTransformed,
-      semanticMethods
+    val targetLoader       = anchorClass.getClassLoader
+    val semanticClasses    = discovery.semanticTargets.flatMap: target =>
+      loadTarget(targetLoader, target.className).map(target -> _)
+    val compilerTypeClass  = discovery.compilerTypeTarget.flatMap: target =>
+      loadTarget(targetLoader, target.className).map(target -> _)
+    val loadFailures       =
+      discovery.semanticTargets.filterNot(target => semanticClasses.exists(_._1 == target)).map(_.className) ++
+        discovery.compilerTypeTarget.toVector
+          .filterNot(target => compilerTypeClass.exists(_._1 == target))
+          .map(_.className)
+    val semanticMethods    = ConcurrentHashMap.newKeySet[String]()
+    val compilerTypeHooked = new AtomicBoolean(false)
+    val transformer        = transformerFor(
+      targetLoader,
+      discovery.semanticTargets,
+      discovery.compilerTypeTarget,
+      semanticMethods,
+      compilerTypeHooked
     )
-    val expectedSemanticMethods = CompilerBackendShimManifest.targets.flatMap: target =>
-      target.methods.map(methodKey(target, _))
-    var backendInstalled        = false
-    var transformerAdded        = false
+    val bridge             = defineBridge(anchorClass)
+    var transformerAdded   = false
+    var backendInstalled   = false
     try
       installBackend(bridge)
       backendInstalled = true
       instrumentation.addTransformer(transformer, true)
       transformerAdded = true
-      instrumentation.retransformClasses((Vector(targetClass, compilerTypeClass) ++ semanticTargets.map(_._2))*)
-      if declaredTypeTransformed.get() && compilerTypeTransformed.get() &&
-        semanticMethods.containsAll(expectedSemanticMethods.asJava)
-      then
-        bridge.getMethod("enable").invoke(null)
-        CompilerBackendShimStatus.Enabled(classHash, methodHash)
-      else
+      val transformFailures = (semanticClasses.map(_._2) ++ compilerTypeClass.map(_._2)).flatMap: targetClass =>
+        retransform(instrumentation, targetClass).left.toOption
+      val expectedMethods   = semanticClasses.flatMap: (target, _) =>
+        target.methods.map(methodKey(target, _))
+      val missingMethods    = expectedMethods.filterNot(semanticMethods.contains)
+      val unavailable       = (
+        discovery.unavailableRoots ++
+          loadFailures.map(name => s"unloadable $name") ++
+          transformFailures ++
+          missingMethods.map(key => s"untransformed $key") ++
+          Option.when(discovery.compilerTypeTarget.nonEmpty && !compilerTypeHooked.get())("CompilerType.apply")
+      ).distinct
+      if semanticMethods.isEmpty then
         uninstallBackend(bridge)
-        CompilerBackendShimStatus.Disabled("one or more compiler-backend roots were not transformed")
+        CompilerBackendShimStatus.Disabled("no compatible Scala PSI type roots were found")
+      else
+        bridge.getMethod("enable").invoke(null)
+        CompilerBackendShimStatus.Enabled(
+          semanticMethods.size() + Option.when(compilerTypeHooked.get())(1).sum,
+          unavailable
+        )
     catch
       case NonFatal(error) =>
         if backendInstalled then uninstallBackend(bridge)
-        throw error
+        CompilerBackendShimStatus.Disabled(error.toString)
     finally
       if transformerAdded then
         val _ = instrumentation.removeTransformer(transformer)
 
+  private def loadTarget(loader: ClassLoader, className: String): Option[Class[?]] =
+    try Some(Class.forName(className, false, loader))
+    catch case NonFatal(_) => None
+
+  private def retransform(instrumentation: Instrumentation, targetClass: Class[?]): Either[String, Unit] =
+    if !instrumentation.isModifiableClass(targetClass) then Left(s"unmodifiable ${targetClass.getName}")
+    else
+      try
+        instrumentation.retransformClasses(targetClass)
+        Right(())
+      catch case NonFatal(error) => Left(s"${targetClass.getName}: ${error.getClass.getSimpleName}")
+
   private def transformerFor(
       targetLoader: ClassLoader,
-      declaredTypeTransformed: AtomicBoolean,
-      compilerTypeTransformed: AtomicBoolean,
-      semanticMethods: java.util.Set[String]
+      semanticTargets: Vector[CompilerBackendShimTarget],
+      compilerTypeTarget: Option[CompilerTypeShimTarget],
+      semanticMethods: java.util.Set[String],
+      compilerTypeHooked: AtomicBoolean
   ): ClassFileTransformer =
-    val semanticTargets =
-      CompilerBackendShimManifest.targets.iterator.map(target => target.internalName -> target).toMap
+    val semanticByName = semanticTargets.iterator.map(target => target.internalName -> target).toMap
     new ClassFileTransformer:
       override def transform(
           loader: ClassLoader,
@@ -184,18 +143,16 @@ private[metallurgy] object BundledCompilerBackendShim:
           classfileBuffer: Array[Byte]
       ): Array[Byte] =
         if loader != targetLoader then null
-        else if className == TargetInternalName then
-          val output = transformTarget(classfileBuffer)
-          declaredTypeTransformed.set(true)
-          output
-        else if className == CompilerTypeInternalName then
-          val output = transformCompilerType(classfileBuffer)
-          compilerTypeTransformed.set(true)
-          output
         else
-          semanticTargets.get(className) match
+          semanticByName.get(className) match
             case Some(target) => transformSemanticTarget(classfileBuffer, target, semanticMethods)
-            case None         => null
+            case None         =>
+              compilerTypeTarget.filter(_.internalName == className) match
+                case Some(target) =>
+                  val output = transformCompilerType(classfileBuffer, target)
+                  compilerTypeHooked.set(true)
+                  output
+                case None         => null
 
   private def transformSemanticTarget(
       original: Array[Byte],
@@ -204,6 +161,7 @@ private[metallurgy] object BundledCompilerBackendShim:
   ): Array[Byte] =
     val reader = new ClassReader(original)
     val writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS)
+    var found  = Set.empty[String]
     reader.accept(
       new ClassVisitor(Opcodes.ASM9, writer):
         override def visitMethod(
@@ -217,19 +175,28 @@ private[metallurgy] object BundledCompilerBackendShim:
           target.methods.find(method => method.name == name && method.descriptor == descriptor) match
             case None         => originalMethod
             case Some(method) =>
-              val _ = transformedMethods.add(methodKey(target, method))
+              found += methodKey(target, method)
               new AdviceAdapter(Opcodes.ASM9, originalMethod, access, name, descriptor):
                 override def onMethodEnter(): Unit =
                   val fallback = new Label()
                   visitVarInsn(Opcodes.ALOAD, method.elementLocal)
-                  visitLdcInsn(Integer.valueOf(method.role.ordinal))
-                  visitMethodInsn(
-                    Opcodes.INVOKESTATIC,
-                    BridgeInternalName,
-                    "semanticType",
-                    "(Ljava/lang/Object;I)Ljava/lang/Object;",
-                    false
-                  )
+                  if method.role == CompilerBackendRole.DeclaredType then
+                    visitMethodInsn(
+                      Opcodes.INVOKESTATIC,
+                      BridgeInternalName,
+                      "declaredType",
+                      "(Ljava/lang/Object;)Ljava/lang/Object;",
+                      false
+                    )
+                  else
+                    visitLdcInsn(Integer.valueOf(method.role.ordinal))
+                    visitMethodInsn(
+                      Opcodes.INVOKESTATIC,
+                      BridgeInternalName,
+                      "semanticType",
+                      "(Ljava/lang/Object;I)Ljava/lang/Object;",
+                      false
+                    )
                   visitInsn(Opcodes.DUP)
                   visitJumpInsn(Opcodes.IFNULL, fallback)
                   visitTypeInsn(Opcodes.CHECKCAST, method.resultInternalName)
@@ -239,9 +206,11 @@ private[metallurgy] object BundledCompilerBackendShim:
       ,
       ClassReader.EXPAND_FRAMES
     )
-    writer.toByteArray
+    val output = writer.toByteArray
+    val _      = transformedMethods.addAll(found.asJava)
+    output
 
-  private def transformTarget(original: Array[Byte]): Array[Byte] =
+  private def transformCompilerType(original: Array[Byte], target: CompilerTypeShimTarget): Array[Byte] =
     val reader = new ClassReader(original)
     val writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS)
     reader.accept(
@@ -254,49 +223,12 @@ private[metallurgy] object BundledCompilerBackendShim:
             exceptions: Array[String]
         ): MethodVisitor =
           val originalMethod = super.visitMethod(access, name, descriptor, signature, exceptions)
-          if name != TargetMethodName || descriptor != TargetDescriptor then originalMethod
+          if name != target.methodName || descriptor != target.descriptor then originalMethod
           else
             new AdviceAdapter(Opcodes.ASM9, originalMethod, access, name, descriptor):
               override def onMethodEnter(): Unit =
                 val fallback = new Label()
-                visitVarInsn(Opcodes.ALOAD, 0)
-                visitMethodInsn(
-                  Opcodes.INVOKESTATIC,
-                  BridgeInternalName,
-                  "declaredType",
-                  "(Ljava/lang/Object;)Ljava/lang/Object;",
-                  false
-                )
-                visitInsn(Opcodes.DUP)
-                visitJumpInsn(Opcodes.IFNULL, fallback)
-                visitTypeInsn(Opcodes.CHECKCAST, "scala/util/Either")
-                visitInsn(Opcodes.ARETURN)
-                visitLabel(fallback)
-                visitInsn(Opcodes.POP)
-      ,
-      ClassReader.EXPAND_FRAMES
-    )
-    writer.toByteArray
-
-  private def transformCompilerType(original: Array[Byte]): Array[Byte] =
-    val reader = new ClassReader(original)
-    val writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS)
-    reader.accept(
-      new ClassVisitor(Opcodes.ASM9, writer):
-        override def visitMethod(
-            access: Int,
-            name: String,
-            descriptor: String,
-            signature: String,
-            exceptions: Array[String]
-        ): MethodVisitor =
-          val originalMethod = super.visitMethod(access, name, descriptor, signature, exceptions)
-          if name != CompilerTypeMethodName || descriptor != CompilerTypeDescriptor then originalMethod
-          else
-            new AdviceAdapter(Opcodes.ASM9, originalMethod, access, name, descriptor):
-              override def onMethodEnter(): Unit =
-                val fallback = new Label()
-                visitVarInsn(Opcodes.ALOAD, 1)
+                visitVarInsn(Opcodes.ALOAD, target.elementLocal)
                 visitMethodInsn(
                   Opcodes.INVOKESTATIC,
                   BridgeInternalName,
@@ -315,8 +247,8 @@ private[metallurgy] object BundledCompilerBackendShim:
     )
     writer.toByteArray
 
-  private def defineBridge(targetClass: Class[?]): Class[?] =
-    try Class.forName(BridgeClassName, false, targetClass.getClassLoader)
+  private def defineBridge(anchorClass: Class[?]): Class[?] =
+    try Class.forName(BridgeClassName, false, anchorClass.getClassLoader)
     catch
       case _: ClassNotFoundException =>
         val path   = BridgeClassName.replace('.', '/') + ".class"
@@ -325,10 +257,11 @@ private[metallurgy] object BundledCompilerBackendShim:
         val bytes  =
           try stream.readAllBytes()
           finally stream.close()
-        MethodHandles.privateLookupIn(targetClass, MethodHandles.lookup()).defineClass(bytes)
+        MethodHandles.privateLookupIn(anchorClass, MethodHandles.lookup()).defineClass(bytes)
 
   private def installBackend(bridge: Class[?]): Unit =
-    val backend: Function[Object, Object]                        = element => BundledCompilerBackendDispatcher.declaredType(element)
+    val declaredTypeBackend: Function[Object, Object]            = element =>
+      BundledCompilerBackendDispatcher.declaredType(element)
     val compilerTypeMissing                                      = bridge.getMethod("missingCompilerType").invoke(null)
     val compilerTypeBackend: Function[Object, Object]            = element =>
       BundledCompilerBackendDispatcher.compilerType(element) match
@@ -337,7 +270,7 @@ private[metallurgy] object BundledCompilerBackendShim:
         case CompilerTypeSelection.FallThrough    => null
     val semanticTypeBackend: BiFunction[Object, Integer, Object] = (element, role) =>
       BundledCompilerBackendDispatcher.semanticType(element, role.intValue())
-    val _                                                        = bridge.getMethod("install", classOf[Function[?, ?]]).invoke(null, backend)
+    val _                                                        = bridge.getMethod("install", classOf[Function[?, ?]]).invoke(null, declaredTypeBackend)
     val _                                                        = bridge
       .getMethod("installCompilerTypeBackend", classOf[Function[?, ?]])
       .invoke(null, compilerTypeBackend)
@@ -348,37 +281,5 @@ private[metallurgy] object BundledCompilerBackendShim:
   private def uninstallBackend(bridge: Class[?]): Unit =
     val _ = bridge.getMethod("uninstall").invoke(null)
 
-  private def classBytes(targetClass: Class[?]): Array[Byte] =
-    val binaryName = targetClass.getName
-    val resource   = binaryName.substring(binaryName.lastIndexOf('.') + 1) + ".class"
-    val stream     = targetClass.getResourceAsStream(resource)
-    if stream == null then throw new IllegalStateException(s"missing class resource $resource")
-    try stream.readAllBytes()
-    finally stream.close()
-
   private def methodKey(target: CompilerBackendShimTarget, method: CompilerBackendShimMethod): String =
     s"${target.internalName}.${method.name}${method.descriptor}"
-
-  private def methodFingerprint(classBytes: Array[Byte]): String =
-    val writer = new ClassWriter(0)
-    writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "MethodFingerprint", null, "java/lang/Object", null)
-    new ClassReader(classBytes).accept(
-      new ClassVisitor(Opcodes.ASM9):
-        override def visitMethod(
-            access: Int,
-            name: String,
-            descriptor: String,
-            signature: String,
-            exceptions: Array[String]
-        ): MethodVisitor =
-          if name == TargetMethodName && descriptor == TargetDescriptor then
-            writer.visitMethod(access, name, descriptor, signature, exceptions)
-          else null
-      ,
-      0
-    )
-    writer.visitEnd()
-    sha256(writer.toByteArray)
-
-  private def sha256(bytes: Array[Byte]): String =
-    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))

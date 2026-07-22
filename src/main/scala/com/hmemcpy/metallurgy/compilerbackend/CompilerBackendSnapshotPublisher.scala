@@ -16,6 +16,7 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiFile, PsiManager, SmartPointerManager}
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
@@ -160,9 +161,11 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
           .map(mapping(_, CompilerBackendRole.ExpressionWidened, entry.renderedType, symbolId))
           .toSeq
       case PcTypedTreeRole.Declared          =>
-        exactAncestor[ScTypeElement](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.DeclaredType, entry.renderedType, symbolId))
-          .toSeq
+        exactAncestor[ScTypeElement](file, entry.range).toSeq.flatMap: declared =>
+          val parameter = Option(PsiTreeUtil.getParentOfType(declared, classOf[ScParameter], true))
+            .filter(_.typeElement.contains(declared))
+            .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbolId))
+          mapping(declared, CompilerBackendRole.DeclaredType, entry.renderedType, symbolId) +: parameter.toSeq
       case PcTypedTreeRole.Inferred          =>
         exactAncestor[ScValueOrVariableDefinition](file, entry.range).toSeq.flatMap: definition =>
           val binding =
@@ -172,6 +175,7 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
           mapping(definition, CompilerBackendRole.Definition, entry.renderedType, symbolId) +: binding
       case PcTypedTreeRole.Parameter         =>
         exactAncestor[ScParameter](file, entry.range)
+          .filter(_.typeElement.isEmpty)
           .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbolId))
           .toSeq
       case PcTypedTreeRole.Function          =>

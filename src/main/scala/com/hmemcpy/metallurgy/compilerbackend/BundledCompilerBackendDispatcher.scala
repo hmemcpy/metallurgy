@@ -5,7 +5,6 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.psi.PsiElement
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
-import org.jetbrains.plugins.scala.lang.psi.types.result.TypeResult
 
 import scala.util.control.NonFatal
 
@@ -22,9 +21,10 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
       case _               => CompilerTypeSelection.FallThrough
 
   def semanticType(element: Object, roleOrdinal: Int): Object =
-    (element, CompilerBackendRole.fromOrdinalOrNone(roleOrdinal)) match
-      case (psi: PsiElement, Some(role)) => semanticTypeFor(psi, role)
-      case _                             => null
+    element match
+      case psi: PsiElement if roleOrdinal >= 0 && roleOrdinal < CompilerBackendRole.values.length =>
+        semanticTypeFor(psi, CompilerBackendRole.values(roleOrdinal))
+      case _                                                                                      => null
 
   private def lookup(element: ScTypeElement): Object =
     try
@@ -46,22 +46,18 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
 
   private def semanticTypeFor(element: PsiElement, role: CompilerBackendRole): Object =
     try
-      currentResult(element, role) match
-        case Some(result) if role == CompilerBackendRole.PatternExpected =>
-          result.fold(_ => null, value => Some(value).asInstanceOf[Object])
-        case Some(result)                                                => result.asInstanceOf[Object]
-        case None                                                        => null
+      val module = ModuleUtilCore.findModuleForPsiElement(element)
+      if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then null
+      else
+        Scala3CompilerBackend.get(element.getProject).stateForActiveModule(element, module, role) match
+          case CompilerBackendState.Current(_, result) if role == CompilerBackendRole.PatternExpected =>
+            result.fold(_ => null, value => Some(value).asInstanceOf[Object])
+          case CompilerBackendState.Current(_, result)                                                =>
+            result.asInstanceOf[Object]
+          case _                                                                                      => null
     catch
       case control: ControlFlowException => throw control
       case NonFatal(_)                   => null
-
-  private def currentResult(element: PsiElement, role: CompilerBackendRole): Option[TypeResult] =
-    Option(ModuleUtilCore.findModuleForPsiElement(element))
-      .filter(ModuleDetectionService.get(element.getProject).isActive)
-      .flatMap: module =>
-        Scala3CompilerBackend.get(element.getProject).stateForActiveModule(element, module, role) match
-          case CompilerBackendState.Current(_, result) => Some(result)
-          case _                                       => None
 
   private def compilerTypeFor(element: PsiElement): CompilerTypeSelection =
     val moduleSelection =
