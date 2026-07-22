@@ -112,6 +112,13 @@ Scala 3 defines separate production and consumption settings:
 `-Ybest-effort` emits best-effort TASTy during the pickler phase, while
 `-Ywith-best-effort-tasty` permits reading it
 ([`ScalaSettings.scala:448-449`](https://github.com/scala/scala3/blob/3.7.4/compiler/src/dotty/tools/dotc/config/ScalaSettings.scala#L448-L449)).
+The [Scala 3.5.2 best-effort specification](https://www.scala-lang.org/api/3.5.2/docs/docs/internals/best-effort-compilation.html)
+also makes two compatibility properties explicit. The format adds an
+`ERRORtype` representation for erroneous types, and while experimental it has
+no compatibility guarantee even between compiler patch releases. Exact-version
+compiler resolution is therefore an artifact-correctness requirement, not only
+a classloader convenience: the producer and consumer for a best-effort output
+must be the same compiler coordinate.
 The full compiler includes `Pickler` after its frontend phases
 ([`Compiler.scala:29-56`](https://github.com/scala/scala3/blob/3.7.4/compiler/src/dotty/tools/dotc/Compiler.scala#L29-L56));
 when best-effort mode is enabled, `Pickler` writes into
@@ -132,6 +139,13 @@ best-effort TASTy was used
 ([`SymbolLoaders.scala:474-502`](https://github.com/scala/scala3/blob/3.7.4/compiler/src/dotty/tools/dotc/core/SymbolLoaders.scala#L474-L502)).
 This is why Metallurgy should let the exact compiler artifact own the binary
 format instead of introducing a plugin-side reader.
+
+The specification also permits a `.betasty` file produced without frontend
+errors to use the ordinary TASTy header. Metallurgy must consequently treat the
+artifact location and the exact compiler's load result as authoritative; it
+must not sniff headers to classify artifacts. Semantic records derived from an
+`ERRORtype` remain unavailable/error records rather than being presented as a
+valid Scala type.
 
 ## Scalameta interface boundary
 

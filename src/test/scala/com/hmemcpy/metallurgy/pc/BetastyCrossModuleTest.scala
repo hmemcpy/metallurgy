@@ -103,6 +103,62 @@ final class BetastyCrossModuleTest extends ScalaLightCodeInsightFixtureTestCase:
     finally deleteRecursively(outA)
   }
 
+  def testBrokenUpstreamApiRetainsValidMembersAndRefreshesRepairedTypes(): Unit = withFetcher { fetcher =>
+    val outA    = Files.createTempDirectory("metallurgy-moduleA")
+    val brokenA =
+      """object ModuleAApi:
+        |  def getModuleAName: String = "module A"
+        |  def missingType: MissingType = ???
+        |  def wrongType: Int = "not an int"
+        |""".stripMargin
+    val fixedA  =
+      """object ModuleAApi:
+        |  def getModuleAName: String = "module A"
+        |  def missingType: String = "repaired"
+        |  def wrongType: Int = 1
+        |""".stripMargin
+    val useApi  =
+      """object Main:
+        |  val observed = ModuleAApi.missingType
+        |""".stripMargin
+
+    try
+      compileBrokenModuleA(fetcher, outA, brokenA)
+      val brokenSession = newSession(fetcher, outA)
+      try
+        assertEquals(None, publishedType(brokenSession, useApi, 1L, "ModuleAApi.missingType"))
+
+        val completionSource =
+          """object Main:
+            |  ModuleAApi.get
+            |""".stripMargin
+        val completionOffset = completionSource.lastIndexOf("get") + 3
+        val completion       = PcSnapshot(moduleBUri, 2L, completionSource)
+        val _                = brokenSession.scheduleRetypecheck(completion).get(30, TimeUnit.SECONDS)
+        val offered          = brokenSession.complete(moduleBUri, completionSource, 2L, completionOffset).map(_.lookupName)
+        assertTrue(s"valid best-effort member was not offered: $offered", offered.contains("getModuleAName"))
+
+        val invalidUse = PcSnapshot(moduleBUri, 3L, "object Main:\n  ModuleAApi.unknown\n")
+        val _          = brokenSession.scheduleRetypecheck(invalidUse).get(30, TimeUnit.SECONDS)
+        val errors     = brokenSession.diagnostics(invalidUse).getOrElse(Seq.empty).filter(_.isError)
+        assertTrue(
+          s"missing downstream member was not diagnosed: $errors",
+          errors.exists(_.message.contains("unknown"))
+        )
+        assertTrue(
+          s"the upstream API object itself did not resolve: $errors",
+          !errors.exists(_.message.contains("Not found: ModuleAApi"))
+        )
+      finally brokenSession.close()
+
+      clear(outA)
+      compileModuleA(fetcher, outA, fixedA)
+      val repairedSession = newSession(fetcher, outA)
+      try assertEquals(Some("String"), publishedType(repairedSession, useApi, 4L, "ModuleAApi.missingType"))
+      finally repairedSession.close()
+    finally deleteRecursively(outA)
+  }
+
   def testBetastyArtifactIsValidAndCrossModuleResolvable(): Unit = withFetcher { fetcher =>
     val outA    = Files.createTempDirectory("metallurgy-moduleA")
     val brokenA = readFixture("module_a", "broken_source.scala")
@@ -160,6 +216,13 @@ final class BetastyCrossModuleTest extends ScalaLightCodeInsightFixtureTestCase:
         assertTrue(s"Expected Person to resolve ($because), but got: $detail", personErrors.isEmpty)
       case false =>
         assertTrue(s"Expected Person to be unresolved ($because), but it resolved cleanly", personErrors.nonEmpty)
+
+  private def publishedType(session: PcSession, source: String, version: Long, expression: String): Option[String] =
+    val snapshot = PcSnapshot(moduleBUri, version, source)
+    val outcome  = session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
+    assertEquals(RetypecheckOutcome.Applied, outcome)
+    val start    = source.indexOf(expression)
+    session.inlineType(snapshot, new com.intellij.openapi.util.TextRange(start, start + expression.length))
 
   /** Compiles a clean `source` for module A with the production BETASTy flags. */
   private def compileModuleA(fetcher: MtagsFetcher, outDir: Path, source: String): Unit =

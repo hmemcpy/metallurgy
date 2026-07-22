@@ -438,7 +438,7 @@ private[pc] final class PcInlineTypeDriver(
           TypeRendering.Widened
         case _ => TypeRendering.Exact
       val rendered  = renderCompilerType(normalizedType(rawType, rendering, context), context)
-      Option.when(rendered.nonEmpty && rendered != "<empty>" && !rendered.contains("<error")):
+      Option.when(isPublishableType(rendered)):
         PcTypedTreeEntry(
           candidate.range,
           candidate.role,
@@ -487,7 +487,12 @@ private[pc] final class PcInlineTypeDriver(
       .invoke(interactive, arguments*)
 
   private def renderType(path: AnyRef, context: AnyRef): Option[String] =
-    selectTree(pathTrees(path)).map(selection => renderTreeType(selection, context))
+    selectTree(pathTrees(path))
+      .map(selection => renderTreeType(selection, context))
+      .filter(isPublishableType)
+
+  private def isPublishableType(rendered: String): Boolean =
+    rendered.nonEmpty && rendered != "<empty>" && !rendered.contains("<error")
 
   private def selectTree(trees: List[AnyRef]): Option[TypedTreeSelection] =
     trees.headOption.map: closest =>
