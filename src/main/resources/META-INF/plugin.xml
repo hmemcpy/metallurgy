@@ -58,6 +58,8 @@
         order="before scalaCompletionContrubutor"/>
     <daemon.highlightInfoFilter
         implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
+    <highlightingPassFactory
+        implementation="com.hmemcpy.metallurgy.feature.inlay.PcTypeHintsPassFactory"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>

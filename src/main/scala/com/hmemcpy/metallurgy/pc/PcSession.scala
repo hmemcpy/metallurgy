@@ -67,9 +67,14 @@ final class PcSession private (
             if applicationIsDispatchThread then None
             else
               active.cachedOrCompute(key, System.nanoTime()):
-                Option(inlineTypeDrivers.get(snapshot.fileUri))
-                  .flatMap(_.use(_.typeAt(snapshot, range)))
-                  .flatten
+                try
+                  Option(inlineTypeDrivers.get(snapshot.fileUri))
+                    .flatMap(_.use(_.typeAt(snapshot, range)))
+                    .flatten
+                catch
+                  case NonFatal(error) =>
+                    Log.warn(s"PC inline type failed for ${snapshot.fileUri}", error)
+                    None
       case None         => None
 
   /** Return compiler diagnostics only for the currently published document version. A failed compiler request is
@@ -99,7 +104,7 @@ final class PcSession private (
   /** Debounces edits per session. A newer edit supersedes the scheduled result; typed state is published only after a
     * successful compiler run.
     */
-  private[pc] def scheduleRetypecheck(snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
+  private[metallurgy] def scheduleRetypecheck(snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
     if closed.get() then CompletableFuture.completedFuture(RetypecheckOutcome.Superseded)
     else if snapshots.matching(snapshot.fileUri, snapshot.documentVersion).nonEmpty then
       CompletableFuture.completedFuture(RetypecheckOutcome.Applied)
