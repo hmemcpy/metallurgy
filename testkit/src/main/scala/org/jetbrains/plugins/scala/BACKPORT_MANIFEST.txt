@@ -6,7 +6,7 @@ Source branch: idea261.x
 Source commit: 8dd22d153b65c847f4ced8917dd7e02b83561e5d
 Target repo : /Users/hmemcpy/git/metallurgy
 Target path : src/test/scala/org/jetbrains/plugins/scala/
-ADR         : docs/adr/0005-in-tree-testkit-backport.md
+PROVENANCE  : docs/archive/adr/0005-in-tree-testkit-backport.md
 
 All paths below are relative to the package root
 `src/test/scala/org/jetbrains/plugins/scala/` in the target repo.

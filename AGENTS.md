@@ -3,13 +3,12 @@
 A third-party IntelliJ plugin that augments the bundled Scala plugin for **Scala 3.5+** modules by delegating language
 semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.interactive.InteractiveDriver`).
 
-- **Scope (current focus):** type *resolution* + *presentation* for macro-driven / new-feature Scala 3 where the bundled
-  plugin widens to `Any` — surfaced via the compiler-type slot, an inline type-hint pass, and completion. Ordinary and
-  library Scala 3 highlighting is already correct natively under compiler-based highlighting (CBH); do **not** extend
-  the diagnostics pipeline unless a real steady-state gap appears.
-- **Design doc:** [`docs/design.md`](docs/design.md) · **Glossary:** [`CONTEXT.md`](CONTEXT.md) ·
-  **Decisions:** [`docs/adr/`](docs/adr/) (0008 = CBH gate, 0010 = native-clean, 0011 = rescope) ·
-  **Gap list:** [`docs/research/15`](docs/research/15-scala3-type-resolution-gaps.md).
+- **Scope:** replace all IntelliJ Scala type resolution in active Scala 3 modules with the real Scala 3 compiler,
+  driven through pc and best-effort compilation. Ordinary steady-state diagnostics remain owned by compiler-based
+  highlighting unless a measured gap appears.
+- **Canonical design:** [`docs/research/17-pc-authoritative-type-resolution.md`](docs/research/17-pc-authoritative-type-resolution.md).
+  It is the sole normative architecture, terminology, and decision source. Everything under [`docs/archive/`](docs/archive/)
+  is historical provenance only.
 - **Status:** pre-alpha. Compiler-type resolution and completion are available behind module opt-in.
 
 ## Discipline (non-negotiable)
@@ -28,7 +27,7 @@ semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.i
   helper, or test fixture, search it for an existing pattern to mirror.
 - **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
   *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
-  "wide-net", "how we got here"). Decisions live in `docs/adr/`, not in code.
+  "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
 - **Bound every test/compile run with a timeout.** No `Thread.sleep` for timing in production code — use latches/futures.
 
 ## Build & test
@@ -94,5 +93,4 @@ JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt -batch -no-colors "scalafmtAll" "test
 
 - **Issue tracker:** GitHub issues via `gh`. See `docs/agents/issue-tracker.md`.
 - **Triage labels:** `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-- **Domain docs:** single-context — `CONTEXT.md` at repo root + `docs/adr/`. See `docs/agents/domain.md`. The live work
-  queue is epic **#34** (check its comments for the current roadmap and "done" checklist).
+- **Domain docs:** use the canonical design document. See `docs/agents/domain.md`. The live work queue is epic **#50**.

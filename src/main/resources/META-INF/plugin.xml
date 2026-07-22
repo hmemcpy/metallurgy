@@ -5,15 +5,14 @@
   <vendor email="hmemcpy@gmail.com" url="https://github.com/hmemcpy/metallurgy">Igal Tabachnik</vendor>
 
   <description><![CDATA[
-    <p><b>Metallurgy</b> augments the bundled Scala plugin for Scala 3.5+ modules by delegating
-    language semantics (type inference, completion, error highlighting, macro expansion) to the
-    real Scala 3 presentation compiler from the Metals project.</p>
-    <p>Where the bundled plugin returns <code>Any</code> for a transparent-inline call, marks
-    a reference unresolved that should resolve, or reports a false-positive error, Metallurgy
-    intercepts and replaces that result with the authoritative answer from <code>pc</code>.
-    Where the bundled plugin is correct, Metallurgy gets out of the way.</p>
-    <p><b>Status:</b> pre-alpha. Compiler-type resolution and completion are available behind module opt-in.
-    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/design.md">the design doc</a>
+    <p><b>Metallurgy</b> replaces IntelliJ's Scala type resolution in opted-in Scala 3.5+ modules with
+    the real Scala 3 compiler, driven through the presentation compiler and best-effort compilation.</p>
+    <p>It retains Scala PSI as IntelliJ's integration model while making a versioned compiler snapshot
+    authoritative for type inference, resolution, completion, and other type consumers. Scala 2, older
+    Scala 3, and modules outside the strict activation gate are unaffected.</p>
+    <p><b>Status:</b> pre-alpha, post-PoC. Compiler-type resolution and completion are available; wholesale
+    type authority is the active implementation program.
+    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/research/17-pc-authoritative-type-resolution.md">the design doc</a>
     for the roadmap.</p>
   ]]></description>
 

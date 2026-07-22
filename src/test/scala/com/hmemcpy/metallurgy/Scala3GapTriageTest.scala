@@ -7,7 +7,7 @@ import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.compiler.highlighting.ScalaCompilerHighlightingTestBase
 import org.jetbrains.plugins.scala.util.CompilerTestUtil.runWithErrorsFromCompiler
 
-/** Triage of epic #34's gap themes under the real baseline: **CBH on (compile server), Metallurgy off**.
+/** Triage of Scala 3 gap themes under the real baseline: **CBH on (compile server), Metallurgy off**.
   *
   * Measures the actual error **`HighlightInfo`s** on each file (what the user sees), NOT compiler messages — valid code
   * compiling says nothing about whether the bundled plugin's highlighting layer marks it red. CBH highlights apply
