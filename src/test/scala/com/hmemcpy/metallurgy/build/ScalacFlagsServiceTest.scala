@@ -51,6 +51,17 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
     settings.setXsemanticdbEnabled(false)
     assertFalse(service.additionalOptions(getModule).contains(ScalacFlagsService.SemanticDbFlag))
 
+  def testPresentationCompilerConsumesButDoesNotProduceBestEffortTasty(): Unit =
+    val settings = MetallurgySettings(getProject)
+    val service  = ScalacFlagsService.get(getProject)
+
+    setCompilerBasedHighlighting(enabled = true)
+    settings.setEnabled(getModule, enabled = true)
+
+    val options = service.presentationCompilerOptions(getModule)
+    assertTrue(options.contains(ScalacFlagsService.BestEffortConsumerFlag))
+    assertFalse(options.contains(ScalacFlagsService.BestEffortProducerFlag))
+
   def testGlobalOptInKeepsFlagsWhenModuleOverrideIsRemoved(): Unit =
     val settings = MetallurgySettings(getProject)
     val service  = ScalacFlagsService.get(getProject)

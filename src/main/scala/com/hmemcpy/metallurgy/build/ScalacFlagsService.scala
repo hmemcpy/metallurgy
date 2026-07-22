@@ -40,6 +40,9 @@ final class ScalacFlagsService(project: Project) extends Disposable:
   private[metallurgy] def compilerOptions(module: Module): Seq[String] =
     BundledCompilerSettingsBridge.compilerOptions(module)
 
+  private[metallurgy] def presentationCompilerOptions(module: Module): Seq[String] =
+    compilerOptions(module).filterNot(_ == ScalacFlagsService.BestEffortProducerFlag)
+
   private def subscribeToCompilerHighlighting(): Unit =
     ApplicationManager.getApplication.getMessageBus
       .connect(this)
@@ -78,9 +81,11 @@ final class ScalacFlagsService(project: Project) extends Disposable:
   override def dispose(): Unit = ()
 
 object ScalacFlagsService:
-  val RequiredFlags: Seq[String] = Seq("-Ybest-effort", "-Ywith-best-effort-tasty")
-  val SemanticDbFlag: String     = "-Xsemanticdb"
-  val ManagedFlags: Set[String]  = (RequiredFlags :+ SemanticDbFlag).toSet
+  val BestEffortProducerFlag: String = "-Ybest-effort"
+  val BestEffortConsumerFlag: String = "-Ywith-best-effort-tasty"
+  val RequiredFlags: Seq[String]     = Seq(BestEffortProducerFlag, BestEffortConsumerFlag)
+  val SemanticDbFlag: String         = "-Xsemanticdb"
+  val ManagedFlags: Set[String]      = (RequiredFlags :+ SemanticDbFlag).toSet
 
   def get(project: Project): ScalacFlagsService =
     project.getService(classOf[ScalacFlagsService])

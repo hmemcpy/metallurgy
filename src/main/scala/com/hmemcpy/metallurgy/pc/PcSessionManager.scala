@@ -289,7 +289,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       ScalacFlagsService.get(project).enableFor(module)
       val classpath     = buildClasspath(module)
       val classpathHash = PcSessionManager.fingerprintClasspath(classpath)
-      val compilerFlags = ScalacFlagsService.get(project).compilerOptions(module)
+      val compilerFlags = ScalacFlagsService.get(project).presentationCompilerOptions(module)
       val updated       = sessions.compute(
         module,
         (_, existing) =>
@@ -337,7 +337,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     PcSessionManager.exposeBestEffortTastyRoots(roots)
 
   private def sessionEntryIsCurrent(module: Module, entry: SessionEntry): Boolean =
-    entry.compilerOptions == ScalacFlagsService.get(project).compilerOptions(module) &&
+    entry.compilerOptions == ScalacFlagsService.get(project).presentationCompilerOptions(module) &&
       entry.classpathHash == PcSessionManager.fingerprintClasspath(buildClasspath(module))
 
   private def applicationIsDispatchThread: Boolean =
