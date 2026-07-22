@@ -7,5 +7,7 @@ private[metallurgy] enum CompilerBackendRole:
   case Definition
   case Binding
   case Function
+  case FunctionResult
   case Parameter
   case Pattern
+  case PatternExpected

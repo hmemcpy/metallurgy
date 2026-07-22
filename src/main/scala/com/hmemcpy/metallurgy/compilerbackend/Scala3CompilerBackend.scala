@@ -515,9 +515,11 @@ final class Scala3CompilerBackend(project: Project):
         element.isInstanceOf[ScValueOrVariableDefinition]
       case CompilerBackendRole.Binding                                                 =>
         element.isInstanceOf[ScBindingPattern]
-      case CompilerBackendRole.Pattern                                                 =>
+      case CompilerBackendRole.Pattern | CompilerBackendRole.PatternExpected           =>
         element.isInstanceOf[ScPattern]
       case CompilerBackendRole.Function                                                =>
+        element.isInstanceOf[ScFunction]
+      case CompilerBackendRole.FunctionResult                                          =>
         element.isInstanceOf[ScFunction]
       case CompilerBackendRole.Parameter                                               =>
         element.isInstanceOf[ScParameter]

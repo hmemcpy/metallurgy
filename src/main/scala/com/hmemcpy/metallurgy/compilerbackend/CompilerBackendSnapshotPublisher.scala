@@ -178,6 +178,10 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
         exactAncestor[ScFunction](file, entry.range)
           .map(mapping(_, CompilerBackendRole.Function, entry.renderedType, symbolId))
           .toSeq
+      case PcTypedTreeRole.FunctionResult    =>
+        exactAncestor[ScFunction](file, entry.range)
+          .map(mapping(_, CompilerBackendRole.FunctionResult, entry.renderedType, symbolId))
+          .toSeq
       case PcTypedTreeRole.Pattern           =>
         exactAncestor[ScPattern](file, entry.range).toSeq.flatMap:
           case binding: ScBindingPattern =>
@@ -186,6 +190,10 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
               mapping(binding, CompilerBackendRole.Pattern, entry.renderedType, symbolId)
             )
           case pattern                   => Seq(mapping(pattern, CompilerBackendRole.Pattern, entry.renderedType, symbolId))
+      case PcTypedTreeRole.PatternExpected   =>
+        exactAncestor[ScPattern](file, entry.range)
+          .map(mapping(_, CompilerBackendRole.PatternExpected, entry.renderedType, symbolId))
+          .toSeq
 
   private def mapping(
       element: PsiElement,

@@ -315,7 +315,9 @@ private[pc] final class PcInlineTypeDriver(
       Option.when(kind == TypedTreeKind.ValDef && !parameter && symbolAvailable)(PcTypedTreeRole.Inferred),
       Option.when(kind == TypedTreeKind.ValDef && parameter && symbolAvailable)(PcTypedTreeRole.Parameter),
       Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.Function),
-      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.Pattern)
+      Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.FunctionResult),
+      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.Pattern),
+      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.PatternExpected)
     ).flatten.distinct
 
   private def startsAfterTypeAscription(sourceText: String, startOffset: Int): Boolean =
@@ -350,7 +352,9 @@ private[pc] final class PcInlineTypeDriver(
       case PcTypedTreeRole.Inferred          => 0
       case PcTypedTreeRole.Parameter         => 0
       case PcTypedTreeRole.Function          => 0
+      case PcTypedTreeRole.FunctionResult    => 0
       case PcTypedTreeRole.Pattern           => if kind == TypedTreeKind.Bind then 0 else 1
+      case PcTypedTreeRole.PatternExpected   => if kind == TypedTreeKind.Bind then 0 else 1
 
   private def symbolDetails(
       symbol: AnyRef,
@@ -422,10 +426,15 @@ private[pc] final class PcInlineTypeDriver(
       context: AnyRef
   ): Option[PcTypedTreeEntry] =
     try
-      val rawType   = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
+      val treeType  = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
+      val rawType   = candidate.role match
+        case PcTypedTreeRole.FunctionResult =>
+          val methodType = invokeContextual(treeType, "widenTermRefExpr", context)
+          invokeContextual(methodType, "finalResultType", context)
+        case _                              => treeType
       val rendering = candidate.role match
         case PcTypedTreeRole.ExpressionWidened | PcTypedTreeRole.Inferred | PcTypedTreeRole.Parameter |
-            PcTypedTreeRole.Pattern =>
+            PcTypedTreeRole.Pattern | PcTypedTreeRole.PatternExpected =>
           TypeRendering.Widened
         case _ => TypeRendering.Exact
       val rendered  = renderCompilerType(normalizedType(rawType, rendering, context), context)

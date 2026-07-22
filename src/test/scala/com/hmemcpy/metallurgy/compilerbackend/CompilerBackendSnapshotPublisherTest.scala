@@ -61,6 +61,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val declared  = children[ScTypeElement](file).find(_.getText == "String").get
     val entries   = Seq(
       entry(function, PcTypedTreeRole.Function, "(Main.function : (parameter: Int): String)"),
+      entry(function, PcTypedTreeRole.FunctionResult, "String"),
       entry(parameter, PcTypedTreeRole.Parameter, "Int"),
       entry(declared, PcTypedTreeRole.Declared, "String")
     )
@@ -69,6 +70,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     publishSynchronously(snapshot)
 
     assertRendered(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
+    assertCurrent(function, CompilerBackendRole.FunctionResult, "String")
     assertCurrent(parameter, CompilerBackendRole.Parameter, "Int")
     assertCurrent(declared, CompilerBackendRole.DeclaredType, "String")
 
@@ -132,6 +134,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val patterns   = children[ScBindingPattern](file).filter(pattern => Set("number", "text").contains(pattern.getText))
 
     assertRendered(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
+    assertCurrent(function, CompilerBackendRole.FunctionResult, "String")
     assertCurrent(parameter, CompilerBackendRole.Parameter, "Int")
     assertCurrent(declared, CompilerBackendRole.DeclaredType, "String")
     assertCurrent(definition, CompilerBackendRole.Definition, "String")
@@ -141,6 +144,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       val expected = if pattern.getText == "number" then "Int" else "String"
       assertCurrent(pattern, CompilerBackendRole.Binding, expected)
       assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
+      assertCurrent(pattern, CompilerBackendRole.PatternExpected, expected)
 
   def testRejectedGenerationCannotPublishStateOrMutateCompilerTypeSlot(): Unit =
     val file       = myFixture.configureByText("RejectedSnapshot.scala", "object Main:\n  val value = 1\n")

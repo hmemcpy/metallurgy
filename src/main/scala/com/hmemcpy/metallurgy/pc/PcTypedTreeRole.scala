@@ -7,4 +7,6 @@ private[metallurgy] enum PcTypedTreeRole:
   case Inferred
   case Parameter
   case Function
+  case FunctionResult
   case Pattern
+  case PatternExpected
