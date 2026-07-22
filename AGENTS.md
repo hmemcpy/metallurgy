@@ -75,9 +75,11 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 - **Presentation (Feature 0):** `CompilerTypeRequestResolver` subscribes to the bundled `CompilerType` topic and fills
   the compiler-type slot. Note: the bundled *requests* the type only for transparent-inline calls during completion,
   then *reads* the slot for any expression — so this path is completion-triggered.
-- **Inlay pass (proactive):** `PcTypeHintsPass` (an `EditorBoundHighlightingPass`, mirroring the bundled
-  `ImplicitHintsPass`) awaits the current version's retypecheck, renders inline type hints, and also writes the
-  compiler-type slot on each value definition's initializer (so hover/resolve see pc's type without a prior completion).
+- **Semantic population:** `CompilerBackendPass` schedules one coalesced population per document generation and returns
+  without waiting in the daemon read action. Cold compiler-artifact resolution uses a cancelable `Task.Backgroundable`
+  queued on the EDT; compilation, mapping, and publication stay off the EDT. Publication restarts the affected file.
+- **Inlay pass:** `PcTypeHintsPass` consumes only the current immutable compiler-backend snapshot. It renders inline type
+  hints and writes the compiler-type slot on each value definition's initializer; it never initiates or waits for pc work.
 - **Diagnostics (demoted to transient plumbing):** `PcDiagnosticSetCache` + `PcHighlightRenderer` + `PcHighlightInfoFilter`.
 - **Completion:** `Scala3PcCompletionContributor` + `PcCompletionMerger` (merges pc items over the bundled's).
 
