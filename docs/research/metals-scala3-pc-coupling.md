@@ -78,6 +78,17 @@ There is one explicit feature list: `supportedCodeActions()`. Its default is emp
 
 Other optional operations do not have explicit capability discovery. Metals calls them and interprets neutral output as absence. For example, it calls `inlayHints`; if the result is empty, it calls the older `syntheticDecorations` path ([`Compilers.scala:706-785`](https://github.com/scalameta/metals/blob/c7402f4b05aada79b2c84959d551cd6a658ebc1a/metals/src/main/scala/scala/meta/internal/metals/Compilers.scala#L706-L785)). That cannot distinguish “supported, legitimately no results” from “not implemented,” so it is not a sufficient model for a replacement backend.
 
+`hover` is not a structured type-query substitute. Scala 3's provider computes a distinct rendered expression type and
+passes it to `ScalaHover` ([`HoverProvider.scala:101-150`](https://github.com/scala/scala3/blob/3.7.4/presentation-compiler/src/main/dotty/tools/pc/HoverProvider.scala#L101-L150)),
+but the published `HoverSignature` interface exposes only the symbol signature, LSP markup, and range
+([`HoverSignature.java:8-15`](https://github.com/scalameta/metals/blob/c7402f4b05aada79b2c84959d551cd6a658ebc1a/mtags-interfaces/src/main/java/scala/meta/pc/HoverSignature.java#L8-L15)).
+The shared implementation retains `expressionType` internally, then folds it together with signature and documentation
+when producing presentation markup
+([`ScalaHover.scala:12-20,40-52`](https://github.com/scalameta/metals/blob/c7402f4b05aada79b2c84959d551cd6a658ebc1a/mtags-shared/src/main/scala/scala/meta/internal/pc/ScalaHover.scala#L12-L52)).
+Parsing Markdown or reflectively calling the implementation accessor would couple Metallurgy to presentation or private
+implementation details. A public structured expression-type accessor could be an incremental upstream improvement, but
+it would still require one query per PSI root and would not supply the whole-file symbol/synthetic records needed here.
+
 Compiler language experiments are a separate concern. Metals forwards ordinary build-target scalac options to the exact PC after filtering compiler-plugin options ([`CompilerConfiguration.scala:193-227`](https://github.com/scalameta/metals/blob/c7402f4b05aada79b2c84959d551cd6a658ebc1a/metals/src/main/scala/scala/meta/internal/metals/CompilerConfiguration.scala#L193-L227), [`CompilerPlugins.scala:39-58`](https://github.com/scalameta/metals/blob/c7402f4b05aada79b2c84959d551cd6a658ebc1a/metals/src/main/scala/scala/meta/internal/metals/CompilerPlugins.scala#L39-L58)). Thus a new syntax/type-system feature that the exact compiler understands can work without Metals understanding the compiler's private trees. By contrast, a new host-visible operation still requires a public API method or generic capability protocol.
 
 ### What is missing

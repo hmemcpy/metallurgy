@@ -249,7 +249,11 @@ resolved or does not advertise the required public capability returns `Unsupport
 allowlist, implementation-class lookup, classpath scan, or private reflection.
 
 Today `PresentationCompiler` exposes fixed public operations and the `supportedCodeActions()` string-list precedent,
-but not a complete bulk type map. The required additive upstream API is:
+but not a complete bulk type map. In particular, `hover` is not a safe type transport: Scala 3 computes a separate
+expression type, but `HoverSignature` exposes only the symbol signature and combined LSP presentation. Metallurgy must
+not parse Markdown or reflect on the compiler-local `ScalaHover.expressionType` accessor. A public structured
+expression-type accessor is useful as an incremental per-position operation, but it does not replace the bulk snapshot.
+The required additive upstream API is:
 
 - provider registration in `scala3-presentation-compiler` through `ServiceLoader`, with no Metallurgy-owned hardcoded
   implementation name;
