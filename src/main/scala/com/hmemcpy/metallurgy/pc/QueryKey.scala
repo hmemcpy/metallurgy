@@ -8,3 +8,4 @@ private[metallurgy] enum QueryKey:
   case Hover(offset: Int)
   case Diagnose(range: TextRange)
   case SemanticTokens
+  case TypedTreeSnapshot

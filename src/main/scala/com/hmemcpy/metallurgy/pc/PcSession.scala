@@ -2,7 +2,7 @@ package com.hmemcpy.metallurgy.pc
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.{ProcessCanceledException, ProgressManager}
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
@@ -30,6 +30,7 @@ final class PcSession private (
   private val inlineTypeDrivers     = new ConcurrentHashMap[String, InlineTypeDriverLease]()
   private val inlineDriverCreations = new AtomicInteger(0)
   private val snapshots             = new PcSnapshotStore()
+  private val requestedVersions     = new ConcurrentHashMap[String, java.lang.Long]()
   private val retypecheckGeneration = new AtomicLong(0L)
   private val pendingRetypecheck    = new AtomicReference[Option[PendingRetypecheck]](None)
   private val retypecheckLock       = new ReentrantLock()
@@ -99,6 +100,34 @@ final class PcSession private (
                     None
       case None         => None
 
+  /** Return the immutable typed-tree view only while this exact document version remains current. */
+  private[metallurgy] def typedTreeSnapshot(snapshot: PcSnapshot): Option[PcTypedTreeSnapshot] =
+    val key = QueryKey.TypedTreeSnapshot
+    snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
+      case Some(active) if !applicationIsDispatchThread =>
+        active
+          .cached[Option[PcTypedTreeSnapshot]](key, System.nanoTime())
+          .getOrElse:
+            active.cachedOrCompute(key, System.nanoTime()):
+              try
+                val currency   = () =>
+                  if !closed.get() &&
+                    Option(requestedVersions.get(snapshot.fileUri)).exists(_.longValue() == snapshot.documentVersion) &&
+                    snapshots.matching(snapshot.fileUri, snapshot.documentVersion).exists(_ eq active)
+                  then PcSnapshotCurrency.Current
+                  else PcSnapshotCurrency.Superseded
+                val extraction = Option(inlineTypeDrivers.get(snapshot.fileUri))
+                  .flatMap(_.use(_.typedTreeSnapshot(snapshot, currency)))
+                extraction.collect:
+                  case PcTypedTreeExtraction.Completed(extracted) if currency() == PcSnapshotCurrency.Current =>
+                    extracted
+              catch
+                case canceled: ProcessCanceledException => throw canceled
+                case NonFatal(error)                    =>
+                  Log.warn(s"PC typed-tree extraction failed for ${snapshot.fileUri}", error)
+                  None
+      case _                                            => None
+
   private[metallurgy] def snapshotCount: Int = snapshots.size
 
   /** Debounces edits per session. A newer edit supersedes the scheduled result; typed state is published only after a
@@ -106,19 +135,21 @@ final class PcSession private (
     */
   private[metallurgy] def scheduleRetypecheck(snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
     if closed.get() then CompletableFuture.completedFuture(RetypecheckOutcome.Superseded)
-    else if snapshots.matching(snapshot.fileUri, snapshot.documentVersion).nonEmpty then
-      CompletableFuture.completedFuture(RetypecheckOutcome.Applied)
     else
-      pendingRetypecheck.get() match
-        case Some(pending) if pending.isFor(snapshot) => pending.result
-        case _                                        =>
-          val generation     = retypecheckGeneration.incrementAndGet()
-          val result         = new CompletableFuture[RetypecheckOutcome]()
-          val task: Runnable = () => runRetypecheck(snapshot, generation, result)
-          val pending        = PendingRetypecheck(snapshot.fileUri, snapshot.documentVersion, task, result)
-          pendingRetypecheck.getAndSet(Some(pending)).foreach(_.supersede(retypecheckAlarm))
-          retypecheckAlarm.addRequest(task, PcSession.RetypecheckDebounceMillis)
-          result
+      requestedVersions.put(snapshot.fileUri, snapshot.documentVersion)
+      if snapshots.matching(snapshot.fileUri, snapshot.documentVersion).nonEmpty then
+        CompletableFuture.completedFuture(RetypecheckOutcome.Applied)
+      else
+        pendingRetypecheck.get() match
+          case Some(pending) if pending.isFor(snapshot) => pending.result
+          case _                                        =>
+            val generation     = retypecheckGeneration.incrementAndGet()
+            val result         = new CompletableFuture[RetypecheckOutcome]()
+            val task: Runnable = () => runRetypecheck(snapshot, generation, result)
+            val pending        = PendingRetypecheck(snapshot.fileUri, snapshot.documentVersion, task, result)
+            pendingRetypecheck.getAndSet(Some(pending)).foreach(_.supersede(retypecheckAlarm))
+            retypecheckAlarm.addRequest(task, PcSession.RetypecheckDebounceMillis)
+            result
 
   override def close(): Unit =
     if closed.compareAndSet(false, true) then
@@ -129,6 +160,7 @@ final class PcSession private (
       inlineTypeDrivers.clear()
       presentationCompiler.getAndSet(None).foreach(shutdown)
       snapshots.clear()
+      requestedVersions.clear()
       try classloader.close()
       catch case NonFatal(error) => Log.warn("Error closing PcSession classloader", error)
 

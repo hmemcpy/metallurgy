@@ -17,6 +17,7 @@ import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, a
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.{CompletableFuture, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.jdk.CollectionConverters.*
 
 final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
@@ -238,6 +239,169 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertTrue(diagnostics.toString, diagnostics.exists(_.exists(_.isError)))
       assertTrue(session.diagnostics(PcSnapshot(snapshot.fileUri, 2L, source)).isEmpty)
 
+  def testTypedTreeSnapshotRendersDefinitionRolesExactly(): Unit =
+    withRealPcSession("metallurgy-typed-tree-definitions"): session =>
+      val source    =
+        """object Main:
+          |  def function(parameter: Int): String = parameter.toString
+          |  val inferred = function(42)
+          |""".stripMargin
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreeDefinitions", source)
+
+      assertSnapshotEntry(
+        source,
+        extracted,
+        "def function(parameter: Int): String = parameter.toString",
+        PcTypedTreeRole.Function,
+        "(Main.function : (parameter: Int): String)"
+      )
+      assertSnapshotEntry(source, extracted, "parameter: Int", PcTypedTreeRole.Parameter, "(parameter : Int)")
+      assertSnapshotEntry(source, extracted, "val inferred = function(42)", PcTypedTreeRole.Inferred, "String")
+      assertSnapshotEntry(source, extracted, "String", PcTypedTreeRole.Declared, "String")
+      val inferredStart = source.indexOf("function(42)")
+      val inferredRange = PcSourceRange(inferredStart, inferredStart + "function(42)".length)
+      assertFalse(
+        extracted.entries.exists(entry => entry.range == inferredRange && entry.role == PcTypedTreeRole.Declared)
+      )
+
+  def testTypedTreeSnapshotRanksInlineApplyAndTypeApplyOverlap(): Unit =
+    withRealPcSession("metallurgy-typed-tree-overlap"): session =>
+      val source    =
+        """object Main:
+          |  transparent inline def identity[A](inline value: A): A = value
+          |  val inferred = identity[Int](42)
+          |""".stripMargin
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreeOverlap", source)
+
+      assertSnapshotEntry(source, extracted, "identity[Int](42)", PcTypedTreeRole.ExpressionExact, "(42 : Int)")
+      assertSnapshotEntry(source, extracted, "identity[Int](42)", PcTypedTreeRole.ExpressionWidened, "Int")
+      val retainedKeys = extracted.entries.map(entry => (entry.range, entry.role, entry.symbol.map(_.id)))
+      assertEquals(retainedKeys.distinct.size, retainedKeys.size)
+      assertTrue(extracted.metrics.deduplicatedCandidateCount > 0)
+      assertTrue(extracted.metrics.compilerWrapperOverlapCount > 0)
+
+  def testTypedTreeSnapshotMapsEachDestructuredBinding(): Unit =
+    withRealPcSession("metallurgy-typed-tree-patterns"): session =>
+      val source    = "object Main:\n  val pair = (1, \"two\")\n  val (number, text) = pair\n"
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreePatterns", source)
+
+      assertSnapshotEntry(source, extracted, "number", PcTypedTreeRole.Pattern, "(number : Int)")
+      assertSnapshotEntry(source, extracted, "text", PcTypedTreeRole.Pattern, "(text : String)")
+      val patterns = extracted.entries.filter(_.role == PcTypedTreeRole.Pattern)
+      assertTrue(patterns.nonEmpty)
+      assertTrue(patterns.forall(_.symbol.nonEmpty))
+
+  def testTypedTreeSnapshotRetainsRefinementTypes(): Unit =
+    withRealPcSession("metallurgy-typed-tree-refinement"): session =>
+      val source    = "object Main:\n  val refined: { val member: Int } = new { val member = 42 }\n"
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreeRefinement", source)
+
+      assertSnapshotEntry(
+        source,
+        extracted,
+        "val refined: { val member: Int } = new { val member = 42 }",
+        PcTypedTreeRole.Inferred,
+        "Object{val member: Int}"
+      )
+
+  def testTypedTreeSnapshotExcludesErrorOnlyTrees(): Unit =
+    withRealPcSession("metallurgy-typed-tree-errors"): session =>
+      val source    = "object Main:\n  val erroneous: Boolean = missing\n"
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreeErrors", source)
+
+      assertSnapshotEntry(
+        source,
+        extracted,
+        "val erroneous: Boolean = missing",
+        PcTypedTreeRole.Inferred,
+        "Boolean"
+      )
+      assertFalse(extracted.entries.exists(_.renderedType.contains("<error")))
+
+  def testTypedTreeSnapshotContainsBoundarySafeSymbolMetadata(): Unit =
+    withRealPcSession("metallurgy-typed-tree-metadata"): session =>
+      val source    = "object Main:\n  def answer(value: Int): Int = value\n"
+      val extracted = extractTypedTreeSnapshot(session, "TypedTreeMetadata", source)
+      val symbols   = extracted.entries.flatMap(_.symbol)
+
+      assertTrue(symbols.nonEmpty)
+      assertTrue(symbols.exists(_.ownerId.nonEmpty))
+      assertTrue(symbols.exists(_.navigation.exists(_.fileUri == "file:///TypedTreeMetadata.scala")))
+      assertTrue(
+        extracted.entries.forall(entry => entry.range.startOffset >= 0 && entry.range.endOffset <= source.length)
+      )
+      assertTrue(extracted.entries.forall(_.renderedType.nonEmpty))
+      assertTrue(extracted.metrics.visitedTreeCount >= extracted.metrics.positionedTreeCount)
+      assertEquals(extracted.entries.size, extracted.metrics.renderedTypeCount)
+      assertEquals(extracted.metrics.retainedEntryCount, extracted.metrics.renderedTypeCount)
+
+  def testTypedTreeSnapshotRejectsSupersededDocumentVersions(): Unit =
+    withRealPcSession("metallurgy-stale-typed-tree-snapshot"): session =>
+      val stale              = PcSnapshot("file:///StaleTypedTree.scala", 1L, "object Main:\n  val value = 1\n")
+      val current            = PcSnapshot("file:///StaleTypedTree.scala", 2L, "object Main:\n  val value = \"current\"\n")
+      val _                  = session.scheduleRetypecheck(stale).get(5, TimeUnit.SECONDS)
+      val currentRetypecheck = session.scheduleRetypecheck(current)
+
+      assertTrue(session.typedTreeSnapshot(stale).isEmpty)
+      assertEquals(RetypecheckOutcome.Applied, currentRetypecheck.get(5, TimeUnit.SECONDS))
+      assertTrue(session.typedTreeSnapshot(current).exists(_.documentVersion == 2L))
+
+  def testTypedTreeExtractionStopsWhenItsGenerationIsSuperseded(): Unit =
+    withRealPcSession("metallurgy-cancel-typed-tree-snapshot"): session =>
+      val source   =
+        (1 to 100).map(index => s"  val value$index = List($index).head").mkString("object Main:\n", "\n", "\n")
+      val snapshot = PcSnapshot("file:///CanceledTypedTree.scala", 1L, source)
+      val driver   = new PcInlineTypeDriver(session.classloader, session.compilerClasspath, session.compilerOptions)
+      val checks   = new AtomicInteger(0)
+      val currency = () =>
+        if checks.incrementAndGet() < 4 then PcSnapshotCurrency.Current
+        else PcSnapshotCurrency.Superseded
+
+      try
+        driver.retypecheck(snapshot)
+        assertEquals(PcTypedTreeExtraction.Superseded, driver.typedTreeSnapshot(snapshot, currency))
+        assertEquals(4, checks.get())
+      finally driver.close()
+
+  def testTypedTreeSnapshotRecordsCorpusMetrics(): Unit =
+    withRealPcSession("metallurgy-typed-tree-corpora"): session =>
+      val ordinary  = "object Ordinary:\n  val answer = List(42).head\n"
+      val large     =
+        (1 to 500).map(index => s"  val value$index = List($index).head").mkString("object Large:\n", "\n", "\n")
+      val typeLevel =
+        """import scala.compiletime.ops.int.*
+          |object TypeLevel:
+          |  type Answer = 40 + 2
+          |  transparent inline def answer: Int = 42
+          |  val result: Answer = answer
+          |""".stripMargin
+      val corpora   = Seq("Ordinary" -> ordinary, "Large" -> large, "TypeLevel" -> typeLevel)
+
+      val measured = corpora.zipWithIndex.map: (corpus, index) =>
+        val (name, source) = corpus
+        val snapshot       = PcSnapshot(s"file:///$name.scala", index.toLong + 1L, source)
+        val outcome        = session.scheduleRetypecheck(snapshot).get(10, TimeUnit.SECONDS)
+        assertEquals(s"$name retypecheck", RetypecheckOutcome.Applied, outcome)
+        val metrics        = session
+          .typedTreeSnapshot(snapshot)
+          .getOrElse(throw new AssertionError(s"$name typed-tree snapshot was not available"))
+          .metrics
+        println(
+          s"[typed-tree] $name: ${metrics.extractionDuration.toMillis}ms total, " +
+            s"${metrics.traversalDuration.toMillis}ms traverse/dedupe, " +
+            s"${metrics.renderingDuration.toMillis}ms render, " +
+            s"${metrics.visitedTreeCount} nodes, ${metrics.candidateCount} candidates, " +
+            s"${metrics.deduplicatedCandidateCount} deduplicated"
+        )
+        metrics
+
+      assertTrue(measured.forall(_.extractionDuration.length >= 0L))
+      assertTrue(measured.forall(_.traversalDuration.length >= 0L))
+      assertTrue(measured.forall(_.renderingDuration.length >= 0L))
+      assertTrue(measured.forall(_.visitedTreeCount > 0))
+      assertTrue(measured.forall(_.renderedTypeCount > 0))
+      assertTrue(measured(1).visitedTreeCount > measured.head.visitedTreeCount)
+
   def testWriterMirrorsRetypecheckOutcomeToCache(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-writer")
     val fetcher            = new MtagsFetcher(
@@ -346,6 +510,29 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     ApplicationManager.getApplication
       .executeOnPooledThread(() => body)
       .get(120, TimeUnit.SECONDS)
+
+  private def extractTypedTreeSnapshot(session: PcSession, name: String, source: String): PcTypedTreeSnapshot =
+    val snapshot = PcSnapshot(s"file:///$name.scala", 1L, source)
+    val outcome  = session.scheduleRetypecheck(snapshot).get(10, TimeUnit.SECONDS)
+    assertEquals(RetypecheckOutcome.Applied, outcome)
+    session
+      .typedTreeSnapshot(snapshot)
+      .getOrElse(throw new AssertionError(s"$name typed-tree snapshot was not available"))
+
+  private def assertSnapshotEntry(
+      source: String,
+      snapshot: PcTypedTreeSnapshot,
+      needle: String,
+      role: PcTypedTreeRole,
+      expectedType: String
+  ): Unit =
+    val start = source.indexOf(needle)
+    assertTrue(s"missing test needle '$needle'", start >= 0)
+    val range = PcSourceRange(start, start + needle.length)
+    assertTrue(
+      s"expected $range $role '$expectedType', got ${snapshot.entries.mkString("\n")}",
+      snapshot.entries.exists(entry => entry.range == range && entry.role == role && entry.renderedType == expectedType)
+    )
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
