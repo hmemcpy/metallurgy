@@ -30,11 +30,15 @@ final class PcCompletionTest extends ScalaLightCodeInsightFixtureTestCase:
   // (label, source ending at the caret, expected lookupNames)
   private val cases: Seq[(String, (String, Set[String]))] = Seq(
     "extension method"  -> (
-      "extension (s: String) def slugify: String = s.trim\nval result = \" A \".slugi",
+      """extension (s: String) def slugify: String = s.trim
+        |val result = " A ".slugi""".stripMargin,
       Set("slugify")
     ),
     "structural member" -> (
-      "import scala.reflect.Selectable.reflectiveSelectable\nval s: { def magic: Int } = new:\n  def magic: Int = 42\nval result = s.mag",
+      """import scala.reflect.Selectable.reflectiveSelectable
+        |val s: { def magic: Int } = new:
+        |  def magic: Int = 42
+        |val result = s.mag""".stripMargin,
       Set("magic")
     )
   )

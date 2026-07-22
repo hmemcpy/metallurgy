@@ -40,137 +40,224 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
   // (label, source, needle = the result val whose type we read, required substrings)
   private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
     "compiletime.ops int singleton"    -> (
-      "import scala.compiletime.ops.int.*\ntype Two = 2 + 2\nval r: Two = 4\n",
+      """import scala.compiletime.ops.int.*
+        |type Two = 2 + 2
+        |val r: Two = 4""".stripMargin,
       "4",
       Set("4")
     ),
     "compiletime.ops string Length"    -> (
-      "import scala.compiletime.ops.string.*\ntype L = Length[\"abc\"]\nval l: L = 3\n",
+      """import scala.compiletime.ops.string.*
+        |type L = Length["abc"]
+        |val l: L = 3""".stripMargin,
       "3",
       Set("3")
     ),
-    "match type reduction"             ->
-      (
-        "type Elem[X] = X match\n  case List[t] => t\n  case Array[t] => t\nval reduced: Elem[List[Int]] = 42\n",
-        "reduced",
-        Set("Int")
-      ),
-    "named tuple"                      -> ("val person = (name = \"Ada\", age = 1)\n", "person", Set("name", "age")),
-    "polymorphic function application" -> ("val id = [A] => (x: A) => x\nval result = id(42)\n", "result", Set("Int")),
-    "context function application"     -> (
-      "val cf: Int ?=> Int = summon[Int]\nval result: Int = cf(using 42)\n",
+    "match type reduction"             -> (
+      """type Elem[X] = X match
+        |  case List[t] => t
+        |  case Array[t] => t
+        |val reduced: Elem[List[Int]] = 42""".stripMargin,
+      "reduced",
+      Set("Int")
+    ),
+    "named tuple"                      -> ("""val person = (name = "Ada", age = 1)""", "person", Set("name", "age")),
+    "polymorphic function application" -> (
+      """val id = [A] => (x: A) => x
+        |val result = id(42)""".stripMargin,
       "result",
       Set("Int")
     ),
-    "Mirror summon"                    ->
-      (
-        "import scala.deriving.Mirror\ncase class P(name: String, age: Int)\nval mirror = summon[Mirror.Of[P]]\n",
-        "mirror",
-        Set("Mirror")
-      ),
-    "structural refinement select"     ->
-      (
-        "import scala.reflect.Selectable.reflectiveSelectable\nval s: { val x: Int } = new:\n  val x: Int = 1\nval selected = s.x\n",
-        "selected",
-        Set("Int")
-      ),
+    "context function application"     -> (
+      """val cf: Int ?=> Int = summon[Int]
+        |val result: Int = cf(using 42)""".stripMargin,
+      "result",
+      Set("Int")
+    ),
+    "Mirror summon"                    -> (
+      """import scala.deriving.Mirror
+        |case class P(name: String, age: Int)
+        |val mirror = summon[Mirror.Of[P]]""".stripMargin,
+      "mirror",
+      Set("Mirror")
+    ),
+    "structural refinement select"     -> (
+      """import scala.reflect.Selectable.reflectiveSelectable
+        |val s: { val x: Int } = new:
+        |  val x: Int = 1
+        |val selected = s.x""".stripMargin,
+      "selected",
+      Set("Int")
+    ),
     "transparent inline singleton"     -> (
-      "transparent inline def port: Int = 8080\nval p: 8080 = port\n",
+      """transparent inline def port: Int = 8080
+        |val p: 8080 = port""".stripMargin,
       "p",
       Set("8080")
     ),
-    "extension method result"          ->
-      (
-        "extension (s: String) def slug: String = s.trim.toLowerCase\nval trimmed = \" A \".slug\n",
-        "trimmed",
-        Set("String")
-      ),
+    "extension method result"          -> (
+      """extension (s: String) def slug: String = s.trim.toLowerCase
+        |val trimmed = " A ".slug""".stripMargin,
+      "trimmed",
+      Set("String")
+    ),
     "generic tuple HList head"         -> (
-      "val h: Int *: String *: EmptyTuple = (1, \"two\")\nval head = h.head\n",
+      """val h: Int *: String *: EmptyTuple = (1, "two")
+        |val head = h.head""".stripMargin,
       "head",
       Set("Int")
     ),
-    "inline match (Peano) result"      ->
-      (
-        "trait Nat\ncase object Zero extends Nat\ncase class Succ[N <: Nat](n: N) extends Nat\n" +
-          "transparent inline def toInt(n: Nat): Int =\n  inline n match\n    case Zero     => 0\n    case Succ(n1) => toInt(n1) + 1\n" +
-          "inline val two = toInt(Succ(Succ(Zero)))\n",
-        "two",
-        Set("2")
-      ),
+    "inline match (Peano) result"      -> (
+      """trait Nat
+        |case object Zero extends Nat
+        |case class Succ[N <: Nat](n: N) extends Nat
+        |transparent inline def toInt(n: Nat): Int =
+        |  inline n match
+        |    case Zero     => 0
+        |    case Succ(n1) => toInt(n1) + 1
+        |inline val two = toInt(Succ(Succ(Zero)))""".stripMargin,
+      "two",
+      Set("2")
+    ),
     "opaque type"                      -> (
-      "object Ports:\n  opaque type Port = Int\n  def apply(n: Int): Port = n\nval p: Ports.Port = Ports(8080)\n",
+      """object Ports:
+        |  opaque type Port = Int
+        |  def apply(n: Int): Port = n
+        |val p: Ports.Port = Ports(8080)""".stripMargin,
       "p",
       Set("Port")
     ),
-    "union type"                       -> ("val u: Int | String = 1\n", "u", Set("Int")),
-    "intersection type"                -> ("trait A\ntrait B\ntype AB = A & B\nval ab: AB = new A with B {}\n", "ab", Set("A")),
-    "extension on generic type"        ->
-      (
-        "extension [T](xs: List[T]) def firstOption: Option[T] = xs.headOption\nval x = List(1).firstOption\n",
-        "x",
-        Set("Option", "Int")
-      ),
-    "singleton literal type"           -> ("val answer: 42 = 42\n", "answer", Set("42")),
-    "type-level boolean negation"      ->
-      ("import scala.compiletime.ops.boolean.*\ntype NotFalse = ![false]\nval x: NotFalse = true\n", "x", Set("true")),
-    "quoted Expr"                      ->
-      (
-        "import scala.quoted.*\ndef makeExpr(using Quotes): Expr[Int] =\n  val e: Expr[Int] = '{ 42 }\n  e\n",
-        "e",
-        Set("Expr", "Int")
-      ),
-    "circe derives Codec"              ->
-      (
-        "import io.circe.{Codec, Encoder}\ncase class Person(name: String, age: Int) derives Codec.AsObject\nval enc = summon[Encoder[Person]]\n",
-        "enc",
-        Set("Codec", "Person")
-      ),
-    "given summon"                     -> ("given Int = 42\nval n = summon[Int]\n", "n", Set("Int")),
+    "union type"                       -> ("""val u: Int | String = 1""", "u", Set("Int")),
+    "intersection type"                -> (
+      """trait A
+        |trait B
+        |type AB = A & B
+        |val ab: AB = new A with B {}""".stripMargin,
+      "ab",
+      Set("A")
+    ),
+    "extension on generic type"        -> (
+      """extension [T](xs: List[T]) def firstOption: Option[T] = xs.headOption
+        |val x = List(1).firstOption""".stripMargin,
+      "x",
+      Set("Option", "Int")
+    ),
+    "singleton literal type"           -> ("""val answer: 42 = 42""", "answer", Set("42")),
+    "type-level boolean negation"      -> (
+      """import scala.compiletime.ops.boolean.*
+        |type NotFalse = ![false]
+        |val x: NotFalse = true""".stripMargin,
+      "x",
+      Set("true")
+    ),
+    "quoted Expr"                      -> (
+      """import scala.quoted.*
+        |def makeExpr(using Quotes): Expr[Int] =
+        |  val e: Expr[Int] = '{ 42 }
+        |  e""".stripMargin,
+      "e",
+      Set("Expr", "Int")
+    ),
+    "circe derives Codec"              -> (
+      """import io.circe.{Codec, Encoder}
+        |case class Person(name: String, age: Int) derives Codec.AsObject
+        |val enc = summon[Encoder[Person]]""".stripMargin,
+      "enc",
+      Set("Codec", "Person")
+    ),
+    "given summon"                     -> (
+      """given Int = 42
+        |val n = summon[Int]""".stripMargin,
+      "n",
+      Set("Int")
+    ),
     "export clause"                    -> (
-      "object B:\n  def x: String = \"\"\nobject S:\n  export B.x\nimport S.x\nval v = x\n",
+      """object B:
+        |  def x: String = ""
+        |object S:
+        |  export B.x
+        |import S.x
+        |val v = x""".stripMargin,
       "v",
       Set("String")
     ),
     "path-dependent type"              -> (
-      "trait Box:\n  type T\nobject IntBox extends Box:\n  type T = Int\nval t: IntBox.T = 1\n",
+      """trait Box:
+        |  type T
+        |object IntBox extends Box:
+        |  type T = Int
+        |val t: IntBox.T = 1""".stripMargin,
       "t",
       Set("Int")
     ),
-    "parameterized type alias"         -> ("type Pair[T] = (T, T)\nval p: Pair[Int] = (1, 2)\n", "p", Set("Int")),
+    "parameterized type alias"         -> (
+      """type Pair[T] = (T, T)
+        |val p: Pair[Int] = (1, 2)""".stripMargin,
+      "p",
+      Set("Int")
+    ),
     "overloaded method eta-expansion"  -> (
-      "object O:\n  def f(x: Int): Int = x\n  def f(s: String): String = s\nval g: Int => Int = O.f\nval r = g(42)\n",
+      """object O:
+        |  def f(x: Int): Int = x
+        |  def f(s: String): String = s
+        |val g: Int => Int = O.f
+        |val r = g(42)""".stripMargin,
       "r",
       Set("Int")
     ),
     "nested generic application"       -> (
-      "val r = List(Option(1)).collect { case Some(x) => x }\n",
+      """val r = List(Option(1)).collect { case Some(x) => x }""",
       "r",
       Set("Int")
     ),
-    "implicit Conversion"              -> ("given Conversion[String, Int] = _.toInt\nval r: Int = \"42\"\n", "r", Set("Int")),
+    "implicit Conversion"              -> (
+      """given Conversion[String, Int] = _.toInt
+        |val r: Int = "42"
+        |""".stripMargin,
+      "r",
+      Set("Int")
+    ),
     "higher-kinded type parameter"     -> (
-      "class Box[F[_]](val f: F[Int])\nval box = new Box(List(1, 2))\n",
+      """class Box[F[_]](val f: F[Int])
+        |val box = new Box(List(1, 2))""".stripMargin,
       "box",
       Set("Box", "List")
     ),
     "quoted Type summon"               -> (
-      "import scala.quoted.*\ndef makeType(using Quotes): Type[Int] =\n  val quotedType: Type[Int] = Type.of[Int]\n  quotedType\n",
+      """import scala.quoted.*
+        |def makeType(using Quotes): Type[Int] =
+        |  val quotedType: Type[Int] = Type.of[Int]
+        |  quotedType""".stripMargin,
       "quotedType",
       Set("Type", "Int")
     ),
     "intersection with refinement"     -> (
-      "trait Reader:\n  def read: String\nval reader: Reader { def read: String } = new Reader:\n  def read: String = \"x\"\n",
+      """trait Reader:
+        |  def read: String
+        |val reader: Reader { def read: String } = new Reader:
+        |  def read: String = "x"""".stripMargin,
       "reader",
       Set("Reader")
     ),
     "Aux pattern"                      -> (
-      "trait Foo:\n  type Out\n  def out: Out\nobject Foo:\n  type Aux[O] = Foo { type Out = O }\n  def apply[O](v: O): Aux[O] = new Foo:\n    type Out = O\n    def out: Out = v\nval fooInstance = Foo(42)\nval resolved: Int = fooInstance.out\n",
+      """trait Foo:
+        |  type Out
+        |  def out: Out
+        |object Foo:
+        |  type Aux[O] = Foo { type Out = O }
+        |  def apply[O](v: O): Aux[O] = new Foo:
+        |    type Out = O
+        |    def out: Out = v
+        |val fooInstance = Foo(42)
+        |val resolved: Int = fooInstance.out""".stripMargin,
       "resolved",
       Set("Int")
     ),
     "refined type"                     -> (
-      "import eu.timepit.refined.api.Refined\nimport eu.timepit.refined.numeric.Positive\ntype PosInt = Int Refined Positive\nval value: PosInt = 1\n",
+      """import eu.timepit.refined.api.Refined
+        |import eu.timepit.refined.numeric.Positive
+        |type PosInt = Int Refined Positive
+        |val value: PosInt = 1""".stripMargin,
       "value",
       Set("Refined", "Positive")
     )

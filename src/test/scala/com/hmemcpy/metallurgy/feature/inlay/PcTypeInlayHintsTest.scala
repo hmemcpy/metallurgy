@@ -30,17 +30,20 @@ final class PcTypeInlayHintsTest extends ScalaLightCodeInsightFixtureTestCase:
   // (label, source, bindingName, required substrings in the rendered inlay)
   private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
     "polymorphic function result" -> (
-      "val id = [A] => (x: A) => x\nval result = id(42)\n",
+      """val id = [A] => (x: A) => x
+        |val result = id(42)""".stripMargin,
       "result",
       Set("Int")
     ),
     "generic tuple head"          -> (
-      "val h: Int *: String *: EmptyTuple = (1, \"two\")\nval first = h.head\n",
+      """val h: Int *: String *: EmptyTuple = (1, "two")
+        |val first = h.head""".stripMargin,
       "first",
       Set("Int")
     ),
     "given summon"                -> (
-      "given Int = 42\nval number = summon[Int]\n",
+      """given Int = 42
+        |val number = summon[Int]""".stripMargin,
       "number",
       Set("Int")
     )

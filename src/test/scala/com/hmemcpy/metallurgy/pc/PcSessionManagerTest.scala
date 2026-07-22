@@ -53,7 +53,10 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         assertTrue(artifactNames.exists(_.startsWith("mtags-interfaces-")))
       finally names.close()
 
-      val source = "object Main:\n  val values = List(1)\n  values."
+      val source =
+        """object Main:
+          |  val values = List(1)
+          |  values.""".stripMargin
       val items  = onPooledThread:
         val session = PcSession.create(
           testScalaVersion.minor,
@@ -78,7 +81,10 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       deleteRecursively(temporaryDirectory)
 
   def testRetypecheckIsLatestWins(): Unit = withRealPcSession("metallurgy-latest-wins"): session =>
-    val staleSource   = "object Main:\n  transparent inline def port = 8080\n  val selected = port\n"
+    val staleSource   =
+      """object Main:
+        |  transparent inline def port = 8080
+        |  val selected = port""".stripMargin
     val currentSource = staleSource.replace("8080", "9090")
     val superseded    = session.scheduleRetypecheck(PcSnapshot("file:///TransparentInline.scala", 1L, staleSource))
     val applied       = session.scheduleRetypecheck(PcSnapshot("file:///TransparentInline.scala", 2L, currentSource))
@@ -94,7 +100,10 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   def testPublishedInlineTypeDriverIsReusedByQueries(): Unit =
     withRealPcSession("metallurgy-inline-driver"): session =>
-      val source   = "object Main:\n  transparent inline def port = 8080\n  val selected = port\n"
+      val source   =
+        """object Main:
+          |  transparent inline def port = 8080
+          |  val selected = port""".stripMargin
       val snapshot = PcSnapshot("file:///TransparentInline.scala", 1L, source)
       val outcome  = session.scheduleRetypecheck(snapshot).get(5, TimeUnit.SECONDS)
 

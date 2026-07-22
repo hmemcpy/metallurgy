@@ -34,24 +34,37 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
   // (label, source, needle, required substrings in the presented type)
   private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
     "compiletime.ops singleton"    -> (
-      "import scala.compiletime.ops.int.*\ntype Two = 2 + 2\nval r: Two = 4\n",
+      """import scala.compiletime.ops.int.*
+        |type Two = 2 + 2
+        |val r: Two = 4""".stripMargin,
       "r",
       Set("4")
     ),
     "match type"                   -> (
-      "type Elem[X] = X match\n  case List[t] => t\nval reduced: Elem[List[Int]] = 42\n",
+      """type Elem[X] = X match
+        |  case List[t] => t
+        |val reduced: Elem[List[Int]] = 42""".stripMargin,
       "reduced",
       Set("Int")
     ),
-    "polymorphic function"         -> ("val id = [A] => (x: A) => x\nval result = id(42)\n", "result", Set("Int")),
+    "polymorphic function"         -> (
+      """val id = [A] => (x: A) => x
+        |val result = id(42)""".stripMargin,
+      "result",
+      Set("Int")
+    ),
     "opaque type"                  -> (
-      "object Ports:\n  opaque type Port = Int\n  def apply(n: Int): Port = n\nval p: Ports.Port = Ports(8080)\n",
+      """object Ports:
+        |  opaque type Port = Int
+        |  def apply(n: Int): Port = n
+        |val p: Ports.Port = Ports(8080)""".stripMargin,
       "p",
       Set("Port")
     ),
-    "union type"                   -> ("val u: Int | String = 1\n", "u", Set("Int")),
+    "union type"                   -> ("""val u: Int | String = 1""", "u", Set("Int")),
     "transparent inline singleton" -> (
-      "transparent inline def port: Int = 8080\nval p: 8080 = port\n",
+      """transparent inline def port: Int = 8080
+        |val p: 8080 = port""".stripMargin,
       "p",
       Set("8080")
     )

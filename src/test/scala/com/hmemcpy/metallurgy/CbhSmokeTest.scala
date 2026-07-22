@@ -22,7 +22,11 @@ final class CbhSmokeTest extends ScalaCompilerHighlightingTestBase:
 
   private def checkValidCodeNotRed(): Unit =
     runWithErrorsFromCompiler(getProject):
-      val file   = addFileToProjectSources("Smoke.scala", "object Smoke:\n  val answer: Int = 42\n")
+      val file   = addFileToProjectSources(
+        "Smoke.scala",
+        """object Smoke:
+          |  val answer: Int = 42""".stripMargin
+      )
       waitUntilFileIsHighlighted(file)
       val errors = fetchHighlightInfos(file).filter(_.getSeverity == HighlightSeverity.ERROR)
       assertTrue(

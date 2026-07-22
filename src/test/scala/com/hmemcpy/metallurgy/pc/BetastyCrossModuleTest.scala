@@ -76,7 +76,9 @@ final class BetastyCrossModuleTest extends ScalaLightCodeInsightFixtureTestCase:
   def testBothPcPathsReadBrokenModuleABetasty(): Unit = withFetcher { fetcher =>
     val outA    = Files.createTempDirectory("metallurgy-moduleA")
     val brokenA = readFixture("module_a", "broken_source.scala")
-    val probe   = "object O:\n  val p: Per\n"
+    val probe   =
+      """object O:
+        |  val p: Per""".stripMargin
     val caret   = probe.lastIndexOf("Per") + 3
 
     try
