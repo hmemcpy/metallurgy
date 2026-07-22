@@ -15,7 +15,14 @@ import com.intellij.util.concurrency.AppExecutorUtil
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import scala.util.control.NonFatal
 
-/** Answers the bundled Scala plugin's compiler-type requests without blocking its caller thread. */
+/** Answers the bundled Scala plugin's compiler-type requests without blocking its caller thread.
+  *
+  * The bundled plugin requests the compiler type only during completion
+  * (`org.jetbrains.plugins.scala.lang.completion`), then reads the stored slot for expression and reference type
+  * resolution. Filling the slot here makes the presentation compiler's type available to those lookups; the
+  * [[com.hmemcpy.metallurgy.feature.inlay.PcTypeHintsPass]] is the proactive surface that shows types without depending
+  * on the completion trigger.
+  */
 final class CompilerTypeRequestResolver(project: Project) extends Disposable:
 
   private val log = Logger.getInstance(classOf[CompilerTypeRequestResolver])
