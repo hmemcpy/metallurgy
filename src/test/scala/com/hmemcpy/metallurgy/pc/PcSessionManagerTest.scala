@@ -480,7 +480,43 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertSame(first, second)
       assertTrue(ScalacFlagsService.RequiredFlags.forall(first.compilerOptions.contains))
 
-      val sourceFile = myFixture.configureByText("SessionReplacement.scala", "val value = List(1).head")
+      onPooledThread(manager.discard(getModule))
+      assertTrue(first.isClosed)
+
+      val replacement = onPooledThread(manager.sessionFor(getModule)).get
+      assertNotSame(first, replacement)
+      assertFalse(replacement.isClosed)
+
+      // without CBH, Metallurgy is a no-op even when enabled.
+      setCompilerBasedHighlighting(enabled = false)
+      assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      setCompilerBasedHighlighting(enabled = true)
+
+      settings.setEnabled(getModule, enabled = false)
+      assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      assertTrue(replacement.isClosed)
+    finally
+      manager.dispose()
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+      deleteRecursively(temporaryDirectory)
+
+  def testSessionDiscardRetiresCompilerBackendState(): Unit =
+    val temporaryDirectory = Files.createTempDirectory("metallurgy-session-retirement")
+    val artifact           = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      FixedPresentationCompilerResolver(artifact),
+      BackgroundRunner.direct
+    )
+    val manager            = new PcSessionManager(getProject, fetcher)
+    val settings           = MetallurgySettings(getProject)
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true)
+      val session    = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
+      val sourceFile = myFixture.configureByText("SessionRetirement.scala", "val value = List(1).head")
       val expression = PsiTreeUtil
         .findChildrenOfType(sourceFile, classOf[ScExpression])
         .asScala
@@ -497,25 +533,13 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
       onPooledThread(manager.discard(getModule))
       UIUtil.dispatchAllInvocationEvents()
-      assertTrue(first.isClosed)
+
+      assertTrue(session.isClosed)
       assertEquals(
         CompilerBackendState.Unavailable,
         backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
       )
       assertNull(BundledPluginBridge.getCompilerType(expression))
-
-      val replacement = onPooledThread(manager.sessionFor(getModule)).get
-      assertNotSame(first, replacement)
-      assertFalse(replacement.isClosed)
-
-      // without CBH, Metallurgy is a no-op even when enabled.
-      setCompilerBasedHighlighting(enabled = false)
-      assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
-      setCompilerBasedHighlighting(enabled = true)
-
-      settings.setEnabled(getModule, enabled = false)
-      assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
-      assertTrue(replacement.isClosed)
     finally
       manager.dispose()
       settings.setEnabled(getModule, enabled = false)
