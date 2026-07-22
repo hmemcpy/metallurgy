@@ -226,6 +226,12 @@ eventually asks an expression for its type; it does not mean the entire subsyste
 The practical conclusion is that whole-file expression population has high impact, but it is not the definition of
 “all.” Typed definitions and symbol identity are separate architectural workstreams.
 
+The default expectation for every other Scala-plugin feature is **semantic inheritance**, not a bespoke Metallurgy
+implementation: if the feature obtains types and resolve targets through the corrected central PSI seams, it should
+work unchanged. The complete feature inventory exists to prove that route and preserve it with regression tests. A
+feature receives its own adapter only when source tracing or a failing parity test demonstrates a bypass such as
+stub/index-only identity, specialized UAST conversion, an execution model, or a separate compiler service.
+
 ## 4. Clean extension points and topics
 
 The bundled Scala EP declarations are together in
@@ -387,6 +393,15 @@ Therefore the architecture has two cooperating loops:
 
 Best effort improves cross-module symbol availability; it is not the mechanism for typing the current unsaved buffer.
 The current buffer is always the interactive driver's `(fileUri, documentVersion)` snapshot.
+
+Neither flag is a requirement for the base compiler backend. `scala.meta.pc.PresentationCompiler` does not publish an
+API for enumerating compiler settings, so `Scala3PcBridge` performs the narrowest remaining bridge-local shape probe
+against the exact compiler distribution: the producer capability requires `YSettings.YbestEffort`, and the consumer
+capability requires `YSettings.YwithBestEffortTasty`. The results are independent structured capability states. Before
+discovery, Metallurgy removes both managed flags; after discovery, it adds only supported flags and passes only the
+consumer flag to the PC session. Older, nightly, and vendor Scala 3 compilers therefore use the same base-PC path
+without a version guess, while BETASTY activates wherever the exact compiler exposes it. A missing BETASTY capability
+disables cross-module best-effort recovery only; it cannot disable ordinary PC typing.
 
 ### Performance model
 

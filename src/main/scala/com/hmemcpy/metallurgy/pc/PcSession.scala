@@ -22,7 +22,8 @@ final class PcSession private (
     val classloader: URLClassLoader,
     val compilerDistribution: Seq[File],
     val compilerClasspath: Seq[File],
-    val compilerOptions: Seq[String]
+    val compilerOptions: Seq[String],
+    private[metallurgy] val capabilities: Scala3PcBridgeCapabilities
 ) extends AutoCloseable:
 
   private val Log                   = Logger.getInstance(classOf[PcSession])
@@ -388,4 +389,12 @@ object PcSession:
     val urls        = (cachedJars ++ classpath).map(_.toURI.toURL).toArray
     val classloader = new PcClassLoader(urls, classOf[PcSession].getClassLoader)
 
-    new PcSession(scalaVersion, classloader, cachedJars.toIndexedSeq, classpath, compilerOptions)
+    val capabilities = Scala3PcBridge.discoverCapabilities(classloader)
+    new PcSession(
+      scalaVersion,
+      classloader,
+      cachedJars.toIndexedSeq,
+      classpath,
+      capabilities.presentationCompilerOptions(compilerOptions),
+      capabilities
+    )

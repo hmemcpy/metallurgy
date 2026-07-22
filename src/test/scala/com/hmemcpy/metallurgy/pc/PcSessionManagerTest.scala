@@ -515,7 +515,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val first  = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
       val second = onPooledThread(manager.sessionFor(getModule)).get
       assertSame(first, second)
-      assertTrue(first.compilerOptions.contains(ScalacFlagsService.BestEffortConsumerFlag))
+      assertFalse(first.compilerOptions.contains(ScalacFlagsService.BestEffortConsumerFlag))
       assertFalse(first.compilerOptions.contains(ScalacFlagsService.BestEffortProducerFlag))
 
       onPooledThread(manager.discard(getModule))

@@ -321,7 +321,7 @@ final class BetastyCrossModuleTest extends ScalaLightCodeInsightFixtureTestCase:
     PcSession.create(
       testScalaVersion.minor,
       coreClasspath ++ moduleAEntries,
-      ScalacFlagsService.RequiredFlags,
+      ScalacFlagsService.BestEffortFlags,
       fetcher
     )
 

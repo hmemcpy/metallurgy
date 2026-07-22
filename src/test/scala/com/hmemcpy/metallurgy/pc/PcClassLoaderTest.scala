@@ -96,6 +96,31 @@ final class PcClassLoaderTest:
       first.close()
       second.close()
 
+  @Test
+  def optionalCapabilitiesAreDiscoveredFromCompilerShape(): Unit =
+    val loader = compilerLoader("3.5.2")
+    try
+      val capabilities = Scala3PcBridge.discoverCapabilities(loader)
+      assertTrue(capabilities.inlineTypes.isAvailable)
+      assertTrue(capabilities.typedTreeSnapshots.isAvailable)
+      assertTrue(capabilities.structuralCompletions.isAvailable)
+      assertTrue(capabilities.bestEffortProduction.isAvailable)
+      assertTrue(capabilities.bestEffortConsumption.isAvailable)
+    finally loader.close()
+
+  @Test
+  def missingOptionalCapabilitiesAreReportedWithoutFailingBasePcDiscovery(): Unit =
+    val loader = new PcClassLoader(Array.empty, getClass.getClassLoader)
+    try
+      val capabilities = Scala3PcBridge.discoverCapabilities(loader)
+      assertFalse(capabilities.inlineTypes.isAvailable)
+      assertFalse(capabilities.typedTreeSnapshots.isAvailable)
+      assertFalse(capabilities.structuralCompletions.isAvailable)
+      assertFalse(capabilities.bestEffortProduction.isAvailable)
+      assertFalse(capabilities.bestEffortConsumption.isAvailable)
+      assertTrue(capabilities.unavailableReasons.nonEmpty)
+    finally loader.close()
+
   private def compilerLoader(scalaVersion: String): PcClassLoader =
     val artifacts = PresentationCompilerResolver.publicCoursier
       .resolve(scalaVersion)

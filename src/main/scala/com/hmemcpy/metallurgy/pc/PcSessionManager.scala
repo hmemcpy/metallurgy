@@ -313,7 +313,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   private def ensureSession(module: Module, scalaVersion: String): Option[PcSession] =
     Option.when(isManaged(module)):
-      ScalacFlagsService.get(project).enableFor(module)
       val classpath     = buildClasspath(module)
       val classpathHash = PcSessionManager.fingerprintClasspath(classpath)
       val compilerFlags = ScalacFlagsService.get(project).presentationCompilerOptions(module)
@@ -339,12 +338,14 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
                   existing.generation.compilerOptions
                 else compilerOptionsGenerations.incrementAndGet()
             )
+            val session    = PcSession.create(scalaVersion, classpath, compilerFlags, fetcher)
+            ScalacFlagsService.get(project).enableFor(module, session.capabilities)
             SessionEntry(
               scalaVersion,
               classpathHash,
-              compilerFlags,
+              session.compilerOptions,
               generation,
-              PcSession.create(scalaVersion, classpath, compilerFlags, fetcher)
+              session
             )
       )
       updated.session

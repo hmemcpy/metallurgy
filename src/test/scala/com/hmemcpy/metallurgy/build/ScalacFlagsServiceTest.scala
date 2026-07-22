@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.build
 
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.hmemcpy.metallurgy.pc.{PcCapabilityStatus, Scala3PcBridgeCapabilities}
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
@@ -22,16 +23,20 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
   override protected def defaultVersionOverride: Option[ScalaVersion] =
     Some(testScalaVersion)
 
-  def testOptInAddsFlagsExactlyOnceAndOptOutRemovesThem(): Unit =
+  def testOptInDoesNotAssumeOptionalCompilerCapabilities(): Unit =
     val settings = MetallurgySettings(getProject)
     val service  = ScalacFlagsService.get(getProject)
 
     setCompilerBasedHighlighting(enabled = true)
     settings.setEnabled(getModule, enabled = true)
-    settings.setEnabled(getModule, enabled = true)
+
+    assertFalse(service.additionalOptions(getModule).exists(ScalacFlagsService.BestEffortFlags.contains))
+
+    service.enableFor(getModule, Scala3PcBridgeCapabilities.bestEffort)
+    service.enableFor(getModule, Scala3PcBridgeCapabilities.bestEffort)
 
     val enabledOptions = service.additionalOptions(getModule)
-    ScalacFlagsService.RequiredFlags.foreach: flag =>
+    ScalacFlagsService.BestEffortFlags.foreach: flag =>
       assertEquals(flag, 1, enabledOptions.count(_ == flag))
 
     settings.setEnabled(getModule, enabled = false)
@@ -46,6 +51,7 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
     setCompilerBasedHighlighting(enabled = true)
     settings.setXsemanticdbEnabled(true)
     settings.setEnabled(getModule, enabled = true)
+    service.enableFor(getModule, Scala3PcBridgeCapabilities.bestEffort)
     assertTrue(service.additionalOptions(getModule).contains(ScalacFlagsService.SemanticDbFlag))
 
     settings.setXsemanticdbEnabled(false)
@@ -57,12 +63,29 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
 
     setCompilerBasedHighlighting(enabled = true)
     settings.setEnabled(getModule, enabled = true)
+    service.enableFor(getModule, Scala3PcBridgeCapabilities.bestEffort)
 
     val options = service.presentationCompilerOptions(getModule)
     assertTrue(options.contains(ScalacFlagsService.BestEffortConsumerFlag))
     assertFalse(options.contains(ScalacFlagsService.BestEffortProducerFlag))
 
-  def testGlobalOptInKeepsFlagsWhenModuleOverrideIsRemoved(): Unit =
+  def testBestEffortProducerAndConsumerCapabilitiesAreIndependent(): Unit =
+    val settings = MetallurgySettings(getProject)
+    val service  = ScalacFlagsService.get(getProject)
+
+    setCompilerBasedHighlighting(enabled = true)
+    settings.setEnabled(getModule, enabled = true)
+    service.enableFor(
+      getModule,
+      Scala3PcBridgeCapabilities.unavailable.copy(bestEffortProduction = PcCapabilityStatus.Available)
+    )
+
+    val buildOptions = service.additionalOptions(getModule)
+    assertTrue(buildOptions.contains(ScalacFlagsService.BestEffortProducerFlag))
+    assertFalse(buildOptions.contains(ScalacFlagsService.BestEffortConsumerFlag))
+    assertFalse(service.presentationCompilerOptions(getModule).exists(ScalacFlagsService.BestEffortFlags.contains))
+
+  def testGlobalOptInStillWaitsForCapabilityDiscovery(): Unit =
     val settings = MetallurgySettings(getProject)
     val service  = ScalacFlagsService.get(getProject)
 
@@ -70,7 +93,7 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
     settings.setGloballyEnabled(true)
     settings.setEnabled(getModule, enabled = false)
 
-    assertTrue(ScalacFlagsService.RequiredFlags.forall(service.additionalOptions(getModule).contains))
+    assertFalse(service.additionalOptions(getModule).exists(ScalacFlagsService.BestEffortFlags.contains))
 
   def testOptInDoesNotApplyFlagsUntilCompilerBackendIsActive(): Unit =
     val settings = MetallurgySettings(getProject)
@@ -84,7 +107,7 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
     setCompilerBasedHighlighting(enabled = true)
     UIUtil.dispatchAllInvocationEvents()
 
-    assertTrue(ScalacFlagsService.RequiredFlags.forall(service.additionalOptions(getModule).contains))
+    assertFalse(service.additionalOptions(getModule).exists(ScalacFlagsService.BestEffortFlags.contains))
 
   def testCompilerBackendDeactivationRemovesManagedFlags(): Unit =
     val settings = MetallurgySettings(getProject)
@@ -93,6 +116,7 @@ final class ScalacFlagsServiceTest extends ScalaLightCodeInsightFixtureTestCase:
     setCompilerBasedHighlighting(enabled = true)
     settings.setXsemanticdbEnabled(true)
     settings.setEnabled(getModule, enabled = true)
+    service.enableFor(getModule, Scala3PcBridgeCapabilities.bestEffort)
     assertTrue(ScalacFlagsService.ManagedFlags.forall(service.additionalOptions(getModule).contains))
 
     setCompilerBasedHighlighting(enabled = false)
