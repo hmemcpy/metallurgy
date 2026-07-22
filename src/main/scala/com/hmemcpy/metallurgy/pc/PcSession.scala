@@ -10,7 +10,8 @@ import org.eclipse.lsp4j.CompletionItem
 import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler}
 
 import java.io.File
-import java.net.{URI, URLClassLoader}
+import java.net.{URI, URL, URLClassLoader}
+import java.util.Enumeration
 import java.util.ServiceLoader
 import java.util.concurrent.{CompletableFuture, CompletionStage, ConcurrentHashMap, TimeUnit}
 import java.util.concurrent.locks.ReentrantLock
@@ -347,36 +348,42 @@ private final class InlineTypeDriverLease(driver: PcInlineTypeDriver):
   private def release(): Unit =
     if readers.decrementAndGet() == 0 && retired.get() then driver.close()
 
-/** Child-first for the Scala compiler implementation, parent-first for JDK/platform classes and the stable Java
-  * presentation-compiler boundary.
+/** Loads the exact compiler distribution while exposing only the published Java presentation-compiler boundary from the
+  * plugin classloader. Scala and compiler implementation classes always remain local to this loader.
   */
-private final class PcClassLoader(urls: Array[java.net.URL], parent: ClassLoader) extends URLClassLoader(urls, parent):
+private final class PcClassLoader(urls: Array[URL], host: ClassLoader)
+    extends URLClassLoader(urls, new PcSharedApiClassLoader(host))
 
-  override protected def loadClass(name: String, resolve: Boolean): Class[?] =
-    if PcClassLoader.isSharedApi(name) then super.loadClass(name, resolve)
-    else
-      // ClassLoader requires per-name locking around findLoadedClass/findClass.
-      getClassLoadingLock(name).synchronized:
-        Option(findLoadedClass(name)).getOrElse:
-          try
-            val loaded = findClass(name)
-            if resolve then resolveClass(loaded)
-            loaded
-          catch case _: ClassNotFoundException => super.loadClass(name, resolve)
+/** Restricts parent delegation to platform classes and types that may legally cross the Scalameta boundary. */
+private final class PcSharedApiClassLoader(host: ClassLoader) extends ClassLoader(ClassLoader.getPlatformClassLoader):
+
+  override protected def findClass(name: String): Class[?] =
+    if PcClassLoader.isSharedApi(name) then host.loadClass(name)
+    else throw new ClassNotFoundException(name)
+
+  override def getResource(name: String): URL =
+    if PcClassLoader.isSharedResource(name) then host.getResource(name)
+    else super.getResource(name)
+
+  override def getResources(name: String): Enumeration[URL] =
+    if PcClassLoader.isSharedResource(name) then host.getResources(name)
+    else super.getResources(name)
 
 private object PcClassLoader:
-  private val ParentFirstPrefixes = Seq(
-    "java.",
+  private val SharedApiPrefixes = Seq(
     "javax.",
-    "jdk.",
-    "sun.",
-    "com.intellij.",
     "scala.meta.pc.",
-    "org.eclipse.lsp4j."
+    "org.eclipse.lsp4j.",
+    "com.google.gson."
   )
 
+  private val PresentationCompilerProviderResource = "META-INF/services/scala.meta.pc.PresentationCompiler"
+
   def isSharedApi(className: String): Boolean =
-    ParentFirstPrefixes.exists(className.startsWith)
+    SharedApiPrefixes.exists(className.startsWith)
+
+  def isSharedResource(resourceName: String): Boolean =
+    resourceName == PresentationCompilerProviderResource
 
 object PcSession:
   private val RetypecheckDebounceMillis = 300L
