@@ -8,9 +8,9 @@ Scala 3 — a broken or changed upstream module leaves dependent references stal
   upstream change.
 - `module_b/source.scala` — references `Person` across the module boundary.
 
-`BetastyCrossModuleTest` compiles module A with `-Ybest-effort -Ywith-best-effort-tasty`,
-puts its output on module B's presentation-compiler classpath, then proves that B's cached
-session does **not** see A's rename until the session is rebuilt. That staleness is the
-cross-module invalidation gap; closing it (detect upstream recompile → discard dependent
-sessions) is the next step. A genuinely *broken* upstream (exercising `.betasty` reading)
-follows once propagation is wired.
+`BetastyCrossModuleTest` compiles module A with `-Ybest-effort -Ywith-best-effort-tasty`
+and puts its best-effort output on module B's presentation-compiler classpath. It proves
+that both the public Scalameta completion path and the typed-tree path resolve declarations
+from a genuinely broken upstream module. Separate controls prove that the nested
+`META-INF/best-effort` root and `-Ywith-best-effort-tasty` are both required, and that a
+clean upstream rename becomes visible after retypecheck.
