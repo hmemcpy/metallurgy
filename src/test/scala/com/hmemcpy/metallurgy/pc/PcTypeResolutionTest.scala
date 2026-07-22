@@ -18,7 +18,8 @@ import scala.jdk.CollectionConverters.*
 /** Verifies `pc` resolves the expected type for Scala 3 constructs the bundled plugin tends to widen or render as `Any`
   * — singleton/literal types, match types, named tuples, polymorphic and context functions, type derivation, structural
   * types, opaque/union/intersection types, quoted expressions. Each case retypechecks a snippet and reads the type of
-  * the result val via [[TypeRenderer.render]].
+  * the result val via [[TypeRenderer.render]], asserting it equals the compiler's rendered type exactly (after
+  * whitespace normalization) rather than merely containing a substring.
   */
 final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -37,21 +38,21 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
       IvyManagedLoader(("eu.timepit" %% "refined"       % "0.11.3").transitive())
     )
 
-  // (label, source, needle = the result val whose type we read, required substrings)
-  private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
+  // (label, source, needle = the result val whose type we read, expected rendered type)
+  private val cases: Seq[(String, (String, String, String))] = Seq(
     "compiletime.ops int singleton"    -> (
       """import scala.compiletime.ops.int.*
         |type Two = 2 + 2
         |val r: Two = 4""".stripMargin,
       "4",
-      Set("4")
+      "(4 : Int)"
     ),
     "compiletime.ops string Length"    -> (
       """import scala.compiletime.ops.string.*
         |type L = Length["abc"]
         |val l: L = 3""".stripMargin,
       "3",
-      Set("3")
+      "(3 : Int)"
     ),
     "match type reduction"             -> (
       """type Elem[X] = X match
@@ -59,27 +60,29 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  case Array[t] => t
         |val reduced: Elem[List[Int]] = 42""".stripMargin,
       "reduced",
-      Set("Int")
+      "Int"
     ),
-    "named tuple"                      -> ("""val person = (name = "Ada", age = 1)""", "person", Set("name", "age")),
+    "named tuple"                      -> ("""val person = (name = "Ada", age = 1)""", "person", "(name : String, age : Int)"),
     "polymorphic function application" -> (
       """val id = [A] => (x: A) => x
         |val result = id(42)""".stripMargin,
       "result",
-      Set("Int")
+      "Int"
     ),
     "context function application"     -> (
       """val cf: Int ?=> Int = summon[Int]
         |val result: Int = cf(using 42)""".stripMargin,
       "result",
-      Set("Int")
+      "Int"
     ),
     "Mirror summon"                    -> (
       """import scala.deriving.Mirror
         |case class P(name: String, age: Int)
         |val mirror = summon[Mirror.Of[P]]""".stripMargin,
       "mirror",
-      Set("Mirror")
+      "scala.deriving.Mirror.Product{ type MirroredMonoType = P; type MirroredType = P; " +
+        "type MirroredLabel = (\"P\" : String); type MirroredElemTypes = (String, Int); " +
+        "type MirroredElemLabels = ((\"name\" : String), (\"age\" : String)) }"
     ),
     "structural refinement select"     -> (
       """import scala.reflect.Selectable.reflectiveSelectable
@@ -87,25 +90,25 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  val x: Int = 1
         |val selected = s.x""".stripMargin,
       "selected",
-      Set("Int")
+      "Int"
     ),
     "transparent inline singleton"     -> (
       """transparent inline def port: Int = 8080
         |val p: 8080 = port""".stripMargin,
       "p",
-      Set("8080")
+      "(8080 : Int)"
     ),
     "extension method result"          -> (
       """extension (s: String) def slug: String = s.trim.toLowerCase
         |val trimmed = " A ".slug""".stripMargin,
       "trimmed",
-      Set("String")
+      "String"
     ),
     "generic tuple HList head"         -> (
       """val h: Int *: String *: EmptyTuple = (1, "two")
         |val head = h.head""".stripMargin,
       "head",
-      Set("Int")
+      "Int"
     ),
     "inline match (Peano) result"      -> (
       """trait Nat
@@ -117,7 +120,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |    case Succ(n1) => toInt(n1) + 1
         |inline val two = toInt(Succ(Succ(Zero)))""".stripMargin,
       "two",
-      Set("2")
+      "(2 : Int)"
     ),
     "opaque type"                      -> (
       """object Ports:
@@ -125,30 +128,30 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  def apply(n: Int): Port = n
         |val p: Ports.Port = Ports(8080)""".stripMargin,
       "p",
-      Set("Port")
+      "Ports.Port"
     ),
-    "union type"                       -> ("""val u: Int | String = 1""", "u", Set("Int")),
+    "union type"                       -> ("""val u: Int | String = 1""", "u", "Int | String"),
     "intersection type"                -> (
       """trait A
         |trait B
         |type AB = A & B
         |val ab: AB = new A with B {}""".stripMargin,
       "ab",
-      Set("A")
+      "A & B"
     ),
     "extension on generic type"        -> (
       """extension [T](xs: List[T]) def firstOption: Option[T] = xs.headOption
         |val x = List(1).firstOption""".stripMargin,
       "x",
-      Set("Option", "Int")
+      "Option[Int]"
     ),
-    "singleton literal type"           -> ("""val answer: 42 = 42""", "answer", Set("42")),
+    "singleton literal type"           -> ("""val answer: 42 = 42""", "answer", "(42 : Int)"),
     "type-level boolean negation"      -> (
       """import scala.compiletime.ops.boolean.*
         |type NotFalse = ![false]
         |val x: NotFalse = true""".stripMargin,
       "x",
-      Set("true")
+      "(true : Boolean)"
     ),
     "quoted Expr"                      -> (
       """import scala.quoted.*
@@ -156,20 +159,20 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  val e: Expr[Int] = '{ 42 }
         |  e""".stripMargin,
       "e",
-      Set("Expr", "Int")
+      "scala.quoted.Expr[Int]"
     ),
     "circe derives Codec"              -> (
       """import io.circe.{Codec, Encoder}
         |case class Person(name: String, age: Int) derives Codec.AsObject
         |val enc = summon[Encoder[Person]]""".stripMargin,
       "enc",
-      Set("Codec", "Person")
+      "io.circe.Codec.AsObject[Person]"
     ),
     "given summon"                     -> (
       """given Int = 42
         |val n = summon[Int]""".stripMargin,
       "n",
-      Set("Int")
+      "Int"
     ),
     "export clause"                    -> (
       """object B:
@@ -179,7 +182,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |import S.x
         |val v = x""".stripMargin,
       "v",
-      Set("String")
+      "String"
     ),
     "path-dependent type"              -> (
       """trait Box:
@@ -188,13 +191,13 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  type T = Int
         |val t: IntBox.T = 1""".stripMargin,
       "t",
-      Set("Int")
+      "IntBox"
     ),
     "parameterized type alias"         -> (
       """type Pair[T] = (T, T)
         |val p: Pair[Int] = (1, 2)""".stripMargin,
       "p",
-      Set("Int")
+      "(Int, Int)"
     ),
     "overloaded method eta-expansion"  -> (
       """object O:
@@ -203,25 +206,25 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |val g: Int => Int = O.f
         |val r = g(42)""".stripMargin,
       "r",
-      Set("Int")
+      "Int"
     ),
     "nested generic application"       -> (
       """val r = List(Option(1)).collect { case Some(x) => x }""",
       "r",
-      Set("Int")
+      "List[Int]"
     ),
     "implicit Conversion"              -> (
       """given Conversion[String, Int] = _.toInt
         |val r: Int = "42"
         |""".stripMargin,
       "r",
-      Set("Int")
+      "Int"
     ),
     "higher-kinded type parameter"     -> (
       """class Box[F[_]](val f: F[Int])
         |val box = new Box(List(1, 2))""".stripMargin,
       "box",
-      Set("Box", "List")
+      "Box[List]"
     ),
     "quoted Type summon"               -> (
       """import scala.quoted.*
@@ -229,7 +232,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  val quotedType: Type[Int] = Type.of[Int]
         |  quotedType""".stripMargin,
       "quotedType",
-      Set("Type", "Int")
+      "scala.quoted.Type[Int]"
     ),
     "intersection with refinement"     -> (
       """trait Reader:
@@ -237,7 +240,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |val reader: Reader { def read: String } = new Reader:
         |  def read: String = "x"""".stripMargin,
       "reader",
-      Set("Reader")
+      "Reader{def read: String}"
     ),
     "Aux pattern"                      -> (
       """trait Foo:
@@ -251,7 +254,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |val fooInstance = Foo(42)
         |val resolved: Int = fooInstance.out""".stripMargin,
       "resolved",
-      Set("Int")
+      "Int"
     ),
     "refined type"                     -> (
       """import eu.timepit.refined.api.Refined
@@ -259,12 +262,12 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |type PosInt = Int Refined Positive
         |val value: PosInt = 1""".stripMargin,
       "value",
-      Set("Refined", "Positive")
+      "Int Refined eu.timepit.refined.numeric.Positive"
     )
   )
 
   def testPcTypeResolution(): Unit = withSession: session =>
-    val results = cases.zipWithIndex.map { case ((label, (source, needle, required)), idx) =>
+    val results = cases.zipWithIndex.map { case ((label, (source, needle, expected)), idx) =>
       val snapshot = PcSnapshot(s"file:///Case$idx.scala", 1L, source)
       val outcome  = session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
       val offset   = source.lastIndexOf(needle)
@@ -272,17 +275,21 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         if offset < 0 then Some(s"<needle '$needle' not found>")
         else if outcome != RetypecheckOutcome.Applied then Some(s"<retypecheck $outcome>")
         else TypeRenderer.render(session, snapshot, offset)
-      val ok       = rendered.exists(t => t != "Any" && required.forall(t.contains))
+      val actual   = rendered.map(normalize)
+      val ok       = actual.contains(normalize(expected))
       println(f"[pc-type] ${if ok then "OK  " else "FAIL"} $label%-36s -> ${rendered.getOrElse("<none>")}")
-      (ok, label, rendered.getOrElse("<none>"), required)
+      (ok, label, actual.getOrElse("<none>"), normalize(expected))
     }
 
     val failures = results.filterNot(_._1)
     assertTrue(
       s"${failures.size}/${cases.size} type-resolution cases failed:\n" +
-        failures.map(f => s"  - ${f._2}: got '${f._3}', required ${f._4.mkString("[", ",", "]")}").mkString("\n"),
+        failures.map(f => s"  - ${f._2}:\n      got:      '${f._3}'\n      expected: '${f._4}'").mkString("\n"),
       failures.isEmpty
     )
+
+  private def normalize(renderedType: String): String =
+    renderedType.trim.replaceAll("\\s+", " ")
 
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-type-resolution")

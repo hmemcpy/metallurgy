@@ -32,26 +32,26 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
     java.nio.file.Path.of("src", "test", "testdata").toAbsolutePath.toString
 
   // (label, source, needle, required substrings in the presented type)
-  private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
+  private val cases: Seq[(String, (String, String, String))] = Seq(
     "compiletime.ops singleton"    -> (
       """import scala.compiletime.ops.int.*
         |type Two = 2 + 2
         |val r: Two = 4""".stripMargin,
       "r",
-      Set("4")
+      "(4 : Int)"
     ),
     "match type"                   -> (
       """type Elem[X] = X match
         |  case List[t] => t
         |val reduced: Elem[List[Int]] = 42""".stripMargin,
       "reduced",
-      Set("Int")
+      "Int"
     ),
     "polymorphic function"         -> (
       """val id = [A] => (x: A) => x
         |val result = id(42)""".stripMargin,
       "result",
-      Set("Int")
+      "Int"
     ),
     "opaque type"                  -> (
       """object Ports:
@@ -59,14 +59,14 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
         |  def apply(n: Int): Port = n
         |val p: Ports.Port = Ports(8080)""".stripMargin,
       "p",
-      Set("Port")
+      "Ports.Port"
     ),
-    "union type"                   -> ("""val u: Int | String = 1""", "u", Set("Int")),
+    "union type"                   -> ("""val u: Int | String = 1""", "u", "Int | String"),
     "transparent inline singleton" -> (
       """transparent inline def port: Int = 8080
         |val p: 8080 = port""".stripMargin,
       "p",
-      Set("8080")
+      "(8080 : Int)"
     )
   )
 
@@ -82,22 +82,27 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
     finally super.tearDown()
 
   def testPresentedTypes(): Unit =
-    val results  = cases.zipWithIndex.map { case ((label, (source, needle, required)), idx) =>
+    val results  = cases.zipWithIndex.map { case ((label, (source, needle, expected)), idx) =>
       val file      = myFixture.configureByText(s"Case$idx.scala", source)
       PcSessionManager.get(getProject).prepareFile(file.getVirtualFile).get(60, TimeUnit.SECONDS)
       val offset    = source.lastIndexOf(needle)
       val element   = typedElementAt(file, offset)
       val presented = presentedType(element)
-      val ok        = presented.exists(t => t != "Any" && required.forall(t.contains))
+      val ok        = presented.exists(t => normalize(t) == normalize(expected))
       println(f"[present] ${if ok then "OK  " else "FAIL"} $label%-30s -> ${presented.getOrElse("<none>")}")
-      (ok, label, presented.getOrElse("<none>"), required)
+      (ok, label, presented.map(normalize).getOrElse("<none>"), normalize(expected))
     }
     val failures = results.filterNot(_._1)
     assertTrue(
       s"${failures.size}/${cases.size} presentation cases failed:\n" +
-        failures.map(f => s"  - ${f._2}: got '${f._3}', required ${f._4.mkString("[", ",", "]")}").mkString("\n"),
+        failures
+          .map(f => s"  - ${f._2}:\n      got:      '${f._3}'\n      expected: '${f._4}'")
+          .mkString("\n"),
       failures.isEmpty
     )
+
+  private def normalize(renderedType: String): String =
+    renderedType.trim.replaceAll("\\s+", " ")
 
   private def presentedType(element: PsiElement): Option[String] =
     val project    = element.getProject
