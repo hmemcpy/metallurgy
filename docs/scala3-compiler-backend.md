@@ -4,14 +4,17 @@
 
 **Baselines:** IntelliJ Platform 261.x, bundled Scala plugin 2026.1.20, Scala 3.7.4
 
-**Decision:** pursue whole-file, versioned pc type population plus a pinned compatibility shim; retain Scala PSI as the
-IntelliJ-facing object model, but select Scala 3's compiler backend instead of the bundled type engine in active modules.
+**Decision:** retain Scala PSI as IntelliJ's object model and bridge its semantic reads to the published Scalameta
+presentation-compiler interfaces. The exact module compiler supplies the implementation in an isolated classloader;
+the bundled Scala plugin supplies a public semantic-backend dispatcher. Private bundled-plugin or dotc implementation
+discovery is not part of the permanent architecture.
 
 This document supersedes every prior Metallurgy design, status, glossary, ADR, and research document. Those materials
 are preserved under `docs/archive/` for provenance only and are non-normative. New architectural decisions amend this
 document; they do not revive or add parallel ADRs.
 
-Source coordinates below are pinned to the bundled Scala plugin tag `2026.1.20` and Scala tag `3.7.4`. Paths beginning
+Source coordinates describe the verified baseline at bundled Scala plugin tag `2026.1.20` and Scala tag `3.7.4`; they
+are evidence, not compatibility gates. Paths beginning
 with `intellij-scala/` are relative to the bundled plugin repository; paths beginning with `scala3/` are relative to
 the Scala 3 repository. Metallurgy coordinates are relative to this repository.
 
@@ -35,16 +38,14 @@ Scala version >= 3.5  AND  the module is opted in  AND  Scala 3 CBH/compiler typ
 
 That predicate already exists at `src/main/scala/com/hmemcpy/metallurgy/module/ModuleDetectionService.scala:31-51`.
 Every scheduler, tree extractor, side-table read, slot write, resolver contribution, synthetic declaration, cache
-invalidation, and compatibility-shim entry must perform the same module check. A false gate means:
+invalidation, and backend-provider entry must perform the same module check. A false gate means:
 
 - no pc session creation, artifact fetch, retypecheck, PSI traversal, side-table allocation, slot mutation, cache flush,
   completion contribution, synthetic PSI, or background listener work;
 - no semantic or UI behavior change in Scala 2, Scala 3.0–3.4, non-opted-in modules, and inactive modules in mixed
   projects;
-- only the constant-time guard needed by a globally installed shim may execute. If “zero overhead” is interpreted as
-  literally zero additional instructions, any process-wide method hook is disqualified; a third-party plugin then
-  needs an upstream bundled-plugin dispatch seam. The implementation gate is therefore **no work beyond a cheap module
-  predicate**, and the predicate cost must be measured.
+- only the public Scala-plugin dispatcher may perform its constant-time provider/gate check. A process-wide transformer
+  is a proof-of-concept tool, not a release mechanism.
 
 ### Explicitly out of scope
 
@@ -117,8 +118,8 @@ The bypasses are structural, not exceptional:
   and recursively derived from the owning definition or extractor
   (`.../psi/api/base/patterns/ScPattern.scala:20-39,46-115`).
 
-Populating `CompilerType` on a binding, definition, function, parameter, or `ScTypeElement` has no effect unless a shim
-adds a reader to that concrete route.
+Populating `CompilerType` on a binding, definition, function, parameter, or `ScTypeElement` has no effect. The public
+Scala-plugin dispatcher must cover those roots; the slot alone cannot provide whole-backend replacement.
 
 ### 2.4 Resolve, bind, and inference
 
@@ -212,60 +213,58 @@ The bundled Scala EP declarations are together in
 Clean EPs should be preferred for completion, interpolation, stable references, synthetic classes, and UI fallbacks.
 They do not eliminate the overwrite points below.
 
-## 5. Overwrite points with no clean EP
+## 5. Required public backend seams
 
-The compatibility layer is version-pinned to 261.x / bundled Scala plugin 2026.1.20. It should expose one internal
-contract—`Scala3CompilerBackend.lookup(element, role)`—even if the underlying interception uses reflection, method handles,
-or bytecode instrumentation. Every hook performs the gate before consulting state.
+The 2026.1.20 baseline has no general type-backend extension point. The permanent solution is therefore an upstream
+Scala-plugin API, not discovery or rewriting of its concrete PSI implementations.
 
-| Priority | Target | Shim strategy | Risk |
-|---|---|---|---|
-| P0 | `ScTypeElement.getType` / `getNonValueType` (`.../psi/api/base/types/ScTypeElement.scala:23-41`) | Intercept before `innerType`; return the current side-table `ScType` for role `DeclaredType`, otherwise call the original. | High: private/package visibility, cache wrapper shape, constructors and singleton type syntax. |
-| P0 | `ScPatternDefinitionImpl.type` and `ScVariableDefinitionImpl.type` (`.../psi/impl/statements/...:41-52` and `:37-41`) | Intercept at the definition and per-binding pattern. Use pc result keyed by declaration symbol/range; never reuse the whole RHS type for destructuring bindings. | High: multiple bindings, literal widening, stable paths. |
-| P0 | All concrete `ScPattern.type` implementations and pattern `expectedType` | Weave the shared backend-selection prelude into implementors discovered and pinned by a compatibility manifest; fall through when no exact mapping exists. | Very high: distributed implementations and recursion-sensitive expected-type caches. |
-| P0 | `ScFunction` return/defined type, `ScGiven` type, and `ScParameter.type`/inside/outside type | Intercept semantic roots, not every presentation caller. Preserve wrappers such as method/poly types and repeated/by-name/`into` adjustments where the pc DTO records their role. | Very high: Java `PsiMethod` bridges, override checks, polymorphic/method types. |
-| P0 | `ScExpression.getTypeWithoutImplicits` | Keep the existing slot reader for compatibility, but make the backend side table/version guard the source of truth. A patched prelude can avoid stale copied user data and distinguish pending/unavailable. | Medium: hottest path; any extra lookup affects active-module editor latency. |
-| P0 | Cache invalidation | For every element whose committed compiler value changed or disappeared, reflectively call `ScalaPsiManager.clearOnScalaElementChange`; after the batch increment `anyScalaPsiChange` once, mirroring `ExternalHighlightersService.scala:126-134`. | High: under-invalidation returns stale bundled types; over-invalidation causes resolve storms. |
-| P1 | `ScReferenceExpressionImpl.multiResolveScala` / resolver fallback | If bundled resolve fails or resolves a member inconsistent with the pc symbol, contribute a `ScalaResolveResult` backed by mapped or synthetic PSI. A general extra-resolver shim is required because no EP exists for arbitrary reference expressions. | Very high: precedence, overloads, implicit conversions, navigation identity. |
-| P1 | `ScStableCodeReferenceImpl` compiler-type branch | Reconcile it with the versioned compiler-backend store; keep `referenceExtraResolver` for symbols that cannot be extracted from parsed `ScType`. | Medium: direct method/body coupling. |
-| P1 | `ScType` member/signature enumeration and conformance hot spots | First use the parsed pc-rendered `ScType`. When that loses compiler-only structure, attach a pc type handle/symbol id and intercept member lookup/conformance selectively rather than recreating all dotc types. | Extreme: many consumers assume concrete `ScType` shapes, equality, substitutors, and stable PSI owners. |
-| P1 | Scala 3 synthesized/derived members | Materialize minimal light/synthetic PSI from pc symbol DTOs, using `SyntheticMembersInjector`/`SyntheticClassProducer` where their contracts fit and resolver shims elsewhere. | High: stable identity across snapshots, navigation, find usages, refactoring. |
-| P2 | CBH compiler type application | In active modules, reject or replace a late native compiler type if it does not match the current pc generation; inactive modules remain untouched. | Medium: races with completion and editor focus; reflection into private compiler-integration services. |
+### 5.1 Scala plugin to external backend
 
-### Shim delivery choice
+The bundled plugin must publish a dynamic `ExternalCompilerBackend` extension point (final name to be agreed upstream)
+and consult it at its semantic roots. The provider contract is synchronous and cache-only: it receives the PSI element,
+semantic role, and module context and returns `Current`, `Pending`, `Unsupported`, or `Failed`, with an `ScType` or
+symbol handle only when current. Provider selection happens after the module gate and before bundled inference.
 
-There are two viable delivery modes:
+The dispatcher must cover expression exact/widened types, declared and inferred definitions, function/given results,
+parameter inside/outside types, pattern type/expected type, stable and expression reference resolution, and cache
+invalidation. Integrating the dispatcher once in the public PSI traits is the Scala plugin's responsibility; Metallurgy
+must not enumerate concrete implementors. The existing clean EPs in section 4 remain appropriate for completion,
+synthetic classes, and surface-specific fallbacks.
 
-1. **Preferred long-term:** an upstream bundled-plugin `ExternalCompilerBackend` dispatcher invoked at the semantic roots.
-   It is synchronous/cache-only and receives the PSI element and role. Metallurgy supplies the provider. This is the
-   only route with maintainable coverage and a deliberately optimized inactive fast path.
-2. **Research implementation:** a startup compatibility transformer pinned to the exact bundled build, with a manifest
-   of target class/method descriptors and bytecode fingerprints. Installation must fail closed: if any fingerprint is
-   unexpected, disable the Scala 3 backend for the project and leave the bundled plugin untouched. Reflection alone can read
-   fields and call private invalidators, but cannot replace method bodies; a transformer or patched bundled plugin is
-   required for the definition/type-element routes.
+### 5.2 Metallurgy to the Scala compiler
 
-The Phase 0 tracer bullet selects the research implementation. On JBR 25 it installs Byte Buddy's agent at Metallurgy
-startup, defines a minimal Java bridge in the bundled Scala plugin's classloader, and retransforms the default
-`ScTypeElement.type(): Either` method. The transformer inserts a cache-only call to `Scala3CompilerBackend` before the
-original body. The bridge remains disabled until retransformation succeeds. The exact 2026.1.20 class and method
-SHA-256 fingerprints are checked before the agent or bridge is installed; a mismatch leaves the original bytecode and
-behavior intact. Dynamic agent loading currently succeeds on the target JBR but emits the JDK's deprecation warning, so
-a future hardened runtime may disable this research hook. That failure is fail-closed and strengthens the case for the
-preferred upstream dispatch seam.
+Metallurgy compiles against Scalameta's published Java `mtags-interfaces` API. It resolves
+`org.scala-lang:scala3-presentation-compiler_3:<exact module Scala version>` using public Coursier APIs and loads the
+provider in a per-artifact child classloader. Only JDK, LSP4J, and `scala.meta.pc` boundary types are shared with the
+host. Scala collections, dotc trees/types/symbols, IntelliJ PSI, and `ScType` never cross that boundary.
 
-The rejected alternatives for this milestone are a locally patched Scala plugin, because it would change the tested
-deployment unit, and a reflection-only wrapper, because reflection cannot replace the cached default method. The tracer
-measures the unavoidable globally woven guard in inactive modules. On the target test runtime, 20,000 warmed calls
-through the transformed method measured approximately 0.8 microseconds additional p50 latency, 1.0 microsecond
-additional p95 latency, and 56 incremental bytes per call relative to the same bridge disabled. This is acceptable only
-for the research tracer: it performs no compiler work or Metallurgy state publication, and all inactive behavior remains
-bundled. Literal zero additional instructions or allocations requires the upstream dispatch seam and is a release
-blocker before broad distribution.
+The module's compiler version is an artifact coordinate and diagnostic value, not a compatibility predicate. Stable,
+RC/EAP, nightly, and vendor builds follow the same resolution and provider-discovery path. An artifact that cannot be
+resolved or does not advertise the required public capability returns `Unsupported`; it does not trigger a version
+allowlist, implementation-class lookup, classpath scan, or private reflection.
 
-Pre-seeding private cached-value keys, substituting parser-created PSI wrappers, or overriding `ScalaPsiManager` are not
-sound substitutes. The cache keys are implementation details, parser element types determine concrete PSI, and
-`ScalaPsiManager` is not a type dispatcher.
+Today `PresentationCompiler` exposes fixed public operations and the `supportedCodeActions()` string-list precedent,
+but not a complete bulk type map. The required additive upstream API is:
+
+- provider registration in `scala3-presentation-compiler` through `ServiceLoader`, with no Metallurgy-owned hardcoded
+  implementation name;
+- concrete-default `capabilities()` and generic `query(...)` methods in `mtags-interfaces`, preserving newer-host/
+  older-provider binary compatibility;
+- a stable `scala.meta.pc.semantic-snapshot` capability whose schema returns one file's span, semantic role, rendered
+  type, stable symbol, and synthetic-declaration records from one typed pass;
+- explicit `unsupported`, `cancelled`, `failed`, and `success` states, because a successful empty result is meaningful;
+- opaque, namespaced experimental capability IDs and schema versions so a nightly may advertise new operations without
+  host version tables. Unknown capabilities are logged/ignored; consuming an unknown payload still requires a handler
+  for its schema.
+
+Direct `InteractiveDriver` coupling belongs inside the exact-version Scala 3 PC artifact, where it is compiled and
+released with dotc. Metallurgy's current reflected driver and bundled-plugin transformer are successful proof-of-concept
+evidence only and must be retired as the public seams land. Existing compiler or Scala-plugin releases that lack a seam
+remain load-compatible and preserve bundled behavior, but cannot retroactively provide the replacement backend without
+one of the prohibited hacks.
+
+The detailed source study is in
+[`docs/research/metals-scala3-pc-coupling.md`](research/metals-scala3-pc-coupling.md).
 
 ## 6. BETASTY and best-effort compilation
 
@@ -316,10 +315,10 @@ The compatibility goal is not tree isomorphism. It is a stable answer for each I
 | Different tree granularity | `Inlined`, `Apply`, `TypeApply`, desugared blocks, synthetic closures, and wrappers can share or omit source spans. | Group by normalized span; rank trees by role-specific priority; retain the pc symbol/owner to break ties. Never choose by “deepest tree” alone. |
 | Multiple PSI nodes at one range | A name, binding, definition, and typeable wrapper may overlap. | Map one compiler DTO to several explicit roles; the side table key includes PSI role, not only range. |
 | Destructuring bindings | The RHS type is not each bound variable's type. | Map pc `ValDef`/pattern symbols individually. If no individual symbol exists, leave that binding unavailable rather than publish the tuple/RHS type. |
-| Declared vs inferred type | PSI prefers source type syntax; pc may expose an alias-reduced, singleton, widened, or inferred view. | Store separate roles (`Declared`, `Inferred`, `InsideParameter`, `OutsideParameter`, `ExpressionExact`, `ExpressionWidened`) and make each shim request the correct role. |
+| Declared vs inferred type | PSI prefers source type syntax; pc may expose an alias-reduced, singleton, widened, or inferred view. | Store separate roles (`Declared`, `Inferred`, `InsideParameter`, `OutsideParameter`, `ExpressionExact`, `ExpressionWidened`) and make each dispatcher request the correct role. |
 | Compiler-only/synthetic declarations | Derived, inline-expanded, or best-effort-loaded symbols may have no source PSI. | Create minimal stable light PSI keyed by compiler symbol id and generation; navigation points to the nearest source owner or TASTy/decompiled owner. Completion/hover can remain pc-native if no safe PSI exists. |
 | Rendered syntax not parsable as `ScType` | Dotc display text may contain compiler names, captures, anonymous refinements, or forms the bundled parser cannot reconstruct. | Prefer a source-compatible renderer; validate with `createTypeFromText`; on failure retain a display string and pc type handle for pc-native surfaces, and mark `ScType` unavailable. Never substitute `Any`. |
-| `ScType` semantic mismatch | Parsed types subsequently use bundled conformance/member algorithms. | Measure first. Add narrow pc-backed conformance/member shims only where mismatches are observed; do not replace the entire `ScType` algebra speculatively. |
+| `ScType` semantic mismatch | Parsed types subsequently use bundled conformance/member algorithms. | Measure first. Add narrow public pc-backed conformance/member operations only where mismatches are observed; do not replace the entire `ScType` algebra speculatively. |
 | Reparse copies user data | `CompilerType` uses copyable user data, so stale strings can survive PSI replacement. | The side table's `(fileUri, documentVersion, generation)` determines freshness. A slot without a matching current entry is ignored/cleared. |
 | Best-effort error types | `.betasty` legitimately contains error placeholders. | Preserve `Unavailable/Error` provenance. Publish nearby valid types and symbols; never disguise an error placeholder as a valid Scala 3 compiler result. |
 
@@ -334,12 +333,9 @@ implementation but do not justify inventing public PSI members.
 1. **`Scala3CompilerSnapshot`** — immutable results for
    `(module, fileUri, documentVersion, classpathGeneration, compilerOptionsGeneration)`. It contains canonical typed
    spans, rendered-type DTOs, compiler symbol DTOs, diagnostics provenance, and extraction timings.
-2. **`PcTypedTreeExtractor`** — runs inside the pc classloader after the one retypecheck. It traverses the compilation
-   unit's `tpdTree`, filters invalid/unpositioned/error-only nodes, groups by span, selects role candidates, renders
-   types there, and returns boundary-safe DTOs. Scala 3.7.4's driver forces `YretainTrees`, records both top-level opened
-   trees and the full `CompilationUnit`, and stores the unit after `run.compileSources`; the full walk therefore starts
-   at `compilationUnits(uri).tpdTree`, not the smaller `openedTrees(uri)` list
-   (`scala3/compiler/src/dotty/tools/dotc/interactive/InteractiveDriver.scala:27-57,144-169`).
+2. **Scalameta semantic-snapshot provider** — runs inside the exact compiler's pc artifact after one retypecheck. Its
+   Scala 3 implementation may traverse `compilationUnits(uri).tpdTree`, but returns only the public capability schema:
+   spans, roles, rendered types, stable symbols, and synthetic declarations. Dotc objects never reach Metallurgy.
 3. **`PcPsiMapper`** — under a cancellable non-blocking read action, maps DTO spans/symbols to current PSI elements and
    semantic roles. It creates smart pointers only for the short commit window; persistent identity is URI/version/range/
    role/symbol id, not a raw PSI object.
@@ -349,9 +345,9 @@ implementation but do not justify inventing public PSI members.
 5. **`Scala3CompilerPublisher`** — commits expression/reference compatibility slots, computes the changed/removed
    element set, performs per-element Scala cache clears, increments the global tracker once, and restarts only the
    necessary daemon/hint/completion surfaces.
-6. **`BundledCompilerBackendShim`** — intercepts the P0 semantic roots in section 5 and asks the store for a role-specific
-   `ScType`. It parses/caches source-compatible rendered text in the bundled classloader. On inactive modules or no
-   current compiler value it invokes the original implementation.
+6. **Scala-plugin backend provider** — implements the public dispatcher from section 5, asks the store for a
+   role-specific result, and parses/caches source-compatible rendered text as `ScType`. On inactive modules or no
+   current compiler value the dispatcher invokes the bundled implementation.
 7. **`PcSymbolBridge`** — maps compiler symbol ids to source PSI or stable light PSI and supplies completion, stable
    reference, arbitrary reference fallback, navigation, and search identity.
 
@@ -362,14 +358,10 @@ The pass is deliberately bulk and version-guarded:
 ```text
 capture file URI + text + document version + module/classpath/options generation
   -> gate ModuleDetectionService.isActive(module)
-  -> background InteractiveDriver.run(uri, text) once
-  -> obtain compilationUnits(uri).tpdTree and current Context
-  -> foreachSubTree:
-       collect positioned, typed candidates
-       normalize [spanStart, spanEnd), role, symbol, exact/widened policy
-  -> group and deduplicate by span + role + symbol
-  -> render selected types inside the pc classloader
-  -> return immutable boundary-safe DTO snapshot
+  -> resolve/discover exact-version scala.meta.pc provider by public capability
+  -> query scala.meta.pc.semantic-snapshot once off EDT
+  -> provider performs one typed pass and returns immutable boundary-safe records
+  -> validate capability/schema/status and deduplicate by span + role + symbol
   -> non-blocking read action maps DTOs to PSI for the captured version
   -> commit only if URI, document version, module gate, session generation,
      classpath generation, and compiler-options generation are unchanged
@@ -379,11 +371,9 @@ capture file URI + text + document version + module/classpath/options generation
   -> increment anyScalaPsiChange once and restart affected presentations
 ```
 
-The existing reflected driver already owns the relevant ingredients: `InteractiveDriver.run`, `currentCtx`,
-`openedFiles`, `openedTrees`, tree spans, type normalization/rendering, and a single-writer lease
-(`src/main/scala/com/hmemcpy/metallurgy/pc/PcInlineTypeDriver.scala:24-43,83-111,119-203,233-248`). It should gain one
-bulk-extraction call rather than looping over `typeAt`. `PcSession` already debounces by 300 ms, supersedes generations,
-serializes retypechecks, and publishes only the winning driver/snapshot
+The proof of concept establishes the required record shape and publication lifecycle. Its reflected
+`PcInlineTypeDriver` is not the production boundary. `PcSession`'s debounce, generation supersession, single-writer
+serialization, and winning-snapshot publication remain reusable host-side behavior
 (`src/main/scala/com/hmemcpy/metallurgy/pc/PcSession.scala:107-121,164-209,349-365`).
 
 ### 8.3 Backend selection rules
@@ -452,17 +442,19 @@ file/top-level clear, and measure that path separately.
 
 ## 10. Phased implementation plan
 
-### Phase 0 — Baseline and instrumentation contract
+### Phase 0 — Public protocol and baseline
 
 - Define compiler-backend roles/states/generation keys and the exact inactive fast-path contract.
 - Add timings and counters around current retypecheck, `typeAt`, PSI traversal, cache invalidation, and daemon restart.
-- Prototype the 2026.1.20 shim on one declared-type root with bytecode fingerprint/fail-closed behavior.
-- **Go/no-go:** no behavior outside active modules; inactive hook overhead statistically indistinguishable from baseline;
-  compatibility failure disables the Scala 3 backend cleanly.
+- Upstream the Scala-plugin semantic-backend dispatcher and the Scalameta provider/capability/snapshot API.
+- Replace private dependency resolution with public Coursier, require provider service metadata, and add stable/RC/nightly
+  artifact-discovery fixtures without version allowlists.
+- **Go/no-go:** no implementation-class names, bytecode fingerprints, private reflection, or version compatibility table;
+  absent capabilities preserve bundled behavior and inactive modules start no work.
 
 ### Phase 1 — Pc everywhere in the existing pass, behind measurement
 
-- Add bulk `tpdTree` extraction and replace per-binding `typeAt` queries.
+- Consume the public bulk semantic snapshot and replace per-binding `typeAt` queries.
 - Map and publish all safely matched expressions while still scheduling from `PcTypeHintsPass`.
 - Perform version-guarded commit and correct per-element invalidation.
 - Keep visible hints behavior unchanged so the experiment has a narrow UI footprint.
@@ -470,8 +462,8 @@ file/top-level clear, and measure that path separately.
 
 ### Phase 2 — Typed definitions and role-specific backend selection
 
-- Activate shim coverage for type elements, vals/vars and individual bindings, functions/givens, parameters, and concrete
-  patterns.
+- Activate public dispatcher coverage for type elements, vals/vars and individual bindings, functions/givens,
+  parameters, and concrete patterns.
 - Preserve distinct declared/inferred/inside/outside/exact/widened roles.
 - Add consumer tests for hover, bundled hints, annotator, representative inspections, Java `PsiType` conversion, and
   refactoring previews.
@@ -483,7 +475,7 @@ file/top-level clear, and measure that path separately.
 - Map pc symbols to existing PSI where possible.
 - Add stable light PSI for unmapped compiler-visible declarations, then wire stable references, general reference
   fallback, completion, navigation, find usages, and selected refactorings.
-- Use clean EPs before resolver method shims.
+- Use the public backend/resolve seams and existing clean EPs; do not patch resolver methods.
 - **Go/no-go:** stable identity across an unchanged version; edits retire old identities; no synthetic result appears in
   an inactive module or leaks through project-wide searches.
 
@@ -505,8 +497,10 @@ file/top-level clear, and measure that path separately.
 
 - Run the full consumer matrix, target larger real projects, and add narrow pc-backed member/conformance operations only
   for measured `ScType` incompatibilities.
-- Publish a compatibility manifest for each supported bundled build.
-- Decide whether upstreaming the dispatcher is mandatory before any non-research distribution.
+- Test newer-host/older-provider and older-host/newer-provider combinations, stable/RC/nightly compiler artifacts, and
+  stable/EAP/nightly Scala-plugin builds through capabilities rather than versions.
+- Remove the proof-of-concept transformer, private bundled dependency resolver, and reflected dotc driver before any
+  non-research distribution.
 
 ### Measurements
 
@@ -544,13 +538,11 @@ are no-go results.
 2. **Backend replacement is asynchronous.** Selecting Scala 3 on the first arbitrary synchronous read would require eager typing
    of every file or blocking PSI. The design instead guarantees Scala 3 results for the latest published exact-version
    snapshot and measures the pending window.
-3. **Transformer lifecycle.** Dynamic retransformation works on the target JBR 25, including when `ScTypeElement` is
-   already loaded, but the runtime warns that dynamic agent loading may be disabled by default in a future release.
-   Plugin unload also cannot safely restore arbitrary third-party transformations. Treat the shim as process-lifetime,
-   fail closed on installation failure, and require the upstream dispatcher before broad distribution.
-4. **Inactive fast path.** A globally woven hook necessarily executes a branch. Is “zero overhead” satisfied by a cached
-   module predicate with zero allocations/work, or must mixed-project inactive modules execute literally unchanged
-   bytecode? The latter rules out third-party global interception.
+3. **Upstream availability.** Existing artifacts cannot retroactively advertise a service or semantic capability.
+   Releases without either public seam remain safe and bundled, but cannot provide permanent backend replacement.
+4. **Protocol evolution.** Additive default methods protect newer hosts from older providers. The generic capability
+   envelope protects older hosts from new experimental DTO linkage, but an unknown payload cannot be interpreted until
+   a compatible handler exists.
 5. **Rendered-type fidelity.** Which dotc types cannot round-trip through `createTypeFromText`, and which lose ownership,
    match-type state, capture sets, refinements, annotations, or singleton precision?
 6. **Role selection.** Which compiler phase/tree type corresponds to IntelliJ's exact vs widened expression,
@@ -571,8 +563,9 @@ are no-go results.
 13. **Failure semantics.** Returning bundled fallback preserves IDE utility but weakens the literal “all” claim.
     Returning unavailable everywhere is purer but may break callers. The backend state and telemetry must make this a
     deliberate per-role decision.
-14. **Version maintenance.** Private APIs and bytecode shapes can change within 261.x. Fingerprints, startup probes, and
-    a fail-closed compatibility matrix are mandatory.
+14. **Artifact availability.** Stable, RC/EAP, nightly, and vendor coordinates may live in different repositories or may
+    omit a PC artifact. Resolution failure is an explicit unavailable capability, never a reason to guess a nearby
+    compiler version.
 
 ## 12. Relationship to prior ADRs
 
@@ -586,13 +579,14 @@ this design retains as implementation constraints; they do not make the archived
   supplies compiled/best-effort artifacts and the safety boundary. Every new backend hook inherits that exact gate.
 - **ADR-0010 remains evidence about diagnostics, not a limit on backend replacement.** Native-clean steady-state highlighting
   justifies leaving diagnostics alone; it does not establish that bundled PSI types are compiler-equivalent.
-- **ADR-0007's version pin/reflection fallback becomes stricter.** The compiler-backend shim requires explicit method
-  fingerprints, startup verification, and fail-closed behavior, not opportunistic reflection.
+- **ADR-0007's version pin/reflection fallback is superseded.** Permanent support uses published Scalameta interfaces,
+  public provider discovery, and a public Scala-plugin dispatcher. The proof-of-concept shim is not a compatibility
+  strategy.
 - **ADR-0009's pass infrastructure is reusable plumbing.** Long-term compiler-backend population becomes its own pass;
   diagnostics and inlays become consumers of the same immutable snapshot.
 
-The central bet is therefore precise: **one exact-version pc retypecheck populates a whole-file semantic snapshot; a
-gated, version-pinned compatibility layer makes that snapshot the first answer at every Scala PSI type root, while a
-pc-symbol bridge covers declarations that cannot be represented by a parsed `ScType`.** The bet succeeds only if its
-inactive fast path, cache invalidation, consumer compatibility, and measured latency are good enough to preserve the
-bundled plugin's years of stabilization.
+The central bet is therefore precise: **one exact-version Scalameta pc query populates a whole-file semantic snapshot;
+a public Scala-plugin backend dispatcher makes that snapshot the first answer at every Scala PSI semantic root, while
+a pc-symbol bridge covers declarations that cannot be represented by a parsed `ScType`.** Compiler and plugin versions
+never select implementation hacks. The bet succeeds only if capability discovery, inactive isolation, cache
+invalidation, consumer compatibility, and measured latency preserve the bundled plugin's years of stabilization.

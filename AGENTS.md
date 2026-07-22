@@ -1,7 +1,7 @@
 # Metallurgy
 
-A third-party IntelliJ plugin that augments the bundled Scala plugin for **Scala 3.5+** modules by delegating language
-semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.interactive.InteractiveDriver`).
+A third-party IntelliJ plugin that replaces IntelliJ's Scala type backend with the real Scala 3 presentation compiler
+through Scalameta's published `scala.meta.pc` interfaces while retaining the existing Scala PSI model.
 
 - **Scope:** replace all IntelliJ Scala type resolution in active Scala 3 modules with the real Scala 3 compiler,
   driven through pc and best-effort compilation. Ordinary steady-state diagnostics remain owned by compiler-based
@@ -25,6 +25,11 @@ semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.i
 - **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the canonical reference for
   IntelliJ / Scala-plugin APIs.** A local checkout lives at `~/git/intellij-scala`. Before writing an implementation,
   helper, or test fixture, search it for an existing pattern to mirror.
+- **Permanent compiler support uses public capabilities, not implementation discovery.** The production bridge is Scala
+  PSI ↔ a public Scala-plugin semantic-backend dispatcher ↔ Metallurgy ↔ published Scalameta PC interfaces. Compiler and
+  plugin versions are artifact coordinates/diagnostics, not compatibility switches. Do not add private reflection,
+  bytecode fingerprints, implementation-class constants, classpath implementation scans, or version allowlists. The
+  existing transformer/direct-dotc path is PoC evidence and must not be expanded.
 - **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
   *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
   "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
@@ -60,10 +65,11 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 
 - **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3.5+ **and** user opted-in **and** CBH on. Everything
   else is a hard no-op without it. `BundledPluginBridge.usesCompilerTypes(project)` reads the CBH settings.
-- **Engine:** `PcSessionManager` (per-module sessions) → `PcSession` (isolated classloader + `InteractiveDriver` via
-  reflection) → `PcInlineTypeDriver.typeAt/diagnostics/structuralCompletions`. `TypeRenderer.render(session, snapshot,
-  offset)` is the single entry point for a rendered type. Queries are cached per `(fileUri, documentVersion)` and
-  return `None` on the EDT (run them off-EDT; await the published snapshot first).
+- **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
+  provider discovered through Scalameta's public interface → bulk semantic snapshot. Direct dotc access belongs inside
+  the exact-version Scala 3 PC artifact. Queries are cached per `(fileUri, documentVersion)` and never run on the EDT.
+- **Current PoC:** `PcInlineTypeDriver` and `BundledCompilerBackendShim` proved typed-tree mapping and PSI dispatch. They
+  are migration inputs only; issue #61 replaces them with the public Scalameta and Scala-plugin seams.
 - **Presentation (Feature 0):** `CompilerTypeRequestResolver` subscribes to the bundled `CompilerType` topic and fills
   the compiler-type slot. Note: the bundled *requests* the type only for transparent-inline calls during completion,
   then *reads* the slot for any expression — so this path is completion-triggered.
