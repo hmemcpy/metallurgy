@@ -257,7 +257,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
     try
       settings.setEnabled(getModule, enabled = true)
-      setCompilerBasedHighlighting(enabled = true) // ADR 0008
+      setCompilerBasedHighlighting(enabled = true)
       val _ = onPooledThread(fetcher.jarsFor(testScalaVersion.minor).get(120, TimeUnit.SECONDS))
 
       // pc flags this as a type error → the cache publishes CurrentSuccess carrying it.
@@ -293,7 +293,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
 
       settings.setEnabled(getModule, enabled = true)
-      setCompilerBasedHighlighting(enabled = true) // ADR 0008: Metallurgy requires CBH
+      setCompilerBasedHighlighting(enabled = true) // Metallurgy requires CBH
       val first  = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
       val second = onPooledThread(manager.sessionFor(getModule)).get
       assertSame(first, second)
@@ -306,7 +306,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertNotSame(first, replacement)
       assertFalse(replacement.isClosed)
 
-      // ADR 0008: without CBH, Metallurgy is a no-op even when enabled.
+      // without CBH, Metallurgy is a no-op even when enabled.
       setCompilerBasedHighlighting(enabled = false)
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
       setCompilerBasedHighlighting(enabled = true)

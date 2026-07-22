@@ -9,8 +9,8 @@ import com.intellij.psi.PsiFile
 /** Suppresses the bundled semantic annotator's errors once pc has spoken for the current document version
   * (PC-authoritative: an empty `CurrentSuccess` means clean), and blanks them while pc analysis is in flight
   * (blank-while-pending). Parser errors, warnings, and anything from a non-active module are left untouched. pc's own
-  * diagnostics are rendered on a separate markup layer by [[PcHighlightRenderer]] (ADR 0009); this filter only removes
-  * the bundled annotator's competing semantic red.
+  * diagnostics are rendered on a separate markup layer by [[PcHighlightRenderer]]; this filter only removes the bundled
+  * annotator's competing semantic red.
   */
 final class PcHighlightInfoFilter extends HighlightInfoFilter:
 

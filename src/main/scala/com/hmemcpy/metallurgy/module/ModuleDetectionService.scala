@@ -43,7 +43,7 @@ final class ModuleDetectionService(project: Project) extends Disposable:
 
   /** Metallurgy is active for a module iff it is a Scala 3.5+ module the user opted into AND compiler-based
     * highlighting is on. `pc` piggybacks on the compile server's compiled artifacts, so without CBH Metallurgy is a
-    * complete no-op (ADR 0008).
+    * complete no-op.
     */
   def isActive(module: Module): Boolean =
     isEligible(module) &&

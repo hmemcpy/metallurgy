@@ -38,7 +38,11 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
       "r",
       Set("4")
     ),
-    "match type" -> ("type Elem[X] = X match\n  case List[t] => t\nval reduced: Elem[List[Int]] = 42\n", "reduced", Set("Int")),
+    "match type"                   -> (
+      "type Elem[X] = X match\n  case List[t] => t\nval reduced: Elem[List[Int]] = 42\n",
+      "reduced",
+      Set("Int")
+    ),
     "polymorphic function"         -> ("val id = [A] => (x: A) => x\nval result = id(42)\n", "result", Set("Int")),
     "opaque type"                  -> (
       "object Ports:\n  opaque type Port = Int\n  def apply(n: Int): Port = n\nval p: Ports.Port = Ports(8080)\n",
