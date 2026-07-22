@@ -340,6 +340,12 @@ consumption, completion, hover, and future experimental facilities are advertise
 succeed. Stable, RC/EAP, nightly, and vendor artifacts use the same discovery path. Failure returns a typed unavailable
 reason and cannot select a nearby compiler or a hardcoded manifest entry.
 
+The capability report retains both typed states for the operations Metallurgy currently consumes and the complete set
+of public operations exposed by the discovered `PresentationCompiler` implementation. A newly published Scalameta
+operation is therefore visible to future adapters immediately; supporting it requires an IntelliJ-side adapter, not a
+new compiler-version entry. The discovered prototype is session-owned and reused for first configuration, so capability
+probing does not rescan or instantiate the exact compiler a second time.
+
 `PcSessionManager` records the active backend lifecycle as `Undiscovered`, `Pending(exactVersion)`,
 `Available(exactVersion, capabilities)`, or `Unavailable(reason)`. Artifact preparation and session construction are
 different unavailable reasons and complete asynchronous callers with no session rather than leaking an exception into

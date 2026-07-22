@@ -23,11 +23,13 @@ final class PcSession private (
     val compilerDistribution: Seq[File],
     val compilerClasspath: Seq[File],
     val compilerOptions: Seq[String],
-    private[metallurgy] val capabilities: Scala3PcBridgeCapabilities
+    private[metallurgy] val capabilities: Scala3PcBridgeCapabilities,
+    initialCompilerPrototype: Option[PresentationCompiler]
 ) extends AutoCloseable:
 
   private val Log                   = Logger.getInstance(classOf[PcSession])
   private val presentationCompiler  = new AtomicReference[Option[PresentationCompiler]](None)
+  private val compilerPrototype     = new AtomicReference(initialCompilerPrototype)
   private val inlineTypeDrivers     = new ConcurrentHashMap[String, InlineTypeDriverLease]()
   private val inlineDriverCreations = new AtomicInteger(0)
   private val snapshots             = new PcSnapshotStore()
@@ -159,6 +161,7 @@ final class PcSession private (
       Disposer.dispose(lifetime)
       inlineTypeDrivers.values().asScala.foreach(_.retire())
       inlineTypeDrivers.clear()
+      compilerPrototype.getAndSet(None).foreach(shutdown)
       presentationCompiler.getAndSet(None).foreach(shutdown)
       snapshots.clear()
       requestedVersions.clear()
@@ -261,9 +264,12 @@ final class PcSession private (
             throw new IllegalStateException("PcSession was closed while creating its presentation compiler")
 
   private def createCompiler(): PresentationCompiler =
-    val prototype = PresentationCompilerDiscovery
-      .load(classloader, compilerDistribution)
-      .fold(reason => throw new IllegalStateException(reason.message), identity)
+    val prototype = compilerPrototype
+      .getAndSet(None)
+      .getOrElse:
+        PresentationCompilerDiscovery
+          .load(classloader, compilerDistribution)
+          .fold(reason => throw new IllegalStateException(reason.message), identity)
 
     try
       prototype.newInstance(
@@ -389,12 +395,14 @@ object PcSession:
     val urls        = (cachedJars ++ classpath).map(_.toURI.toURL).toArray
     val classloader = new PcClassLoader(urls, classOf[PcSession].getClassLoader)
 
-    val capabilities = Scala3PcBridge.discoverCapabilities(classloader)
+    val provider     = PresentationCompilerDiscovery.load(classloader, cachedJars.toIndexedSeq)
+    val capabilities = Scala3PcBridge.discoverCapabilities(classloader, provider)
     new PcSession(
       scalaVersion,
       classloader,
       cachedJars.toIndexedSeq,
       classpath,
       capabilities.presentationCompilerOptions(compilerOptions),
-      capabilities
+      capabilities,
+      provider.toOption
     )

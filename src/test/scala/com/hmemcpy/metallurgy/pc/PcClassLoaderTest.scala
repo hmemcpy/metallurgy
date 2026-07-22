@@ -98,21 +98,30 @@ final class PcClassLoaderTest:
 
   @Test
   def optionalCapabilitiesAreDiscoveredFromCompilerShape(): Unit =
-    val loader = compilerLoader("3.5.2")
+    val artifacts = compilerDistribution("3.5.2")
+    val loader    = new PcClassLoader(artifacts.map(_.toUri.toURL).toArray, getClass.getClassLoader)
     try
-      val capabilities = Scala3PcBridge.discoverCapabilities(loader)
+      val capabilities = Scala3PcBridge.discoverCapabilities(loader, artifacts.map(_.toFile))
+      assertTrue(capabilities.basePresentationCompiler.isAvailable)
+      assertTrue(capabilities.completion.isAvailable)
+      assertTrue(capabilities.hover.isAvailable)
       assertTrue(capabilities.inlineTypes.isAvailable)
       assertTrue(capabilities.typedTreeSnapshots.isAvailable)
       assertTrue(capabilities.structuralCompletions.isAvailable)
       assertTrue(capabilities.bestEffortProduction.isAvailable)
       assertTrue(capabilities.bestEffortConsumption.isAvailable)
+      assertTrue(capabilities.publicOperations.contains("complete"))
+      assertTrue(capabilities.publicOperations.contains("hover"))
     finally loader.close()
 
   @Test
   def missingOptionalCapabilitiesAreReportedWithoutFailingBasePcDiscovery(): Unit =
     val loader = new PcClassLoader(Array.empty, getClass.getClassLoader)
     try
-      val capabilities = Scala3PcBridge.discoverCapabilities(loader)
+      val capabilities = Scala3PcBridge.discoverCapabilities(loader, Seq.empty)
+      assertFalse(capabilities.basePresentationCompiler.isAvailable)
+      assertFalse(capabilities.completion.isAvailable)
+      assertFalse(capabilities.hover.isAvailable)
       assertFalse(capabilities.inlineTypes.isAvailable)
       assertFalse(capabilities.typedTreeSnapshots.isAvailable)
       assertFalse(capabilities.structuralCompletions.isAvailable)
@@ -132,10 +141,13 @@ final class PcClassLoaderTest:
     finally loader.close()
 
   private def compilerLoader(scalaVersion: String): PcClassLoader =
-    val artifacts = PresentationCompilerResolver.publicCoursier
+    val artifacts = compilerDistribution(scalaVersion)
+    new PcClassLoader(artifacts.map(_.toUri.toURL).toArray, getClass.getClassLoader)
+
+  private def compilerDistribution(scalaVersion: String): Seq[Path] =
+    PresentationCompilerResolver.publicCoursier
       .resolve(scalaVersion)
       .fold(error => throw error.toException, identity)
-    new PcClassLoader(artifacts.map(_.toUri.toURL).toArray, getClass.getClassLoader)
 
   private def newCompiler(loader: PcClassLoader, scalaVersion: String): PresentationCompiler =
     val prototype = discoverCompiler(loader, scalaVersion)
