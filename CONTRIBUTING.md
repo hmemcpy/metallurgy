@@ -23,7 +23,8 @@ sbt runIDE         # launch a dev IDEA with the plugin loaded
 - Plugin code is **Scala 3.7.4**. The in-tree testkit backport (`testkit/`, ADR 0005) is **Scala 2.13.16** to match the bundled Scala plugin it mirrors.
 - `sbt fmt` applies `scalafmt`; `sbt check` verifies formatting (CI gates on this).
 - Prefer idiomatic Scala 3. **Java-isms are fine where the IntelliJ / bundled-Scala-plugin APIs force them** — don't fight the platform for purity.
-- **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the definitive reference.** Before writing an implementation, helper, or test fixture, check it (the GitHub repo, or your local checkout) for an existing one to mirror.
+- **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the definitive reference** for IntelliJ / Scala-plugin APIs. Before writing an implementation, helper, or test fixture, check it (the GitHub repo, or your local checkout) for an existing one to mirror.
+- **The [scala/scala3](https://github.com/scala/scala3) repo is the source of truth for Scala language and compiler behaviour.** When something doesn't work where it seemingly should — a snippet that won't compile, a type that resolves unexpectedly, a macro that doesn't expand — check the upstream compiler implementation, its tests (`tests/run`, `tests/run-macros`, `tests/pos`), and the issue tracker *before* concluding it's a tooling limitation. This is the companion to **"pc is never wrong"**: a surprising `pc`/dotc result almost always means the snippet or assumption is wrong, and the canonical usage lives upstream (verified against the exact Scala version under test).
 - When running tests, always bound the timeout — a hung compile-server test should not stall the suite.
 
 ## Branches
