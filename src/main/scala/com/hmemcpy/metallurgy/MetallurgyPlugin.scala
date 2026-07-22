@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy
 
 import com.hmemcpy.metallurgy.feature.compilertype.{CompilerTypeReportInterceptor, CompilerTypeRequestResolver}
-import com.hmemcpy.metallurgy.compilerbackend.BundledCompilerBackendShim
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.{FirstDetectionNotifier, ModuleDetectionService}
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleManager
@@ -10,7 +10,7 @@ import com.intellij.openapi.project.{DumbService, Project}
 final class MetallurgyProjectActivity extends ScalaProjectActivity:
   override def execute(project: Project): Unit =
     MetallurgyPlugin.Log.info("Metallurgy loaded")
-    val shimStatus = BundledCompilerBackendShim.install()
+    val shimStatus = ScalaPluginSemanticBridge.install()
     if !shimStatus.isEnabled then MetallurgyPlugin.Log.warn(s"Scala 3 compiler backend shim disabled: $shimStatus")
     val _          = CompilerTypeRequestResolver(project) // eagerly subscribe to compiler-type requests
     project.getService(classOf[CompilerTypeReportInterceptor])

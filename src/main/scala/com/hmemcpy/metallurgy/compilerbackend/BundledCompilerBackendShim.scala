@@ -14,7 +14,7 @@ import java.util.function.{BiFunction, Function}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
-private[metallurgy] object BundledCompilerBackendShim:
+private[compilerbackend] object BundledCompilerBackendShim:
 
   private enum Installation:
     case NotStarted

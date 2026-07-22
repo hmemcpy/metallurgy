@@ -245,7 +245,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
           |  val selected = structural.`
           |""".stripMargin
       val snapshot = PcSnapshot("file:///StructuralCompletion.scala", 1L, source)
-      val driver   = new PcInlineTypeDriver(session.classloader, session.compilerClasspath, session.compilerOptions)
+      val driver   = Scala3PcBridge.open(session.classloader, session.compilerClasspath, session.compilerOptions)
 
       try
         driver.retypecheck(snapshot)
@@ -398,7 +398,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val source   =
         (1 to 100).map(index => s"  val value$index = List($index).head").mkString("object Main:\n", "\n", "\n")
       val snapshot = PcSnapshot("file:///CanceledTypedTree.scala", 1L, source)
-      val driver   = new PcInlineTypeDriver(session.classloader, session.compilerClasspath, session.compilerOptions)
+      val driver   = Scala3PcBridge.open(session.classloader, session.compilerClasspath, session.compilerOptions)
       val checks   = new AtomicInteger(0)
       val currency = () =>
         if checks.incrementAndGet() < 4 then PcSnapshotCurrency.Current

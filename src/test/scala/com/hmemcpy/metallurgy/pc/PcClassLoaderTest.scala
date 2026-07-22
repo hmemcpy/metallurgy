@@ -4,9 +4,7 @@ import org.junit.Assert.{assertFalse, assertNotSame, assertSame, assertThrows, a
 import org.junit.Test
 import scala.meta.pc.PresentationCompiler
 
-import java.net.URL
 import java.nio.file.Path
-import java.util.ServiceLoader
 import scala.jdk.CollectionConverters.*
 
 final class PcClassLoaderTest:
@@ -67,10 +65,13 @@ final class PcClassLoaderTest:
       second.close()
 
   @Test
-  def providerDescriptorRemainsVisibleUntilPublishedCompilerArtifactsCarryIt(): Unit =
-    val loader = new PcClassLoader(Array.empty[URL], getClass.getClassLoader)
-    try assertTrue(loader.getResources("META-INF/services/scala.meta.pc.PresentationCompiler").hasMoreElements)
-    finally loader.close()
+  def providerIsDiscoveredFromTheExactArtifactWithoutHostMetadata(): Unit =
+    val loader    = compilerLoader("3.7.4")
+    val prototype = discoverCompiler(loader, "3.7.4")
+    try assertSame(loader, prototype.getClass.getClassLoader)
+    finally
+      prototype.shutdown()
+      loader.close()
 
   @Test
   def exactCompilerVersionsCanCoexistBehindTheSharedApi(): Unit =
@@ -102,10 +103,14 @@ final class PcClassLoaderTest:
     new PcClassLoader(artifacts.map(_.toUri.toURL).toArray, getClass.getClassLoader)
 
   private def newCompiler(loader: PcClassLoader, scalaVersion: String): PresentationCompiler =
-    val prototype = ServiceLoader
-      .load(classOf[PresentationCompiler], loader)
-      .iterator()
-      .asScala
-      .nextOption()
-      .getOrElse(throw new AssertionError(s"No presentation compiler provider for Scala $scalaVersion"))
-    prototype.newInstance(s"test-$scalaVersion", Seq.empty[Path].asJava, Seq.empty[String].asJava)
+    val prototype = discoverCompiler(loader, scalaVersion)
+    try prototype.newInstance(s"test-$scalaVersion", Seq.empty[Path].asJava, Seq.empty[String].asJava)
+    finally prototype.shutdown()
+
+  private def discoverCompiler(loader: PcClassLoader, scalaVersion: String): PresentationCompiler =
+    val artifacts = PresentationCompilerResolver.publicCoursier
+      .resolve(scalaVersion)
+      .fold(error => throw error.toException, identity)
+    PresentationCompilerDiscovery
+      .load(loader, artifacts.map(_.toFile))
+      .fold(reason => throw new AssertionError(s"$reason for Scala $scalaVersion"), identity)

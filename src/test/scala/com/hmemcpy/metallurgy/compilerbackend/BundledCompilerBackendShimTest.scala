@@ -48,7 +48,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     super.setUp()
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
     setCompilerBasedHighlighting(enabled = true)
-    assertTrue(BundledCompilerBackendShim.install().isEnabled)
+    assertTrue(ScalaPluginSemanticBridge.install().isEnabled)
 
   override protected def tearDown(): Unit =
     try
@@ -416,8 +416,6 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.compilerTypeTarget.nonEmpty)
     assertTrue(discovery.patternImplementations.size >= 17)
     discovery.patternImplementations.foreach: pattern =>
-      assertEquals(pattern.className, 64, pattern.bytecodeFingerprint.length)
-      assertTrue(pattern.className, pattern.bytecodeFingerprint.forall(Character.digit(_, 16) >= 0))
       assertTrue(pattern.className, pattern.hookClassName.nonEmpty)
     assertTrue(
       CompilerBackendRole.values.forall(role =>

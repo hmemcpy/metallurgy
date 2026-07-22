@@ -25,11 +25,13 @@ through Scalameta's published `scala.meta.pc` interfaces while retaining the exi
 - **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the canonical reference for
   IntelliJ / Scala-plugin APIs.** A local checkout lives at `~/git/intellij-scala`. Before writing an implementation,
   helper, or test fixture, search it for an existing pattern to mirror.
-- **Permanent compiler support uses public capabilities, not implementation discovery.** The production bridge is Scala
-  PSI ↔ a public Scala-plugin semantic-backend dispatcher ↔ Metallurgy ↔ published Scalameta PC interfaces. Compiler and
-  plugin versions are artifact coordinates/diagnostics, not compatibility switches. Do not add private reflection,
-  bytecode fingerprints, implementation-class constants, classpath implementation scans, or version allowlists. The
-  existing transformer/direct-dotc path is PoC evidence and must not be expanded.
+- **Adapt on the IntelliJ side.** Use published IntelliJ, Scala-plugin, and Scalameta PC interfaces first. Exhaust the
+  available IntelliJ/Scala-plugin extension points for each semantic root; where they cannot implement the required
+  contract, isolate a wrapper or reimplementation in the compatibility bridge. Structural access is preferred to raw
+  reflection, which is permitted only inside that bridge and only after supported interfaces are exhausted. Compiler
+  and plugin versions are artifact coordinates/diagnostics, not compatibility switches. Do not add bytecode
+  fingerprints, unconditional implementation-class mappings, or version allowlists. No upstream Scala 3, Scalameta, or
+  Scala-plugin change is a prerequisite.
 - **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
   *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
   "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
@@ -68,10 +70,13 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
   BETASTY are enabled only when discovered as capabilities. `BundledPluginBridge.usesCompilerTypes(project)` reads the
   CBH settings. The current PoC still has a temporary 3.5 floor that #61 must remove.
 - **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
-  provider discovered through Scalameta's public interface → bulk semantic snapshot. Direct dotc access belongs inside
-  the exact-version Scala 3 PC artifact. Queries are cached per `(fileUri, documentVersion)` and never run on the EDT.
-- **Current PoC:** `PcInlineTypeDriver` and `BundledCompilerBackendShim` proved typed-tree mapping and PSI dispatch. They
-  are migration inputs only; issue #61 replaces them with the public Scalameta and Scala-plugin seams.
+  published Scalameta `PresentationCompiler` interface → bulk semantic snapshot. When no public PC operation exposes the
+  required snapshot, a capability-probed compiler bridge may structurally read the retained driver and export only
+  neutral DTOs. Queries are cached per `(fileUri, documentVersion)` and never run on the EDT.
+- **Compatibility bridges:** compiler implementation access belongs only in `Scala3PcBridge`; Scala-plugin wrapping,
+  replacement, and any private access belong only in `ScalaPluginSemanticBridge`. Consumers see one role-based,
+  cache-only lookup interface and do not know which adapter supplied it. `StructuralScala3PcBridge` and
+  `BundledCompilerBackendShim` are private implementations behind those interfaces, not consumer-visible surfaces.
 - **Presentation (Feature 0):** `CompilerTypeRequestResolver` subscribes to the bundled `CompilerType` topic and fills
   the compiler-type slot. Note: the bundled *requests* the type only for transparent-inline calls during completion,
   then *reads* the slot for any expression — so this path is completion-triggered.

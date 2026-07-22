@@ -3,7 +3,6 @@ package com.hmemcpy.metallurgy.compilerbackend
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
 import java.nio.file.{Files, Path}
-import java.security.MessageDigest
 import java.util.jar.JarFile
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -32,7 +31,6 @@ private[compilerbackend] final case class CompilerTypeShimTarget(
 
 private[compilerbackend] final case class CompilerBackendPatternImplementation(
     className: String,
-    bytecodeFingerprint: String,
     hookClassName: Option[String]
 )
 
@@ -58,8 +56,7 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       superName: Option[String],
       interfaces: Vector[String],
       access: Int,
-      methods: Vector[MethodShape],
-      bytecodeFingerprint: String
+      methods: Vector[MethodShape]
   ):
     def isConcrete: Boolean     = (access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) == 0
     def parents: Vector[String] = superName.toVector ++ interfaces
@@ -170,7 +167,6 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
         val hookOwner = concreteMethodOwner(shape.internalName, "type", EitherDescriptor, shapes)
         CompilerBackendPatternImplementation(
           shape.internalName.replace('/', '.'),
-          shape.bytecodeFingerprint,
           hookOwner.map(_.replace('/', '.'))
         )
       .toVector
@@ -298,7 +294,6 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
 
   private def readShape(bytes: Array[Byte]): ClassShape =
     var result: Option[ClassShape] = None
-    val fingerprint                = MessageDigest.getInstance("SHA-256").digest(bytes).map("%02x".format(_)).mkString
     new ClassReader(bytes).accept(
       new ClassVisitor(Opcodes.ASM9):
         override def visit(
@@ -309,7 +304,7 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
             superName: String,
             interfaces: Array[String]
         ): Unit =
-          result = Some(ClassShape(name, Option(superName), interfaces.toVector, access, Vector.empty, fingerprint))
+          result = Some(ClassShape(name, Option(superName), interfaces.toVector, access, Vector.empty))
 
         override def visitMethod(
             access: Int,

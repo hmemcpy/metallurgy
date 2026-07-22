@@ -19,11 +19,11 @@ import scala.util.control.NonFatal
   * transparent inline expansion. Metallurgy needs the `Inlined` tree's type for the Scala plugin's `CompilerType` slot.
   * All reflected values stay behind this boundary so child-classloader Scala values never escape into the plugin.
   */
-private[pc] final class PcInlineTypeDriver(
+private final class StructuralScala3PcBridge(
     classloader: ClassLoader,
     compilerClasspath: Seq[File],
     compilerOptions: Seq[String]
-):
+) extends Scala3PcBridge:
 
   private val driverClass   = Class.forName("dotty.tools.dotc.interactive.InteractiveDriver", true, classloader)
   private val driver        = driverClass

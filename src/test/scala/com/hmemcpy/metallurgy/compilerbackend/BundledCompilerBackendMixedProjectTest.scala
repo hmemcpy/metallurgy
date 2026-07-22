@@ -27,7 +27,7 @@ final class BundledCompilerBackendMixedProjectTest
     super.setUp()
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
     setCompilerBasedHighlighting(enabled = true)
-    assertTrue(BundledCompilerBackendShim.install().isEnabled)
+    assertTrue(ScalaPluginSemanticBridge.install().isEnabled)
 
   override def tearDown(): Unit =
     try

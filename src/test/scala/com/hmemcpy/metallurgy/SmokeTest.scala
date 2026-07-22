@@ -11,4 +11,4 @@ final class SmokeTest:
     assertNotNull(classOf[settings.MetallurgySettings].getName)
     assertNotNull(classOf[module.ModuleDetectionService].getName)
     assertNotNull(classOf[pc.PcSessionManager].getName)
-    assertNotNull(Class.forName("com.hmemcpy.metallurgy.pc.PcInlineTypeDriver"))
+    assertNotNull(Class.forName("com.hmemcpy.metallurgy.pc.Scala3PcBridge"))

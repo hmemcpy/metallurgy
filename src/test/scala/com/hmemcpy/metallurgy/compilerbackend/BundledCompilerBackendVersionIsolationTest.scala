@@ -25,7 +25,7 @@ final class BundledCompilerBackendVersionIsolationTest extends ScalaLightCodeIns
     super.setUp()
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
     setCompilerBasedHighlighting(enabled = true)
-    assertTrue(BundledCompilerBackendShim.install().isEnabled)
+    assertTrue(ScalaPluginSemanticBridge.install().isEnabled)
 
   override protected def tearDown(): Unit =
     try

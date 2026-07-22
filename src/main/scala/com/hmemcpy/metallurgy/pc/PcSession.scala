@@ -11,8 +11,6 @@ import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler}
 
 import java.io.File
 import java.net.{URI, URL, URLClassLoader}
-import java.util.Enumeration
-import java.util.ServiceLoader
 import java.util.concurrent.{CompletableFuture, CompletionStage, ConcurrentHashMap, TimeUnit}
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
@@ -22,6 +20,7 @@ import scala.util.control.NonFatal
 final class PcSession private (
     val scalaVersion: String,
     val classloader: URLClassLoader,
+    val compilerDistribution: Seq[File],
     val compilerClasspath: Seq[File],
     val compilerOptions: Seq[String]
 ) extends AutoCloseable:
@@ -211,7 +210,7 @@ final class PcSession private (
       try
         if generation != retypecheckGeneration.get() || closed.get() then RetypecheckOutcome.Superseded
         else
-          val driver = new PcInlineTypeDriver(classloader, compilerClasspath, compilerOptions)
+          val driver = Scala3PcBridge.open(classloader, compilerClasspath, compilerOptions)
           inlineDriverCreations.incrementAndGet()
           try
             driver.retypecheck(snapshot)
@@ -230,7 +229,7 @@ final class PcSession private (
   private def publish(
       snapshot: PcSnapshot,
       generation: Long,
-      driver: PcInlineTypeDriver
+      driver: Scala3PcBridge
   ): RetypecheckOutcome =
     if generation == retypecheckGeneration.get() && !closed.get() then
       val replacement = new InlineTypeDriverLease(driver)
@@ -261,17 +260,17 @@ final class PcSession private (
             throw new IllegalStateException("PcSession was closed while creating its presentation compiler")
 
   private def createCompiler(): PresentationCompiler =
-    val providers = ServiceLoader.load(classOf[PresentationCompiler], classloader).iterator().asScala
-    val prototype = providers
-      .nextOption()
-      .getOrElse:
-        throw new IllegalStateException("No Scala presentation compiler provider found")
+    val prototype = PresentationCompilerDiscovery
+      .load(classloader, compilerDistribution)
+      .fold(reason => throw new IllegalStateException(reason), identity)
 
-    prototype.newInstance(
-      s"metallurgy-$scalaVersion",
-      compilerClasspath.map(_.toPath).asJava,
-      compilerOptions.asJava
-    )
+    try
+      prototype.newInstance(
+        s"metallurgy-$scalaVersion",
+        compilerClasspath.map(_.toPath).asJava,
+        compilerOptions.asJava
+      )
+    finally shutdown(prototype)
 
   private def decodeItem(item: CompletionItem): Option[PcCompletion] =
     Option(item.getLabel).map: label =>
@@ -286,7 +285,7 @@ final class PcSession private (
     try compiler.shutdown()
     catch case NonFatal(error) => Log.warn("Error shutting down presentation compiler", error)
 
-  private def shutdownInlineDriver(driver: PcInlineTypeDriver): Unit =
+  private def shutdownInlineDriver(driver: Scala3PcBridge): Unit =
     try driver.close()
     catch case NonFatal(error) => Log.warn("Error closing inline type driver", error)
 
@@ -325,11 +324,11 @@ private final case class PendingRetypecheck(
     val _ = result.complete(RetypecheckOutcome.Superseded)
 
 /** Keeps an atomically published typed driver alive until its last concurrent reader completes. */
-private final class InlineTypeDriverLease(driver: PcInlineTypeDriver):
+private final class InlineTypeDriverLease(driver: Scala3PcBridge):
   private val readers = new AtomicInteger(0)
   private val retired = new AtomicBoolean(false)
 
-  def use[A](query: PcInlineTypeDriver => A): Option[A] =
+  def use[A](query: Scala3PcBridge => A): Option[A] =
     if !acquire() then None
     else
       try Some(query(driver))
@@ -361,14 +360,6 @@ private final class PcSharedApiClassLoader(host: ClassLoader) extends ClassLoade
     if PcClassLoader.isSharedApi(name) then host.loadClass(name)
     else throw new ClassNotFoundException(name)
 
-  override def getResource(name: String): URL =
-    if PcClassLoader.isSharedResource(name) then host.getResource(name)
-    else super.getResource(name)
-
-  override def getResources(name: String): Enumeration[URL] =
-    if PcClassLoader.isSharedResource(name) then host.getResources(name)
-    else super.getResources(name)
-
 private object PcClassLoader:
   private val SharedApiPrefixes = Seq(
     "javax.",
@@ -377,13 +368,8 @@ private object PcClassLoader:
     "com.google.gson."
   )
 
-  private val PresentationCompilerProviderResource = "META-INF/services/scala.meta.pc.PresentationCompiler"
-
   def isSharedApi(className: String): Boolean =
     SharedApiPrefixes.exists(className.startsWith)
-
-  def isSharedResource(resourceName: String): Boolean =
-    resourceName == PresentationCompilerProviderResource
 
 object PcSession:
   private val RetypecheckDebounceMillis = 300L
@@ -402,4 +388,4 @@ object PcSession:
     val urls        = (cachedJars ++ classpath).map(_.toURI.toURL).toArray
     val classloader = new PcClassLoader(urls, classOf[PcSession].getClassLoader)
 
-    new PcSession(scalaVersion, classloader, classpath, compilerOptions)
+    new PcSession(scalaVersion, classloader, cachedJars.toIndexedSeq, classpath, compilerOptions)
