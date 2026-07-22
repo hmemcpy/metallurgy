@@ -37,6 +37,8 @@ ThisBuild / scalacOptions ++= Seq(
 )
 
 lazy val scalaPluginVersion           = "2026.1.20"
+// revision of scala-library paired with the Scala 3.7.x toolchain
+lazy val scala2LibraryVersion         = "2.13.16"
 lazy val intellijTestFrameworkVersion = "261.26222.65"
 
 lazy val intellijTestFrameworkDependencies = Seq(
@@ -110,5 +112,11 @@ lazy val root =
       Test / compile            := ((Test / compile) dependsOn compileTestkit).value,
       testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-s", "-a", "+c", "+q"),
       buildIntellijOptionsIndex := {},
-      intellijPlugins           := intellijPluginDependencies
+      intellijPlugins           := intellijPluginDependencies,
+      // the bundled Scala plugin supplies the Scala runtime from its own classloader at runtime,
+      // so neither scala-library nor scala3-library is bundled here
+      packageLibraryMappings := Seq(
+        "org.scala-lang" % "scala-library"     % scala2LibraryVersion -> None,
+        "org.scala-lang" % "scala3-library_3" % scalaVersion.value   -> None
+      )
     )
