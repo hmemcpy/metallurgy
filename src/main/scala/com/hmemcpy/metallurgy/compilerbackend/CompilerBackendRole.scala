@@ -11,3 +11,7 @@ private[metallurgy] enum CompilerBackendRole:
   case Parameter
   case Pattern
   case PatternExpected
+
+private[metallurgy] object CompilerBackendRole:
+  def fromOrdinalOrNone(ordinal: Int): Option[CompilerBackendRole] =
+    values.lift(ordinal)

@@ -11,8 +11,11 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
 
@@ -87,6 +90,49 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         assertEquals(compilerType, renderedType)
         assertSame(selectedType, result.fold(failure => throw new AssertionError(failure.toString), identity))
       case state                                              => throw new AssertionError(s"expected current compiler result, got $state")
+
+  def testPublishedDefinitionTypeReplacesBundledDeclaredType(): Unit =
+    val file       = myFixture.configureByText("DefinitionType.scala", "val value: String = \"text\"")
+    val definition = PsiTreeUtil.findChildOfType(file, classOf[ScValueOrVariableDefinition])
+
+    publish(definition, CompilerBackendRole.Definition, "Int")
+
+    assertEquals("Int", rendered(definition.`type`()))
+
+  def testPublishedFunctionResultFlowsThroughScalaAndJavaPsi(): Unit =
+    val file     = myFixture.configureByText("FunctionResult.scala", "def function: String = \"text\"")
+    val function = PsiTreeUtil.findChildOfType(file, classOf[ScFunction])
+
+    publish(function, CompilerBackendRole.FunctionResult, "Int")
+
+    assertEquals("Int", rendered(function.returnType))
+    assertEquals("int", function.getReturnType.getCanonicalText)
+
+  def testPublishedParameterTypePreservesParameterViewsAndJavaPsi(): Unit =
+    val file      = myFixture.configureByText("ParameterType.scala", "def function(value: String): Unit = ()")
+    val parameter = PsiTreeUtil.findChildOfType(file, classOf[ScParameter])
+
+    publish(parameter, CompilerBackendRole.Parameter, "Int")
+
+    assertEquals("Int", rendered(parameter.`type`()))
+    assertEquals("Int", rendered(parameter.insideParamType))
+    assertEquals("Int", rendered(parameter.outsideParamType))
+    assertEquals("int", parameter.getType.getCanonicalText)
+
+  def testPublishedPatternAndExpectedTypesReplaceBundledResults(): Unit =
+    val file    = myFixture.configureByText("PatternType.scala", "val (value, _) = (1, \"text\")")
+    val pattern = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .stream()
+      .filter(_.getText == "value")
+      .findFirst()
+      .orElseThrow()
+
+    publish(pattern, CompilerBackendRole.Pattern, "String")
+    publish(pattern, CompilerBackendRole.PatternExpected, "Boolean")
+
+    assertEquals("_root_.scala.Predef.String", rendered(pattern.`type`()))
+    assertEquals("Boolean", pattern.expectedType.map(_.canonicalText).orNull)
 
   def testPendingBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Pending)
@@ -205,6 +251,28 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertFalse(status.isEnabled)
     assertFalse(installationReached.get())
 
+  def testSemanticManifestMatchesSupportedBundledPlugin(): Unit =
+    val patternImplementations = CompilerBackendShimManifest.targets.filter: target =>
+      target.className.contains(".base.patterns.") && target.className.endsWith("Impl")
+
+    assertEquals(17, patternImplementations.size)
+    CompilerBackendShimManifest.targets.foreach: target =>
+      assertEquals(
+        target.className,
+        Right(()),
+        BundledCompilerBackendShim.semanticCompatibility(
+          target,
+          BundledCompilerBackendShim.supportedSemanticClassBytes(target)
+        )
+      )
+
+  def testCorruptSemanticClassFingerprintIsRejected(): Unit =
+    val target    = CompilerBackendShimManifest.targets.head
+    val corrupted = BundledCompilerBackendShim.supportedSemanticClassBytes(target).clone()
+    corrupted(corrupted.length - 1) = (corrupted.last ^ 1).toByte
+
+    assertTrue(BundledCompilerBackendShim.semanticCompatibility(target, corrupted).isLeft)
+
   def testInactiveBackendSelectorAllocationAndLatency(): Unit =
     val (typeElement, _) = declaredString("FastPath.scala")
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
@@ -249,6 +317,17 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
   private def rendered(typeElement: ScTypeElement): String =
     typeElement.`type`().fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
+
+  private def rendered(result: org.jetbrains.plugins.scala.lang.psi.types.result.TypeResult): String =
+    result.fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
+
+  private def publish(element: PsiElement, role: CompilerBackendRole, renderedType: String): Unit =
+    assertEquals(
+      CompilerBackendPublication.Published,
+      Scala3CompilerBackend
+        .get(getProject)
+        .publish(element, role, myFixture.getEditor.getDocument.getModificationStamp, renderedType)
+    )
 
   private def compilerType(element: PsiElement): Option[String] =
     val moduleClass = Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.CompilerType$")

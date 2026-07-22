@@ -1,5 +1,6 @@
 package org.jetbrains.plugins.scala.lang.psi.api.base.types;
 
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -10,6 +11,7 @@ import java.util.function.Function;
 public final class MetallurgyCompilerBackendBridge {
   private static volatile Function<Object, Object> backend;
   private static volatile Function<Object, Object> compilerTypeBackend;
+  private static volatile BiFunction<Object, Integer, Object> semanticTypeBackend;
   private static volatile boolean enabled;
   private static final Object MISSING_COMPILER_TYPE = new Object();
 
@@ -21,6 +23,10 @@ public final class MetallurgyCompilerBackendBridge {
 
   public static void installCompilerTypeBackend(Function<Object, Object> candidate) {
     compilerTypeBackend = candidate;
+  }
+
+  public static void installSemanticTypeBackend(BiFunction<Object, Integer, Object> candidate) {
+    semanticTypeBackend = candidate;
   }
 
   public static Object missingCompilerType() {
@@ -39,6 +45,7 @@ public final class MetallurgyCompilerBackendBridge {
     enabled = false;
     backend = null;
     compilerTypeBackend = null;
+    semanticTypeBackend = null;
   }
 
   public static Object declaredType(Object element) {
@@ -53,5 +60,10 @@ public final class MetallurgyCompilerBackendBridge {
     if (value == null) return null;
     if (value == MISSING_COMPILER_TYPE) return scala.None$.MODULE$;
     return scala.Option$.MODULE$.apply(value);
+  }
+
+  public static Object semanticType(Object element, int role) {
+    BiFunction<Object, Integer, Object> current = semanticTypeBackend;
+    return enabled && current != null ? current.apply(element, role) : null;
   }
 }
