@@ -7,7 +7,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
   CompilerBackendState,
   Scala3CompilerBackend
 }
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.daemon.impl.HintRenderer
@@ -118,7 +118,7 @@ final class PcTypeInlayHintsTest extends ScalaLightCodeInsightFixtureTestCase:
       .asScala
       .last
     val initializer    = definition.expr.get
-    val slotType       = BundledPluginBridge.getCompilerType(initializer)
+    val slotType       = ScalaPluginSemanticBridge.getCompilerType(initializer)
     val expressionType = initializer.getTypeWithoutImplicits().fold(_.toString, _.canonicalText)
     val bindingType    = Scala3CompilerBackend
       .get(getProject)

@@ -41,7 +41,8 @@ through Scalameta's published `scala.meta.pc` interfaces while retaining the exi
   deadline, a shell/Python alarm, or killing only the launcher process. If a command yields a session, retain and poll
   that session through its real exit. Choose the limit deliberately (normally 120s for focused builds/tests) and raise
   it only when the operation is known to require more time. Routine bounded commands such as `git`, `gh`, `rg`, and
-  `sed` do not require a timeout.
+  `sed` do not require a timeout. When piping a bounded command through `tail` or another formatter, enable shell
+  `pipefail` so the formatter cannot mask a test failure or timeout exit.
 - No `Thread.sleep` for timing in production code — use latches/futures.
 
 ## Build & test
@@ -65,10 +66,11 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 
 ## Architecture (data flow)
 
-- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 backend capability **and** user opt-in **and** CBH on.
+- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 **and** user opt-in **and** CBH on. CBH is retained as a
+  rollout failsafe, not because the replacement backend technically depends on it.
   Everything else is a hard no-op without it. Compiler versions never select behavior; optional facilities such as
-  BETASTY are enabled only when discovered as capabilities. `BundledPluginBridge.usesCompilerTypes(project)` reads the
-  CBH settings. The current PoC still has a temporary 3.5 floor that #61 must remove.
+  BETASTY are enabled only when discovered as capabilities. `ScalaPluginSemanticBridge.usesCompilerTypes(project)` reads the
+  CBH settings. Exact PC artifact availability and optional facilities such as BETASTY are discovered independently.
 - **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
   published Scalameta `PresentationCompiler` interface → bulk semantic snapshot. When no public PC operation exposes the
   required snapshot, a capability-probed compiler bridge may structurally read the retained driver and export only

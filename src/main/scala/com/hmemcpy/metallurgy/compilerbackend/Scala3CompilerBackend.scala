@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
-import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
+import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{PcSnapshotCurrency, PcSourceRange}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.ControlFlowException
@@ -221,14 +221,14 @@ final class Scala3CompilerBackend(project: Project):
   private def applyCommit(file: PsiFile, plan: CommitPlan): CompilerBackendCommit =
     val changedSlots     = plan.slotMappings.flatMap: (key, value) =>
       findElement(file, key).filter: element =>
-        val changed = Option(BundledPluginBridge.getCompilerType(element)).forall(_ != value)
-        if changed then BundledPluginBridge.setCompilerType(element, value)
+        val changed = Option(ScalaPluginSemanticBridge.getCompilerType(element)).forall(_ != value)
+        if changed then ScalaPluginSemanticBridge.setCompilerType(element, value)
         changed
     val clearedSlots     = plan.removedSlots.toSeq
       .flatMap(key => findElement(file, key))
       .filter: element =>
-        val present = BundledPluginBridge.getCompilerType(element) != null
-        if present then BundledPluginBridge.clearCompilerType(element)
+        val present = ScalaPluginSemanticBridge.getCompilerType(element) != null
+        if present then ScalaPluginSemanticBridge.clearCompilerType(element)
         present
     val resolvedByKey    = plan.resolved.map: (mapping, element) =>
       ElementKey(mapping.range, mapping.role, mapping.symbolId) -> element
@@ -285,11 +285,12 @@ final class Scala3CompilerBackend(project: Project):
     else
       stateForActiveModule(element, module, role) match
         case CompilerBackendState.Current(renderedType, _) =>
-          if Option(BundledPluginBridge.getCompilerType(element)).forall(_ != renderedType) then
-            BundledPluginBridge.setCompilerType(element, renderedType)
+          if Option(ScalaPluginSemanticBridge.getCompilerType(element)).forall(_ != renderedType) then
+            ScalaPluginSemanticBridge.setCompilerType(element, renderedType)
           Some(renderedType)
         case _                                             =>
-          if BundledPluginBridge.getCompilerType(element) != null then BundledPluginBridge.clearCompilerType(element)
+          if ScalaPluginSemanticBridge.getCompilerType(element) != null then
+            ScalaPluginSemanticBridge.clearCompilerType(element)
           None
 
   def clear(): Unit =
@@ -480,8 +481,8 @@ final class Scala3CompilerBackend(project: Project):
                 val cleared    = (slots -- ownedSlots)
                   .flatMap(findElement(file, _))
                   .filter: element =>
-                    val present = BundledPluginBridge.getCompilerType(element) != null
-                    if present then BundledPluginBridge.clearCompilerType(element)
+                    val present = ScalaPluginSemanticBridge.getCompilerType(element) != null
+                    if present then ScalaPluginSemanticBridge.clearCompilerType(element)
                     present
                 val unresolved = entries.exists(findElement(file, _).isEmpty)
                 invalidate(mapped ++ cleared ++ Option.when(unresolved)(file))
@@ -509,8 +510,8 @@ final class Scala3CompilerBackend(project: Project):
 
   private def invalidate(elements: Iterable[PsiElement]): Unit =
     val distinct = elements.iterator.filter(_.isValid).toSeq.distinct
-    distinct.foreach(BundledPluginBridge.clearScalaTypeCacheForElement(project, _))
-    if distinct.nonEmpty then BundledPluginBridge.invalidateScalaTypeCaches()
+    distinct.foreach(ScalaPluginSemanticBridge.clearScalaTypeCacheForElement(project, _))
+    if distinct.nonEmpty then ScalaPluginSemanticBridge.invalidateScalaTypeCaches()
 
   private def findElement(file: PsiFile, key: ElementKey): Option[PsiElement] =
     Option(file.findElementAt(math.min(key.range.startOffset, math.max(0, file.getTextLength - 1))))

@@ -8,7 +8,8 @@ import com.hmemcpy.metallurgy.compilerbackend.{
   Scala3CompilerBackend
 }
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
-import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -74,7 +75,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       deactivate(module)
       None
     else
-      Option(BundledPluginBridge.getScalaVersion(module)).flatMap: scalaVersion =>
+      Option(ScalaPluginSemanticBridge.getScalaVersion(module)).flatMap: scalaVersion =>
         Option(sessions.get(module))
           .filter(_.scalaVersion == scalaVersion)
           .filter(sessionEntryIsCurrent(module, _))
@@ -87,7 +88,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       deactivate(module)
       CompletableFuture.completedFuture(None)
     else
-      Option(BundledPluginBridge.getScalaVersion(module)) match
+      Option(ScalaPluginSemanticBridge.getScalaVersion(module)) match
         case None               => CompletableFuture.completedFuture(None)
         case Some(scalaVersion) =>
           Option(sessions.get(module))

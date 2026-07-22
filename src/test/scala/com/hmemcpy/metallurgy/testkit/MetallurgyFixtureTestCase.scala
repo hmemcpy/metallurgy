@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.testkit
 
 import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
@@ -152,9 +152,9 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     val actual  = session match
       case Some(_) =>
         requestCompilerType(element) match
-          case MetallurgyStatus.Resolved(_, _) => Option(BundledPluginBridge.getCompilerType(element))
+          case MetallurgyStatus.Resolved(_, _) => Option(ScalaPluginSemanticBridge.getCompilerType(element))
           case status                          => throw new AssertionError(s"Compiler type request ended with $status")
-      case None    => Option(BundledPluginBridge.getCompilerType(element))
+      case None    => Option(ScalaPluginSemanticBridge.getCompilerType(element))
 
     if expected == "<empty>" then
       assertTrue(s"Expected no compiler type at ${offset.value}, got $actual", actual.isEmpty)

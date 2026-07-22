@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
 import com.intellij.openapi.project.Project
@@ -121,7 +121,7 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
       CompilerTypeRequestResolver(project).request(element)
       PlatformTestUtil.waitForFuture(done, TimeUnit.SECONDS.toMillis(60))
     finally connection.disconnect()
-    Option(BundledPluginBridge.getCompilerType(element)).filter(_.nonEmpty)
+    Option(ScalaPluginSemanticBridge.getCompilerType(element)).filter(_.nonEmpty)
 
   private def typedElementAt(file: PsiFile, offset: Int): PsiElement =
     val leaf    = file.findElementAt(offset)

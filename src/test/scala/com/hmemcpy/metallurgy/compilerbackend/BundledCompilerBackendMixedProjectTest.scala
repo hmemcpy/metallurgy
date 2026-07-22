@@ -1,6 +1,5 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.*
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
@@ -130,9 +129,9 @@ final class BundledCompilerBackendMixedProjectTest
 
     MetallurgySettings(getProject).setEnabled(otherModule, enabled = false)
 
-    assertEquals("Int", BundledPluginBridge.getCompilerType(activeExpr))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(activeExpr))
     assertCurrent(backend, activeExpr, getModule, "Int")
-    assertNull(BundledPluginBridge.getCompilerType(otherExpr))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(otherExpr))
     assertEquals(
       CompilerBackendState.Unavailable,
       backend.stateForActiveModule(otherExpr, otherModule, CompilerBackendRole.ExpressionExact)

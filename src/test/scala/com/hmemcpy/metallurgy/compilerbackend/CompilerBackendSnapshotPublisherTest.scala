@@ -1,6 +1,5 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.*
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
@@ -94,7 +93,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     assertCurrent(definition, CompilerBackendRole.Definition, "Int")
     assertCurrent(definition.bindings.head, CompilerBackendRole.Binding, "Int")
     assertCurrent(call, CompilerBackendRole.ExpressionExact, "Int")
-    assertEquals("Int", BundledPluginBridge.getCompilerType(call))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(call))
 
   def testSnapshotMapsEachDestructuredPatternTypeToBindingAndPatternRoles(): Unit =
     val file     = myFixture.configureByText("MappedPatterns.scala", "object Main:\n  val (number, text) = (1, \"two\")\n")
@@ -170,7 +169,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       CompilerBackendState.Pending,
       backend.stateForActiveModule(definition, getModule, CompilerBackendRole.Definition)
     )
-    assertNull(BundledPluginBridge.getCompilerType(definition))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(definition))
 
   def testGenerationSupersededAfterStateSwapRollsBackWithoutSlotMutation(): Unit =
     val file       = myFixture.configureByText("SupersededAfterSwap.scala", "object Main:\n  val value = List(1).head\n")
@@ -195,7 +194,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       CompilerBackendState.Pending,
       backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
     )
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testSupersededAsyncPublicationCannotReachEdtCommit(): Unit =
     val file           = myFixture.configureByText("SupersededAsync.scala", "object Main:\n  val value = List(1).head\n")
@@ -226,7 +225,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       CompilerBackendState.Pending,
       backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
     )
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testAsyncPublicationMapsOffEdtAndCommitsOnEdt(): Unit =
     val file        = myFixture.configureByText("PublishedAsync.scala", "object Main:\n  val value = List(1).head\n")
@@ -251,7 +250,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
 
     assertEquals(java.lang.Boolean.FALSE, mapRanOnEdt.get())
     assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testCommitReacquiresCurrentPsiAfterReparse(): Unit =
     val originalFile       = myFixture.configureByText("ReparsedSnapshot.scala", "object Main:\n  val value = 1\n")
@@ -295,19 +294,19 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     )
     val backend    = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
-    val before     = BundledPluginBridge.scalaPsiModificationCount
+    val before     = ScalaPluginSemanticBridge.scalaPsiModificationCount
 
     val first       = readAction:
       backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
-    val afterFirst  = BundledPluginBridge.scalaPsiModificationCount
+    val afterFirst  = ScalaPluginSemanticBridge.scalaPsiModificationCount
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     val second      = readAction:
       backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
-    val afterSecond = BundledPluginBridge.scalaPsiModificationCount
+    val afterSecond = ScalaPluginSemanticBridge.scalaPsiModificationCount
 
     assertTrue(first.toString, first == CompilerBackendCommit.Committed(1))
     assertEquals(CompilerBackendCommit.Committed(0), second)
@@ -318,10 +317,10 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val file       = myFixture.configureByText("CopiedSlot.scala", "object Main:\n  val value = 1\n")
     val definition = child[ScValueOrVariableDefinition](file)
     val backend    = Scala3CompilerBackend.get(getProject)
-    BundledPluginBridge.setCompilerType(definition, "String")
+    ScalaPluginSemanticBridge.setCompilerType(definition, "String")
 
     assertTrue(backend.validatedCompilerType(definition, getModule, CompilerBackendRole.Definition).isEmpty)
-    assertNull(BundledPluginBridge.getCompilerType(definition))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(definition))
 
   def testFileStateReportsPendingSynchronously(): Unit =
     val (definition, backend, fileUri, version) = definitionStateFixture("PendingState.scala")
@@ -360,11 +359,11 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
         generation,
         Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "Int"))
       )(PcSnapshotCurrency.Current)
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
 
     backend.markFailed(getModule, fileUri, version, generation)
 
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
     assertEquals(
       CompilerBackendState.Failed,
       backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
@@ -406,7 +405,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       CompilerBackendState.Pending,
       backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
     )
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testDocumentChangeRejectsPreviouslyMappedSnapshot(): Unit =
     val file           = myFixture.configureByText("ChangedDocument.scala", "object Main:\n  val value = 1\n")
@@ -422,7 +421,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       backend.commitSnapshot(getModule, file, version, generation, Seq(backendMapping))(PcSnapshotCurrency.Current)
 
     assertEquals(CompilerBackendCommit.Rejected, result)
-    assertNull(BundledPluginBridge.getCompilerType(definition))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(definition))
 
   def testGenerationMismatchRejectsMappedSnapshot(): Unit =
     val file        = myFixture.configureByText("ChangedGeneration.scala", "object Main:\n  val value = 1\n")
@@ -458,7 +457,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(backendMapping))(
         PcSnapshotCurrency.Current
       )
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
 
     val removed = readAction:
       backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq.empty)(
@@ -466,7 +465,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       )
 
     assertEquals(CompilerBackendCommit.Committed(1), removed)
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testCurrentExpressionOverridesConflictingBundledInference(): Unit =
     val file       = myFixture.configureByText("ExpressionOverride.scala", "object Main:\n  val value = List(1).head\n")
@@ -536,7 +535,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
         .get(getProject)
         .stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
     )
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
 
   def testDeferredRetirementClearsSlotsNotOwnedByReplacementState(): Unit =
     val file       = myFixture.configureByText("ReplacementState.scala", "object Main:\n  val value = List(1).head\n")
@@ -555,7 +554,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
         generation,
         Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "Int"))
       )(PcSnapshotCurrency.Current)
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
 
     val clear: Runnable = () => backend.clear(getModule)
     ApplicationManager.getApplication.executeOnPooledThread(clear).get(10, TimeUnit.SECONDS)
@@ -571,7 +570,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       )(PcSnapshotCurrency.Current)
     UIUtil.dispatchAllInvocationEvents()
 
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
     assertCurrent(definition, CompilerBackendRole.Definition, "Int")
 
   def testCompilerWrapperOverlapPublishesTheFirstRankedExactType(): Unit =
@@ -592,7 +591,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
 
     publishSynchronously(typedTreeSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, entries))
 
-    assertEquals("String", BundledPluginBridge.getCompilerType(expression))
+    assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(expression))
     assertCurrent(expression, CompilerBackendRole.ExpressionExact, "String")
 
   def testDisablingModuleRetiresOnlyItsCompilerBackendState(): Unit =
@@ -609,7 +608,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
 
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
 
-    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
     assertEquals(
       CompilerBackendState.Unavailable,
       backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)

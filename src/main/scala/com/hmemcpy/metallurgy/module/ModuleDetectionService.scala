@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.module
 
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
@@ -37,26 +38,24 @@ final class ModuleDetectionService(project: Project) extends Disposable:
       if previous == null then computed.booleanValue else previous.booleanValue
 
   private def computeEligible(module: Module): Boolean =
-    BundledPluginBridge.getScalaVersion(module) match
-      case v if v != null && v.startsWith("3.") =>
-        val major = v.split("\\.")
-        major.length >= 2 && major(1).toInt >= 5
-      case _                                    => false
+    ModuleDetectionService.isScala3Version(ScalaPluginSemanticBridge.getScalaVersion(module))
 
   def isEligibleFile(file: VirtualFile): Boolean =
     Option(ModuleUtilCore.findModuleForFile(file, project)).exists(isEligible)
 
-  /** Metallurgy is active for a module iff it is currently eligible, the user enabled the backend, and compiler-based
-    * highlighting is on. `pc` piggybacks on the compile server's compiled artifacts, so without CBH Metallurgy is a
-    * complete no-op. Eligibility is temporarily restricted until the public capability handshake replaces the PoC
-    * version floor.
+  /** Metallurgy is active for a module iff it uses Scala 3, the user enabled the backend, and compiler-based
+    * highlighting is on. Exact presentation-compiler artifact resolution determines backend availability
+    * asynchronously; optional facilities such as BETASTY are discovered independently.
     */
   def isActive(module: Module): Boolean =
     isEligible(module) &&
       MetallurgySettings(project).isEnabled(module) &&
-      BundledPluginBridge.usesCompilerTypes(project)
+      ScalaPluginSemanticBridge.usesCompilerTypes(project)
 
   override def dispose(): Unit = cache.clear()
 
 object ModuleDetectionService:
+  private[module] def isScala3Version(version: String): Boolean =
+    version != null && (version == "3" || version.startsWith("3."))
+
   def get(project: Project): ModuleDetectionService = project.getService(classOf[ModuleDetectionService])

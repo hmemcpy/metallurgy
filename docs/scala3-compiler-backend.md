@@ -34,14 +34,14 @@ compatibility shell. This decision replaces its type-producing backend; it does 
 This applies **only** when `ModuleDetectionService.isActive(module)` is true. Its target definition is:
 
 ```text
-Scala 3 backend capability is available  AND  the module is opted in  AND  Scala 3 CBH/compiler types are enabled
+the module uses Scala 3  AND  the module is opted in  AND  Scala 3 CBH/compiler types are enabled
 ```
 
-Compiler versions are artifact coordinates and diagnostic metadata, never compatibility tables. Base backend
-availability and optional facilities such as BETASTY are independently capability-discovered. Stable, RC, nightly,
-and vendor Scala 3 compilers follow the same exact-artifact path. The current predicate at
-`src/main/scala/com/hmemcpy/metallurgy/module/ModuleDetectionService.scala:31-51` retains the Scala 3.5 product floor;
-it must not be used to infer implementation shape or optional capabilities.
+Compiler versions are artifact coordinates and diagnostic metadata, never compatibility tables. Every Scala 3 version
+with a resolvable presentation-compiler artifact follows the same path. Base backend availability and optional
+facilities such as BETASTY are independently capability-discovered; no minor-version floor infers either one.
+An active module may briefly be `Pending` while its exact artifact is resolved, or `Unavailable` when no such artifact
+is published. Neither state permits a compiler-derived PSI overwrite.
 Every scheduler, tree extractor, side-table read, slot write, resolver contribution, synthetic declaration, cache
 invalidation, and backend-provider entry must perform the same module check. A false gate means:
 
@@ -54,8 +54,10 @@ invalidation, and backend-provider entry must perform the same module check. A f
 
 ### Explicitly out of scope
 
-- Replacing the Scala parser, PSI tree, stubs, indices, editor mechanics, project import, debugger, worksheet/REPL, or
-  build runner.
+- Replacing the Scala parser, PSI tree, stubs, indices, editor mechanics, project import, debugger, or build runner.
+  IntelliJ's native sbt importer and IntelliJ's BSP importer remain the project-model owners; Metallurgy does not speak
+  sbt or BSP. Worksheet and interactive REPL semantic integration is deferred to a later phase, while their execution
+  remains owned by the bundled Scala plugin.
 - Rebuilding steady-state compiler diagnostics. Compiler-based highlighting already owns that surface; Metallurgy's
   diagnostic pipeline stays transient plumbing unless a measured gap appears.
 - Scala 2.
@@ -159,8 +161,10 @@ types only to exact-range `ScExpression` or `ScStableCodeReference` nodes in the
 clears Scala caches for every changed element, increments `anyScalaPsiChange`, and refreshes hints
 (`ExternalHighlightersService.scala:104-145`).
 
-CBH remains the isolation foundation and the build/artifact producer. Its diagnostics are not a substitute for pc type
-population, and its type reports must not be allowed to overwrite a newer pc generation in active modules.
+CBH remains a deliberate rollout failsafe and one available build/artifact producer; the replacement backend does not
+technically require CBH to type a document. Its diagnostics are not a substitute for pc type population, and its type
+reports must not be allowed to overwrite a newer pc generation in active modules. Once isolation and build-loop
+ownership are proven independently, removing the CBH interlock is a separate product decision.
 
 ### 2.6 Cache topology
 
@@ -174,6 +178,33 @@ This distinction is load-bearing: incrementing only `anyScalaPsiChange` does not
 against its local `BlockModificationTracker`. Every changed backend value needs the per-element clear, followed by one
 coalesced global increment for downstream usages and presentations.
 
+### 2.7 Project loading and pipeline activation
+
+Project loading is deliberately upstream of the compiler backend. The user's selected IntelliJ loader—native sbt
+import or IntelliJ BSP import—creates and updates the workspace modules, source/test roots, dependency classpaths,
+Scala SDK/compiler version, output paths, and compiler options. Metallurgy reads that normalized IntelliJ/Scala-plugin
+model only after import has produced it. It neither launches sbt for semantic queries nor owns a BSP connection.
+
+This matches the bundled plugin's own split. Its compiler-highlighting service chooses BSP or JPS compilation from the
+project model and constructs a `BspProjectTaskRunner` only on the BSP branch
+(`intellij-scala/scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/CompilerHighlightingService.scala:205-220,234-262`).
+After external builds, common Scala-plugin code refreshes source and output roots for both sbt shell and BSP
+(`intellij-scala/scala/scala-impl/src/org/jetbrains/plugins/scala/util/ExternalSystemVfsUtil.scala:20-53`). Metallurgy
+must consume those refreshed roots identically regardless of which importer produced them.
+
+```text
+sbt import or IntelliJ BSP import
+  -> IntelliJ workspace/module model becomes current
+  -> module/root/compiler-settings listeners invalidate the old backend generation
+  -> exact compiler artifact and module classpath are resolved from the imported model
+  -> the normal per-document compiler-backend pipeline starts
+```
+
+An incomplete or reloading project model is a `Pending` input, not permission to reuse a stale classpath. Project
+reload, module replacement, SDK/compiler change, roots change, and imported scalac-option change each retire affected
+sessions and schedule fresh snapshots for open active files. None of those listeners may depend on sbt-only module
+types: BSP, sbt, Maven, Gradle, and manually configured Scala modules must converge on the same module descriptor.
+
 ## 3. Type consumers
 
 The table describes steady-state behavior after a current pc snapshot exists. “Slot reaches it” means the consumer
@@ -186,6 +217,7 @@ eventually asks an expression for its type; it does not mean the entire subsyste
 | Reference resolve / navigation | `ScReferenceExpressionImpl.multiResolveScala` invokes bundled `ReferenceExpressionResolver` (`.../psi/impl/expr/ScReferenceExpressionImpl.scala:59-79`); qualified stable references have their own slot reader (`.../psi/impl/base/ScStableCodeReferenceImpl.scala:470-493`). | **Indirectly** for qualifier/member resolution; **no** for general symbol identity. | Feed pc receiver types, then add a pc-symbol resolver/synthetic PSI bridge for compiler-only declarations. |
 | Semantic annotator / type mismatch highlighting | `ScalaAnnotator` and element annotators call `getTypeAfterImplicitConversion`; `ScExpressionAnnotator` uses it with expected types (`.../annotator/ScalaAnnotator.scala:92-106`; `.../annotator/element/ScExpressionAnnotator.scala:168-181`). CBH overlays compiler diagnostics separately. | **Yes** for actual expression type. | Expected types, implicit adaptation, and non-expression annotations remain bundled unless the backend dispatcher covers them. Do not duplicate CBH diagnostics. |
 | Inspections / analyzer | Mixed. Type-aware inspections call expression typing or generic `Typeable`; others call `bind()` or are syntactic. Collection inspections explicitly expose a `Typeable` backed by `getTypeWithoutImplicits` (`.../codeInspection/collections/package.scala:516,550-560`). | **Mixed.** | The dispatcher covers type reads; the symbol bridge covers bind-based checks. Syntactic inspections remain unchanged. |
+| Scala UAST (experimental) | Registered behind experimental feature `scala.uast.enabled` (`intellij-scala/scala/uast/resources/scalaCommunity.uast.xml:12-18`). Its adapters commonly call Scala PSI ``type()`` and convert `ScType` to `PsiType`; expression, method-call receiver/return, method, variable, parameter, and resolve adapters also have specialized paths (`.../uast/baseAdapters/ScUExpression.scala:27-28`; `.../uast/expressions/ScUMethodCallExpression.scala:57-83`; `.../uast/declarations/ScUMethod.scala:58-62`). | **Mixed.** Generic expression UAST reads inherit backend types, while specialized declaration, resolve, light-variable, and conversion paths can bypass or lose them. | Test feature disabled/enabled. Audit `getExpressionType`, `getReturnType`, `getReceiverType`, variable/parameter `PsiType`, resolve, evaluation, conversion, caching, and UAST inspections; add bridge work only for demonstrated gaps. |
 | Inline/type hints | Bundled `ScalaTypeHintsPass` calls value/variable ``type()`` and function `returnType` (`intellij-scala/scala/codeInsight/src/org/jetbrains/plugins/scala/codeInsight/hints/ScalaTypeHintsPass.scala:127-147`). `ImplicitHintsPass` hosts the pass and also runs implicit-resolution hints (`.../codeInsight/implicits/ImplicitHintsPass.scala:42-80,108-135`). | **Untyped values only**, through their initializer; not explicit definitions/functions. | Keep Metallurgy's pc hint renderer initially; after full dispatcher coverage, decide whether it is redundant. |
 | Structure view | Primarily stub/source text: function return type text, val/var declared type text, and parameter type text (`intellij-scala/scala/structure-view/src/org/jetbrains/plugins/scala/structureView/element/Function.scala:20-26`; `ValOrVar.scala:20-24`; `element/package.scala:17-28`). Anonymous-class location resolves a type element (`ScalaAnonymousClassTreeElement.scala:36-42`). | **Generally no.** | This is presentation of source syntax, not inferred semantics. Leave it alone except compiler-synthetic declarations and the anonymous-class resolver. |
 | Find usages | Searchers use indices/`ReferencesSearch` and validate with `PsiReference.resolve`/`isReferenceTo`; e.g. `ObjectTraitReferenceSearcher` (`.../findUsages/typeDef/ObjectTraitReferenceSearcher.scala:12-32`) and operator search (`.../findUsages/OperatorAndBacktickedSearcher.scala:25-100`). | **Only indirectly** when resolve depends on a qualifier type. | Stable pc-symbol-to-PSI identity is required for compiler-only members; type strings alone are insufficient. |
@@ -396,23 +428,26 @@ implementation but do not justify inventing public PSI members.
 1. **`Scala3CompilerSnapshot`** — immutable results for
    `(module, fileUri, documentVersion, classpathGeneration, compilerOptionsGeneration)`. It contains canonical typed
    spans, rendered-type DTOs, compiler symbol DTOs, diagnostics provenance, and extraction timings.
-2. **`Scala3PcBridge`** — configures the exact compiler through published Scalameta PC interfaces, performs one
+2. **`ScalaProjectModelAdapter`** — derives a loader-neutral descriptor from the imported IntelliJ model: compiler
+   coordinate, production/test source roots, dependency/output classpath, compiler options, JDK, and model epoch. It
+   observes project/root/settings changes but never calls sbt or BSP.
+3. **`Scala3PcBridge`** — configures the exact compiler through published Scalameta PC interfaces, performs one
    retypecheck, and builds the missing bulk snapshot through capability-probed structural access when no public PC
    operation supplies it. It returns only neutral spans, roles, rendered types, stable symbols, and synthetic
    declarations; dotc objects never leave its isolated classloader.
-3. **`PcPsiMapper`** — under a cancellable non-blocking read action, maps DTO spans/symbols to current PSI elements and
+4. **`PcPsiMapper`** — under a cancellable non-blocking read action, maps DTO spans/symbols to current PSI elements and
    semantic roles. It creates smart pointers only for the short commit window; persistent identity is URI/version/range/
    role/symbol id, not a raw PSI object.
-4. **`Scala3CompilerBackend`** — atomically publishes immutable mapped snapshots and answers synchronous cache-only
+5. **`Scala3CompilerBackend`** — atomically publishes immutable mapped snapshots and answers synchronous cache-only
    lookups. Its first instruction is the active-module gate. It exposes `Current`, `Pending`, `Unavailable`, and `Failed`,
    not `Option[String]` alone.
-5. **`Scala3CompilerPublisher`** — commits expression/reference compatibility slots, computes the changed/removed
+6. **`Scala3CompilerPublisher`** — commits expression/reference compatibility slots, computes the changed/removed
    element set, performs per-element Scala cache clears, increments the global tracker once, and restarts only the
    necessary daemon/hint/completion surfaces.
-6. **`ScalaPluginSemanticBridge`** — routes each semantic root through the clean EPs in section 4 where possible and
+7. **`ScalaPluginSemanticBridge`** — routes each semantic root through the clean EPs in section 4 where possible and
    through a capability-probed wrapper or replacement elsewhere. It asks the store for a role-specific result and
    parses/caches source-compatible text as `ScType`. The inactive path invokes the untouched bundled implementation.
-7. **`PcSymbolBridge`** — maps compiler symbol ids to source PSI or stable light PSI and supplies completion, stable
+8. **`PcSymbolBridge`** — maps compiler symbol ids to source PSI or stable light PSI and supplies completion, stable
    reference, arbitrary reference fallback, navigation, and search identity.
 
 ### 8.2 Population pass shape
@@ -461,7 +496,7 @@ reusable host-side behavior
 (`src/main/scala/com/hmemcpy/metallurgy/feature/inlay/PcTypeHintsPass.scala:23-49,71-91,114-124`). That is the right
 prototype scheduler. It is the wrong final semantic boundary because hints can be disabled, it visits only selected
 definitions, it queries one offset at a time, and its current project-wide invalidation does not clear each expression's
-`BlockModificationTracker` (`PcTypeHintsPass.scala:69`; `BundledPluginBridge.scala:120-137`). The first milestone should
+`BlockModificationTracker` (`PcTypeHintsPass.scala:69`; `ScalaPluginSemanticBridge.scala:242-269`). The first milestone should
 instrument and broaden this pass; the later milestone should split population into a dedicated compiler-backend pass and let
 hints consume its snapshot.
 
@@ -514,6 +549,8 @@ file/top-level clear, and measure that path separately.
 - Add timings and counters around current retypecheck, `typeAt`, PSI traversal, cache invalidation, and daemon restart.
 - Introduce the small `Scala3PcBridge` and `ScalaPluginSemanticBridge` interfaces; move all compiler/Scala-plugin
   implementation access behind them.
+- Introduce `ScalaProjectModelAdapter`; prove that representative native-sbt and IntelliJ-BSP imports produce equivalent
+  compiler-backend descriptors without exposing loader-specific types.
 - Replace private dependency resolution with public Coursier and add stable/RC/nightly artifact-discovery fixtures
   without version allowlists. Discover service providers, public factories, and structural fallbacks in that order.
 - Inventory each semantic root against section 4's EPs and record why wrapping or replacement is needed where no EP fits.
@@ -566,11 +603,56 @@ file/top-level clear, and measure that path separately.
 
 - Run the full consumer matrix, target larger real projects, and add narrow pc-backed member/conformance operations only
   for measured `ScType` incompatibilities.
+- Generate a complete surface inventory from shipped Scala-plugin modules, plugin XML registrations, services,
+  listeners, actions, languages, EPs, and integration modules. Classify every feature as a direct/indirect semantic
+  consumer, model/artifact producer, execution-only, syntactic/unaffected, or deferred. In particular, cover test
+  framework discovery/runners, parameter info, code generation, hierarchies, debugger evaluation, Java PSI/UAST,
+  structural search, language injection, compiler indices, TASTy/decompiler, scratches/consoles, and build-tool/native
+  platform variants.
+- Audit Scala UAST with `scala.uast.enabled` off and on, and inventory every registry key/experimental feature in the
+  target Platform and Scala-plugin builds that can alter project loading, compiler highlighting, type/resolve,
+  completion, UAST, debugger, worksheet/REPL, or process/classloader behavior. Test relevant non-default states.
 - Test stable/RC/nightly compiler artifacts and stable/EAP/nightly Scala-plugin builds through capabilities rather than
   versions. Unsupported mechanisms must disable independently without preventing the plugin from loading.
 - Remove the proof-of-concept manifest/fingerprint selection, private bundled dependency resolver, and reflection outside
   the two bridges. Retain only the smallest proven structural/reflective adapters required after public interfaces and
   extension points are exhausted.
+
+### Phase 7 — Ecosystem and project-loader parity
+
+- Maintain a reproducible corpus of pinned, compiler-clean open-source Scala 3 projects. It must include conventional
+  application code and non-trivial macro/type-level libraries; initial candidates are ZIO, Cats, Shapeless, Cats Effect,
+  FS2, and Tapir where their pinned revisions support Scala 3.
+- Import representative projects through both native sbt and IntelliJ BSP. Assert equivalent backend module descriptors,
+  source/test/generated roots, compiler coordinates/options, classpaths, cross-module symbols, and session invalidation
+  after reload.
+- Run steady-state highlighting over every source file and require zero Metallurgy-introduced errors for revisions that
+  compile cleanly with the same exact compiler/options. Keep an allowlist only for verified project/upstream baseline
+  diagnostics, with source, reason, and expiry; never use it to hide backend failures.
+- Sample exact types, resolve targets, completion sets, hover signatures, navigation, find usages, and safe refactoring
+  previews from every project and compare them to the exact compiler/PC result, not merely to the bundled plugin.
+- Exercise clean build, broken upstream module with BETASTY, edit/fix, project reload, branch/classpath change, and cold
+  cache. Record crashes, timeouts, unmapped roles/symbols, fallbacks, and false positive/negative diagnostics.
+- **Go/no-go:** all pinned compiler-clean projects have zero false errors and zero crashes; sampled facts match the exact
+  compiler; sbt/BSP descriptors and results are semantically equivalent; performance stays within Phase 1 budgets.
+
+### Phase 8 — Worksheet and interactive REPL integration (deferred)
+
+- Keep worksheet and REPL execution, process lifecycle, result transport, and BSP-specific execution owned by the
+  bundled Scala plugin.
+- Route Scala PSI type/resolve/presentation reads inside worksheet and REPL editors through the same compiler backend
+  when their virtual files and module context can be versioned safely.
+- Add worksheet plain/REPL modes and BSP/non-BSP execution fixtures; execution results must remain unchanged when the
+  backend is inactive.
+- **Go/no-go:** semantic presentation uses current compiler snapshots without changing execution behavior or coupling
+  the core backend to a worksheet/REPL protocol.
+
+### Phase 9 — Graduation
+
+- Run the entire Metallurgy suite, the ecosystem/project-loader corpus, and all Scala 3-focused tests from the target
+  `intellij-scala` project under hard timeouts. Building `intellij-scala` is reserved for this final step.
+- **Go/no-go:** no unexplained regressions, false errors, leaked inactive-module work, or compatibility-probe failures;
+  every remaining fallback and private bridge operation is measured and documented.
 
 ### Measurements
 
@@ -592,7 +674,8 @@ Use at least these corpora:
 2. very large generated or declaration-dense files;
 3. macro-heavy, inline-heavy, structural/refinement, quoted, derivation, capture/type-level, and library-backed files;
 4. cross-module broken builds consuming `.betasty`;
-5. mixed projects with capable Scala 3, inactive Scala 3, unavailable-capability Scala 3, Scala 2, and Java modules.
+5. mixed projects with capable Scala 3, inactive Scala 3, unavailable-capability Scala 3, Scala 2, and Java modules;
+6. the pinned open-source ecosystem corpus, imported through native sbt and IntelliJ BSP where supported.
 
 Phase 1 establishes numeric latency and memory budgets from evidence rather than inventing them here. Structural
 budgets are fixed now: no more than one pc compile/tree walk per file version, no pc work on the EDT, bounded snapshot
@@ -639,6 +722,20 @@ are no-go results.
 15. **Replacement maintenance.** Copied Scala-plugin implementations can diverge from upstream bug fixes. Prefer
     wrapping; when reimplementation is unavoidable, minimize the copied surface, test against the public behavioral
     contract, and run the complete Scala 3-focused upstream suite as the epic's final graduation check.
+16. **Project-loader divergence.** Native sbt and IntelliJ BSP imports can represent source sets, generated sources,
+    output roots, or compiler options differently. Backend code that reads loader-specific services can silently miss
+    dependencies or fail to invalidate. The adapter contract must use only normalized IntelliJ module/root/SDK terms,
+    with import/reload parity tests and a descriptor diff when the loaders disagree.
+17. **Hidden feature gates.** Platform or Scala-plugin registry/experimental flags can activate alternate UAST,
+    highlighting, type-intrinsic, document-compilation, project-loader, debugger, or worksheet paths after the normal
+    suite passes. Compatibility discovery must inventory gates for every target build, classify their reachability, and
+    test every gate that changes a semantic root, model input, cache, scheduler, or classloader boundary. Unknown enabled
+    gates produce structured diagnostics; they must not silently select a version-specific adapter.
+18. **Unknown consumer surfaces.** A backend can pass type fixtures while breaking a feature that consumes resolve,
+    Java `PsiType`, compiler indices, synthetic PSI, or project metadata indirectly—for example a test-framework finder,
+    parameter-info handler, hierarchy provider, debugger evaluator, or code generator. Graduation requires a
+    source-derived feature inventory with an affected/unaffected rationale and regression ownership for every shipped
+    Scala-plugin module/registration; absence from an ad hoc checklist is not evidence of safety.
 
 ## 12. Relationship to prior ADRs
 
@@ -648,8 +745,9 @@ this design retains as implementation constraints; they do not make the archived
 - **ADR-0011 is superseded in framing.** Its selective “repair `Any`/widening for macro-heavy Scala 3” scope remains a
   useful shipped waypoint and regression suite, but it is no longer the architectural destination. The destination is
   Scala 3's compiler backend for every type read in active modules.
-- **ADR-0008 remains foundational.** CBH plus compiler types is still part of `ModuleDetectionService.isActive`; it
-  supplies compiled/best-effort artifacts and the safety boundary. Every new backend hook inherits that exact gate.
+- **ADR-0008 remains a rollout constraint.** CBH plus compiler types stays in `ModuleDetectionService.isActive` as a
+  failsafe and can supply compiled/best-effort artifacts, but PC type replacement does not technically depend on it.
+  Every new backend hook inherits the current gate until a separate decision removes the interlock.
 - **ADR-0010 remains evidence about diagnostics, not a limit on backend replacement.** Native-clean steady-state highlighting
   justifies leaving diagnostics alone; it does not establish that bundled PSI types are compiler-equivalent.
 - **ADR-0007's version pin/fingerprint strategy is superseded.** Permanent support uses published Scalameta interfaces,

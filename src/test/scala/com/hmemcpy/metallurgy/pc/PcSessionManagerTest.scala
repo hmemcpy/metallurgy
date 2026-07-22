@@ -9,7 +9,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 }
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, SnapshotState}
-import com.hmemcpy.metallurgy.module.BundledPluginBridge
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -570,7 +570,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
       )
       assertEquals("_root_.scala.Predef.String", expression.getTypeWithoutImplicits().toOption.get.canonicalText)
-      assertEquals("String", BundledPluginBridge.getCompilerType(expression))
+      assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(expression))
 
       onPooledThread(manager.discard(getModule))
       UIUtil.dispatchAllInvocationEvents()
@@ -580,7 +580,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         CompilerBackendState.Unavailable,
         backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
       )
-      assertNull(BundledPluginBridge.getCompilerType(expression))
+      assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
     finally
       manager.dispose()
       settings.setEnabled(getModule, enabled = false)

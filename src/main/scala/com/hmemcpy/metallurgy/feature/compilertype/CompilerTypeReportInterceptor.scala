@@ -1,8 +1,8 @@
 package com.hmemcpy.metallurgy.feature.compilertype
 
-import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
+import com.hmemcpy.metallurgy.compilerbackend.{ScalaCompilerMessage, ScalaPluginSemanticBridge}
+import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.MetallurgyStatus
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ReadAction
@@ -22,7 +22,6 @@ import com.intellij.psi.{
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
-import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.nio.file.Path
 
 final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
@@ -34,53 +33,20 @@ final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
 
   private def subscribeToCompilerEvents(): Unit =
     try
-      val listenerClass = BundledPluginBridge.compilerEventListenerClass
-      val handler       = new InvocationHandler:
-        override def invoke(proxy: AnyRef, method: Method, args: Array[AnyRef]): AnyRef =
-          if method.getName == "eventReceived" && args != null && args.nonEmpty then onCompilerEvent(args(0))
-          null
-
-      val listener = Proxy.newProxyInstance(listenerClass.getClassLoader, Array(listenerClass), handler)
-      project.getMessageBus
-        .connect(this)
-        .subscribe(
-          BundledPluginBridge.compilerEventTopic.asInstanceOf[com.intellij.util.messages.Topic[AnyRef]],
-          listener.asInstanceOf[AnyRef]
-        )
+      ScalaPluginSemanticBridge.subscribeToCompilerMessages(project, this)(onCompilerMessage)
       Log.info("CompilerTypeReportInterceptor: subscribed to compiler events")
     catch case e: Exception => Log.error("CompilerTypeReportInterceptor: failed to subscribe", e)
 
-  private def onCompilerEvent(event: AnyRef): Unit =
-    if event.getClass.getSimpleName == "MessageEmitted" then
-      compilerTypeReport(event).foreach { report =>
+  private def onCompilerMessage(message: ScalaCompilerMessage): Unit =
+    CompilerTypeReport
+      .from(message)
+      .foreach: report =>
         ReadAction
           .nonBlocking(() => renderInput(report))
           .inSmartMode(project)
           .expireWith(this)
           .submit(AppExecutorUtil.getAppExecutorService)
           .onSuccess(_.foreach(intercept))
-      }
-
-  private def compilerTypeReport(event: AnyRef): Option[CompilerTypeReport] =
-    val message = event.getClass.getMethod("msg").invoke(event).asInstanceOf[AnyRef]
-    val text    = message.getClass.getMethod("text").invoke(message).asInstanceOf[String]
-    if !text.startsWith(CompilerTypeReport.TypePrefix) then return None
-
-    for
-      source     <- bundledOption(message, "source")
-      begin      <- bundledOption(message, "problemStart")
-      end        <- bundledOption(message, "problemEnd")
-      nativeType <- CompilerTypeReport.typeFrom(text)
-    yield CompilerTypeReport(
-      source.getClass.getMethod("toPath").invoke(source).asInstanceOf[Path],
-      Position.from(begin),
-      Position.from(end),
-      nativeType
-    )
-
-  private def bundledOption(owner: AnyRef, methodName: String): Option[AnyRef] =
-    val option = owner.getClass.getMethod(methodName).invoke(owner).asInstanceOf[AnyRef]
-    BundledPluginBridge.optionValue(option)
 
   private def intercept(input: RenderInput): Unit =
     try
@@ -104,9 +70,7 @@ final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
       range       <- report.toTextRange(psiFile)
       element     <- exactElement(psiFile, range)
       module      <- Option(ModuleUtilCore.findModuleForPsiElement(element))
-      if ModuleDetectionService.get(project).isEligible(module)
-      if MetallurgySettings(project).isEnabled(module)
-      if BundledPluginBridge.usesCompilerTypes(project)
+      if ModuleDetectionService.get(project).isActive(module)
     yield RenderInput(
       module,
       SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element),
@@ -130,8 +94,8 @@ final class CompilerTypeReportInterceptor(project: Project) extends Disposable:
           input.element.getElement match
             case null    => ()
             case element =>
-              BundledPluginBridge.setCompilerType(element, pcType)
-              BundledPluginBridge.clearScalaTypeCaches(project, element),
+              ScalaPluginSemanticBridge.setCompilerType(element, pcType)
+              ScalaPluginSemanticBridge.clearScalaTypeCaches(project, element),
         delay
       )
     }
@@ -151,13 +115,6 @@ private final case class RenderInput(
 )
 
 private final case class Position(line: Int, column: Int)
-
-private object Position:
-  def from(value: AnyRef): Position =
-    Position(
-      value.getClass.getMethod("line").invoke(value).asInstanceOf[Int],
-      value.getClass.getMethod("column").invoke(value).asInstanceOf[Int]
-    )
 
 private final case class CompilerTypeReport(path: Path, begin: Position, end: Position, nativeType: String):
   def toTextRange(file: PsiFile): Option[TextRange] =
@@ -181,3 +138,15 @@ private object CompilerTypeReport:
   def typeFrom(text: String): Option[String] =
     val suffix = text.indexOf(TypeSuffix)
     Option.when(suffix >= TypePrefix.length)(text.substring(TypePrefix.length, suffix))
+
+  def from(message: ScalaCompilerMessage): Option[CompilerTypeReport] =
+    Option
+      .when(message.text.startsWith(TypePrefix)):
+        typeFrom(message.text).map: nativeType =>
+          CompilerTypeReport(
+            message.path,
+            Position(message.beginLine, message.beginColumn),
+            Position(message.endLine, message.endColumn),
+            nativeType
+          )
+      .flatten

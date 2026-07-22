@@ -35,7 +35,7 @@ final class BundledCompilerBackendVersionIsolationTest extends ScalaLightCodeIns
     finally super.tearDown()
 
   @Test
-  def testUnsupportedScalaVersionUsesBundledBackend(): Unit =
+  def testBackendSelectionFollowsScalaMajorVersion(): Unit =
     val file        = myFixture.configureByText("VersionIsolation.scala", "val value: String = \"text\"")
     val typeElement = PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])
     val version     = myFixture.getEditor.getDocument.getModificationStamp
@@ -46,7 +46,10 @@ final class BundledCompilerBackendVersionIsolationTest extends ScalaLightCodeIns
       .`type`()
       .fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
 
-    assertEquals("_root_.scala.Predef.String", rendered)
+    val expected =
+      if ScalaPluginSemanticBridge.getScalaVersion(getModule).startsWith("3.") then "Int"
+      else "_root_.scala.Predef.String"
+    assertEquals(expected, rendered)
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
