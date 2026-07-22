@@ -22,10 +22,12 @@ import org.jetbrains.plugins.scala.annotator.{
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.editor.documentationProvider.ScalaDocQuickInfoGenerator
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpression, ScReferenceExpression}
-import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.{assertFalse, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
 
 import scala.annotation.nowarn
 import scala.collection.mutable
@@ -147,6 +149,52 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       case state                                  => throw new AssertionError(s"expected exact bulk Int state, got $state")
     assertTrue(quickInfo, quickInfo.contains("Int"))
 
+  def testQuickInfoUsesCompilerTypesForEveryDeclaredSemanticRoot(): Unit =
+    val source =
+      """object Main:
+        |  val declared: Int = 1
+        |  def function: Int = 1
+        |  def parameterOwner(parameter: Int): Unit = ()
+        |  val (number, _) = (1, "text")
+        |""".stripMargin
+    val file   = myFixture.configureByText("SemanticQuickInfo.scala", source)
+
+    val declaredType = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeElement])
+      .asScala
+      .find(element => element.getText == "Int" && element.getParent.getText.contains("declared"))
+      .get
+    val function     = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .asScala
+      .find(_.name == "function")
+      .get
+    val parameter    = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParameter])
+      .asScala
+      .find(_.name == "parameter")
+      .get
+    val pattern      = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .asScala
+      .find(_.name == "number")
+      .get
+    val declared     = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .asScala
+      .find(_.name == "declared")
+      .get
+
+    publishType(declaredType, CompilerBackendRole.DeclaredType, "String")
+    publishType(function, CompilerBackendRole.FunctionResult, "String")
+    publishType(parameter, CompilerBackendRole.Parameter, "String")
+    publishType(pattern, CompilerBackendRole.Pattern, "String")
+
+    Seq(declared, function, parameter, pattern).foreach: element =>
+      val quickInfo = ScalaDocQuickInfoGenerator.getQuickNavigateInfo(element, element).getOrElse("")
+      assertTrue(s"quick info did not use String for '${element.getText}': $quickInfo", quickInfo.contains("String"))
+      assertFalse(s"quick info retained Int for '${element.getText}': $quickInfo", quickInfo.contains(": Int"))
+
   private def publish(expression: ScExpression, renderedType: String): Unit =
     val backend                                   = Scala3CompilerBackend.get(getProject)
     val file                                      = expression.getContainingFile
@@ -166,6 +214,14 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       backend.commitSnapshot(getModule, file, version, generation, Seq(mapping))(PcSnapshotCurrency.Current)
     val result                                    = ApplicationManager.getApplication.runReadAction(commit)
     assertTrue(result.toString, result.isInstanceOf[CompilerBackendCommit.Committed])
+
+  private def publishType(element: PsiElement, role: CompilerBackendRole, renderedType: String): Unit =
+    assertEquals(
+      CompilerBackendPublication.Published,
+      Scala3CompilerBackend
+        .get(getProject)
+        .publish(element, role, myFixture.getEditor.getDocument.getModificationStamp, renderedType)
+    )
 
   private def expressionWithText(file: PsiElement, text: String): ScExpression =
     PsiTreeUtil
