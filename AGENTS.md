@@ -63,8 +63,10 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 
 ## Architecture (data flow)
 
-- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3.5+ **and** user opted-in **and** CBH on. Everything
-  else is a hard no-op without it. `BundledPluginBridge.usesCompilerTypes(project)` reads the CBH settings.
+- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 backend capability **and** user opt-in **and** CBH on.
+  Everything else is a hard no-op without it. Compiler versions never select behavior; optional facilities such as
+  BETASTY are enabled only when discovered as capabilities. `BundledPluginBridge.usesCompilerTypes(project)` reads the
+  CBH settings. The current PoC still has a temporary 3.5 floor that #61 must remove.
 - **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
   provider discovered through Scalameta's public interface → bulk semantic snapshot. Direct dotc access belongs inside
   the exact-version Scala 3 PC artifact. Queries are cached per `(fileUri, documentVersion)` and never run on the EDT.

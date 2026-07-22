@@ -25,7 +25,7 @@ object FirstDetectionNotifier {
     val notification = NotificationGroupManager.getInstance
       .getNotificationGroup(GroupId)
       .createNotification(
-        "Metallurgy: Scala 3.5+ module detected",
+        "Metallurgy: Scala 3 module detected",
         s"Enable Metallurgy for accurate types, completion, and error highlighting in $moduleDescription?",
         NotificationType.INFORMATION
       )

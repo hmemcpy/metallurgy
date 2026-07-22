@@ -30,20 +30,25 @@ answer or an explicit unavailable/error result. It must not silently choose a co
 plugin remains the parser, PSI owner, UI integration, cache framework, refactoring framework, and the `ScType`
 compatibility shell. This decision replaces its type-producing backend; it does not replace every IntelliJ subsystem.
 
-This applies **only** when `ModuleDetectionService.isActive(module)` is true:
+This applies **only** when `ModuleDetectionService.isActive(module)` is true. Its target definition is:
 
 ```text
-Scala version >= 3.5  AND  the module is opted in  AND  Scala 3 CBH/compiler types are enabled
+Scala 3 backend capability is available  AND  the module is opted in  AND  Scala 3 CBH/compiler types are enabled
 ```
 
-That predicate already exists at `src/main/scala/com/hmemcpy/metallurgy/module/ModuleDetectionService.scala:31-51`.
+Compiler versions are artifact coordinates and diagnostic metadata, never eligibility thresholds. Base backend
+availability and optional facilities such as BETASTY are independently capability-discovered. An older, RC, nightly,
+or vendor Scala 3 compiler is supported whenever its exact presentation-compiler artifact exposes the required public
+operation. The current PoC predicate at
+`src/main/scala/com/hmemcpy/metallurgy/module/ModuleDetectionService.scala:31-51` still has a temporary Scala 3.5 floor;
+Phase 0 removes it after public capability discovery is connected.
 Every scheduler, tree extractor, side-table read, slot write, resolver contribution, synthetic declaration, cache
 invalidation, and backend-provider entry must perform the same module check. A false gate means:
 
 - no pc session creation, artifact fetch, retypecheck, PSI traversal, side-table allocation, slot mutation, cache flush,
   completion contribution, synthetic PSI, or background listener work;
-- no semantic or UI behavior change in Scala 2, Scala 3.0–3.4, non-opted-in modules, and inactive modules in mixed
-  projects;
+- no semantic or UI behavior change in Scala 2, non-opted-in modules, Scala 3 modules without the required capability,
+  and inactive modules in mixed projects;
 - only the public Scala-plugin dispatcher may perform its constant-time provider/gate check. A process-wide transformer
   is a proof-of-concept tool, not a release mechanism.
 
@@ -53,7 +58,7 @@ invalidation, and backend-provider entry must perform the same module check. A f
   build runner.
 - Rebuilding steady-state compiler diagnostics. Compiler-based highlighting already owns that surface; Metallurgy's
   diagnostic pipeline stays transient plumbing unless a measured gap appears.
-- Scala 2 and Scala 3 before 3.5.
+- Scala 2.
 - A one-to-one pc-tree/PSI-tree mapping. Position, ownership, symbol, and role shims are expected.
 - Blocking synchronous PSI getters until pc finishes. During a pending or failed exact-version snapshot, IntelliJ must
   remain responsive and the backend state is explicitly `Pending`/`Unavailable`.
@@ -522,7 +527,7 @@ Use at least these corpora:
 2. very large generated or declaration-dense files;
 3. macro-heavy, inline-heavy, structural/refinement, quoted, derivation, capture/type-level, and library-backed files;
 4. cross-module broken builds consuming `.betasty`;
-5. mixed projects with active Scala 3, inactive Scala 3, older Scala 3, Scala 2, and Java modules.
+5. mixed projects with capable Scala 3, inactive Scala 3, unavailable-capability Scala 3, Scala 2, and Java modules.
 
 Phase 1 establishes numeric latency and memory budgets from evidence rather than inventing them here. Structural
 budgets are fixed now: no more than one pc compile/tree walk per file version, no pc work on the EDT, bounded snapshot

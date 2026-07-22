@@ -17,7 +17,7 @@ inside your favourite Scala IDE*).
 ## Requirements
 
 - IntelliJ IDEA **2026.1+**
-- **Scala 3.5.0+**
+- **Scala 3** with a published presentation-compiler artifact
 - The Scala plugin, with **compiler-based highlighting** enabled
 
 ## Install

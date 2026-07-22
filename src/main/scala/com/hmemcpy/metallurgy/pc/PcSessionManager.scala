@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
-/** Project-level owner of the current presentation-compiler session for each opted-in module. */
+/** Project-level owner of the current presentation-compiler session for each active module. */
 final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetcher) extends Disposable:
 
   def this(project: Project) = this(project, MtagsFetcher(project))

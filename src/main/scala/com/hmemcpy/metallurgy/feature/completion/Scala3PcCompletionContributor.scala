@@ -27,7 +27,7 @@ final class Scala3PcCompletionContributor extends CompletionContributor:
       case m    => m
 
     if !ModuleDetectionService.get(project).isActive(module) then
-      Log.debug(s"PC completion skipped: ${module.getName} is not active (Scala 3.5+ opt-in + CBH)")
+      Log.debug(s"PC completion skipped: ${module.getName} does not have an active Scala 3 compiler backend")
       return
 
     val document = PsiDocumentManager.getInstance(project).getDocument(file)

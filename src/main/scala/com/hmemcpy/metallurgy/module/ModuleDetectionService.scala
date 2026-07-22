@@ -46,9 +46,10 @@ final class ModuleDetectionService(project: Project) extends Disposable:
   def isEligibleFile(file: VirtualFile): Boolean =
     Option(ModuleUtilCore.findModuleForFile(file, project)).exists(isEligible)
 
-  /** Metallurgy is active for a module iff it is a Scala 3.5+ module the user opted into AND compiler-based
+  /** Metallurgy is active for a module iff it is currently eligible, the user enabled the backend, and compiler-based
     * highlighting is on. `pc` piggybacks on the compile server's compiled artifacts, so without CBH Metallurgy is a
-    * complete no-op.
+    * complete no-op. Eligibility is temporarily restricted until the public capability handshake replaces the PoC
+    * version floor.
     */
   def isActive(module: Module): Boolean =
     isEligible(module) &&
