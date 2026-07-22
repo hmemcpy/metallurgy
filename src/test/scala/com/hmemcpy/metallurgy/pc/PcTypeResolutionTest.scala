@@ -32,7 +32,10 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
     Path.of("src", "test", "testdata").toAbsolutePath.toString
 
   override protected def additionalLibraries: Seq[LibraryLoader] =
-    Seq(IvyManagedLoader(("io.circe" %% "circe-generic" % "0.14.10").transitive()))
+    Seq(
+      IvyManagedLoader(("io.circe"   %% "circe-generic" % "0.14.10").transitive()),
+      IvyManagedLoader(("eu.timepit" %% "refined"       % "0.11.3").transitive())
+    )
 
   // (label, source, needle = the result val whose type we read, required substrings)
   private val cases: Seq[(String, (String, String, Set[String]))] = Seq(
@@ -165,6 +168,11 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
       "trait Foo:\n  type Out\n  def out: Out\nobject Foo:\n  type Aux[O] = Foo { type Out = O }\n  def apply[O](v: O): Aux[O] = new Foo:\n    type Out = O\n    def out: Out = v\nval fooInstance = Foo(42)\nval resolved: Int = fooInstance.out\n",
       "resolved",
       Set("Int")
+    ),
+    "refined type"                     -> (
+      "import eu.timepit.refined.api.Refined\nimport eu.timepit.refined.numeric.Positive\ntype PosInt = Int Refined Positive\nval value: PosInt = 1\n",
+      "value",
+      Set("Refined", "Positive")
     )
   )
 
