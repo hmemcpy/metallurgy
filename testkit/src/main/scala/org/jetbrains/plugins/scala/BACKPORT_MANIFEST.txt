@@ -16,13 +16,14 @@ Source paths are relative to one of:
   [test-utils-comm] = scala/test-utils-common/test/org/jetbrains/plugins/scala/
 
 
-base/                                                                    [16 files]
+base/                                                                    [17 files]
 -------------------------------------------------------------------------------
 EditorActionTestBase.scala                       [scala-impl] base/                       unchanged
 FailableTest.scala                               [test-utils-comm] base/                  unchanged
 HelperFixtureEditorOps.scala                     [scala-impl] base/                       unchanged
 InjectableJdk.scala                              [scala-impl] base/                       unchanged
 LibrariesOwner.scala                             [scala-impl] base/                       unchanged
+MultiScalaModulesInsightFixtureTestCase.scala    [scala-impl] base/                       unchanged
 package.scala                                    [scala-impl] base/                       MODIFIED (1)
 ScalaCodeInsightTestFixture.scala                [scala-impl] base/                       unchanged
 ScalaCodeParsing.scala                           [scala-impl] base/                       unchanged

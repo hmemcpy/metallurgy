@@ -4,6 +4,7 @@ import com.intellij.openapi.module.Module
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
+import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 
 import java.lang.reflect.{Field, Method}
 
@@ -89,16 +90,9 @@ object BundledPluginBridge:
 
   // --- ScalaProjectSettings ---
 
-  private lazy val scalaProjectSettingsClass =
-    Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings", true, bundledClassLoader)
-
-  private lazy val scalaProjectSettingsInstance =
-    scalaProjectSettingsClass.getMethod("getInstance", classOf[Project])
-
   def usesCompilerTypes(project: Project): Boolean =
-    val settings = scalaProjectSettingsInstance.invoke(null, project)
-    settings.getClass.getMethod("isCompilerHighlightingScala3").invoke(settings).asInstanceOf[Boolean] &&
-    settings.getClass.getMethod("isUseCompilerTypes").invoke(settings).asInstanceOf[Boolean]
+    val settings = ScalaProjectSettings.getInstance(project)
+    settings.isCompilerHighlightingScala3 && settings.isUseCompilerTypes
 
   // --- Compiler events ---
 

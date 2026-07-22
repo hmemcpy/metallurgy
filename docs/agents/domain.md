@@ -4,7 +4,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-For this repository, read `docs/research/17-pc-authoritative-type-resolution.md`. It is the sole normative architecture,
+For this repository, read `docs/scala3-compiler-backend.md`. It is the sole normative architecture,
 domain-language, and decision source. `docs/archive/` is historical provenance only and must not be treated as current.
 
 The generic convention below applies only when a repository has not declared a single canonical document.

@@ -59,7 +59,7 @@ final class PcDiagnosticSetCacheTest:
   @Test def documentAdvancedIsUnavailable(): Unit =
     cache.markPending("file://x.scala", 1L)
     cache.publishSuccess("file://x.scala", 1L, Seq.empty)
-    // version 2 has no authoritative state → never apply a stale result; leave bundled
+    // version 2 has no current pc state → never apply a stale result; leave bundled
     assertEquals(SnapshotState.Unavailable, cache.stateFor("file://x.scala", 2L))
 
   @Test def documentAdvancedPastFailedIsUnavailable(): Unit =

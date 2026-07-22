@@ -274,7 +274,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         myFixture.addFileToProject("WriterError.scala", "object WriterError:\n  val value: String = 1\n").getVirtualFile
       assertPublishedState(errorFile, expectError = true)
 
-      // a clean source → empty CurrentSuccess (PC-authoritative "clean").
+      // a clean source → empty CurrentSuccess (pc reports "clean").
       val cleanFile =
         myFixture.addFileToProject("WriterClean.scala", "object WriterClean:\n  val value: Int = 1\n").getVirtualFile
       assertPublishedState(cleanFile, expectError = false)

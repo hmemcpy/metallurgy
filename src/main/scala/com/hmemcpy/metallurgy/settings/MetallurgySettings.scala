@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.settings
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.compilerbackend.Scala3CompilerBackend
 import com.intellij.openapi.components.{PersistentStateComponent, State, Storage}
 import com.intellij.openapi.module.{Module, ModuleManager}
 import com.intellij.openapi.project.Project
@@ -25,13 +26,16 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
       .getModules
       .foreach: module =>
         if enabled then ScalacFlagsService.get(project).enableFor(module)
-        else if !myState.enabledModules.contains(module.getName) then ScalacFlagsService.get(project).disableFor(module)
+        else if !myState.enabledModules.contains(module.getName) then
+          clearCompilerBackend(module)
+          ScalacFlagsService.get(project).disableFor(module)
 
   def isEnabled(module: Module): Boolean =
-    isGloballyEnabled || myState.enabledModules.asScala.contains(module.getName)
+    isGloballyEnabled || myState.enabledModules.contains(module.getName)
 
   def setEnabled(module: Module, enabled: Boolean): Unit =
     setEnabled(module.getName, enabled)
+    if !isEnabled(module) then clearCompilerBackend(module)
     if isEnabled(module) then ScalacFlagsService.get(project).enableFor(module)
     else ScalacFlagsService.get(project).disableFor(module)
 
@@ -54,6 +58,9 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
       .getModules
       .filter(isEnabled)
       .foreach(ScalacFlagsService.get(project).enableFor)
+
+  private def clearCompilerBackend(module: Module): Unit =
+    Option(project.getServiceIfCreated(classOf[Scala3CompilerBackend])).foreach(_.clear(module))
 
   override def getState: MetallurgySettings.State                = myState
   override def loadState(loaded: MetallurgySettings.State): Unit = myState = loaded

@@ -1,11 +1,11 @@
-# 17 — Making the Scala 3 presentation compiler authoritative for type resolution
+# Metallurgy's definitive architecture: replacing IntelliJ's Scala type backend with Scala 3's compiler backend
 
 **Status:** sole normative architecture and design document
 
 **Baselines:** IntelliJ Platform 261.x, bundled Scala plugin 2026.1.20, Scala 3.7.4
 
 **Decision:** pursue whole-file, versioned pc type population plus a pinned compatibility shim; retain Scala PSI as the
-IntelliJ-facing object model, but stop treating the bundled Scala type engine as authoritative in active modules.
+IntelliJ-facing object model, but select Scala 3's compiler backend instead of the bundled type engine in active modules.
 
 This document supersedes every prior Metallurgy design, status, glossary, ADR, and research document. Those materials
 are preserved under `docs/archive/` for provenance only and are non-normative. New architectural decisions amend this
@@ -19,13 +19,13 @@ the Scala 3 repository. Metallurgy coordinates are relative to this repository.
 
 The goal is deliberately stronger than “repair `Any` when the bundled plugin loses precision”:
 
-> For an active Scala 3 module, make the real Scala 3 compiler, driven through the presentation compiler and supported
-> by best-effort compilation, the authoritative producer of every type IntelliJ observes.
+> For an active Scala 3 module, replace IntelliJ's bundled Scala type backend with the real Scala 3 compiler, driven
+> through the presentation compiler and supported by best-effort compilation, for every type IntelliJ observes.
 
-“Authoritative” means that after the exact document version's typed snapshot is published, a type-bearing PSI read must
-return the pc-derived answer or an explicit unavailable/error result. It must not silently choose a conflicting bundled
-inference. The bundled plugin remains the parser, PSI owner, UI integration, cache framework, refactoring framework, and
-the `ScType` compatibility shell. Authority concerns the semantic answer, not ownership of every IntelliJ subsystem.
+After the exact document version's typed snapshot is published, a type-bearing PSI read selects the Scala 3 backend's
+answer or an explicit unavailable/error result. It must not silently choose a conflicting bundled inference. The bundled
+plugin remains the parser, PSI owner, UI integration, cache framework, refactoring framework, and the `ScType`
+compatibility shell. This decision replaces its type-producing backend; it does not replace every IntelliJ subsystem.
 
 This applies **only** when `ModuleDetectionService.isActive(module)` is true:
 
@@ -55,7 +55,7 @@ invalidation, and compatibility-shim entry must perform the same module check. A
 - Scala 2 and Scala 3 before 3.5.
 - A one-to-one pc-tree/PSI-tree mapping. Position, ownership, symbol, and role shims are expected.
 - Blocking synchronous PSI getters until pc finishes. During a pending or failed exact-version snapshot, IntelliJ must
-  remain responsive and the authority state is explicitly `Pending`/`Unavailable`.
+  remain responsive and the backend state is explicitly `Pending`/`Unavailable`.
 - Inventing members that Scala itself does not expose. In particular, Scala 3 macro annotations cannot add new
   definitions visible from user-written code; this is a language restriction, not a pc gap.
 - Treating a rendered type string as sufficient for every compiler symbol. Compiler-only members require the symbol
@@ -68,7 +68,7 @@ invalidation, and compatibility-shim entry must perform the same module check. A
 The bundled plugin has no production `ScTypeEvaluator` service or replaceable `typeOf(PsiElement)` dispatcher.
 `Typeable` is only an interface with an abstract ``type(): TypeResult``
 (`intellij-scala/scala/scala-impl/src/org/jetbrains/plugins/scala/lang/psi/types/result.scala:10-21`). Concrete PSI traits
-and classes own their computations. This is the fundamental reason a single clean extension cannot make pc authoritative.
+and classes own their computations. This is the fundamental reason a single clean extension cannot replace the backend.
 
 `ScType` is the bundled semantic algebra. It carries a project context/type system, alias and unpacking caches,
 equivalence hooks, visitors, and renderers
@@ -93,7 +93,7 @@ and Java bridging still execute bundled algorithms.
 (`ScExpression.scala:301-328`). The slot itself is a copied user-data string plus a synchronous message-bus request
 topic (`.../psi/impl/CompilerType.scala:7-30`).
 
-This makes pc authoritative for a populated **expression's initial type**. It does not make pc authoritative for the
+This selects pc for a populated **expression's initial type**. It does not select pc for the
 expected-type calculation, implicit search, adaptation, or nodes whose concrete ``type()`` never reaches an expression.
 
 ### 2.3 Definitions, type elements, functions, parameters, and patterns
@@ -165,20 +165,20 @@ it can increment the relevant stable-expression local counter (or the top-level 
 maps (`ScalaPsiManager.scala:55-147`); it is a cache owner for `ScType` operations, not a general type evaluator.
 
 This distinction is load-bearing: incrementing only `anyScalaPsiChange` does not invalidate an expression type cached
-against its local `BlockModificationTracker`. Every changed authority value needs the per-element clear, followed by one
+against its local `BlockModificationTracker`. Every changed backend value needs the per-element clear, followed by one
 coalesced global increment for downstream usages and presentations.
 
 ## 3. Type consumers
 
 The table describes steady-state behavior after a current pc snapshot exists. “Slot reaches it” means the consumer
-eventually asks an expression for its type; it does not mean the entire subsystem is compiler-authoritative.
+eventually asks an expression for its type; it does not mean the entire subsystem selects the Scala 3 backend.
 
-| Subsystem | Actual route in 2026.1.20 | Does a populated expression slot reach it? | Additional authority work |
+| Subsystem | Actual route in 2026.1.20 | Does a populated expression slot reach it? | Additional backend work |
 |---|---|---:|---|
 | Hover / quick navigation | `ScalaDocQuickInfoGenerator` first `bind()`s the original reference, then renders functions, values, bindings, and parameters through `TypeAnnotationRenderer` (`.../editor/documentationProvider/ScalaDocQuickInfoGenerator.scala:33-52,101-114,247-275,311-350`). The renderer calls function `returnType`, given `givenType`, or generic ``Typeable.type()`` (`.../types/api/presentation/TypeAnnotationRenderer.scala:32-61`). | **Sometimes.** Untyped vals may flow to a populated initializer. Explicit vals, functions, parameters, and pattern bindings bypass it. | Patch all typed-definition routes; retain a pc-native hover fallback for unmappable compiler symbols. |
 | Completion | Bundled completion copies/request the compiler slot only for transparent-inline calls (`.../lang/completion/package.scala:259-286`) and otherwise uses bundled resolve/processors. Metallurgy already contributes pc completion. | **Yes for the copied call**, but only after that trigger. | Whole-file proactive population; retain pc completion for symbols/member sets that rendered `ScType` cannot enumerate. |
 | Reference resolve / navigation | `ScReferenceExpressionImpl.multiResolveScala` invokes bundled `ReferenceExpressionResolver` (`.../psi/impl/expr/ScReferenceExpressionImpl.scala:59-79`); qualified stable references have their own slot reader (`.../psi/impl/base/ScStableCodeReferenceImpl.scala:470-493`). | **Indirectly** for qualifier/member resolution; **no** for general symbol identity. | Feed pc receiver types, then add a pc-symbol resolver/synthetic PSI bridge for compiler-only declarations. |
-| Semantic annotator / type mismatch highlighting | `ScalaAnnotator` and element annotators call `getTypeAfterImplicitConversion`; `ScExpressionAnnotator` uses it with expected types (`.../annotator/ScalaAnnotator.scala:92-106`; `.../annotator/element/ScExpressionAnnotator.scala:168-181`). CBH overlays compiler diagnostics separately. | **Yes** for actual expression type. | Expected types, implicit adaptation, and non-expression annotations remain bundled unless the authority dispatcher covers them. Do not duplicate CBH diagnostics. |
+| Semantic annotator / type mismatch highlighting | `ScalaAnnotator` and element annotators call `getTypeAfterImplicitConversion`; `ScExpressionAnnotator` uses it with expected types (`.../annotator/ScalaAnnotator.scala:92-106`; `.../annotator/element/ScExpressionAnnotator.scala:168-181`). CBH overlays compiler diagnostics separately. | **Yes** for actual expression type. | Expected types, implicit adaptation, and non-expression annotations remain bundled unless the backend dispatcher covers them. Do not duplicate CBH diagnostics. |
 | Inspections / analyzer | Mixed. Type-aware inspections call expression typing or generic `Typeable`; others call `bind()` or are syntactic. Collection inspections explicitly expose a `Typeable` backed by `getTypeWithoutImplicits` (`.../codeInspection/collections/package.scala:516,550-560`). | **Mixed.** | The dispatcher covers type reads; the symbol bridge covers bind-based checks. Syntactic inspections remain unchanged. |
 | Inline/type hints | Bundled `ScalaTypeHintsPass` calls value/variable ``type()`` and function `returnType` (`intellij-scala/scala/codeInsight/src/org/jetbrains/plugins/scala/codeInsight/hints/ScalaTypeHintsPass.scala:127-147`). `ImplicitHintsPass` hosts the pass and also runs implicit-resolution hints (`.../codeInsight/implicits/ImplicitHintsPass.scala:42-80,108-135`). | **Untyped values only**, through their initializer; not explicit definitions/functions. | Keep Metallurgy's pc hint renderer initially; after full dispatcher coverage, decide whether it is redundant. |
 | Structure view | Primarily stub/source text: function return type text, val/var declared type text, and parameter type text (`intellij-scala/scala/structure-view/src/org/jetbrains/plugins/scala/structureView/element/Function.scala:20-26`; `ValOrVar.scala:20-24`; `element/package.scala:17-28`). Anonymous-class location resolves a type element (`ScalaAnonymousClassTreeElement.scala:36-42`). | **Generally no.** | This is presentation of source syntax, not inferred semantics. Leave it alone except compiler-synthetic declarations and the anonymous-class resolver. |
@@ -193,21 +193,21 @@ The practical conclusion is that whole-file expression population has high impac
 The bundled Scala EP declarations are together in
 `intellij-scala/scala/scala-impl/resources/META-INF/scala-plugin-common.xml:4-27`.
 
-| Extension / topic | What it injects | Fit for pc authority | Required isolation |
+| Extension / topic | What it injects | Fit for replacing the type backend | Required isolation |
 |---|---|---|---|
 | `CompilerType.Topic` | Synchronous notification that a compiler type was requested (`.../psi/impl/CompilerType.scala:12,21-30`). | Useful demand signal and cache lookup trigger; not a universal producer. Listener must never wait for pc. | Resolve element → module and return immediately unless `isActive`. |
 | Compiler event topic | Build/compile-server events consumed by current `CompilerTypeReportInterceptor`. | Useful to suppress or reconcile late CBH type reports. Not the primary population mechanism. | Ignore inactive modules and reject any report whose document version/generation is not current. |
-| `org.intellij.scala.syntheticMemberInjector` | Textual functions, inner types, supers, and members on an `ScTypeDefinition` (`.../psi/impl/toplevel/typedef/SyntheticMembersInjector.scala:19-63,82-107,143-180`). | Secondary compatibility adapter for a small, stable set of compiler-visible members. Not a general Scala 3 authority vector; synchronous and historically macro-oriented. | Gate on the source definition's module; cache-only; never launch pc in the callback. |
+| `org.intellij.scala.syntheticMemberInjector` | Textual functions, inner types, supers, and members on an `ScTypeDefinition` (`.../psi/impl/toplevel/typedef/SyntheticMembersInjector.scala:19-63,82-107,143-180`). | Secondary compatibility adapter for a small, stable set of compiler-visible members. Not a general Scala 3 backend vector; synchronous and historically macro-oriented. | Gate on the source definition's module; cache-only; never launch pc in the callback. |
 | `org.intellij.scala.scalaDynamicTypeResolver` | Resolve results for `ScReferenceExpression` dynamic handling (`.../lang/resolve/DynamicTypeReferenceResolver.scala:7-18`). | Narrowly useful for actual `scala.Dynamic` paths, not arbitrary members. | Gate every expression. |
 | `org.intellij.scala.interpolatedStringMacroTypeProvider` | Result type for interpolated-string macros (`.../psi/impl/base/InterpolatedStringMacroTypeProvider.scala:12-38`). | Clean, exact fit for that construct; use current snapshot only. | Gate the literal's module and return bundled fallback on cache miss. |
 | `org.intellij.scala.memberElementTypesExtension` | Adds AST token kinds treated as members (`.../util/MemberElementTypesExtension.java:7-23`; `.../lang/TokenSets.scala:60-80`). | Not a type provider. Relevant only if Metallurgy introduces a new PSI member element kind, which is not recommended. | A process-wide token-set change would leak to inactive modules; avoid it. |
 | `org.intellij.scala.scalaSyntheticClassProducer` | Supplies `PsiClass` values for FQNs (`.../lang/resolve/SyntheticClassProducer.scala:8-21`). | Useful for compiler symbols with no class PSI, especially generated top-level/classpath-visible types. Internal API and identity-sensitive. | Check request scope/project and return nothing unless a matching active-module snapshot/artifact exists. |
 | `org.intellij.scala.referenceExtraResolver` | Fallback for stable code references, originally for Ammonite (`.../psi/impl/base/ScStableCodeReferenceExtraResolver.scala:11-38`). | Useful for stable/type references backed by pc symbols; not `ScReferenceExpression`. | `acceptsFile` must be an exact active-file gate; resolver must be cache-only. |
 | Platform `completion.contributor` | Adds/reorders completion items. | Already appropriate for pc-native member/symbol completion. | Early file/module gate before session lookup. |
-| Platform `highlightingPassFactory` / inlay APIs | Schedules a daemon pass and renders inlays. | Appropriate scheduler for proactive population and measurement; the authority population should eventually be a dedicated pass rather than coupled to visible hints. | Factory and pass both gate; no pass object with pc state for inactive files. |
+| Platform `highlightingPassFactory` / inlay APIs | Schedules a daemon pass and renders inlays. | Appropriate scheduler for proactive population and measurement; backend population should eventually be a dedicated pass rather than coupled to visible hints. | Factory and pass both gate; no pass object with pc state for inactive files. |
 | Platform documentation/navigation EPs | Can provide pc-native documentation or navigation targets. | Fallback for compiler symbols that cannot be represented by normal Scala PSI. Does not change core ``type()``. | Gate the source element and use exact-version cache only. |
 | Platform `PsiAugmentProvider` | Adds Java PSI members and can infer a Java `PsiTypeElement` (`intellij-community/java/java-psi-api/src/com/intellij/psi/augment/PsiAugmentProvider.java:38-40,47-67,91-106`). | **Not** a Scala type hook. Scala `ScTypeElement` never calls it; Java's `PsiTypeElementImpl` does. | Do not register a broad provider for this design. |
-| Platform reference/search/refactoring EPs | Add reference contributors, search executors, rename handlers, etc. | Surface-specific escape hatches for synthetic pc symbols, not a coherent type authority layer. | Every callback must derive and check the originating module; global search contributions must filter scope/results. |
+| Platform reference/search/refactoring EPs | Add reference contributors, search executors, rename handlers, etc. | Surface-specific escape hatches for synthetic pc symbols, not a coherent compiler-backend layer. | Every callback must derive and check the originating module; global search contributions must filter scope/results. |
 
 Clean EPs should be preferred for completion, interpolation, stable references, synthetic classes, and UI fallbacks.
 They do not eliminate the overwrite points below.
@@ -215,19 +215,19 @@ They do not eliminate the overwrite points below.
 ## 5. Overwrite points with no clean EP
 
 The compatibility layer is version-pinned to 261.x / bundled Scala plugin 2026.1.20. It should expose one internal
-contract—`PcTypeAuthority.lookup(element, role)`—even if the underlying interception uses reflection, method handles,
+contract—`Scala3CompilerBackend.lookup(element, role)`—even if the underlying interception uses reflection, method handles,
 or bytecode instrumentation. Every hook performs the gate before consulting state.
 
 | Priority | Target | Shim strategy | Risk |
 |---|---|---|---|
 | P0 | `ScTypeElement.getType` / `getNonValueType` (`.../psi/api/base/types/ScTypeElement.scala:23-41`) | Intercept before `innerType`; return the current side-table `ScType` for role `DeclaredType`, otherwise call the original. | High: private/package visibility, cache wrapper shape, constructors and singleton type syntax. |
 | P0 | `ScPatternDefinitionImpl.type` and `ScVariableDefinitionImpl.type` (`.../psi/impl/statements/...:41-52` and `:37-41`) | Intercept at the definition and per-binding pattern. Use pc result keyed by declaration symbol/range; never reuse the whole RHS type for destructuring bindings. | High: multiple bindings, literal widening, stable paths. |
-| P0 | All concrete `ScPattern.type` implementations and pattern `expectedType` | Weave the shared authority prelude into implementors discovered and pinned by a compatibility manifest; fall through when no exact mapping exists. | Very high: distributed implementations and recursion-sensitive expected-type caches. |
+| P0 | All concrete `ScPattern.type` implementations and pattern `expectedType` | Weave the shared backend-selection prelude into implementors discovered and pinned by a compatibility manifest; fall through when no exact mapping exists. | Very high: distributed implementations and recursion-sensitive expected-type caches. |
 | P0 | `ScFunction` return/defined type, `ScGiven` type, and `ScParameter.type`/inside/outside type | Intercept semantic roots, not every presentation caller. Preserve wrappers such as method/poly types and repeated/by-name/`into` adjustments where the pc DTO records their role. | Very high: Java `PsiMethod` bridges, override checks, polymorphic/method types. |
-| P0 | `ScExpression.getTypeWithoutImplicits` | Keep the existing slot reader for compatibility, but make the authority side table/version guard the source of truth. A patched prelude can avoid stale copied user data and distinguish pending/unavailable. | Medium: hottest path; any extra lookup affects active-module editor latency. |
-| P0 | Cache invalidation | For every element whose committed authority value changed or disappeared, reflectively call `ScalaPsiManager.clearOnScalaElementChange`; after the batch increment `anyScalaPsiChange` once, mirroring `ExternalHighlightersService.scala:126-134`. | High: under-invalidation returns stale bundled types; over-invalidation causes resolve storms. |
+| P0 | `ScExpression.getTypeWithoutImplicits` | Keep the existing slot reader for compatibility, but make the backend side table/version guard the source of truth. A patched prelude can avoid stale copied user data and distinguish pending/unavailable. | Medium: hottest path; any extra lookup affects active-module editor latency. |
+| P0 | Cache invalidation | For every element whose committed compiler value changed or disappeared, reflectively call `ScalaPsiManager.clearOnScalaElementChange`; after the batch increment `anyScalaPsiChange` once, mirroring `ExternalHighlightersService.scala:126-134`. | High: under-invalidation returns stale bundled types; over-invalidation causes resolve storms. |
 | P1 | `ScReferenceExpressionImpl.multiResolveScala` / resolver fallback | If bundled resolve fails or resolves a member inconsistent with the pc symbol, contribute a `ScalaResolveResult` backed by mapped or synthetic PSI. A general extra-resolver shim is required because no EP exists for arbitrary reference expressions. | Very high: precedence, overloads, implicit conversions, navigation identity. |
-| P1 | `ScStableCodeReferenceImpl` compiler-type branch | Reconcile it with the versioned authority store; keep `referenceExtraResolver` for symbols that cannot be extracted from parsed `ScType`. | Medium: direct method/body coupling. |
+| P1 | `ScStableCodeReferenceImpl` compiler-type branch | Reconcile it with the versioned compiler-backend store; keep `referenceExtraResolver` for symbols that cannot be extracted from parsed `ScType`. | Medium: direct method/body coupling. |
 | P1 | `ScType` member/signature enumeration and conformance hot spots | First use the parsed pc-rendered `ScType`. When that loses compiler-only structure, attach a pc type handle/symbol id and intercept member lookup/conformance selectively rather than recreating all dotc types. | Extreme: many consumers assume concrete `ScType` shapes, equality, substitutors, and stable PSI owners. |
 | P1 | Scala 3 synthesized/derived members | Materialize minimal light/synthetic PSI from pc symbol DTOs, using `SyntheticMembersInjector`/`SyntheticClassProducer` where their contracts fit and resolver shims elsewhere. | High: stable identity across snapshots, navigation, find usages, refactoring. |
 | P2 | CBH compiler type application | In active modules, reject or replace a late native compiler type if it does not match the current pc generation; inactive modules remain untouched. | Medium: races with completion and editor focus; reflection into private compiler-integration services. |
@@ -236,14 +236,32 @@ or bytecode instrumentation. Every hook performs the gate before consulting stat
 
 There are two viable delivery modes:
 
-1. **Preferred long-term:** an upstream bundled-plugin `ExternalTypeAuthority` dispatcher invoked at the semantic roots.
+1. **Preferred long-term:** an upstream bundled-plugin `ExternalCompilerBackend` dispatcher invoked at the semantic roots.
    It is synchronous/cache-only and receives the PSI element and role. Metallurgy supplies the provider. This is the
    only route with maintainable coverage and a deliberately optimized inactive fast path.
 2. **Research implementation:** a startup compatibility transformer pinned to the exact bundled build, with a manifest
    of target class/method descriptors and bytecode fingerprints. Installation must fail closed: if any fingerprint is
-   unexpected, disable pc authority for the project and leave the bundled plugin untouched. Reflection alone can read
+   unexpected, disable the Scala 3 backend for the project and leave the bundled plugin untouched. Reflection alone can read
    fields and call private invalidators, but cannot replace method bodies; a transformer or patched bundled plugin is
    required for the definition/type-element routes.
+
+The Phase 0 tracer bullet selects the research implementation. On JBR 25 it installs Byte Buddy's agent at Metallurgy
+startup, defines a minimal Java bridge in the bundled Scala plugin's classloader, and retransforms the default
+`ScTypeElement.type(): Either` method. The transformer inserts a cache-only call to `Scala3CompilerBackend` before the
+original body. The bridge remains disabled until retransformation succeeds. The exact 2026.1.20 class and method
+SHA-256 fingerprints are checked before the agent or bridge is installed; a mismatch leaves the original bytecode and
+behavior intact. Dynamic agent loading currently succeeds on the target JBR but emits the JDK's deprecation warning, so
+a future hardened runtime may disable this research hook. That failure is fail-closed and strengthens the case for the
+preferred upstream dispatch seam.
+
+The rejected alternatives for this milestone are a locally patched Scala plugin, because it would change the tested
+deployment unit, and a reflection-only wrapper, because reflection cannot replace the cached default method. The tracer
+measures the unavoidable globally woven guard in inactive modules. On the target test runtime, 20,000 warmed calls
+through the transformed method measured approximately 0.8 microseconds additional p50 latency, 1.0 microsecond
+additional p95 latency, and 56 incremental bytes per call relative to the same bridge disabled. This is acceptable only
+for the research tracer: it performs no compiler work or Metallurgy state publication, and all inactive behavior remains
+bundled. Literal zero additional instructions or allocations requires the upstream dispatch seam and is a release
+blocker before broad distribution.
 
 Pre-seeding private cached-value keys, substituting parser-created PSI wrappers, or overriding `ScalaPsiManager` are not
 sound substitutes. The cache keys are implementation details, parser element types determine concrete PSI, and
@@ -302,8 +320,8 @@ The compatibility goal is not tree isomorphism. It is a stable answer for each I
 | Compiler-only/synthetic declarations | Derived, inline-expanded, or best-effort-loaded symbols may have no source PSI. | Create minimal stable light PSI keyed by compiler symbol id and generation; navigation points to the nearest source owner or TASTy/decompiled owner. Completion/hover can remain pc-native if no safe PSI exists. |
 | Rendered syntax not parsable as `ScType` | Dotc display text may contain compiler names, captures, anonymous refinements, or forms the bundled parser cannot reconstruct. | Prefer a source-compatible renderer; validate with `createTypeFromText`; on failure retain a display string and pc type handle for pc-native surfaces, and mark `ScType` unavailable. Never substitute `Any`. |
 | `ScType` semantic mismatch | Parsed types subsequently use bundled conformance/member algorithms. | Measure first. Add narrow pc-backed conformance/member shims only where mismatches are observed; do not replace the entire `ScType` algebra speculatively. |
-| Reparse copies user data | `CompilerType` uses copyable user data, so stale strings can survive PSI replacement. | The side table's `(fileUri, documentVersion, generation)` is authoritative. A slot without a matching current entry is ignored/cleared. |
-| Best-effort error types | `.betasty` legitimately contains error placeholders. | Preserve `Unavailable/Error` provenance. Publish nearby valid types and symbols; never convert an error placeholder to a plausible bundled fallback and call it authoritative. |
+| Reparse copies user data | `CompilerType` uses copyable user data, so stale strings can survive PSI replacement. | The side table's `(fileUri, documentVersion, generation)` determines freshness. A slot without a matching current entry is ignored/cleared. |
+| Best-effort error types | `.betasty` legitimately contains error placeholders. | Preserve `Unavailable/Error` provenance. Publish nearby valid types and symbols; never disguise an error placeholder as a valid Scala 3 compiler result. |
 
 Scala 3 macro annotations are not a synthetic-member use case for new public members: upstream behavior intentionally
 does not make newly added definitions visible to user-written code. Existing overrides/private helpers may affect
@@ -313,7 +331,7 @@ implementation but do not justify inventing public PSI members.
 
 ### 8.1 Components
 
-1. **`PcTypeAuthoritySnapshot`** — immutable results for
+1. **`Scala3CompilerSnapshot`** — immutable results for
    `(module, fileUri, documentVersion, classpathGeneration, compilerOptionsGeneration)`. It contains canonical typed
    spans, rendered-type DTOs, compiler symbol DTOs, diagnostics provenance, and extraction timings.
 2. **`PcTypedTreeExtractor`** — runs inside the pc classloader after the one retypecheck. It traverses the compilation
@@ -325,15 +343,15 @@ implementation but do not justify inventing public PSI members.
 3. **`PcPsiMapper`** — under a cancellable non-blocking read action, maps DTO spans/symbols to current PSI elements and
    semantic roles. It creates smart pointers only for the short commit window; persistent identity is URI/version/range/
    role/symbol id, not a raw PSI object.
-4. **`PcTypeAuthorityStore`** — atomically publishes immutable mapped snapshots and answers synchronous cache-only
+4. **`Scala3CompilerBackend`** — atomically publishes immutable mapped snapshots and answers synchronous cache-only
    lookups. Its first instruction is the active-module gate. It exposes `Current`, `Pending`, `Unavailable`, and `Failed`,
    not `Option[String]` alone.
-5. **`PcTypeAuthorityPublisher`** — commits expression/reference compatibility slots, computes the changed/removed
+5. **`Scala3CompilerPublisher`** — commits expression/reference compatibility slots, computes the changed/removed
    element set, performs per-element Scala cache clears, increments the global tracker once, and restarts only the
    necessary daemon/hint/completion surfaces.
-6. **`BundledTypeAuthorityShim`** — intercepts the P0 semantic roots in section 5 and asks the store for a role-specific
+6. **`BundledCompilerBackendShim`** — intercepts the P0 semantic roots in section 5 and asks the store for a role-specific
    `ScType`. It parses/caches source-compatible rendered text in the bundled classloader. On inactive modules or no
-   current authoritative value it invokes the original implementation.
+   current compiler value it invokes the original implementation.
 7. **`PcSymbolBridge`** — maps compiler symbol ids to source PSI or stable light PSI and supplies completion, stable
    reference, arbitrary reference fallback, navigation, and search identity.
 
@@ -368,17 +386,17 @@ bulk-extraction call rather than looping over `typeAt`. `PcSession` already debo
 serializes retypechecks, and publishes only the winning driver/snapshot
 (`src/main/scala/com/hmemcpy/metallurgy/pc/PcSession.scala:107-121,164-209,349-365`).
 
-### 8.3 Authority rules
+### 8.3 Backend selection rules
 
 - A `Current` pc result wins over every bundled type for the same element/role/version.
 - `Pending` never exposes the previous document version. UI may temporarily use the original bundled implementation,
-  but it is explicitly a pre-publication fallback, not a competing authority.
-- `Unavailable` in rollout/audit mode uses the original bundled path and records the gap. In the target strict-authority
+  but it is explicitly a pre-publication fallback, not a competing backend result.
+- `Unavailable` in rollout/audit mode uses the original bundled path and records the gap. In the target strict-backend
   mode, a successfully published current snapshot with no safe pc mapping returns an explicit `TypeResult` failure or a
-  pc-native surface result; it does **not** silently promote bundled inference to authority.
+  pc-native surface result; it does **not** silently treat bundled inference as Scala 3 compiler output.
 - `Failed` leaves bundled behavior intact and surfaces telemetry/logging, never a guessed type. This is an operational
   failure fallback, distinct from a successful current snapshot that lacks a mapping.
-- The raw `CompilerType` string is a compatibility cache, not the freshness authority.
+- The raw `CompilerType` string is a compatibility cache, not the freshness guard.
 - All cross-file and best-effort symbols carry classpath/options generation so a session rebuild invalidates them.
 
 ### 8.4 Why the current inlay pass is not the final owner
@@ -388,7 +406,7 @@ serializes retypechecks, and publishes only the winning driver/snapshot
 prototype scheduler. It is the wrong final semantic boundary because hints can be disabled, it visits only selected
 definitions, it queries one offset at a time, and its current project-wide invalidation does not clear each expression's
 `BlockModificationTracker` (`PcTypeHintsPass.scala:69`; `BundledPluginBridge.scala:120-137`). The first milestone should
-instrument and broaden this pass; the later milestone should split population into a dedicated authority pass and let
+instrument and broaden this pass; the later milestone should split population into a dedicated compiler-backend pass and let
 hints consume its snapshot.
 
 ## 9. Cache invalidation and threading
@@ -412,7 +430,7 @@ tree traversal, PSI mapping, and any bounded polling; production code uses futur
 
 ### Generations and reparses
 
-Every result carries document, session, classpath, options, and authority generations. “Latest generation wins” is
+Every result carries document, session, classpath, options, and backend generations. “Latest generation wins” is
 checked both before mapping and immediately before commit. A reparse invalidates PSI pointers but not range/symbol DTOs;
 the mapper must reacquire PSI from the current file. Copyable user data copied onto new PSI is ignored unless the
 side-table entry matches the exact current generation. Closing/disabling a module removes its store entries, clears only
@@ -436,11 +454,11 @@ file/top-level clear, and measure that path separately.
 
 ### Phase 0 — Baseline and instrumentation contract
 
-- Define authority roles/states/generation keys and the exact inactive fast-path contract.
+- Define compiler-backend roles/states/generation keys and the exact inactive fast-path contract.
 - Add timings and counters around current retypecheck, `typeAt`, PSI traversal, cache invalidation, and daemon restart.
 - Prototype the 2026.1.20 shim on one declared-type root with bytecode fingerprint/fail-closed behavior.
 - **Go/no-go:** no behavior outside active modules; inactive hook overhead statistically indistinguishable from baseline;
-  compatibility failure disables authority cleanly.
+  compatibility failure disables the Scala 3 backend cleanly.
 
 ### Phase 1 — Pc everywhere in the existing pass, behind measurement
 
@@ -450,7 +468,7 @@ file/top-level clear, and measure that path separately.
 - Keep visible hints behavior unchanged so the experiment has a narrow UI footprint.
 - **Go/no-go:** exact-type tests stay exact; no stale type after edit/reparse; one retypecheck and one tree walk per version.
 
-### Phase 2 — Typed definitions and role-specific authority
+### Phase 2 — Typed definitions and role-specific backend selection
 
 - Activate shim coverage for type elements, vals/vars and individual bindings, functions/givens, parameters, and concrete
   patterns.
@@ -476,14 +494,14 @@ file/top-level clear, and measure that path separately.
 - Separate build-loop latency from per-document pc latency.
 - **Go/no-go:** downstream types/symbols update after upstream break/fix/rename without restarting the IDE.
 
-### Phase 5 — Split a dedicated authority pass
+### Phase 5 — Split a dedicated compiler-backend pass
 
 - Move population scheduling, mapping, publication, and invalidation out of the inlay pass.
 - Make hints, hover, completion, resolver bridges, and diagnostics consume the same immutable snapshot.
 - Retire duplicate slot-filling/report-interception work only after parity is proven.
-- **Go/no-go:** disabling visible type hints does not disable authority; exactly one authority population runs per version.
+- **Go/no-go:** disabling visible type hints does not disable backend population; exactly one population runs per version.
 
-### Phase 6 — Compatibility hardening and authority expansion
+### Phase 6 — Compatibility hardening and backend expansion
 
 - Run the full consumer matrix, target larger real projects, and add narrow pc-backed member/conformance operations only
   for measured `ScType` incompatibilities.
@@ -499,8 +517,8 @@ Record p50, p95, and max, separated by file size and typed-node count, for:
 - type rendering;
 - PSI mapping;
 - commit and cache invalidation;
-- time from edit to current authoritative snapshot;
-- synchronous authority lookup overhead and cache hit rate;
+- time from edit to current Scala 3 compiler snapshot;
+- synchronous backend lookup overhead and cache hit rate;
 - count of mapped, deduplicated, unavailable, unparsable, and synthetic-symbol nodes;
 - daemon/resolve work triggered by publication.
 
@@ -521,14 +539,15 @@ are no-go results.
 ## 11. Risks and open questions
 
 1. **`ScType` identity and algorithms.** Many subsystems pattern-match concrete `ScType`, compare them, carry
-   substitutors, or expect a designated PSI element. A parsed compiler rendering may be authoritative at production but
+   substitutors, or expect a designated PSI element. A parsed compiler rendering may replace type production but
    still destabilize bundled member lookup/conformance later.
-2. **Authority is asynchronous.** Absolute authority on the first arbitrary synchronous read would require eager typing
-   of every file or blocking PSI. The design instead guarantees authority for the latest published exact-version
+2. **Backend replacement is asynchronous.** Selecting Scala 3 on the first arbitrary synchronous read would require eager typing
+   of every file or blocking PSI. The design instead guarantees Scala 3 results for the latest published exact-version
    snapshot and measures the pending window.
-3. **Transformer feasibility.** Can a dependent plugin install the transformer before all target classes load on JBR
-   25, without unsupported self-attach or startup flags? If not, the upstream dispatcher/locally patched bundled plugin
-   is a hard prerequisite.
+3. **Transformer lifecycle.** Dynamic retransformation works on the target JBR 25, including when `ScTypeElement` is
+   already loaded, but the runtime warns that dynamic agent loading may be disabled by default in a future release.
+   Plugin unload also cannot safely restore arbitrary third-party transformations. Treat the shim as process-lifetime,
+   fail closed on installation failure, and require the upstream dispatcher before broad distribution.
 4. **Inactive fast path.** A globally woven hook necessarily executes a branch. Is “zero overhead” satisfied by a cached
    module predicate with zero allocations/work, or must mixed-project inactive modules execute literally unchanged
    bytecode? The latter rules out third-party global interception.
@@ -543,14 +562,14 @@ are no-go results.
 9. **CBH races.** Native compiler type reports, pc population, completion-file copies, and reparses may compete for the
    same copyable slot. Ownership/provenance must be explicit.
 10. **Closed and batch-analyzed files.** An editor-bound pass covers open files. Inspections, search, and refactorings may
-    load closed PSI; decide whether to prewarm on demand asynchronously, restrict strict authority to analyzed files, or
+    load closed PSI; decide whether to prewarm on demand asynchronously, restrict strict backend selection to analyzed files, or
     integrate with a broader analysis lifecycle.
 11. **Best-effort freshness.** Output directories can contain stale `.betasty`; classpath generation and upstream build
-    provenance must prevent old symbols from becoming authoritative.
+    provenance must prevent old symbols from becoming current.
 12. **Memory.** Whole-file types, symbol DTOs, parsed `ScType` caches, and light PSI can be large. Snapshots need bounded
     retention and weak/retired PSI associations.
 13. **Failure semantics.** Returning bundled fallback preserves IDE utility but weakens the literal “all” claim.
-    Returning unavailable everywhere is purer but may break callers. The authority state and telemetry must make this a
+    Returning unavailable everywhere is purer but may break callers. The backend state and telemetry must make this a
     deliberate per-role decision.
 14. **Version maintenance.** Private APIs and bytecode shapes can change within 261.x. Fingerprints, startup probes, and
     a fail-closed compatibility matrix are mandatory.
@@ -558,18 +577,18 @@ are no-go results.
 ## 12. Relationship to prior ADRs
 
 The former ADR set is archived under `docs/archive/adr/` and is wholly superseded. The notes below record which ideas
-this design retains as implementation constraints; they do not grant the archived ADRs continuing authority.
+this design retains as implementation constraints; they do not make the archived ADRs normative.
 
 - **ADR-0011 is superseded in framing.** Its selective “repair `Any`/widening for macro-heavy Scala 3” scope remains a
   useful shipped waypoint and regression suite, but it is no longer the architectural destination. The destination is
-  pc authority for every type read in active modules.
+  Scala 3's compiler backend for every type read in active modules.
 - **ADR-0008 remains foundational.** CBH plus compiler types is still part of `ModuleDetectionService.isActive`; it
-  supplies compiled/best-effort artifacts and the safety boundary. Every new authority hook inherits that exact gate.
-- **ADR-0010 remains evidence about diagnostics, not a limit on type authority.** Native-clean steady-state highlighting
+  supplies compiled/best-effort artifacts and the safety boundary. Every new backend hook inherits that exact gate.
+- **ADR-0010 remains evidence about diagnostics, not a limit on backend replacement.** Native-clean steady-state highlighting
   justifies leaving diagnostics alone; it does not establish that bundled PSI types are compiler-equivalent.
-- **ADR-0007's version pin/reflection fallback becomes stricter.** The authority shim requires explicit method
+- **ADR-0007's version pin/reflection fallback becomes stricter.** The compiler-backend shim requires explicit method
   fingerprints, startup verification, and fail-closed behavior, not opportunistic reflection.
-- **ADR-0009's pass infrastructure is reusable plumbing.** The long-term authority population becomes its own pass;
+- **ADR-0009's pass infrastructure is reusable plumbing.** Long-term compiler-backend population becomes its own pass;
   diagnostics and inlays become consumers of the same immutable snapshot.
 
 The central bet is therefore precise: **one exact-version pc retypecheck populates a whole-file semantic snapshot; a

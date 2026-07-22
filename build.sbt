@@ -74,6 +74,7 @@ lazy val root =
         ("org.scalameta"    % "mtags-interfaces"  % "1.3.4")
           .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j")
           .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j.jsonrpc"),
+        "net.bytebuddy"     % "byte-buddy-agent" % "1.18.11",
         "junit"             % "junit"             % "4.13.2" % Test,
         "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
         "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test

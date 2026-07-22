@@ -1,18 +1,14 @@
 # Metallurgy
 
-An IntelliJ plugin whose central architectural bet is to replace IntelliJ's Scala type resolution in opted-in Scala
-3.5+ modules with the real Scala 3 compiler, driven through the presentation compiler and best-effort compilation.
+An IntelliJ plugin that replaces IntelliJ's Scala type backend with the real Scala 3 compiler.
 
-> **Pre-alpha, post-PoC.** The proof of concept established compiler-type resolution, inline type hints, completion,
-> and best-effort operation. The next phase makes pc authoritative across every type consumer. All behavior remains
-> behind per-module opt-in and requires compiler-based highlighting; the plugin is a hard no-op outside that gate.
+> **Pre-alpha, post-PoC.** Compiler-backed type resolution, inline type hints, completion, and best-effort operation are
+> working. The next phase carries the Scala 3 backend across every IntelliJ type consumer.
 
 ## Target architecture
 
-The plugin runs the real Scala 3 compiler — the same one [Metals](https://scalameta.org/metals/) uses — once per
-document version, walks the resulting typed tree, and feeds version-guarded types and symbols into IntelliJ's Scala
-PSI compatibility layer. The completed architecture makes that snapshot authoritative for all type reads in active
-Scala 3.5+ modules, not only the constructs where the bundled plugin currently loses precision.
+The plugin runs the real Scala 3 compiler — the same one [Metals](https://scalameta.org/metals/) uses — inside IntelliJ,
+then exposes its types and symbols through Scala PSI so existing IDE features continue to work.
 
 The idea — running the Scala compiler directly inside IntelliJ, without LSP — comes from
 [Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SNc7xeHrKnQ&t=3931s) (*The best Scala IDE
@@ -30,7 +26,7 @@ inside your favourite Scala IDE*).
 sbt packageArtifactZip
 ```
 
-Then `Settings | Plugins | Install plugin from disk…` → the zip in `target/`. Opt a module in via its settings.
+Then `Settings | Plugins | Install plugin from disk…` → the zip in `target/`.
 
 ## Develop
 
@@ -45,8 +41,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`AGENTS.md`](./AGENTS.md).
 
 ## Docs
 
-- [`docs/research/17-pc-authoritative-type-resolution.md`](docs/research/17-pc-authoritative-type-resolution.md) — the
-  sole canonical architecture and design document
+- [`docs/scala3-compiler-backend.md`](docs/scala3-compiler-backend.md) — the definitive architecture and reference
 - [`docs/archive/`](docs/archive/) — superseded design, glossary, ADR, status, and research documents retained only for
   historical provenance
 

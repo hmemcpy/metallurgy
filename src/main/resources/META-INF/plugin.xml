@@ -5,14 +5,12 @@
   <vendor email="hmemcpy@gmail.com" url="https://github.com/hmemcpy/metallurgy">Igal Tabachnik</vendor>
 
   <description><![CDATA[
-    <p><b>Metallurgy</b> replaces IntelliJ's Scala type resolution in opted-in Scala 3.5+ modules with
-    the real Scala 3 compiler, driven through the presentation compiler and best-effort compilation.</p>
-    <p>It retains Scala PSI as IntelliJ's integration model while making a versioned compiler snapshot
-    authoritative for type inference, resolution, completion, and other type consumers. Scala 2, older
-    Scala 3, and modules outside the strict activation gate are unaffected.</p>
-    <p><b>Status:</b> pre-alpha, post-PoC. Compiler-type resolution and completion are available; wholesale
-    type authority is the active implementation program.
-    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/research/17-pc-authoritative-type-resolution.md">the design doc</a>
+    <p><b>Metallurgy</b> replaces IntelliJ's Scala type backend with the real Scala 3 compiler.</p>
+    <p>It retains Scala PSI as IntelliJ's integration model while selecting a versioned Scala 3 compiler snapshot
+    for type inference, resolution, completion, and other type consumers.</p>
+    <p><b>Status:</b> pre-alpha, post-PoC. Compiler-type resolution and completion are available; replacing the
+    bundled type backend is the active implementation program.
+    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/scala3-compiler-backend.md">the definitive architecture</a>
     for the roadmap.</p>
   ]]></description>
 
@@ -37,6 +35,8 @@
         serviceImplementation="com.hmemcpy.metallurgy.pc.MtagsFetcher"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.build.ScalacFlagsService"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.compilerbackend.Scala3CompilerBackend"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver"/>
     <projectService

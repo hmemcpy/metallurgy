@@ -29,7 +29,12 @@ final class ModuleDetectionService(project: Project) extends Disposable:
     )
 
   def isEligible(module: Module): Boolean =
-    cache.computeIfAbsent(module, m => java.lang.Boolean.valueOf(computeEligible(m)))
+    val cached = cache.get(module)
+    if cached != null then cached.booleanValue
+    else
+      val computed = java.lang.Boolean.valueOf(computeEligible(module))
+      val previous = cache.putIfAbsent(module, computed)
+      if previous == null then computed.booleanValue else previous.booleanValue
 
   private def computeEligible(module: Module): Boolean =
     BundledPluginBridge.getScalaVersion(module) match

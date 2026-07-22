@@ -6,14 +6,14 @@ import com.hmemcpy.metallurgy.pc.PcDiagnostic
   *
   * The [[PcDiagnosticSetCache]] is the single writer per `(file, DocumentVersion)`; the ExternalAnnotator (add side)
   * and the `HighlightInfoFilter` (suppress side) only read it. This is the pc-side analogue of the upstream
-  * `DocumentUtil.stillValid(documentVersions)` gate in `ExternalHighlightersService`: a result is authoritative only
-  * for the exact version it was computed against.
+  * `DocumentUtil.stillValid(documentVersions)` gate in `ExternalHighlightersService`: a result is current only for the
+  * exact version it was computed against.
   *
   *   - `Pending` — analysis for this version is in flight. Blank-while-pending: show no semantic red until pc settles.
   *     The retypecheck writer flips a file to `Pending` synchronously on each edit, ahead of the async daemon pass, so
   *     this state is observed — never inferred from a version mismatch.
-  *   - `CurrentSuccess` — pc accepted this exact version. Authoritative: an empty diagnostic list means "no semantic
-  *     errors" (suppress bundled semantic red); the annotator emits pc's diagnostics.
+  *   - `CurrentSuccess` — pc accepted this exact version. An empty diagnostic list means "no semantic errors" (suppress
+  *     bundled semantic red); the annotator emits pc's diagnostics.
   *   - `Failed` — pc could not analyze this version. Leave bundled diagnostics untouched (uncertainty).
   *   - `Unavailable` — no entry: Metallurgy inactive, the file was never analyzed, or the document has moved past the
   *     last published version. Leave bundled untouched.

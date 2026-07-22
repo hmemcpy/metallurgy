@@ -6,10 +6,10 @@ semantics to the real Scala 3 presentation compiler (`pc`, from Metals / `dotc.i
 - **Scope:** replace all IntelliJ Scala type resolution in active Scala 3 modules with the real Scala 3 compiler,
   driven through pc and best-effort compilation. Ordinary steady-state diagnostics remain owned by compiler-based
   highlighting unless a measured gap appears.
-- **Canonical design:** [`docs/research/17-pc-authoritative-type-resolution.md`](docs/research/17-pc-authoritative-type-resolution.md).
+- **Canonical design:** [`docs/scala3-compiler-backend.md`](docs/scala3-compiler-backend.md).
   It is the sole normative architecture, terminology, and decision source. Everything under [`docs/archive/`](docs/archive/)
   is historical provenance only.
-- **Status:** pre-alpha. Compiler-type resolution and completion are available behind module opt-in.
+- **Status:** pre-alpha. Compiler-backed type resolution and completion are available.
 
 ## Discipline (non-negotiable)
 
