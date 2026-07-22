@@ -124,6 +124,13 @@ object BundledPluginBridge:
     val manager            = managerModuleClass.getMethod("instance", classOf[Project]).invoke(managerModule, project)
     manager.getClass.getMethod("clearOnScalaElementChange", classOf[PsiElement]).invoke(manager, element)
 
+    bumpAnyScalaPsiChange()
+
+  /** Invalidate all Scala type caches project-wide. */
+  def invalidateScalaTypeCaches(): Unit =
+    bumpAnyScalaPsiChange()
+
+  private def bumpAnyScalaPsiChange(): Unit =
     val modTrackerClass = Class.forName("org.jetbrains.plugins.scala.caches.ModTracker$", true, bundledClassLoader)
     val modTracker      = modTrackerClass.getField("MODULE$").get(null)
     val tracker         = modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)

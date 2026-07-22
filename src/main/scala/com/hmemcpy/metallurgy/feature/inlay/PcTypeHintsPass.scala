@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.feature.inlay
 
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
-import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
 import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager, PcSnapshot}
 import com.intellij.codeHighlighting.EditorBoundHighlightingPass
 import com.intellij.codeInsight.daemon.impl.HintRenderer
@@ -21,17 +21,21 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** Inline type-hint pass backed by the presentation compiler. For each simple value definition without a declared type
-  * annotation, the compiler's rendered type is shown as an inline hint after the binding name. A retypecheck for the
-  * current document version is awaited before querying, so the typed snapshot is always present when hints are read.
-  * Existing hints are disposed and rebuilt in a single bulk edit on every run, so only the latest snapshot is visible.
+  * annotation, the compiler's rendered type is shown as an inline hint after the binding name, and the same type is
+  * stored in the bundled plugin's compiler-type slot on the definition's initializer so hover and type resolution read
+  * it without waiting for a completion. A retypecheck for the current document version is awaited before querying, so
+  * the typed snapshot is always present when hints are read. Existing hints are disposed and rebuilt in a single bulk
+  * edit on every run, so only the latest snapshot is visible.
   */
 final class PcTypeHintsPass(editor: Editor, file: PsiFile) extends EditorBoundHighlightingPass(editor, file, false):
 
-  private val hints          = mutable.ArrayBuffer.empty[PcTypeHintsPass.TypeHint]
-  private val sessionManager = PcSessionManager.get(file.getProject)
+  private val hints                   = mutable.ArrayBuffer.empty[PcTypeHintsPass.TypeHint]
+  private val sessionManager          = PcSessionManager.get(file.getProject)
+  @volatile private var filledAnySlot = false
 
   override def doCollectInformation(indicator: ProgressIndicator): Unit =
     hints.clear()
+    filledAnySlot = false
     val project = file.getProject
     for
       module      <-
@@ -62,6 +66,7 @@ final class PcTypeHintsPass(editor: Editor, file: PsiFile) extends EditorBoundHi
             val inlay = model.addInlineElement(hint.offset, true, new HintRenderer(hint.text))
             if inlay != null then inlay.putUserData(PcTypeHintsPass.InlayKey, java.lang.Boolean.TRUE)
     )
+    if filledAnySlot then BundledPluginBridge.invalidateScalaTypeCaches()
 
   private def collectHints(session: PcSession, snapshot: PcSnapshot, indicator: ProgressIndicator): Unit =
     val definitions = PsiTreeUtil.findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
@@ -69,15 +74,21 @@ final class PcTypeHintsPass(editor: Editor, file: PsiFile) extends EditorBoundHi
     while iterator.hasNext do
       indicator.checkCanceled()
       iterator.next() match
-        case definition: ScValueOrVariableDefinition if definition.expr.isDefined && definition.bindings.size == 1 =>
-          definition.bindings.headOption.foreach: binding =>
-            if !PcTypeHintsPass.hasDeclaredType(binding) then
-              val rendered = TypeRenderer.render(session, snapshot, binding.getTextOffset)
-              rendered
-                .filter(PcTypeHintsPass.isMeaningful)
-                .foreach: tpe =>
-                  hints += PcTypeHintsPass.TypeHint(binding.getTextRange.getEndOffset, s": ${StringUtil.trim(tpe)}")
-        case _                                                                                                     => ()
+        case definition: ScValueOrVariableDefinition if definition.bindings.size == 1 =>
+          definition.expr.foreach: initializer =>
+            definition.bindings.headOption.foreach: binding =>
+              if !PcTypeHintsPass.hasDeclaredType(binding) then
+                TypeRenderer.render(session, snapshot, binding.getTextOffset).filter(PcTypeHintsPass.isMeaningful) match
+                  case Some(tpe) =>
+                    hints +=
+                      PcTypeHintsPass.TypeHint(binding.getTextRange.getEndOffset, s": ${StringUtil.trim(tpe)}")
+                    BundledPluginBridge.setCompilerType(binding, tpe)
+                    BundledPluginBridge.setCompilerType(initializer, tpe)
+                    filledAnySlot = true
+                  case None      =>
+                    BundledPluginBridge.clearCompilerType(binding)
+                    BundledPluginBridge.clearCompilerType(initializer)
+        case _                                                                        => ()
 
 object PcTypeHintsPass:
   private val InlayKey: Key[java.lang.Boolean] = Key.create("METALLURGY_TYPE_HINT")

@@ -1,13 +1,16 @@
 package com.hmemcpy.metallurgy.feature.inlay
 
+import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.daemon.impl.HintRenderer
 import com.intellij.openapi.project.Project
+import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.assertTrue
+import org.junit.Assert.{assertEquals, assertTrue}
 
 import java.util.concurrent.TimeUnit
 import scala.jdk.CollectionConverters.*
@@ -84,6 +87,23 @@ final class PcTypeInlayHintsTest extends ScalaLightCodeInsightFixtureTestCase:
         failures.map(f => s"  - ${f._2}: got '${f._3}', required ${f._4.mkString("[", ",", "]")}").mkString("\n"),
       failures.isEmpty
     )
+
+  /** The pass stores pc's type in the compiler-type slot on each initializer without a completion running first. */
+  def testProactiveCompilerTypeSlotFill(): Unit =
+    val source      =
+      """val id = [A] => (x: A) => x
+        |val result = id(42)""".stripMargin
+    val file        = myFixture.configureByText("SlotFill.scala", source)
+    PcSessionManager.get(getProject).prepareFile(file.getVirtualFile).get(60, TimeUnit.SECONDS)
+    myFixture.doHighlighting()
+    val initializer = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .asScala
+      .flatMap(_.expr)
+      .last
+    val slotType    = BundledPluginBridge.getCompilerType(initializer)
+    println(s"[slot] proactive fill -> $slotType")
+    assertEquals("proactive compiler-type slot not filled with pc's type", "Int", slotType)
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
