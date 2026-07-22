@@ -1,18 +1,19 @@
 package com.hmemcpy.metallurgy.feature.inlay
 
+import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.daemon.impl.HintRenderer
 import com.intellij.openapi.project.Project
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertTrue}
 
-import java.util.concurrent.TimeUnit
 import scala.jdk.CollectionConverters.*
 
 /** Verifies the presentation-compiler type-hint pass renders inline hints with pc's resolved type for value definitions
@@ -66,7 +67,10 @@ final class PcTypeInlayHintsTest extends ScalaLightCodeInsightFixtureTestCase:
   def testTypeInlayHints(): Unit =
     val results  = cases.zipWithIndex.map { case ((label, (source, bindingName, required)), idx) =>
       val file   = myFixture.configureByText(s"Inlay$idx.scala", source)
-      PcSessionManager.get(getProject).prepareFile(file.getVirtualFile).get(60, TimeUnit.SECONDS)
+      val _      = PlatformTestUtil.waitForFuture(
+        PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+        60000L
+      )
       myFixture.doHighlighting()
       val offset = source.lastIndexOf(bindingName) + bindingName.length
       val texts  = myFixture.getEditor.getInlayModel
@@ -88,22 +92,33 @@ final class PcTypeInlayHintsTest extends ScalaLightCodeInsightFixtureTestCase:
       failures.isEmpty
     )
 
-  /** The pass stores pc's type in the compiler-type slot on each initializer without a completion running first. */
-  def testProactiveCompilerTypeSlotFill(): Unit =
-    val source      =
+  def testHintAndExpressionResolutionUseTheSameBulkSnapshotType(): Unit =
+    val source         =
       """val id = [A] => (x: A) => x
         |val result = id(42)""".stripMargin
-    val file        = myFixture.configureByText("SlotFill.scala", source)
-    PcSessionManager.get(getProject).prepareFile(file.getVirtualFile).get(60, TimeUnit.SECONDS)
+    val file           = myFixture.configureByText("SlotFill.scala", source)
+    val _              = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
     myFixture.doHighlighting()
-    val initializer = PsiTreeUtil
+    val definition     = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
       .asScala
-      .flatMap(_.expr)
       .last
-    val slotType    = BundledPluginBridge.getCompilerType(initializer)
-    println(s"[slot] proactive fill -> $slotType")
-    assertEquals("proactive compiler-type slot not filled with pc's type", "Int", slotType)
+    val initializer    = definition.expr.get
+    val slotType       = BundledPluginBridge.getCompilerType(initializer)
+    val expressionType = initializer.getTypeWithoutImplicits().fold(_.toString, _.canonicalText)
+    val bindingType    = Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(definition.bindings.head, getModule, CompilerBackendRole.Binding)
+    println(s"[bulk-type] slot=$slotType expression=$expressionType binding=$bindingType")
+
+    assertEquals("Int", slotType)
+    assertEquals("Int", expressionType)
+    bindingType match
+      case CompilerBackendState.Current(renderedType, _) => assertEquals("Int", renderedType)
+      case state                                         => throw new AssertionError(s"expected current binding type, got $state")
 
   private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
     val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")

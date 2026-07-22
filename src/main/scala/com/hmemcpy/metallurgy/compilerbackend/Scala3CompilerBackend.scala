@@ -11,7 +11,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
-import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
@@ -104,7 +103,7 @@ final class Scala3CompilerBackend(project: Project):
                 entries = previous.filter(_.documentVersion == documentVersion).map(_.entries).getOrElse(Map.empty),
                 entryOrder =
                   previous.filter(_.documentVersion == documentVersion).map(_.entryOrder).getOrElse(Vector.empty),
-                compilerTypeSlots = previous.map(_.compilerTypeSlots).getOrElse(Set.empty)
+                compilerTypeSlots = previous.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
               )
             )
       transition match
@@ -113,7 +112,7 @@ final class Scala3CompilerBackend(project: Project):
             key,
             pending.revision,
             before.toSeq.flatMap(_.entries.keySet).toSet,
-            before.toSeq.flatMap(_.compilerTypeSlots).toSet
+            before.toSeq.flatMap(ownedCompilerTypeSlots).toSet
           )
         case _                                                  => ()
 
@@ -212,7 +211,7 @@ final class Scala3CompilerBackend(project: Project):
       resolved,
       slotMappings,
       changedElementKeys(target.previous.entries, current),
-      target.previous.compilerTypeSlots -- slotKeys
+      ownedCompilerTypeSlots(target.previous) -- slotKeys
     )
 
   private def applyCommit(file: PsiFile, plan: CommitPlan): CompilerBackendCommit =
@@ -281,13 +280,14 @@ final class Scala3CompilerBackend(project: Project):
     val retired = files.entrySet().asScala.map(entry => entry.getKey -> entry.getValue).toSeq
     retired.foreach: (key, state) =>
       val removed = withFileMutation(key)(files.remove(key, state))
-      if removed then retireRemovedState(key, state.entries.keySet, state.compilerTypeSlots)
+      if removed then retireRemovedState(key, state.entries.keySet, ownedCompilerTypeSlots(state))
 
   def clear(module: Module): Unit =
     val retired = files.entrySet().asScala.filter(_.getKey.module == module).toSeq
     retired.foreach: entry =>
       val removed = withFileMutation(entry.getKey)(files.remove(entry.getKey, entry.getValue))
-      if removed then retireRemovedState(entry.getKey, entry.getValue.entries.keySet, entry.getValue.compilerTypeSlots)
+      if removed then
+        retireRemovedState(entry.getKey, entry.getValue.entries.keySet, ownedCompilerTypeSlots(entry.getValue))
 
   private def updateFallback(
       module: Module,
@@ -317,7 +317,7 @@ final class Scala3CompilerBackend(project: Project):
             key,
             updated.revision,
             before.toSeq.flatMap(_.entries.keySet).toSet,
-            before.toSeq.flatMap(_.compilerTypeSlots).toSet
+            before.toSeq.flatMap(ownedCompilerTypeSlots).toSet
           )
         case _                                                  => ()
 
@@ -344,7 +344,7 @@ final class Scala3CompilerBackend(project: Project):
               fallback = CompilerBackendState.Unavailable,
               entries = existing.map(_.entries).getOrElse(Map.empty).updated(key, state),
               entryOrder = existing.map(_.entryOrder).getOrElse(Vector.empty).filterNot(_ == key) :+ key,
-              compilerTypeSlots = existing.map(_.compilerTypeSlots).getOrElse(Set.empty)
+              compilerTypeSlots = existing.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
             )
           )
 
@@ -354,11 +354,11 @@ final class Scala3CompilerBackend(project: Project):
       renderedType: String
   ): Option[CompilerBackendState.Current] =
     try
-      val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
-      Option(typeElement)
-        .filter(typeElement => acceptsRecoveredType(role) || !PsiTreeUtil.hasErrorElements(typeElement))
-        .map: valid =>
-          val result: TypeResult = valid.`type`()
+      ScalaPsiElementFactory
+        .createTypeFromText(renderedType, element, null)
+        .filter(parsed => acceptsRecoveredType(role) || !isFallbackType(renderedType, parsed.canonicalText))
+        .map: parsed =>
+          val result: TypeResult = Right(parsed)
           CompilerBackendState.Current(renderedType, result)
     catch
       case control: ControlFlowException => throw control
@@ -368,6 +368,12 @@ final class Scala3CompilerBackend(project: Project):
     role match
       case CompilerBackendRole.Function | CompilerBackendRole.Parameter | CompilerBackendRole.Pattern => true
       case _                                                                                          => false
+
+  private def isFallbackType(renderedType: String, canonicalText: String): Boolean =
+    val fallbackTypes = Set("Any", "Unit", "Nothing")
+    val rendered      = renderedType.trim.stripPrefix("_root_.").stripPrefix("scala.")
+    val canonical     = canonicalText.trim.stripPrefix("_root_.").stripPrefix("scala.")
+    fallbackTypes.contains(canonical) && rendered != canonical
 
   private def resolveMapping(
       file: PsiFile,
@@ -404,6 +410,10 @@ final class Scala3CompilerBackend(project: Project):
       case CompilerBackendState.Current(renderedType, _) => "current" -> renderedType
       case other                                         => "state"   -> other.productPrefix
 
+  private def ownedCompilerTypeSlots(state: FileState): Set[ElementKey] =
+    state.compilerTypeSlots ++ state.entries.collect:
+      case (key, _: CompilerBackendState.Current) if key.role == CompilerBackendRole.ExpressionExact => key
+
   private def retireMappedValues(
       fileKey: FileKey,
       expectedRevision: Long,
@@ -419,7 +429,7 @@ final class Scala3CompilerBackend(project: Project):
       slots: Set[ElementKey]
   ): Unit =
     retireValuesWhen(fileKey, entries, slots): () =>
-      Some(Option(files.get(fileKey)).map(_.compilerTypeSlots).getOrElse(Set.empty))
+      Some(Option(files.get(fileKey)).map(ownedCompilerTypeSlots).getOrElse(Set.empty))
 
   private def retireValuesWhen(
       fileKey: FileKey,

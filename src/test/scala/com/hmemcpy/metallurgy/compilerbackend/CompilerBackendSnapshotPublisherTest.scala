@@ -118,7 +118,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
         |""".stripMargin
     val file   = myFixture.configureByText("RealSnapshotRoles.scala", source)
     val _      = PlatformTestUtil.waitForFuture(
-      PcSessionManager.get(getProject).prepareFile(file.getVirtualFile),
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
       60000L
     )
     NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
@@ -568,28 +568,6 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
 
     assertNull(BundledPluginBridge.getCompilerType(expression))
     assertCurrent(definition, CompilerBackendRole.Definition, "Int")
-
-  def testSessionReplacementRetiresExpressionUntilReplacementCommits(): Unit =
-    val file       = myFixture.configureByText("SessionReplacement.scala", "object Main:\n  val value = List(1).head\n")
-    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
-    val manager    = PcSessionManager.get(getProject)
-    val _          = PlatformTestUtil.waitForFuture(manager.prepareFile(file.getVirtualFile), 60000L)
-    assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
-
-    manager.discard(getModule)
-
-    assertEquals(
-      CompilerBackendState.Unavailable,
-      Scala3CompilerBackend
-        .get(getProject)
-        .stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
-    )
-    assertNull(BundledPluginBridge.getCompilerType(expression))
-
-    val _ = PlatformTestUtil.waitForFuture(manager.prepareFile(file.getVirtualFile), 60000L)
-    assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
-    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
 
   def testCompilerWrapperOverlapPublishesTheFirstRankedExactType(): Unit =
     val source      =

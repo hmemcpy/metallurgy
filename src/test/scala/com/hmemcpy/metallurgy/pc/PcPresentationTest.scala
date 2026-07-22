@@ -84,7 +84,10 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
   def testPresentedTypes(): Unit =
     val results  = cases.zipWithIndex.map { case ((label, (source, needle, expected)), idx) =>
       val file      = myFixture.configureByText(s"Case$idx.scala", source)
-      PcSessionManager.get(getProject).prepareFile(file.getVirtualFile).get(60, TimeUnit.SECONDS)
+      val _         = PlatformTestUtil.waitForFuture(
+        PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+        TimeUnit.SECONDS.toMillis(60)
+      )
       val offset    = source.lastIndexOf(needle)
       val element   = typedElementAt(file, offset)
       val presented = presentedType(element)

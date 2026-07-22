@@ -23,7 +23,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 
-import java.util.concurrent.{CancellationException, CompletableFuture}
+import java.util.concurrent.{CancellationException, CompletableFuture, ConcurrentHashMap}
 import scala.util.control.NonFatal
 
 /** Maps a boundary-safe compiler snapshot to current PSI in a cancellable read action, then commits it on the UI thread
@@ -34,8 +34,16 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
     beforeMap: () => Unit = () => ()
 ):
 
-  private val backend = Scala3CompilerBackend.get(project)
-  private val log     = Logger.getInstance(classOf[CompilerBackendSnapshotPublisher])
+  private final case class PublicationKey(
+      module: Module,
+      fileUri: String,
+      documentVersion: Long,
+      generation: CompilerBackendGeneration
+  )
+
+  private val backend  = Scala3CompilerBackend.get(project)
+  private val log      = Logger.getInstance(classOf[CompilerBackendSnapshotPublisher])
+  private val inFlight = new ConcurrentHashMap[PublicationKey, CompletableFuture[CompilerBackendCommit]]()
 
   def publish(
       module: Module,
@@ -46,39 +54,47 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
     if project.isDisposed || snapshotCurrency() != PcSnapshotCurrency.Current then
       CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
     else
+      val key        = PublicationKey(module, snapshot.fileUri, snapshot.documentVersion, generation)
       val completion = new CompletableFuture[CompilerBackendCommit]()
-      try
-        val promise = ReadAction
-          .nonBlocking(() =>
-            beforeMap()
-            mapCurrentFile(module, snapshot)
-          )
-          .inSmartMode(project)
-          .coalesceBy(this, module, snapshot.fileUri)
-          .expireWith(project)
-          .expireWhen(() => !isCurrent(module, snapshot, snapshotCurrency))
-          .finishOnUiThread(
-            ModalityState.nonModal(),
-            mappings =>
-              val _ = completion.complete(commit(module, snapshot, generation, snapshotCurrency, mappings))
-          )
-          .submit(AppExecutorUtil.getAppExecutorService)
-        val _       = promise.onError: error =>
-          error match
-            case _: CancellationException      =>
-              val _ = completion.complete(CompilerBackendCommit.Rejected)
-            case control: ControlFlowException => throw control
-            case _                             =>
-              log.warn(s"Compiler-backend PSI mapping failed for ${snapshot.fileUri}", error)
+      Option(inFlight.putIfAbsent(key, completion)) match
+        case Some(existing) => existing
+        case None           =>
+          val _ = completion.whenComplete: (_, _) =>
+            val _ = inFlight.remove(key, completion)
+          try
+            val promise = ReadAction
+              .nonBlocking(() =>
+                beforeMap()
+                mapCurrentFile(module, snapshot)
+              )
+              .inSmartMode(project)
+              .coalesceBy(this, module, snapshot.fileUri)
+              .expireWith(project)
+              .expireWhen(() => !isCurrent(module, snapshot, snapshotCurrency))
+              .finishOnUiThread(
+                ModalityState.nonModal(),
+                mappings =>
+                  val _ = completion.complete(commit(module, snapshot, generation, snapshotCurrency, mappings))
+              )
+              .submit(AppExecutorUtil.getAppExecutorService)
+            val _       = promise.onError: error =>
+              error match
+                case _: CancellationException      =>
+                  val _ = completion.complete(CompilerBackendCommit.Rejected)
+                case control: ControlFlowException => throw control
+                case _                             =>
+                  log.warn(s"Compiler-backend PSI mapping failed for ${snapshot.fileUri}", error)
+                  backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+                  val _ = completion.complete(CompilerBackendCommit.Rejected)
+          catch
+            case control: ControlFlowException =>
+              inFlight.remove(key, completion)
+              throw control
+            case NonFatal(error) =>
+              log.warn(s"Could not schedule compiler-backend PSI mapping for ${snapshot.fileUri}", error)
               backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
               val _ = completion.complete(CompilerBackendCommit.Rejected)
-      catch
-        case control: ControlFlowException => throw control
-        case NonFatal(error) =>
-          log.warn(s"Could not schedule compiler-backend PSI mapping for ${snapshot.fileUri}", error)
-          backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
-          completion.complete(CompilerBackendCommit.Rejected)
-      completion
+          completion
 
   private[metallurgy] def mapCurrentFile(
       module: Module,

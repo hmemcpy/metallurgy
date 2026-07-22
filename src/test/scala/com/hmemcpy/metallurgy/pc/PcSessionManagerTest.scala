@@ -1,8 +1,15 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.compilerbackend.{
+  CompilerBackendPublication,
+  CompilerBackendRole,
+  CompilerBackendState,
+  Scala3CompilerBackend
+}
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, SnapshotState}
+import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -11,9 +18,12 @@ import com.intellij.openapi.roots.OrderEnumerator
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.util.TextRange
+import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertTrue, fail}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertNull, assertSame, assertTrue, fail}
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.{CompletableFuture, TimeUnit}
@@ -451,9 +461,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
   def testEligibilityOptInReuseAndDiscardLifecycle(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-manager")
     val artifact           = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))
-    val resolver           = new PresentationCompilerResolver:
-      override def resolve(scalaVersion: String): Either[ArtifactResolutionError, Seq[Path]] =
-        Right(Seq(artifact))
+    val resolver           = FixedPresentationCompilerResolver(artifact)
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
       resolver,
@@ -472,8 +480,29 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertSame(first, second)
       assertTrue(ScalacFlagsService.RequiredFlags.forall(first.compilerOptions.contains))
 
+      val sourceFile = myFixture.configureByText("SessionReplacement.scala", "val value = List(1).head")
+      val expression = PsiTreeUtil
+        .findChildrenOfType(sourceFile, classOf[ScExpression])
+        .asScala
+        .find(_.getText == "List(1).head")
+        .get
+      val version    = myFixture.getEditor.getDocument.getModificationStamp
+      val backend    = Scala3CompilerBackend.get(getProject)
+      assertEquals(
+        CompilerBackendPublication.Published,
+        backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+      )
+      assertEquals("_root_.scala.Predef.String", expression.getTypeWithoutImplicits().toOption.get.canonicalText)
+      assertEquals("String", BundledPluginBridge.getCompilerType(expression))
+
       onPooledThread(manager.discard(getModule))
+      UIUtil.dispatchAllInvocationEvents()
       assertTrue(first.isClosed)
+      assertEquals(
+        CompilerBackendState.Unavailable,
+        backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
+      )
+      assertNull(BundledPluginBridge.getCompilerType(expression))
 
       val replacement = onPooledThread(manager.sessionFor(getModule)).get
       assertNotSame(first, replacement)
@@ -584,3 +613,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val stream = Files.walk(path)
       try stream.sorted(java.util.Comparator.reverseOrder()).forEach(Files.delete)
       finally stream.close()
+
+private[pc] final case class FixedPresentationCompilerResolver(artifact: Path) extends PresentationCompilerResolver:
+  override def resolve(scalaVersion: String): Either[ArtifactResolutionError, Seq[Path]] =
+    Right(Seq(artifact))

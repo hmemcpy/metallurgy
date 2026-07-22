@@ -1,15 +1,31 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.compilerbackend.{
+  CompilerBackendCommit,
+  CompilerBackendGeneration,
+  CompilerBackendRole,
+  CompilerBackendSnapshotPublisher,
+  CompilerBackendState,
+  Scala3CompilerBackend
+}
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.OrderEnumerator
+import com.intellij.psi.{PsiElement, PsiFile}
+import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.DependencyManagerBase.RichStr
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.base.libraryLoaders.{IvyManagedLoader, LibraryLoader}
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.assertTrue
+import org.junit.Assert.{assertEquals, assertTrue}
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
@@ -189,9 +205,9 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         |  type T
         |object IntBox extends Box:
         |  type T = Int
-        |val t: IntBox.T = 1""".stripMargin,
-      "t",
-      "IntBox"
+        |val pathValue: IntBox.T = 1""".stripMargin,
+      "pathValue",
+      "Int"
     ),
     "parameterized type alias"         -> (
       """type Pair[T] = (T, T)
@@ -288,8 +304,61 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
       failures.isEmpty
     )
 
+  def testCompilerBackendBulkPublicationCorpus(): Unit =
+    setCompilerBasedHighlighting(enabled = true)
+    try
+      withPsiSession: session =>
+        val backend   = Scala3CompilerBackend.get(getProject)
+        val publisher = new CompilerBackendSnapshotPublisher(getProject)
+        val results   = cases.zipWithIndex.map { case ((label, (source, needle, expected)), idx) =>
+          val file          = myFixture.configureByText(s"BackendCase$idx.scala", source)
+          val document      = FileDocumentManager.getInstance().getDocument(file.getVirtualFile)
+          val snapshot      = PcSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, source)
+          val typedSnapshot = onPooledThread:
+            val outcome = session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
+            assertEquals(RetypecheckOutcome.Applied, outcome)
+            session.typedTreeSnapshot(snapshot).get
+          val generation    = CompilerBackendGeneration(1L, idx.toLong + 1L, idx.toLong + 1L)
+          backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
+          val publication   = publisher.publish(getModule, typedSnapshot, generation, () => PcSnapshotCurrency.Current)
+          val commit        = PlatformTestUtil.waitForFuture(publication, TimeUnit.SECONDS.toMillis(30))
+          val offset        = source.lastIndexOf(needle)
+          val targets       = compilerBackendTargets(file, offset)
+          val rendered      = targets.flatMap: (element, role) =>
+            backend.stateForActiveModule(element, getModule, role) match
+              case CompilerBackendState.Current(value, _) => Some(value)
+              case _                                      => None
+          val matched       = rendered.find(value => normalize(value) == normalize(expected))
+          val ok            = commit.isInstanceOf[CompilerBackendCommit.Committed] && matched.nonEmpty
+          val observed      = matched.orElse(rendered.headOption)
+          println(f"[backend] ${if ok then "OK  " else "FAIL"} $label%-36s -> ${observed.getOrElse("<none>")}")
+          (ok, label, rendered.map(normalize).mkString(", "), normalize(expected))
+        }
+
+        val failures = results.filterNot(_._1)
+        assertTrue(
+          s"${failures.size}/${cases.size} compiler-backend publication cases failed:\n" +
+            failures.map(f => s"  - ${f._2}:\n      got:      '${f._3}'\n      expected: '${f._4}'").mkString("\n"),
+          failures.isEmpty
+        )
+    finally setCompilerBasedHighlighting(enabled = false)
+
   private def normalize(renderedType: String): String =
     renderedType.trim.replaceAll("\\s+", " ")
+
+  private def compilerBackendTargets(file: PsiFile, offset: Int): Seq[(PsiElement, CompilerBackendRole)] =
+    val leaf    = file.findElementAt(offset)
+    val parents = Iterator.iterate(leaf: PsiElement)(_.getParent).takeWhile(_ != null).toList
+    val direct  = parents.flatMap:
+      case binding: ScBindingPattern               => Seq(binding -> CompilerBackendRole.Binding)
+      case expression: ScExpression                => Seq(expression -> CompilerBackendRole.ExpressionExact)
+      case typeElement: ScTypeElement              => Seq(typeElement -> CompilerBackendRole.DeclaredType)
+      case definition: ScValueOrVariableDefinition =>
+        (definition -> CompilerBackendRole.Definition) +:
+          definition.bindings.map(_ -> CompilerBackendRole.Binding)
+      case _                                       => Seq.empty
+    assertTrue(s"No compiler-backend target at $offset in ${file.getName}", direct.nonEmpty)
+    direct.distinct
 
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-type-resolution")
@@ -308,6 +377,26 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
         val session = PcSession.create(testScalaVersion.minor, moduleClasspath, options, fetcher)
         try test(session)
         finally session.close()
+    finally
+      settings.setEnabled(getModule, enabled = false)
+      deleteRecursively(temporaryDirectory)
+
+  private def withPsiSession(test: PcSession => Unit): Unit =
+    val temporaryDirectory = Files.createTempDirectory("pc-type-publication")
+    val fetcher            = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      PresentationCompilerResolver.bundled,
+      BackgroundRunner.direct
+    )
+    val settings           = MetallurgySettings(getProject)
+    try
+      settings.setEnabled(getModule, enabled = true)
+      val _       = onPooledThread(fetcher.jarsFor(testScalaVersion.minor).get(120, TimeUnit.SECONDS))
+      val options =
+        ScalacFlagsService.get(getProject).compilerOptions(getModule) :+ "-language:experimental.namedTuples"
+      val session = onPooledThread(PcSession.create(testScalaVersion.minor, moduleClasspath, options, fetcher))
+      try test(session)
+      finally onPooledThread(session.close())
     finally
       settings.setEnabled(getModule, enabled = false)
       deleteRecursively(temporaryDirectory)
@@ -331,6 +420,13 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
     com.intellij.openapi.application.ApplicationManager.getApplication
       .executeOnPooledThread(() => body)
       .get(120, TimeUnit.SECONDS)
+
+  private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
+    val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
+    val s   = cls.getMethod("getInstance", classOf[Project]).invoke(null, getProject)
+    val on  = java.lang.Boolean.valueOf(enabled)
+    val _   = cls.getMethod("setCompilerHighlightingScala3", classOf[Boolean]).invoke(s, on)
+    val _   = cls.getMethod("setUseCompilerTypes", classOf[Boolean]).invoke(s, on)
 
   private def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then

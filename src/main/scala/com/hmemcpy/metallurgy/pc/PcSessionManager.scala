@@ -101,16 +101,17 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   /** Creates the file's session if necessary and completes after its exact document version has been retypechecked. */
   private[metallurgy] def prepareFile(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    prepareFile(file, awaitBackendPublication = false)
+    prepareFile(file, awaitBackendPublication = false, retries = 0)
 
   /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
     */
   private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    prepareFile(file, awaitBackendPublication = true)
+    prepareFile(file, awaitBackendPublication = true, retries = 1)
 
   private def prepareFile(
       file: VirtualFile,
-      awaitBackendPublication: Boolean
+      awaitBackendPublication: Boolean,
+      retries: Int
   ): CompletableFuture[Option[PcSession]] =
     val preparation =
       for
@@ -125,9 +126,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           case None          => CompletableFuture.completedFuture(None)
           case Some(session) =>
             analyze(session, module, snapshot, awaitBackendPublication)
-              .thenApply:
-                case RetypecheckOutcome.Applied => Some(session)
-                case _                          => None
+              .thenCompose:
+                case RetypecheckOutcome.Applied                   =>
+                  CompletableFuture.completedFuture(Some(session))
+                case RetypecheckOutcome.Superseded if retries > 0 =>
+                  prepareFile(file, awaitBackendPublication, retries - 1)
+                case _                                            => CompletableFuture.completedFuture(None)
 
   def discard(module: Module): Unit =
     inFlight
@@ -209,7 +213,9 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
         if awaitBackendPublication then
           prepared.thenCompose: (outcome, publication) =>
-            publication.thenApply(_ => outcome)
+            publication.thenApply:
+              case CompilerBackendCommit.Committed(_) => outcome
+              case CompilerBackendCommit.Rejected     => RetypecheckOutcome.Superseded
         else prepared.thenApply(_._1)
 
   private def publishOutcome(
