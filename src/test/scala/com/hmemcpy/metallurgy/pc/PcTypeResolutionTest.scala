@@ -364,7 +364,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory("pc-type-resolution")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val settings           = MetallurgySettings(getProject)
@@ -385,7 +385,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory("pc-type-publication")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val settings           = MetallurgySettings(getProject)

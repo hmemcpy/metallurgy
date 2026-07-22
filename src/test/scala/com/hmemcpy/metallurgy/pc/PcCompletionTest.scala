@@ -64,7 +64,7 @@ final class PcCompletionTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory("pc-completion")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val settings           = MetallurgySettings(getProject)

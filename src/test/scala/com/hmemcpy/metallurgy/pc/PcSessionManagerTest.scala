@@ -44,11 +44,11 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
   override protected def defaultVersionOverride: Option[ScalaVersion] =
     Some(testScalaVersion)
 
-  def testBundledResolverLoadsAWorkingPresentationCompiler(): Unit =
+  def testPublicCoursierResolverLoadsAWorkingPresentationCompiler(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-real-pc")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val settings           = MetallurgySettings(getProject)
@@ -426,7 +426,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory("metallurgy-writer")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val manager            = new PcSessionManager(getProject, fetcher)
@@ -622,7 +622,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory(prefix)
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     val settings           = MetallurgySettings(getProject)

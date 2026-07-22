@@ -273,7 +273,7 @@ final class BetastyCrossModuleTest extends ScalaLightCodeInsightFixtureTestCase:
     val temporaryDirectory = Files.createTempDirectory("metallurgy-betasty")
     val fetcher            = new MtagsFetcher(
       PcArtifactCache(temporaryDirectory.resolve("cache")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.direct
     )
     try

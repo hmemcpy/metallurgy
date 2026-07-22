@@ -17,7 +17,7 @@ final class MtagsFetcher private[pc] (
   def this(project: Project) =
     this(
       PcArtifactCache(PathManager.getSystemDir.resolve("caches/metallurgy/presentation-compiler")),
-      PresentationCompilerResolver.bundled,
+      PresentationCompilerResolver.publicCoursier,
       BackgroundRunner.intellij(project)
     )
 
