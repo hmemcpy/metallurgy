@@ -25,6 +25,7 @@ import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertNull, assertSame, assertTrue, fail}
 
+import java.nio.file.attribute.FileTime
 import java.nio.file.{Files, Path}
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
@@ -567,6 +568,20 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     val clean          = Files.createTempDirectory("cleanOut").toFile
     val withoutBetasty = PcSessionManager.exposeBestEffortTastyRoots(Seq(clean))
     assertEquals(Seq(clean), withoutBetasty)
+
+  def testBestEffortClasspathFingerprintTracksArtifactContent(): Unit =
+    val output     = Files.createTempDirectory("betasty-fingerprint")
+    val bestEffort = Files.createDirectories(output.resolve("META-INF").resolve("best-effort"))
+    val artifact   = Files.write(bestEffort.resolve("Person.betasty"), Array[Byte](1, 2, 3, 4))
+    val timestamp  = FileTime.fromMillis(123456789L)
+    val _          = Files.setLastModifiedTime(artifact, timestamp)
+    val classpath  = PcSessionManager.exposeBestEffortTastyRoots(Seq(output.toFile))
+    val before     = PcSessionManager.fingerprintClasspath(classpath)
+
+    val _ = Files.write(artifact, Array[Byte](4, 3, 2, 1))
+    val _ = Files.setLastModifiedTime(artifact, timestamp)
+
+    assertFalse(before == PcSessionManager.fingerprintClasspath(classpath))
 
   private def onPooledThread[A](body: => A): A =
     ApplicationManager.getApplication

@@ -23,10 +23,12 @@ import com.intellij.util.concurrency.AppExecutorUtil
 
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.{CompletableFuture, ConcurrentHashMap}
 import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** Project-level owner of the current presentation-compiler session for each opted-in module. */
 final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetcher) extends Disposable:
@@ -73,6 +75,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       Option(BundledPluginBridge.getScalaVersion(module)).flatMap: scalaVersion =>
         Option(sessions.get(module))
           .filter(_.scalaVersion == scalaVersion)
+          .filter(sessionEntryIsCurrent(module, _))
           .map(_.session)
           .orElse(prepareSession(module, scalaVersion))
 
@@ -87,6 +90,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         case Some(scalaVersion) =>
           Option(sessions.get(module))
             .filter(_.scalaVersion == scalaVersion)
+            .filter(sessionEntryIsCurrent(module, _))
             .map(entry => CompletableFuture.completedFuture(Some(entry.session)))
             .getOrElse(scheduleCreation(module, scalaVersion))
 
@@ -280,7 +284,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     Option.when(isManaged(module)):
       ScalacFlagsService.get(project).enableFor(module)
       val classpath     = buildClasspath(module)
-      val classpathHash = hashClasspath(classpath)
+      val classpathHash = PcSessionManager.fingerprintClasspath(classpath)
       val compilerFlags = ScalacFlagsService.get(project).compilerOptions(module)
       val updated       = sessions.compute(
         module,
@@ -328,14 +332,9 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       .toSeq
     PcSessionManager.exposeBestEffortTastyRoots(roots)
 
-  private def hashClasspath(classpath: Seq[File]): String =
-    val digest = MessageDigest.getInstance("SHA-256")
-    classpath
-      .sortBy(_.getAbsolutePath)
-      .foreach: file =>
-        val identity = s"${file.getAbsolutePath}\u0000${file.length()}\u0000${file.lastModified()}\n"
-        digest.update(identity.getBytes(StandardCharsets.UTF_8))
-    digest.digest().map(byte => f"${byte & 0xff}%02x").mkString
+  private def sessionEntryIsCurrent(module: Module, entry: SessionEntry): Boolean =
+    entry.compilerOptions == ScalacFlagsService.get(project).compilerOptions(module) &&
+      entry.classpathHash == PcSessionManager.fingerprintClasspath(buildClasspath(module))
 
   private def applicationIsDispatchThread: Boolean =
     Option(ApplicationManager.getApplication).exists(_.isDispatchThread)
@@ -375,3 +374,42 @@ object PcSessionManager:
         case root if root.isDirectory => File(root, "META-INF/best-effort")
       .filter(_.isDirectory)
     (roots ++ betastyRoots).distinct
+
+  /** Fingerprints ordinary classpath entries by filesystem identity and best-effort roots by artifact content. A
+    * `.betasty` rewrite can preserve both size and timestamp, so metadata alone cannot guard compiler-symbol freshness.
+    */
+  private[pc] def fingerprintClasspath(classpath: Seq[File]): String =
+    val digest = MessageDigest.getInstance("SHA-256")
+    classpath
+      .sortBy(_.getAbsolutePath)
+      .foreach: file =>
+        updateDigest(digest, s"${file.getAbsolutePath}\u0000${file.length()}\u0000${file.lastModified()}\n")
+        if isBestEffortRoot(file) && file.isDirectory then
+          try
+            val stream = Files.walk(file.toPath)
+            try
+              stream
+                .iterator()
+                .asScala
+                .filter(path => Files.isRegularFile(path) && path.getFileName.toString.endsWith(".betasty"))
+                .toVector
+                .sortBy(path => file.toPath.relativize(path).toString)
+                .foreach: artifact =>
+                  updateDigest(digest, file.toPath.relativize(artifact).toString)
+                  val input = Files.newInputStream(artifact)
+                  try
+                    val buffer = new Array[Byte](8192)
+                    var read   = input.read(buffer)
+                    while read >= 0 do
+                      if read > 0 then digest.update(buffer, 0, read)
+                      read = input.read(buffer)
+                  finally input.close()
+            finally stream.close()
+          catch case NonFatal(error) => updateDigest(digest, s"unreadable:${error.getClass.getName}")
+    digest.digest().map(byte => f"${byte & 0xff}%02x").mkString
+
+  private def isBestEffortRoot(file: File): Boolean =
+    file.getName == "best-effort" && Option(file.getParentFile).exists(_.getName == "META-INF")
+
+  private def updateDigest(digest: MessageDigest, value: String): Unit =
+    digest.update(value.getBytes(StandardCharsets.UTF_8))
