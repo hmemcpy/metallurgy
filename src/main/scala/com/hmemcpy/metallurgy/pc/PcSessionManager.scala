@@ -1,6 +1,11 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
+import com.hmemcpy.metallurgy.compilerbackend.{
+  CompilerBackendGeneration,
+  CompilerBackendSnapshotPublisher,
+  Scala3CompilerBackend
+}
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
 import com.intellij.openapi.Disposable
@@ -19,6 +24,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.{CompletableFuture, ConcurrentHashMap}
+import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 
 /** Project-level owner of the current presentation-compiler session for each opted-in module. */
@@ -26,10 +32,15 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   def this(project: Project) = this(project, MtagsFetcher(project))
 
-  private val log         = Logger.getInstance(classOf[PcSessionManager])
-  private val sessions    = new ConcurrentHashMap[Module, SessionEntry]()
-  private val inFlight    = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
-  private val moduleFiles = new ConcurrentHashMap[Module, java.util.Set[String]]()
+  private val log                        = Logger.getInstance(classOf[PcSessionManager])
+  private val sessions                   = new ConcurrentHashMap[Module, SessionEntry]()
+  private val inFlight                   = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
+  private val moduleFiles                = new ConcurrentHashMap[Module, java.util.Set[String]]()
+  private val sessionGenerations         = new AtomicLong(0L)
+  private val classpathGenerations       = new AtomicLong(0L)
+  private val compilerOptionsGenerations = new AtomicLong(0L)
+  private val backend                    = Scala3CompilerBackend.get(project)
+  private val backendPublisher           = new CompilerBackendSnapshotPublisher(project, snapshotCurrency)
 
   private def cache: PcDiagnosticSetCache   = PcDiagnosticSetCache.get(project)
   private def renderer: PcHighlightRenderer = PcHighlightRenderer.get(project)
@@ -118,6 +129,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       cache.markUnavailable(url)
       renderer.erase(url)
     })
+    backend.clear(module)
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
@@ -161,21 +173,36 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     * drops it).
     */
   private def analyze(session: PcSession, module: Module, snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
-    cache.markPending(snapshot.fileUri, snapshot.documentVersion)
-    renderer.blank(
-      snapshot.fileUri,
-      snapshot.documentVersion
-    ) // clear the pc layer from the previous version while the new one is in flight
-    trackFile(module, snapshot.fileUri)
-    session
-      .scheduleRetypecheck(snapshot)
-      .whenComplete: (outcome, error) =>
-        if error != null then cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
-        else publishOutcome(session, snapshot, outcome)
+    currentGeneration(module, session) match
+      case None             => CompletableFuture.completedFuture(RetypecheckOutcome.Superseded)
+      case Some(generation) =>
+        cache.markPending(snapshot.fileUri, snapshot.documentVersion)
+        backend.markPending(module, snapshot.fileUri, snapshot.documentVersion, generation)
+        renderer.blank(
+          snapshot.fileUri,
+          snapshot.documentVersion
+        ) // clear the pc layer from the previous version while the new one is in flight
+        trackFile(module, snapshot.fileUri)
+        session
+          .scheduleRetypecheck(snapshot)
+          .whenComplete: (outcome, error) =>
+            if error != null then
+              cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+              backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+            else publishOutcome(session, module, snapshot, generation, outcome)
 
-  private def publishOutcome(session: PcSession, snapshot: PcSnapshot, outcome: RetypecheckOutcome): Unit =
+  private def publishOutcome(
+      session: PcSession,
+      module: Module,
+      snapshot: PcSnapshot,
+      generation: CompilerBackendGeneration,
+      outcome: RetypecheckOutcome
+  ): Unit =
     outcome match
       case RetypecheckOutcome.Applied    =>
+        session.typedTreeSnapshot(snapshot) match
+          case Some(typedTree) => backendPublisher.publish(module, session, typedTree, generation)
+          case None            => backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
         session.diagnostics(snapshot) match
           case Some(diagnostics) =>
             cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
@@ -185,6 +212,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             renderer.blank(snapshot.fileUri, snapshot.documentVersion)
       case RetypecheckOutcome.Failed(_)  =>
         cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+        backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
         renderer.blank(snapshot.fileUri, snapshot.documentVersion)
       case RetypecheckOutcome.Superseded => ()
 
@@ -231,11 +259,24 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             existing.compilerOptions == compilerFlags
           then existing
           else
-            Option(existing).foreach(_.session.close())
+            Option(existing).foreach: stale =>
+              stale.session.close()
+              backend.clear(module)
+            val generation = CompilerBackendGeneration(
+              session = sessionGenerations.incrementAndGet(),
+              classpath =
+                if existing != null && existing.classpathHash == classpathHash then existing.generation.classpath
+                else classpathGenerations.incrementAndGet(),
+              compilerOptions =
+                if existing != null && existing.compilerOptions == compilerFlags then
+                  existing.generation.compilerOptions
+                else compilerOptionsGenerations.incrementAndGet()
+            )
             SessionEntry(
               scalaVersion,
               classpathHash,
               compilerFlags,
+              generation,
               PcSession.create(scalaVersion, classpath, compilerFlags, fetcher)
             )
       )
@@ -267,10 +308,22 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private def applicationIsDispatchThread: Boolean =
     Option(ApplicationManager.getApplication).exists(_.isDispatchThread)
 
+  private def currentGeneration(module: Module, session: PcSession): Option[CompilerBackendGeneration] =
+    Option(sessions.get(module)).filter(_.session eq session).map(_.generation)
+
+  private def snapshotCurrency(
+      module: Module,
+      session: PcSession,
+      generation: CompilerBackendGeneration
+  ): PcSnapshotCurrency =
+    if isManaged(module) && currentGeneration(module, session).contains(generation) then PcSnapshotCurrency.Current
+    else PcSnapshotCurrency.Superseded
+
 private final case class SessionEntry(
     scalaVersion: String,
     classpathHash: String,
     compilerOptions: Seq[String],
+    generation: CompilerBackendGeneration,
     session: PcSession
 )
 

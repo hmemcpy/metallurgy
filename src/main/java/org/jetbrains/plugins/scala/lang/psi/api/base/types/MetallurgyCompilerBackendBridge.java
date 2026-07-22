@@ -9,12 +9,22 @@ import java.util.function.Function;
  */
 public final class MetallurgyCompilerBackendBridge {
   private static volatile Function<Object, Object> backend;
+  private static volatile Function<Object, Object> compilerTypeBackend;
   private static volatile boolean enabled;
+  private static final Object MISSING_COMPILER_TYPE = new Object();
 
   private MetallurgyCompilerBackendBridge() {}
 
   public static void install(Function<Object, Object> candidate) {
     backend = candidate;
+  }
+
+  public static void installCompilerTypeBackend(Function<Object, Object> candidate) {
+    compilerTypeBackend = candidate;
+  }
+
+  public static Object missingCompilerType() {
+    return MISSING_COMPILER_TYPE;
   }
 
   public static void enable() {
@@ -28,10 +38,20 @@ public final class MetallurgyCompilerBackendBridge {
   public static void uninstall() {
     enabled = false;
     backend = null;
+    compilerTypeBackend = null;
   }
 
   public static Object declaredType(Object element) {
     Function<Object, Object> current = backend;
     return enabled && current != null ? current.apply(element) : null;
+  }
+
+  public static Object compilerType(Object element) {
+    Function<Object, Object> current = compilerTypeBackend;
+    if (!enabled || current == null) return null;
+    Object value = current.apply(element);
+    if (value == null) return null;
+    if (value == MISSING_COMPILER_TYPE) return scala.None$.MODULE$;
+    return scala.Option$.MODULE$.apply(value);
   }
 }

@@ -1,14 +1,17 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
+import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
 
@@ -122,6 +125,33 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     )
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
 
+  def testActiveCompilerTypeReadRejectsSlotWithoutCurrentSideTableEntry(): Unit =
+    val file       = myFixture.configureByText("RejectedCopiedSlot.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    BundledPluginBridge.setCompilerType(expression, "String")
+
+    assertTrue(compilerType(expression).isEmpty)
+    assertTrue(Option(BundledPluginBridge.getCompilerType(expression)).isEmpty)
+
+  def testInactiveCompilerTypeReadPreservesBundledSlot(): Unit =
+    val file       = myFixture.configureByText("InactiveCopiedSlot.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    BundledPluginBridge.setCompilerType(expression, "String")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals(Some("String"), compilerType(expression))
+    assertEquals("String", BundledPluginBridge.getCompilerType(expression))
+
   def testLocalOptOutKeepsPublishedTypeWhenGlobalOptInRemainsActive(): Unit =
     val settings               = MetallurgySettings(getProject)
     val (typeElement, version) = declaredString("GlobalOptIn.scala")
@@ -198,6 +228,12 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
   private def rendered(typeElement: ScTypeElement): String =
     typeElement.`type`().fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
+
+  private def compilerType(element: PsiElement): Option[String] =
+    val moduleClass = Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.CompilerType$")
+    val module      = moduleClass.getField("MODULE$").get(null)
+    val option      = moduleClass.getMethod("apply", classOf[PsiElement]).invoke(module, element).asInstanceOf[AnyRef]
+    BundledPluginBridge.optionValue(option).map(_.toString)
 
   private def measureFastPath(iterations: Int)(operation: => Object): FastPathMeasurement =
     var warmup = 0

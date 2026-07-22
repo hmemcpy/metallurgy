@@ -111,21 +111,31 @@ object BundledPluginBridge:
   lazy val compilerEventListenerClass: Class[?] =
     Class.forName("org.jetbrains.plugins.scala.compiler.CompilerEventListener", true, bundledClassLoader)
 
-  def clearScalaTypeCaches(project: Project, element: PsiElement): Unit =
+  def clearScalaTypeCacheForElement(project: Project, element: PsiElement): Unit =
     val managerModuleClass =
       Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiManager$", true, bundledClassLoader)
     val managerModule      = managerModuleClass.getField("MODULE$").get(null)
     val manager            = managerModuleClass.getMethod("instance", classOf[Project]).invoke(managerModule, project)
-    manager.getClass.getMethod("clearOnScalaElementChange", classOf[PsiElement]).invoke(manager, element)
+    val _                  = manager.getClass.getMethod("clearOnScalaElementChange", classOf[PsiElement]).invoke(manager, element)
 
+  def clearScalaTypeCaches(project: Project, element: PsiElement): Unit =
+    clearScalaTypeCacheForElement(project, element)
     bumpAnyScalaPsiChange()
 
   /** Invalidate all Scala type caches project-wide. */
   def invalidateScalaTypeCaches(): Unit =
     bumpAnyScalaPsiChange()
 
+  private[metallurgy] def scalaPsiModificationCount: Long =
+    anyScalaPsiChangeTracker.getClass
+      .getMethod("getModificationCount")
+      .invoke(anyScalaPsiChangeTracker)
+      .asInstanceOf[Long]
+
   private def bumpAnyScalaPsiChange(): Unit =
+    val _ = anyScalaPsiChangeTracker.getClass.getMethod("incModificationCount").invoke(anyScalaPsiChangeTracker)
+
+  private def anyScalaPsiChangeTracker: AnyRef =
     val modTrackerClass = Class.forName("org.jetbrains.plugins.scala.caches.ModTracker$", true, bundledClassLoader)
     val modTracker      = modTrackerClass.getField("MODULE$").get(null)
-    val tracker         = modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)
-    val _               = tracker.getClass.getMethod("incModificationCount").invoke(tracker)
+    modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)
