@@ -1,8 +1,8 @@
 # Metallurgy
 
-An IntelliJ plugin that uses the real Scala 3 presentation compiler ([pc](https://scalameta.org/metals/), from Metals)
-to enrich the type information available to IntelliJ — a more faithful representation of the actual type, completion
-members, inline hints, and more, for Scala 3.5+.
+An IntelliJ plugin that brings Scala 3 support closer to parity with the real Scala 3 compiler — running the actual
+presentation compiler ([pc](https://scalameta.org/metals/), from Metals) and enriching IntelliJ's type information
+with what the compiler really knows: the actual type, completion members, and inline hints, for Scala 3.5+.
 
 > **Pre-alpha.** Type resolution, inline type hints, and completion are available behind per-module opt-in and require
 > compiler-based highlighting to be on. The plugin is a hard no-op without it.
@@ -10,7 +10,7 @@ members, inline hints, and more, for Scala 3.5+.
 ## What it does
 
 The Before/After columns below are the **measured output** of the [test fixtures](src/test/testdata/feature/compilertype/)
-— the compiler-type slot and red-state, with the plugin off vs on. (Cells are placeholders for screenshots.)
+— what the compiler-type slot holds, with the plugin off vs on. (Cells are placeholders for screenshots.)
 
 ### Type resolution (hover / inspect)
 
@@ -44,8 +44,8 @@ The plugin offers completion for extension methods and structural-refinement mem
 
 ### Cross-module robustness
 
-The plugin applies `-Ybest-effort -Ywith-best-effort-tasty` to the compile server, enabling cross-module type
-resolution against upstream `.betasty` artifacts.
+The plugin applies `-Ybest-effort -Ywith-best-effort-tasty` to the compile server, so type resolution stays faithful
+to the real compiler across module boundaries (reading upstream `.betasty` artifacts).
 
 ## How it works
 
