@@ -3,12 +3,15 @@ package com.hmemcpy.metallurgy.compilerbackend
 import com.hmemcpy.metallurgy.module.{BundledPluginBridge, ModuleDetectionService}
 import com.hmemcpy.metallurgy.pc.{PcSnapshotCurrency, PcSourceRange}
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
+import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
@@ -20,6 +23,7 @@ import org.jetbrains.plugins.scala.lang.psi.types.result.TypeResult
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** Cache-only Scala 3 compiler backend for synchronous PSI reads. The immutable file state is the freshness source;
   * `CompilerType` strings are compatibility data owned and validated by that state.
@@ -46,8 +50,9 @@ final class Scala3CompilerBackend(project: Project):
       removedSlots: Set[ElementKey]
   )
 
-  private val files        = new ConcurrentHashMap[FileKey, FileState]()
-  private val nextRevision = new AtomicLong(0L)
+  private val files         = new ConcurrentHashMap[FileKey, FileState]()
+  private val nextRevision  = new AtomicLong(0L)
+  private val mutationLocks = Array.fill(64)(new Object())
 
   def publish(
       element: PsiElement,
@@ -57,7 +62,7 @@ final class Scala3CompilerBackend(project: Project):
   ): CompilerBackendPublication =
     activeModule(element) match
       case Some(module) =>
-        parsedState(element, renderedType) match
+        parsedState(element, role, renderedType) match
           case Some(state) =>
             put(element, module, role, documentVersion, state)
             CompilerBackendPublication.Published
@@ -82,25 +87,26 @@ final class Scala3CompilerBackend(project: Project):
   ): Unit =
     if ModuleDetectionService.get(project).isActive(module) && fileBelongsToModule(fileUrl, module) then
       val key        = FileKey(module, fileUrl)
-      val transition = transitionFile(key): previous =>
-        val isCurrent = previous.exists: state =>
-          state.documentVersion == documentVersion &&
-            state.identity == CompilerBackendIdentity.Snapshot(generation) &&
-            state.fallback == CompilerBackendState.Unavailable
-        if isCurrent then previous
-        else
-          Some(
-            FileState(
-              revision = nextRevision.incrementAndGet(),
-              documentVersion = documentVersion,
-              identity = CompilerBackendIdentity.Snapshot(generation),
-              fallback = CompilerBackendState.Pending,
-              entries = previous.filter(_.documentVersion == documentVersion).map(_.entries).getOrElse(Map.empty),
-              entryOrder =
-                previous.filter(_.documentVersion == documentVersion).map(_.entryOrder).getOrElse(Vector.empty),
-              compilerTypeSlots = previous.map(_.compilerTypeSlots).getOrElse(Set.empty)
+      val transition = withFileMutation(key):
+        transitionFile(key): previous =>
+          val isCurrent = previous.exists: state =>
+            state.documentVersion == documentVersion &&
+              state.identity == CompilerBackendIdentity.Snapshot(generation) &&
+              state.fallback == CompilerBackendState.Unavailable
+          if isCurrent then previous
+          else
+            Some(
+              FileState(
+                revision = nextRevision.incrementAndGet(),
+                documentVersion = documentVersion,
+                identity = CompilerBackendIdentity.Snapshot(generation),
+                fallback = CompilerBackendState.Pending,
+                entries = previous.filter(_.documentVersion == documentVersion).map(_.entries).getOrElse(Map.empty),
+                entryOrder =
+                  previous.filter(_.documentVersion == documentVersion).map(_.entryOrder).getOrElse(Vector.empty),
+                compilerTypeSlots = previous.map(_.compilerTypeSlots).getOrElse(Set.empty)
+              )
             )
-          )
       transition match
         case (before, Some(pending)) if before != Some(pending) =>
           retireMappedValues(
@@ -139,10 +145,18 @@ final class Scala3CompilerBackend(project: Project):
       commitTarget(module, file, documentVersion, generation) match
         case None         => CompilerBackendCommit.Rejected
         case Some(target) =>
-          val plan = prepareCommit(file, documentVersion, generation, mappings, target)
-          if currency != PcSnapshotCurrency.Current || !files.replace(target.fileKey, target.previous, plan.committed)
-          then CompilerBackendCommit.Rejected
-          else applyCommit(file, plan)
+          withFileMutation(target.fileKey):
+            commitTarget(module, file, documentVersion, generation) match
+              case None                => CompilerBackendCommit.Rejected
+              case Some(currentTarget) =>
+                val plan = prepareCommit(file, documentVersion, generation, mappings, currentTarget)
+                if currency != PcSnapshotCurrency.Current ||
+                  !files.replace(currentTarget.fileKey, currentTarget.previous, plan.committed)
+                then CompilerBackendCommit.Rejected
+                else if currency != PcSnapshotCurrency.Current then
+                  val _ = files.replace(currentTarget.fileKey, plan.committed, currentTarget.previous)
+                  CompilerBackendCommit.Rejected
+                else applyCommit(file, plan)
 
   private def commitTarget(
       module: Module,
@@ -173,11 +187,16 @@ final class Scala3CompilerBackend(project: Project):
     val resolved     = mappings.flatMap(resolveMapping(file, _))
     val entries      = resolved.map: (mapping, element) =>
       val key = ElementKey(mapping.range, mapping.role, mapping.symbolId)
-      key -> parsedState(element, mapping.renderedType).getOrElse(CompilerBackendState.Unavailable)
+      key -> parsedState(element, mapping.role, mapping.renderedType).getOrElse(CompilerBackendState.Unavailable)
     val current      = entries.foldLeft(Map.empty[ElementKey, CompilerBackendState]):
       case (ranked, (key, state)) =>
         if ranked.contains(key) then ranked else ranked.updated(key, state)
-    val slotMappings = firstCompilerTypeMappings(resolved)
+    val slotMappings = firstCompilerTypeMappings(
+      resolved.filter: (mapping, _) =>
+        current
+          .get(ElementKey(mapping.range, mapping.role, mapping.symbolId))
+          .exists(_.isInstanceOf[CompilerBackendState.Current])
+    )
     val slotKeys     = slotMappings.iterator.map(_._1).toSet
     val committed    = FileState(
       revision = nextRevision.incrementAndGet(),
@@ -219,7 +238,7 @@ final class Scala3CompilerBackend(project: Project):
     invalidate(invalidated)
     CompilerBackendCommit.Committed(invalidated.size)
 
-  private[compilerbackend] def stateForActiveModule(
+  private[metallurgy] def stateForActiveModule(
       element: PsiElement,
       module: Module,
       role: CompilerBackendRole
@@ -250,7 +269,10 @@ final class Scala3CompilerBackend(project: Project):
     if !ModuleDetectionService.get(project).isActive(module) then None
     else
       stateForActiveModule(element, module, role) match
-        case CompilerBackendState.Current(renderedType, _) => Some(renderedType)
+        case CompilerBackendState.Current(renderedType, _) =>
+          if Option(BundledPluginBridge.getCompilerType(element)).forall(_ != renderedType) then
+            BundledPluginBridge.setCompilerType(element, renderedType)
+          Some(renderedType)
         case _                                             =>
           if BundledPluginBridge.getCompilerType(element) != null then BundledPluginBridge.clearCompilerType(element)
           None
@@ -258,13 +280,14 @@ final class Scala3CompilerBackend(project: Project):
   def clear(): Unit =
     val retired = files.entrySet().asScala.map(entry => entry.getKey -> entry.getValue).toSeq
     retired.foreach: (key, state) =>
-      if files.remove(key, state) then retireRemovedState(key, state.entries.keySet, state.compilerTypeSlots)
+      val removed = withFileMutation(key)(files.remove(key, state))
+      if removed then retireRemovedState(key, state.entries.keySet, state.compilerTypeSlots)
 
   def clear(module: Module): Unit =
     val retired = files.entrySet().asScala.filter(_.getKey.module == module).toSeq
     retired.foreach: entry =>
-      if files.remove(entry.getKey, entry.getValue) then
-        retireRemovedState(entry.getKey, entry.getValue.entries.keySet, entry.getValue.compilerTypeSlots)
+      val removed = withFileMutation(entry.getKey)(files.remove(entry.getKey, entry.getValue))
+      if removed then retireRemovedState(entry.getKey, entry.getValue.entries.keySet, entry.getValue.compilerTypeSlots)
 
   private def updateFallback(
       module: Module,
@@ -275,18 +298,19 @@ final class Scala3CompilerBackend(project: Project):
   ): Unit =
     if ModuleDetectionService.get(project).isActive(module) && fileBelongsToModule(fileUrl, module) then
       val key        = FileKey(module, fileUrl)
-      val transition = transitionFile(key): previous =>
-        previous.map: state =>
-          if state.documentVersion == documentVersion &&
-            state.identity == CompilerBackendIdentity.Snapshot(generation)
-          then
-            state.copy(
-              revision = nextRevision.incrementAndGet(),
-              fallback = fallback,
-              entries = Map.empty,
-              entryOrder = Vector.empty
-            )
-          else state
+      val transition = withFileMutation(key):
+        transitionFile(key): previous =>
+          previous.map: state =>
+            if state.documentVersion == documentVersion &&
+              state.identity == CompilerBackendIdentity.Snapshot(generation)
+            then
+              state.copy(
+                revision = nextRevision.incrementAndGet(),
+                fallback = fallback,
+                entries = Map.empty,
+                entryOrder = Vector.empty
+              )
+            else state
       transition match
         case (before, Some(updated)) if before != Some(updated) =>
           retireMappedValues(
@@ -309,26 +333,41 @@ final class Scala3CompilerBackend(project: Project):
       range <- elementRange(element)
     do
       val key = ElementKey(range, role, None)
-      val _   = transitionFile(file): previous =>
-        val existing = previous.filter(_.documentVersion == documentVersion)
-        Some(
-          FileState(
-            revision = nextRevision.incrementAndGet(),
-            documentVersion = documentVersion,
-            identity = CompilerBackendIdentity.Direct,
-            fallback = CompilerBackendState.Unavailable,
-            entries = existing.map(_.entries).getOrElse(Map.empty).updated(key, state),
-            entryOrder = existing.map(_.entryOrder).getOrElse(Vector.empty).filterNot(_ == key) :+ key,
-            compilerTypeSlots = existing.map(_.compilerTypeSlots).getOrElse(Set.empty)
+      val _   = withFileMutation(file):
+        transitionFile(file): previous =>
+          val existing = previous.filter(_.documentVersion == documentVersion)
+          Some(
+            FileState(
+              revision = nextRevision.incrementAndGet(),
+              documentVersion = documentVersion,
+              identity = CompilerBackendIdentity.Direct,
+              fallback = CompilerBackendState.Unavailable,
+              entries = existing.map(_.entries).getOrElse(Map.empty).updated(key, state),
+              entryOrder = existing.map(_.entryOrder).getOrElse(Vector.empty).filterNot(_ == key) :+ key,
+              compilerTypeSlots = existing.map(_.compilerTypeSlots).getOrElse(Set.empty)
+            )
           )
-        )
 
-  private def parsedState(element: PsiElement, renderedType: String): Option[CompilerBackendState.Current] =
-    ScalaPsiElementFactory
-      .createTypeFromText(renderedType, element, null)
-      .map: scType =>
-        val result: TypeResult = Right(scType)
-        CompilerBackendState.Current(renderedType, result)
+  private def parsedState(
+      element: PsiElement,
+      role: CompilerBackendRole,
+      renderedType: String
+  ): Option[CompilerBackendState.Current] =
+    try
+      val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
+      Option(typeElement)
+        .filter(typeElement => acceptsRecoveredType(role) || !PsiTreeUtil.hasErrorElements(typeElement))
+        .map: valid =>
+          val result: TypeResult = valid.`type`()
+          CompilerBackendState.Current(renderedType, result)
+    catch
+      case control: ControlFlowException => throw control
+      case NonFatal(_) => None
+
+  private def acceptsRecoveredType(role: CompilerBackendRole): Boolean =
+    role match
+      case CompilerBackendRole.Function | CompilerBackendRole.Parameter | CompilerBackendRole.Pattern => true
+      case _                                                                                          => false
 
   private def resolveMapping(
       file: PsiFile,
@@ -371,36 +410,45 @@ final class Scala3CompilerBackend(project: Project):
       entries: Set[ElementKey],
       slots: Set[ElementKey]
   ): Unit =
-    retireValuesWhen(fileKey, entries, slots)(() => Option(files.get(fileKey)).exists(_.revision == expectedRevision))
+    retireValuesWhen(fileKey, entries, slots): () =>
+      Option.when(Option(files.get(fileKey)).exists(_.revision == expectedRevision))(Set.empty)
 
   private def retireRemovedState(
       fileKey: FileKey,
       entries: Set[ElementKey],
       slots: Set[ElementKey]
   ): Unit =
-    retireValuesWhen(fileKey, entries, slots)(() => files.get(fileKey) == null)
+    retireValuesWhen(fileKey, entries, slots): () =>
+      Some(Option(files.get(fileKey)).map(_.compilerTypeSlots).getOrElse(Set.empty))
 
   private def retireValuesWhen(
       fileKey: FileKey,
       entries: Set[ElementKey],
       slots: Set[ElementKey]
-  )(stillOwned: () => Boolean): Unit =
+  )(protectedSlots: () => Option[Set[ElementKey]]): Unit =
     if (entries.nonEmpty || slots.nonEmpty) && !project.isDisposed then
       val clear = () =>
-        if stillOwned() then
-          currentPsiFile(fileKey.fileUrl).foreach: file =>
-            val mapped     = entries.flatMap(findElement(file, _))
-            val cleared    = slots
-              .flatMap(findElement(file, _))
-              .filter: element =>
-                val present = BundledPluginBridge.getCompilerType(element) != null
-                if present then BundledPluginBridge.clearCompilerType(element)
-                present
-            val unresolved = entries.exists(findElement(file, _).isEmpty)
-            invalidate(mapped ++ cleared ++ Option.when(unresolved)(file))
+        if !project.isDisposed then
+          withFileMutation(fileKey):
+            protectedSlots().foreach: ownedSlots =>
+              currentPsiFile(fileKey.fileUrl).foreach: file =>
+                val mapped     = entries.flatMap(findElement(file, _))
+                val cleared    = (slots -- ownedSlots)
+                  .flatMap(findElement(file, _))
+                  .filter: element =>
+                    val present = BundledPluginBridge.getCompilerType(element) != null
+                    if present then BundledPluginBridge.clearCompilerType(element)
+                    present
+                val unresolved = entries.exists(findElement(file, _).isEmpty)
+                invalidate(mapped ++ cleared ++ Option.when(unresolved)(file))
       val app   = ApplicationManager.getApplication
       if app.isDispatchThread then clear()
-      else app.invokeLater(() => clear())
+      else
+        val expired: Condition[Any] = _ => project.isDisposed
+        app.invokeLater(() => clear(), expired)
+
+  private def withFileMutation[A](fileKey: FileKey)(body: => A): A =
+    mutationLocks(Math.floorMod(fileKey.hashCode(), mutationLocks.length)).synchronized(body)
 
   @annotation.tailrec
   private def transitionFile(

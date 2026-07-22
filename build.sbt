@@ -79,11 +79,17 @@ lazy val root =
         "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
         "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test
       ) ++ intellijTestFrameworkDependencies.map(_ % Test),
-      Test / javaOptions ++= Seq(
-        s"-Didea.home.path=${intellijBaseDirectory.value}",
-        "-Didea.is.unit.test=true",
-        "-Didea.is.headless=true"
-      ),
+      Test / javaOptions ++= {
+        val testRoot = target.value / s"idea-test-${ProcessHandle.current().pid()}"
+        Seq(
+          s"-Didea.system.path=${testRoot / "system"}",
+          s"-Didea.config.path=${testRoot / "config"}",
+          s"-Didea.log.path=${testRoot / "system" / "log"}",
+          s"-Didea.home.path=${intellijBaseDirectory.value}",
+          "-Didea.is.unit.test=true",
+          "-Didea.is.headless=true"
+        )
+      },
       Test / unmanagedClasspath +=
         Attributed.blank(baseDirectory.value / "testkit" / "target" / "scala-2.13" / "classes"),
       prepareIntellijTestSdk    := {

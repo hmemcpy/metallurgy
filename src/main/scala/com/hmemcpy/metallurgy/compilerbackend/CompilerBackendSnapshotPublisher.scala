@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{
-  PcSession,
   PcSnapshotCurrency,
   PcSourceRange,
   PcTypedTreeEntry,
@@ -24,7 +23,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 
-import java.util.concurrent.CancellationException
+import java.util.concurrent.{CancellationException, CompletableFuture}
 import scala.util.control.NonFatal
 
 /** Maps a boundary-safe compiler snapshot to current PSI in a cancellable read action, then commits it on the UI thread
@@ -32,7 +31,7 @@ import scala.util.control.NonFatal
   */
 private[metallurgy] final class CompilerBackendSnapshotPublisher(
     project: Project,
-    snapshotCurrency: (Module, PcSession, CompilerBackendGeneration) => PcSnapshotCurrency
+    beforeMap: () => Unit = () => ()
 ):
 
   private val backend = Scala3CompilerBackend.get(project)
@@ -40,36 +39,48 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
 
   def publish(
       module: Module,
-      session: PcSession,
       snapshot: PcTypedTreeSnapshot,
-      generation: CompilerBackendGeneration
-  ): Unit =
-    if project.isDisposed || snapshotCurrency(module, session, generation) != PcSnapshotCurrency.Current then return
-    try
-      val promise = ReadAction
-        .nonBlocking(() => mapCurrentFile(module, snapshot))
-        .inSmartMode(project)
-        .coalesceBy(this, module, snapshot.fileUri)
-        .expireWith(project)
-        .expireWhen(() => !isCurrent(module, session, snapshot, generation))
-        .finishOnUiThread(
-          ModalityState.nonModal(),
-          mappings => commit(module, session, snapshot, generation, mappings)
-        )
-        .submit(AppExecutorUtil.getAppExecutorService)
-      val _       = promise.onError: error =>
-        error match
-          case _: CancellationException      => ()
-          case control: ControlFlowException => throw control
-          case _                             =>
-            log.warn(s"Compiler-backend PSI mapping failed for ${snapshot.fileUri}", error)
-            backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
-    catch
-      case NonFatal(error) =>
-        log.warn(s"Could not schedule compiler-backend PSI mapping for ${snapshot.fileUri}", error)
-        backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+      generation: CompilerBackendGeneration,
+      snapshotCurrency: () => PcSnapshotCurrency
+  ): CompletableFuture[CompilerBackendCommit] =
+    if project.isDisposed || snapshotCurrency() != PcSnapshotCurrency.Current then
+      CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
+    else
+      val completion = new CompletableFuture[CompilerBackendCommit]()
+      try
+        val promise = ReadAction
+          .nonBlocking(() =>
+            beforeMap()
+            mapCurrentFile(module, snapshot)
+          )
+          .inSmartMode(project)
+          .coalesceBy(this, module, snapshot.fileUri)
+          .expireWith(project)
+          .expireWhen(() => !isCurrent(module, snapshot, snapshotCurrency))
+          .finishOnUiThread(
+            ModalityState.nonModal(),
+            mappings =>
+              val _ = completion.complete(commit(module, snapshot, generation, snapshotCurrency, mappings))
+          )
+          .submit(AppExecutorUtil.getAppExecutorService)
+        val _       = promise.onError: error =>
+          error match
+            case _: CancellationException      =>
+              val _ = completion.complete(CompilerBackendCommit.Rejected)
+            case control: ControlFlowException => throw control
+            case _                             =>
+              log.warn(s"Compiler-backend PSI mapping failed for ${snapshot.fileUri}", error)
+              backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+              val _ = completion.complete(CompilerBackendCommit.Rejected)
+      catch
+        case control: ControlFlowException => throw control
+        case NonFatal(error) =>
+          log.warn(s"Could not schedule compiler-backend PSI mapping for ${snapshot.fileUri}", error)
+          backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+          completion.complete(CompilerBackendCommit.Rejected)
+      completion
 
-  private[compilerbackend] def mapCurrentFile(
+  private[metallurgy] def mapCurrentFile(
       module: Module,
       snapshot: PcTypedTreeSnapshot
   ): Seq[CompilerBackendMapping] =
@@ -84,22 +95,23 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
 
   private def commit(
       module: Module,
-      session: PcSession,
       snapshot: PcTypedTreeSnapshot,
       generation: CompilerBackendGeneration,
+      snapshotCurrency: () => PcSnapshotCurrency,
       mappings: Seq[CompilerBackendMapping]
-  ): Unit =
-    currentFile(module, snapshot).foreach: file =>
-      val _ = backend.commitSnapshot(module, file, snapshot.documentVersion, generation, mappings):
-        snapshotCurrency(module, session, generation)
+  ): CompilerBackendCommit =
+    currentFile(module, snapshot)
+      .map: file =>
+        backend.commitSnapshot(module, file, snapshot.documentVersion, generation, mappings):
+          snapshotCurrency()
+      .getOrElse(CompilerBackendCommit.Rejected)
 
   private def isCurrent(
       module: Module,
-      session: PcSession,
       snapshot: PcTypedTreeSnapshot,
-      generation: CompilerBackendGeneration
+      snapshotCurrency: () => PcSnapshotCurrency
   ): Boolean =
-    snapshotCurrency(module, session, generation) == PcSnapshotCurrency.Current &&
+    snapshotCurrency() == PcSnapshotCurrency.Current &&
       ModuleDetectionService.get(project).isActive(module) &&
       Option(VirtualFileManager.getInstance().findFileByUrl(snapshot.fileUri))
         .filter(ModuleUtilCore.findModuleForFile(_, project) == module)

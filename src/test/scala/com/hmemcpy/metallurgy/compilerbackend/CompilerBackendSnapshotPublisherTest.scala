@@ -4,11 +4,14 @@ import com.hmemcpy.metallurgy.module.BundledPluginBridge
 import com.hmemcpy.metallurgy.pc.*
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.psi.{PsiElement, SmartPointerManager}
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.util.FileContentUtilCore
+import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
@@ -20,6 +23,8 @@ import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotSame, assertNull, assertTrue}
 
 import java.nio.file.Path
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import scala.concurrent.duration.DurationInt
 
 final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFixtureTestCase:
@@ -103,6 +108,40 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       assertCurrent(pattern, CompilerBackendRole.Binding, expected)
       assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
 
+  def testRealCompilerSnapshotMapsAllSupportedPsiRoles(): Unit =
+    val source =
+      """object Main:
+        |  def function(parameter: Int): String = parameter.toString
+        |  val inferred = function(42)
+        |  val pair = (1, "two")
+        |  val (number, text) = pair
+        |""".stripMargin
+    val file   = myFixture.configureByText("RealSnapshotRoles.scala", source)
+    val _      = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareFile(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val function   = child[ScFunction](file)
+    val parameter  = child[ScParameter](file)
+    val definition = children[ScValueOrVariableDefinition](file).find(_.getText.startsWith("val inferred")).get
+    val declared   = children[ScTypeElement](file).find(_.getText == "String").get
+    val call       = children[ScExpression](file).find(_.getText == "function(42)").get
+    val patterns   = children[ScBindingPattern](file).filter(pattern => Set("number", "text").contains(pattern.getText))
+
+    assertCurrent(function, CompilerBackendRole.Function, "(Main.function : (parameter: Int): String)")
+    assertCurrent(parameter, CompilerBackendRole.Parameter, "(parameter : Int)")
+    assertCurrent(declared, CompilerBackendRole.DeclaredType, "String")
+    assertCurrent(definition, CompilerBackendRole.Definition, "String")
+    assertCurrent(definition.bindings.head, CompilerBackendRole.Binding, "String")
+    assertCurrent(call, CompilerBackendRole.ExpressionExact, "String")
+    patterns.foreach: pattern =>
+      val expected = if pattern.getText == "number" then "(number : Int)" else "(text : String)"
+      assertCurrent(pattern, CompilerBackendRole.Binding, expected)
+      assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
+
   def testRejectedGenerationCannotPublishStateOrMutateCompilerTypeSlot(): Unit =
     val file       = myFixture.configureByText("RejectedSnapshot.scala", "object Main:\n  val value = 1\n")
     val document   = myFixture.getEditor.getDocument
@@ -115,7 +154,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     )
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
 
-    val publisher = new CompilerBackendSnapshotPublisher(getProject, (_, _, _) => PcSnapshotCurrency.Current)
+    val publisher = new CompilerBackendSnapshotPublisher(getProject)
     val mappings  = readAction(publisher.mapCurrentFile(getModule, snapshot))
     val _         = readAction:
       backend.commitSnapshot(getModule, file, snapshot.documentVersion, generation, mappings)(
@@ -128,6 +167,87 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     )
     assertNull(BundledPluginBridge.getCompilerType(definition))
 
+  def testGenerationSupersededAfterStateSwapRollsBackWithoutSlotMutation(): Unit =
+    val file       = myFixture.configureByText("SupersededAfterSwap.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val backend    = Scala3CompilerBackend.get(getProject)
+    val checks     = new AtomicInteger(0)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+
+    val result = readAction:
+      backend.commitSnapshot(
+        getModule,
+        file,
+        document.getModificationStamp,
+        generation,
+        Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "String"))
+      ):
+        if checks.incrementAndGet() < 3 then PcSnapshotCurrency.Current else PcSnapshotCurrency.Superseded
+
+    assertEquals(CompilerBackendCommit.Rejected, result)
+    assertEquals(
+      CompilerBackendState.Pending,
+      backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
+    )
+    assertNull(BundledPluginBridge.getCompilerType(expression))
+
+  def testSupersededAsyncPublicationCannotReachEdtCommit(): Unit =
+    val file           = myFixture.configureByText("SupersededAsync.scala", "object Main:\n  val value = List(1).head\n")
+    val document       = myFixture.getEditor.getDocument
+    val expression     = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val snapshot       = typedTreeSnapshot(
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      Seq(entry(expression, PcTypedTreeRole.ExpressionExact, "Int"))
+    )
+    val mappingStarted = new CountDownLatch(1)
+    val currency       = new AtomicReference[PcSnapshotCurrency](PcSnapshotCurrency.Current)
+    val publisher      = new CompilerBackendSnapshotPublisher(
+      getProject,
+      () =>
+        currency.set(PcSnapshotCurrency.Superseded)
+        mappingStarted.countDown()
+    )
+    val backend        = Scala3CompilerBackend.get(getProject)
+    backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
+
+    val _ = publisher.publish(getModule, snapshot, generation, () => currency.get())
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    assertEquals("mapping did not start", 0L, mappingStarted.getCount)
+    assertEquals(
+      CompilerBackendState.Pending,
+      backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
+    )
+    assertNull(BundledPluginBridge.getCompilerType(expression))
+
+  def testAsyncPublicationMapsOffEdtAndCommitsOnEdt(): Unit =
+    val file        = myFixture.configureByText("PublishedAsync.scala", "object Main:\n  val value = List(1).head\n")
+    val document    = myFixture.getEditor.getDocument
+    val expression  = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val snapshot    = typedTreeSnapshot(
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      Seq(entry(expression, PcTypedTreeRole.ExpressionExact, "Int"))
+    )
+    val mapRanOnEdt = new AtomicReference[java.lang.Boolean]()
+    val publisher   = new CompilerBackendSnapshotPublisher(
+      getProject,
+      () => mapRanOnEdt.set(java.lang.Boolean.valueOf(ApplicationManager.getApplication.isDispatchThread))
+    )
+    val backend     = Scala3CompilerBackend.get(getProject)
+    backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
+
+    val _ = publisher.publish(getModule, snapshot, generation, () => PcSnapshotCurrency.Current)
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    assertEquals(java.lang.Boolean.FALSE, mapRanOnEdt.get())
+    assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
+    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+
   def testCommitReacquiresCurrentPsiAfterReparse(): Unit =
     val originalFile       = myFixture.configureByText("ReparsedSnapshot.scala", "object Main:\n  val value = 1\n")
     val document           = myFixture.getEditor.getDocument
@@ -137,7 +257,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       document.getModificationStamp,
       Seq(entry(originalDefinition, PcTypedTreeRole.Inferred, "Int"))
     )
-    val publisher          = new CompilerBackendSnapshotPublisher(getProject, (_, _, _) => PcSnapshotCurrency.Current)
+    val publisher          = new CompilerBackendSnapshotPublisher(getProject)
     val mappings           = readAction(publisher.mapCurrentFile(getModule, snapshot))
     val backend            = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
@@ -343,6 +463,134 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     assertEquals(CompilerBackendCommit.Committed(1), removed)
     assertNull(BundledPluginBridge.getCompilerType(expression))
 
+  def testCurrentExpressionOverridesConflictingBundledInference(): Unit =
+    val file       = myFixture.configureByText("ExpressionOverride.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val backend    = Scala3CompilerBackend.get(getProject)
+    assertEquals("Int", expression.getTypeWithoutImplicits().fold(_.toString, _.canonicalText))
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+
+    val result = readAction:
+      backend.commitSnapshot(
+        getModule,
+        file,
+        document.getModificationStamp,
+        generation,
+        Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "String"))
+      )(PcSnapshotCurrency.Current)
+
+    assertEquals(CompilerBackendCommit.Committed(1), result)
+    assertEquals(
+      "_root_.scala.Predef.String",
+      expression.getTypeWithoutImplicits().fold(_.toString, _.canonicalText)
+    )
+
+  def testExpressionFallsBackImmediatelyAfterDocumentEdit(): Unit =
+    val file       = myFixture.configureByText("EditedExpression.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val backend    = Scala3CompilerBackend.get(getProject)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    val _          = readAction:
+      backend.commitSnapshot(
+        getModule,
+        file,
+        document.getModificationStamp,
+        generation,
+        Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "String"))
+      )(PcSnapshotCurrency.Current)
+    assertEquals(
+      "_root_.scala.Predef.String",
+      expression.getTypeWithoutImplicits().fold(_.toString, _.canonicalText)
+    )
+
+    myFixture.getEditor.getCaretModel.moveToOffset(file.getTextLength)
+    myFixture.`type`(" ")
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    val currentExpression = children[ScExpression](myFixture.getFile).find(_.getText == "List(1).head").get
+
+    assertEquals("Int", currentExpression.getTypeWithoutImplicits().fold(_.toString, _.canonicalText))
+
+  def testUnparsableExactTypeDoesNotReachCompilerTypeSlot(): Unit =
+    val file       = myFixture.configureByText("UnparsableSlot.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+
+    publishSynchronously(
+      typedTreeSnapshot(
+        file.getVirtualFile.getUrl,
+        document.getModificationStamp,
+        Seq(entry(expression, PcTypedTreeRole.ExpressionExact, "("))
+      )
+    )
+
+    assertEquals(
+      CompilerBackendState.Unavailable,
+      Scala3CompilerBackend
+        .get(getProject)
+        .stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
+    )
+    assertNull(BundledPluginBridge.getCompilerType(expression))
+
+  def testDeferredRetirementClearsSlotsNotOwnedByReplacementState(): Unit =
+    val file       = myFixture.configureByText("ReplacementState.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val definition = child[ScValueOrVariableDefinition](file)
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val backend    = Scala3CompilerBackend.get(getProject)
+    val fileUri    = file.getVirtualFile.getUrl
+    val version    = document.getModificationStamp
+    backend.markPending(getModule, fileUri, version, generation)
+    val _          = readAction:
+      backend.commitSnapshot(
+        getModule,
+        file,
+        version,
+        generation,
+        Seq(mapping(expression, CompilerBackendRole.ExpressionExact, "Int"))
+      )(PcSnapshotCurrency.Current)
+    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+
+    val clear: Runnable = () => backend.clear(getModule)
+    ApplicationManager.getApplication.executeOnPooledThread(clear).get(10, TimeUnit.SECONDS)
+    val replacement     = generation.copy(session = 2L)
+    backend.markPending(getModule, fileUri, version, replacement)
+    val _               = readAction:
+      backend.commitSnapshot(
+        getModule,
+        file,
+        version,
+        replacement,
+        Seq(mapping(definition, CompilerBackendRole.Definition, "Int"))
+      )(PcSnapshotCurrency.Current)
+    UIUtil.dispatchAllInvocationEvents()
+
+    assertNull(BundledPluginBridge.getCompilerType(expression))
+    assertCurrent(definition, CompilerBackendRole.Definition, "Int")
+
+  def testSessionReplacementRetiresExpressionUntilReplacementCommits(): Unit =
+    val file       = myFixture.configureByText("SessionReplacement.scala", "object Main:\n  val value = List(1).head\n")
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+    val manager    = PcSessionManager.get(getProject)
+    val _          = PlatformTestUtil.waitForFuture(manager.prepareFile(file.getVirtualFile), 60000L)
+    assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
+    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+
+    manager.discard(getModule)
+
+    assertEquals(
+      CompilerBackendState.Unavailable,
+      Scala3CompilerBackend
+        .get(getProject)
+        .stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
+    )
+    assertNull(BundledPluginBridge.getCompilerType(expression))
+
+    val _ = PlatformTestUtil.waitForFuture(manager.prepareFile(file.getVirtualFile), 60000L)
+    assertCurrent(expression, CompilerBackendRole.ExpressionExact, "Int")
+    assertEquals("Int", BundledPluginBridge.getCompilerType(expression))
+
   def testCompilerWrapperOverlapPublishesTheFirstRankedExactType(): Unit =
     val source      =
       """object Main:
@@ -385,7 +633,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     )
 
   private def publishSynchronously(snapshot: PcTypedTreeSnapshot): Unit =
-    val publisher = new CompilerBackendSnapshotPublisher(getProject, (_, _, _) => PcSnapshotCurrency.Current)
+    val publisher = new CompilerBackendSnapshotPublisher(getProject)
     val backend   = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
     val mappings  = readAction(publisher.mapCurrentFile(getModule, snapshot))

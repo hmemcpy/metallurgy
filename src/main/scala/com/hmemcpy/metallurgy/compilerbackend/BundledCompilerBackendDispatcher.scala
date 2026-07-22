@@ -1,9 +1,10 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import com.intellij.psi.PsiElement
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 
 import scala.util.control.NonFatal
 
@@ -33,19 +34,32 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
             .stateForActiveModule(element, module, CompilerBackendRole.DeclaredType) match
             case CompilerBackendState.Current(_, result) => result.asInstanceOf[Object]
             case _                                       => null
-    catch case NonFatal(_) => null
+    catch
+      case control: ControlFlowException => throw control
+      case NonFatal(_)                   => null
 
   private def compilerTypeFor(element: PsiElement): CompilerTypeSelection =
-    try
-      val module = ModuleUtilCore.findModuleForPsiElement(element)
-      if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then
-        CompilerTypeSelection.FallThrough
-      else
-        Scala3CompilerBackend
-          .get(element.getProject)
-          .validatedCompilerType(element, module, CompilerBackendRole.ExpressionExact)
-          .fold[CompilerTypeSelection](CompilerTypeSelection.Missing)(CompilerTypeSelection.Current(_))
-    catch case NonFatal(_) => CompilerTypeSelection.Missing
+    val moduleSelection =
+      try
+        Right(
+          Option(ModuleUtilCore.findModuleForPsiElement(element))
+            .filter(ModuleDetectionService.get(element.getProject).isActive)
+        )
+      catch
+        case control: ControlFlowException => throw control
+        case NonFatal(_)                   => Left(())
+    moduleSelection match
+      case Left(_)             => CompilerTypeSelection.FallThrough
+      case Right(None)         => CompilerTypeSelection.FallThrough
+      case Right(Some(module)) =>
+        try
+          Scala3CompilerBackend
+            .get(element.getProject)
+            .validatedCompilerType(element, module, CompilerBackendRole.ExpressionExact)
+            .fold[CompilerTypeSelection](CompilerTypeSelection.Missing)(CompilerTypeSelection.Current(_))
+        catch
+          case control: ControlFlowException => throw control
+          case NonFatal(_)                   => CompilerTypeSelection.Missing
 
 private[compilerbackend] enum CompilerTypeSelection:
   case Current(value: String)

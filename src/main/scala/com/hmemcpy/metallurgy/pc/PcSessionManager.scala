@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.compilerbackend.{
+  CompilerBackendCommit,
   CompilerBackendGeneration,
   CompilerBackendSnapshotPublisher,
   Scala3CompilerBackend
@@ -40,7 +41,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val classpathGenerations       = new AtomicLong(0L)
   private val compilerOptionsGenerations = new AtomicLong(0L)
   private val backend                    = Scala3CompilerBackend.get(project)
-  private val backendPublisher           = new CompilerBackendSnapshotPublisher(project, snapshotCurrency)
+  private val backendPublisher           = new CompilerBackendSnapshotPublisher(project)
 
   private def cache: PcDiagnosticSetCache   = PcDiagnosticSetCache.get(project)
   private def renderer: PcHighlightRenderer = PcHighlightRenderer.get(project)
@@ -98,8 +99,19 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       val _ = analyze(session, module, snapshot)
       session
 
-  /** Creates the file's session if necessary and completes only after its exact document version has been published. */
+  /** Creates the file's session if necessary and completes after its exact document version has been retypechecked. */
   private[metallurgy] def prepareFile(file: VirtualFile): CompletableFuture[Option[PcSession]] =
+    prepareFile(file, awaitBackendPublication = false)
+
+  /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
+    */
+  private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
+    prepareFile(file, awaitBackendPublication = true)
+
+  private def prepareFile(
+      file: VirtualFile,
+      awaitBackendPublication: Boolean
+  ): CompletableFuture[Option[PcSession]] =
     val preparation =
       for
         module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
@@ -112,7 +124,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         sessionForAsync(module).thenCompose:
           case None          => CompletableFuture.completedFuture(None)
           case Some(session) =>
-            analyze(session, module, snapshot)
+            analyze(session, module, snapshot, awaitBackendPublication)
               .thenApply:
                 case RetypecheckOutcome.Applied => Some(session)
                 case _                          => None
@@ -159,7 +171,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       if isManaged(module) && isScalaSource(file)
       session <- Option(sessions.get(module)).map(_.session)
       snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
-    do analyze(session, module, snapshot)
+    do analyze(session, module, snapshot, awaitBackendPublication = false)
 
   private def isScalaSource(file: VirtualFile): Boolean =
     Set("scala", "sc", "sbt", "mill").contains(file.getExtension)
@@ -172,7 +184,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     * `CurrentSuccess`/`Failed` when it settles. A superseded outcome leaves the newer pending state intact (the cache
     * drops it).
     */
-  private def analyze(session: PcSession, module: Module, snapshot: PcSnapshot): CompletableFuture[RetypecheckOutcome] =
+  private def analyze(
+      session: PcSession,
+      module: Module,
+      snapshot: PcSnapshot,
+      awaitBackendPublication: Boolean = false
+  ): CompletableFuture[RetypecheckOutcome] =
     currentGeneration(module, session) match
       case None             => CompletableFuture.completedFuture(RetypecheckOutcome.Superseded)
       case Some(generation) =>
@@ -183,13 +200,17 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           snapshot.documentVersion
         ) // clear the pc layer from the previous version while the new one is in flight
         trackFile(module, snapshot.fileUri)
-        session
-          .scheduleRetypecheck(snapshot)
-          .whenComplete: (outcome, error) =>
-            if error != null then
-              cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
-              backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
-            else publishOutcome(session, module, snapshot, generation, outcome)
+        val retypecheck = session.scheduleRetypecheck(snapshot)
+        val prepared    = retypecheck.thenApply: outcome =>
+          outcome -> publishOutcome(session, module, snapshot, generation, outcome)
+        prepared.whenComplete: (_, error) =>
+          if error != null then
+            cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
+            backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+        if awaitBackendPublication then
+          prepared.thenCompose: (outcome, publication) =>
+            publication.thenApply(_ => outcome)
+        else prepared.thenApply(_._1)
 
   private def publishOutcome(
       session: PcSession,
@@ -197,12 +218,15 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       snapshot: PcSnapshot,
       generation: CompilerBackendGeneration,
       outcome: RetypecheckOutcome
-  ): Unit =
+  ): CompletableFuture[CompilerBackendCommit] =
     outcome match
       case RetypecheckOutcome.Applied    =>
-        session.typedTreeSnapshot(snapshot) match
-          case Some(typedTree) => backendPublisher.publish(module, session, typedTree, generation)
-          case None            => backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+        val publication = session.typedTreeSnapshot(snapshot) match
+          case Some(typedTree) =>
+            backendPublisher.publish(module, typedTree, generation, () => snapshotCurrency(module, session, generation))
+          case None            =>
+            backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
+            CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
         session.diagnostics(snapshot) match
           case Some(diagnostics) =>
             cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
@@ -210,11 +234,13 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           case None              =>
             cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
             renderer.blank(snapshot.fileUri, snapshot.documentVersion)
+        publication
       case RetypecheckOutcome.Failed(_)  =>
         cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
         backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
         renderer.blank(snapshot.fileUri, snapshot.documentVersion)
-      case RetypecheckOutcome.Superseded => ()
+        CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
+      case RetypecheckOutcome.Superseded => CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
 
   private def trackFile(module: Module, fileUrl: String): Unit =
     val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)

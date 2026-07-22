@@ -8,6 +8,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
@@ -63,10 +64,8 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     val file         = myFixture.configureByText("PcDeclaredType.scala", source)
     val typeElement  = PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])
     val document     = myFixture.getEditor.getDocument
-    val session      = PcSessionManager
-      .get(getProject)
-      .prepareFile(file.getVirtualFile)
-      .get(60, TimeUnit.SECONDS)
+    val session      = PlatformTestUtil
+      .waitForFuture(PcSessionManager.get(getProject).prepareFile(file.getVirtualFile), 60000L)
       .getOrElse(throw new AssertionError("presentation compiler session was unavailable"))
     val snapshot     = PcSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, document.getText)
     val typeRange    = typeElement.getTextRange
@@ -125,7 +124,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     )
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
 
-  def testActiveCompilerTypeReadRejectsSlotWithoutCurrentSideTableEntry(): Unit =
+  def testActiveCompilerTypeReadRejectsCopiedSlotWithoutCurrentSideTableEntry(): Unit =
     val file       = myFixture.configureByText("RejectedCopiedSlot.scala", "val value = List(1).head")
     val expression = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScExpression])
@@ -134,7 +133,10 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       .findFirst()
       .orElseThrow()
     BundledPluginBridge.setCompilerType(expression, "String")
+    val copied     = expression.copy().asInstanceOf[ScExpression]
 
+    assertTrue(compilerType(copied).isEmpty)
+    assertTrue(Option(BundledPluginBridge.getCompilerType(copied)).isEmpty)
     assertTrue(compilerType(expression).isEmpty)
     assertTrue(Option(BundledPluginBridge.getCompilerType(expression)).isEmpty)
 
@@ -148,6 +150,25 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       .orElseThrow()
     BundledPluginBridge.setCompilerType(expression, "String")
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals(Some("String"), compilerType(expression))
+    assertEquals("String", BundledPluginBridge.getCompilerType(expression))
+
+  def testCurrentExpressionRepairsLateBundledCompilerTypeWrite(): Unit =
+    val file       = myFixture.configureByText("LateCompilerType.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    val version    = myFixture.getEditor.getDocument.getModificationStamp
+    val backend    = Scala3CompilerBackend.get(getProject)
+    assertEquals(
+      CompilerBackendPublication.Published,
+      backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+    )
+    BundledPluginBridge.setCompilerType(expression, "Boolean")
 
     assertEquals(Some("String"), compilerType(expression))
     assertEquals("String", BundledPluginBridge.getCompilerType(expression))
