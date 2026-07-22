@@ -69,7 +69,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   def sessionFor(module: Module): Option[PcSession] =
     if !isManaged(module) then
-      discard(module)
+      deactivate(module)
       None
     else
       Option(BundledPluginBridge.getScalaVersion(module)).flatMap: scalaVersion =>
@@ -82,7 +82,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   /** Returns the current session or prepares one asynchronously, including a cold artifact fetch. */
   def sessionForAsync(module: Module): CompletableFuture[Option[PcSession]] =
     if !isManaged(module) then
-      discard(module)
+      deactivate(module)
       CompletableFuture.completedFuture(None)
     else
       Option(BundledPluginBridge.getScalaVersion(module)) match
@@ -153,6 +153,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     Option(sessions.remove(module)).foreach: entry =>
       if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => entry.session.close())
       else entry.session.close()
+
+  private def deactivate(module: Module): Unit =
+    discard(module)
+    ScalacFlagsService.get(project).disableFor(module)
 
   /** Compatibility for existing call sites; new code should use [[discard]]. */
   def invalidate(module: Module): Unit = discard(module)

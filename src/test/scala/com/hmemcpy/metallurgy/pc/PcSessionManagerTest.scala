@@ -16,9 +16,10 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.OrderEnumerator
 import com.intellij.openapi.util.Computable
-import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.{LocalFileSystem, VirtualFile}
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
@@ -500,6 +501,9 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       // without CBH, Metallurgy is a no-op even when enabled.
       setCompilerBasedHighlighting(enabled = false)
       assertTrue(onPooledThread(manager.sessionFor(getModule)).isEmpty)
+      assertFalse(
+        ScalacFlagsService.get(getProject).additionalOptions(getModule).exists(ScalacFlagsService.ManagedFlags.contains)
+      )
       setCompilerBasedHighlighting(enabled = true)
 
       settings.setEnabled(getModule, enabled = false)
@@ -582,6 +586,57 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
     val _ = Files.setLastModifiedTime(artifact, timestamp)
 
     assertFalse(before == PcSessionManager.fingerprintClasspath(classpath))
+
+  def testBestEffortArtifactAndOptionChangesReplaceTheModuleSession(): Unit =
+    val temporaryDirectory = Files.createTempDirectory("metallurgy-betasty-session")
+    val compilerArtifact   = Files.write(temporaryDirectory.resolve("presentation-compiler.jar"), Array[Byte](1))
+    val output             = Files.createDirectories(temporaryDirectory.resolve("module-a-output"))
+    val bestEffort         = Files.createDirectories(output.resolve("META-INF").resolve("best-effort"))
+    val person             = Files.write(bestEffort.resolve("Person.betasty"), Array[Byte](1, 2, 3, 4))
+    val stableTimestamp    = FileTime.fromMillis(123456789L)
+    val _                  = Files.setLastModifiedTime(person, stableTimestamp)
+    val outputRoot         = LocalFileSystem.getInstance.refreshAndFindFileByNioFile(output)
+    assertTrue(s"could not refresh $output", outputRoot != null)
+    PsiTestUtil.addProjectLibrary(getModule, "module-a-output", outputRoot)
+
+    val fetcher  = new MtagsFetcher(
+      PcArtifactCache(temporaryDirectory.resolve("cache")),
+      FixedPresentationCompilerResolver(compilerArtifact),
+      BackgroundRunner.direct
+    )
+    val manager  = new PcSessionManager(getProject, fetcher)
+    val settings = MetallurgySettings(getProject)
+
+    try
+      setCompilerBasedHighlighting(enabled = true)
+      settings.setEnabled(getModule, enabled = true)
+      val first = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
+
+      val _      = Files.write(person, Array[Byte](4, 3, 2, 1))
+      val _      = Files.setLastModifiedTime(person, stableTimestamp)
+      val second = onPooledThread(manager.sessionFor(getModule)).get
+
+      assertNotSame("rewritten .betasty must replace the module session", first, second)
+      assertTrue("the stale artifact session must be retired", first.isClosed)
+
+      settings.setXsemanticdbEnabled(true)
+      val third = onPooledThread(manager.sessionFor(getModule)).get
+
+      assertNotSame("compiler-option changes must replace the module session", second, third)
+      assertTrue("the stale option session must be retired", second.isClosed)
+
+      val renamed = bestEffort.resolve("RenamedPerson.betasty")
+      val _       = Files.move(person, renamed)
+      val fourth  = onPooledThread(manager.sessionFor(getModule)).get
+
+      assertNotSame("renamed .betasty must replace the module session", third, fourth)
+      assertTrue("the stale symbol session must be retired", third.isClosed)
+    finally
+      manager.dispose()
+      settings.setXsemanticdbEnabled(false)
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+      deleteRecursively(temporaryDirectory)
 
   private def onPooledThread[A](body: => A): A =
     ApplicationManager.getApplication
