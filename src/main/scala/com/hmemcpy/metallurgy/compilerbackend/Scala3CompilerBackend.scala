@@ -36,6 +36,7 @@ final class Scala3CompilerBackend(project: Project):
       revision: Long,
       documentVersion: Long,
       identity: CompilerBackendIdentity,
+      committed: Boolean,
       fallback: CompilerBackendState,
       entries: Map[ElementKey, CompilerBackendState],
       entryOrder: Vector[ElementKey],
@@ -100,6 +101,7 @@ final class Scala3CompilerBackend(project: Project):
                 revision = nextRevision.incrementAndGet(),
                 documentVersion = documentVersion,
                 identity = CompilerBackendIdentity.Snapshot(generation),
+                committed = false,
                 fallback = CompilerBackendState.Pending,
                 entries = previous.filter(_.documentVersion == documentVersion).map(_.entries).getOrElse(Map.empty),
                 entryOrder =
@@ -202,6 +204,7 @@ final class Scala3CompilerBackend(project: Project):
       revision = nextRevision.incrementAndGet(),
       documentVersion = documentVersion,
       identity = CompilerBackendIdentity.Snapshot(generation),
+      committed = true,
       fallback = CompilerBackendState.Unavailable,
       entries = current,
       entryOrder = entries.iterator.map(_._1).toVector.distinct,
@@ -261,6 +264,18 @@ final class Scala3CompilerBackend(project: Project):
             case None                                                                  => CompilerBackendState.Unavailable
         case _                                         => CompilerBackendState.Unavailable
 
+  private[metallurgy] def hasCommittedSnapshot(
+      module: Module,
+      fileUrl: String,
+      documentVersion: Long,
+      generation: CompilerBackendGeneration
+  ): Boolean =
+    ModuleDetectionService.get(project).isActive(module) &&
+      Option(files.get(FileKey(module, fileUrl))).exists: state =>
+        state.documentVersion == documentVersion &&
+          state.identity == CompilerBackendIdentity.Snapshot(generation) &&
+          state.committed
+
   private[metallurgy] def validatedCompilerType(
       element: PsiElement,
       module: Module,
@@ -307,6 +322,7 @@ final class Scala3CompilerBackend(project: Project):
             then
               state.copy(
                 revision = nextRevision.incrementAndGet(),
+                committed = false,
                 fallback = fallback,
                 entries = Map.empty,
                 entryOrder = Vector.empty
@@ -342,6 +358,7 @@ final class Scala3CompilerBackend(project: Project):
               revision = nextRevision.incrementAndGet(),
               documentVersion = documentVersion,
               identity = CompilerBackendIdentity.Direct,
+              committed = true,
               fallback = CompilerBackendState.Unavailable,
               entries = existing.map(_.entries).getOrElse(Map.empty).updated(key, state),
               entryOrder = existing.map(_.entryOrder).getOrElse(Vector.empty).filterNot(_ == key) :+ key,

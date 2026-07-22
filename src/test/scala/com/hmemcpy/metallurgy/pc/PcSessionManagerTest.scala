@@ -19,7 +19,7 @@ import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.{LocalFileSystem, VirtualFile}
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.testFramework.PsiTestUtil
+import com.intellij.testFramework.{PlatformTestUtil, PsiTestUtil}
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
@@ -110,6 +110,32 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       currentSource.lastIndexOf("port")
     )
     assertTrue(rendered.toString, rendered.exists(_.contains("9090")))
+
+  def testCompilerBackendPopulationIsCoalescedPerDocumentGeneration(): Unit =
+    val file     = myFixture.configureByText("Coalesced.scala", "val compilerResult = Option(42).get")
+    val settings = MetallurgySettings(getProject)
+    val manager  = PcSessionManager.get(getProject)
+
+    try
+      setCompilerBasedHighlighting(enabled = true)
+      settings.setEnabled(getModule, enabled = true)
+
+      val first  = manager.prepareCompilerBackend(file.getVirtualFile)
+      val second = manager.prepareCompilerBackend(file.getVirtualFile)
+      assertSame("concurrent consumers must share one publication", first, second)
+
+      val session = PlatformTestUtil.waitForFuture(first, 120000L).get
+      assertEquals(1, session.inlineDriverCreationCount)
+
+      val repeated = PlatformTestUtil
+        .waitForFuture(manager.prepareCompilerBackend(file.getVirtualFile), 120000L)
+        .get
+      assertSame(session, repeated)
+      assertEquals("a committed generation must not be populated again", 1, session.inlineDriverCreationCount)
+    finally
+      manager.discard(getModule)
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
 
   def testPublishedInlineTypeDriverIsReusedByQueries(): Unit =
     withRealPcSession("metallurgy-inline-driver"): session =>

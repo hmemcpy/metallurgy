@@ -58,7 +58,7 @@
     <daemon.highlightInfoFilter
         implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
     <highlightingPassFactory
-        implementation="com.hmemcpy.metallurgy.feature.inlay.PcTypeHintsPassFactory"/>
+        implementation="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendPassFactory"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>

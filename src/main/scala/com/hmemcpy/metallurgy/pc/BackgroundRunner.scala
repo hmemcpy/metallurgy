@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
-import com.intellij.openapi.progress.{ProgressIndicator, Task}
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.{ProcessCanceledException, ProgressIndicator, Task}
 import com.intellij.openapi.project.Project
 
 import java.nio.file.Path
@@ -22,13 +23,29 @@ private[pc] object BackgroundRunner:
   def intellij(project: Project): BackgroundRunner =
     new BackgroundRunner:
       override def submit(title: String)(work: () => Path): CompletableFuture[Path] =
-        val result = new CompletableFuture[Path]()
-        new Task.Backgroundable(project, title, true):
-          override def run(indicator: ProgressIndicator): Unit =
-            try
-              val _ = result.complete(work())
-            catch
-              case NonFatal(error) =>
-                val _ = result.completeExceptionally(error)
-        .queue()
+        val result             = new CompletableFuture[Path]()
+        val schedule: Runnable = () =>
+          if project.isDisposed then
+            val _ = result.cancel(false)
+          else
+            val task = new Task.Backgroundable(project, title, true):
+              override def run(indicator: ProgressIndicator): Unit =
+                try
+                  indicator.checkCanceled()
+                  val resolved = work()
+                  indicator.checkCanceled()
+                  val _        = result.complete(resolved)
+                catch
+                  case canceled: ProcessCanceledException =>
+                    val _ = result.cancel(true)
+                    throw canceled
+                  case NonFatal(error)                    =>
+                    val _ = result.completeExceptionally(error)
+
+              override def onCancel(): Unit =
+                val _ = result.cancel(true)
+
+            task.queue()
+
+        ApplicationManager.getApplication.invokeLater(schedule)
         result

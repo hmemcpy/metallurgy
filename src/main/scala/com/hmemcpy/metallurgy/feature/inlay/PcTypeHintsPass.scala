@@ -1,11 +1,8 @@
 package com.hmemcpy.metallurgy.feature.inlay
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
-import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.intellij.codeHighlighting.EditorBoundHighlightingPass
 import com.intellij.codeInsight.daemon.impl.HintRenderer
-import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.progress.ProgressIndicator
@@ -17,7 +14,6 @@ import com.intellij.util.DocumentUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypedPatternLike
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 
-import java.util.concurrent.{CancellationException, ExecutionException, TimeoutException, TimeUnit}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -27,20 +23,15 @@ import scala.jdk.CollectionConverters.*
   */
 final class PcTypeHintsPass(editor: Editor, file: PsiFile) extends EditorBoundHighlightingPass(editor, file, false):
 
-  private val hints          = mutable.ArrayBuffer.empty[PcTypeHintsPass.TypeHint]
-  private val sessionManager = PcSessionManager.get(file.getProject)
-  private val backend        = Scala3CompilerBackend.get(file.getProject)
+  private val hints   = mutable.ArrayBuffer.empty[PcTypeHintsPass.TypeHint]
+  private val backend = Scala3CompilerBackend.get(file.getProject)
 
   override def doCollectInformation(indicator: ProgressIndicator): Unit =
     hints.clear()
-    val project = file.getProject
     for
-      module      <-
-        Option(ModuleUtilCore.findModuleForPsiElement(file)).filter(ModuleDetectionService.get(project).isActive)
-      virtualFile <- Option(file.getVirtualFile)
-    do
-      if PcTypeHintsPass.awaitPublication(sessionManager.prepareCompilerBackend(virtualFile), indicator) then
-        collectHints(module, indicator)
+      module <- Option(ModuleUtilCore.findModuleForPsiElement(file))
+      if com.hmemcpy.metallurgy.compilerbackend.CompilerBackendPassFactory.isActiveScala(file)
+    do collectHints(module, indicator)
 
   override def doApplyInformationToEditor(): Unit                              =
     val document = editor.getDocument
@@ -84,10 +75,6 @@ object PcTypeHintsPass:
 
   private val BulkChangeThreshold = 1000
 
-  private val AwaitTimeoutNanos = TimeUnit.SECONDS.toNanos(5L)
-
-  private val PollIntervalMillis = 50L
-
   private final case class TypeHint(offset: Int, text: String)
 
   private def owns(inlay: com.intellij.openapi.editor.Inlay[?]): Boolean =
@@ -99,29 +86,3 @@ object PcTypeHintsPass:
   private def isMeaningful(renderedType: String): Boolean =
     val trimmed = renderedType.trim
     trimmed.nonEmpty && trimmed != "Any" && trimmed != "?"
-
-  /** Wait until the current document's backend snapshot has committed. Polling with cancellation checks lets the daemon
-    * abort this pass promptly when the document changes again.
-    */
-  private def awaitPublication(
-      future: java.util.concurrent.CompletableFuture[Option[com.hmemcpy.metallurgy.pc.PcSession]],
-      indicator: ProgressIndicator
-  ): Boolean =
-    try
-      val deadline = System.nanoTime() + AwaitTimeoutNanos
-      while !future.isDone && System.nanoTime() < deadline do
-        indicator.checkCanceled()
-        try
-          val _ = future.get(PollIntervalMillis, TimeUnit.MILLISECONDS)
-        catch case _: TimeoutException => ()
-      future.isDone && future.get(0L, TimeUnit.MILLISECONDS).nonEmpty
-    catch
-      case canceled: ControlFlowException => throw canceled
-      case error: ExecutionException =>
-        error.getCause match
-          case canceled: ControlFlowException => throw canceled
-          case _                              => false
-      case _: CancellationException  => false
-      case _: InterruptedException   =>
-        Thread.currentThread().interrupt()
-        false

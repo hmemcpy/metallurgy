@@ -38,6 +38,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val log                        = Logger.getInstance(classOf[PcSessionManager])
   private val sessions                   = new ConcurrentHashMap[Module, SessionEntry]()
   private val inFlight                   = new ConcurrentHashMap[SessionKey, CompletableFuture[Option[PcSession]]]()
+  private val backendInFlight            =
+    new ConcurrentHashMap[BackendPreparationKey, CompletableFuture[Option[PcSession]]]()
   private val moduleFiles                = new ConcurrentHashMap[Module, java.util.Set[String]]()
   private val sessionGenerations         = new AtomicLong(0L)
   private val classpathGenerations       = new AtomicLong(0L)
@@ -110,7 +112,17 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
     */
   private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    prepareFile(file, awaitBackendPublication = true, retries = 1)
+    (Option(ModuleUtilCore.findModuleForFile(file, project)), snapshotFor(file)) match
+      case (Some(module), Some(snapshot)) if isManaged(module) =>
+        val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
+        val future = backendInFlight.computeIfAbsent(
+          key,
+          _ => prepareFile(file, awaitBackendPublication = true, retries = 1)
+        )
+        future.whenComplete: (_, _) =>
+          val _ = backendInFlight.remove(key, future)
+        future
+      case _                                                   => CompletableFuture.completedFuture(None)
 
   private def prepareFile(
       file: VirtualFile,
@@ -129,15 +141,27 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         sessionForAsync(module).thenCompose:
           case None          => CompletableFuture.completedFuture(None)
           case Some(session) =>
-            analyze(session, module, snapshot, awaitBackendPublication)
-              .thenCompose:
-                case RetypecheckOutcome.Applied                   =>
-                  CompletableFuture.completedFuture(Some(session))
-                case RetypecheckOutcome.Superseded if retries > 0 =>
-                  prepareFile(file, awaitBackendPublication, retries - 1)
-                case _                                            => CompletableFuture.completedFuture(None)
+            val alreadyCommitted =
+              awaitBackendPublication && currentGeneration(module, session).exists: generation =>
+                backend.hasCommittedSnapshot(module, snapshot.fileUri, snapshot.documentVersion, generation)
+            if alreadyCommitted then CompletableFuture.completedFuture(Some(session))
+            else
+              analyze(session, module, snapshot, awaitBackendPublication)
+                .thenCompose:
+                  case RetypecheckOutcome.Applied                   =>
+                    CompletableFuture.completedFuture(Some(session))
+                  case RetypecheckOutcome.Superseded if retries > 0 =>
+                    prepareFile(file, awaitBackendPublication, retries - 1)
+                  case _                                            => CompletableFuture.completedFuture(None)
 
   def discard(module: Module): Unit =
+    backendInFlight
+      .entrySet()
+      .asScala
+      .filter(_.getKey.module == module)
+      .foreach: entry =>
+        if backendInFlight.remove(entry.getKey, entry.getValue) then
+          val _ = entry.getValue.cancel(true)
     inFlight
       .entrySet()
       .asScala
@@ -166,6 +190,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   override def dispose(): Unit =
     inFlight.values().asScala.foreach(_.cancel(true))
     inFlight.clear()
+    backendInFlight.values().asScala.foreach(_.cancel(true))
+    backendInFlight.clear()
     moduleFiles.clear()
     sessions.values().asScala.foreach(_.session.close())
     sessions.clear()
@@ -363,6 +389,8 @@ private final case class SessionEntry(
 )
 
 private final case class SessionKey(module: Module, scalaVersion: String)
+
+private final case class BackendPreparationKey(module: Module, fileUri: String, documentVersion: Long)
 
 object PcSessionManager:
   def get(project: Project): PcSessionManager = project.getService(classOf[PcSessionManager])
