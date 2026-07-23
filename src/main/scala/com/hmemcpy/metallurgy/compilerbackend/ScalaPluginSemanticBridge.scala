@@ -21,7 +21,7 @@ import scala.util.control.NonFatal
   */
 object ScalaPluginSemanticBridge:
 
-  private val ResolveResultKey: Key[Object] = Key.create("METALLURGY_RESOLVE_FALLBACK")
+  private val ResolveResultKey: Key[java.util.Optional[Object]] = Key.create("METALLURGY_RESOLVE_FALLBACK")
 
   def install(): CompilerBackendShimStatus =
     BundledCompilerBackendShim.install()
@@ -38,7 +38,7 @@ object ScalaPluginSemanticBridge:
           reference match
             case element: PsiElement =>
               val cached = element.getUserData(ResolveResultKey)
-              if cached != null then cached
+              if cached != null then cached.orElse(bundledResult)
               else
                 val module = ModuleUtilCore.findModuleForPsiElement(element)
                 val result =
@@ -50,7 +50,7 @@ object ScalaPluginSemanticBridge:
                       .collect:
                         case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
                       .orNull
-                element.putUserData(ResolveResultKey, result)
+                element.putUserData(ResolveResultKey, java.util.Optional.ofNullable(result))
                 if result != null then result else bundledResult
             case _                   => bundledResult
         catch
