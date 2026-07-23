@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.compilerbackend
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot, PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.codeInsight.documentation.DocumentationManager
 import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
 import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
 import com.intellij.openapi.application.ApplicationManager
@@ -314,6 +315,31 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertFalse(first.head.element.isValid)
     assertEquals(null, documentationPointer.dereference())
     assertTrue(reference.multiResolveScala(false).isEmpty)
+
+  def testExplicitQuickDocumentationTargetsCompilerOnlySymbol(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("ExplicitCompilerOnlyDocumentation.scala")
+    val targets = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, fixture.file, fixture.reference.nameId.getTextOffset)
+      .asScala
+
+    val target = targets.collectFirst:
+      case documentation: PsiElementDocumentationTarget if documentation.getTargetElement eq fixture.target =>
+        documentation
+    assertTrue(target.isDefined)
+    assertEquals("def generatedMember: String", target.get.computeDocumentationHint())
+
+  def testAutomaticEditorHoverTargetsCompilerOnlySymbol(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("HoverCompilerOnlyDocumentation.scala")
+    val manager = DocumentationManager.getInstance(getProject)
+    myFixture.getEditor.getCaretModel.moveToOffset(fixture.reference.nameId.getTextOffset)
+
+    val hoverTarget = manager.findTargetElement(myFixture.getEditor, fixture.file)
+    assertSame(fixture.target, hoverTarget)
+    val provider    = DocumentationManager.getProviderFromElement(hoverTarget, fixture.reference)
+    val hoverDoc    = provider.generateDoc(hoverTarget, fixture.reference)
+    assertTrue(hoverDoc, hoverDoc.contains("generatedMember"))
+    assertTrue(hoverDoc, hoverDoc.contains("String"))
 
   def testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity(): Unit =
     val file       = myFixture.configureByText("CompilerOnlyStableResolve.scala", "val result: GeneratedType = ???")
@@ -845,6 +871,39 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     writer.toByteArray
 
   private final case class SyntheticMethod(access: Int, name: String, descriptor: String)
+
+  private final case class CompilerOnlyDocumentationFixture(
+      file: com.intellij.psi.PsiFile,
+      reference: ScReferenceExpression,
+      target: PsiElement
+  )
+
+  private def compilerOnlyDocumentationFixture(fileName: String): CompilerOnlyDocumentationFixture =
+    val file       = myFixture.configureByText(fileName, "val result = generatedMember")
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(41L, 41L, 41L)
+    val symbol     = PcCompilerSymbol("Main.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertTrue(
+      backend
+        .commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+          PcSnapshotCurrency.Current
+        )
+        .isInstanceOf[CompilerBackendCommit.Committed]
+    )
+    val target     = reference.multiResolveScala(false).head.element
+    CompilerOnlyDocumentationFixture(file, reference, target)
 
   private def declaredString(fileName: String): (ScTypeElement, Long) =
     val file        = myFixture.configureByText(fileName, "val value: String = \"text\"")

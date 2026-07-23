@@ -8,8 +8,11 @@ import com.intellij.codeInsight.hint.ShowParameterInfoContext
 import com.intellij.codeInspection.{InspectionManager, ProblemDescriptor, ProblemsHolder}
 import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.ide.util.treeView.smartTree.TreeElement
+import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
+import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
 import com.intellij.lang.annotation.{AnnotationSession, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.progress.{EmptyProgressIndicator, ProgressIndicator}
 import com.intellij.openapi.project.Project
@@ -38,6 +41,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpres
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.parameterInfo.ScalaFunctionParameterInfoHandler
+import org.jetbrains.plugins.scala.overrideImplement.ScalaOIUtil
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.structureView.ScalaStructureViewModel
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
@@ -71,7 +75,7 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       setCompilerBasedHighlighting(enabled = false)
     finally super.tearDown()
 
-  def testQuickInfoUsesCurrentInitializerType(): Unit =
+  def testAutomaticEditorHoverUsesCurrentInitializerType(): Unit =
     val file       = myFixture.configureByText("QuickInfo.scala", "val value = List(1).head")
     val expression = expressionWithText(file, "List(1).head")
     val binding    = PsiTreeUtil.findChildOfType(file, classOf[ScBindingPattern])
@@ -81,6 +85,27 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
 
     assertTrue(quickInfo, quickInfo.contains("String"))
     assertFalse(quickInfo, quickInfo.contains(": Int"))
+
+  def testQuickDocumentationActionUsesCurrentInitializerType(): Unit =
+    val source     =
+      """val value = List(1).head
+        |val use = val<caret>ue
+        |""".stripMargin
+    val file       = myFixture.configureByText("QuickDocumentation.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    publish(expression, "String")
+
+    val targets = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, file, myFixture.getCaretOffset)
+      .asScala
+    val hint    = targets.collectFirst:
+      case target: PsiElementDocumentationTarget => target.computeDocumentationHint()
+
+    assertEquals(s"unexpected Quick Documentation targets: $targets", 1, targets.size)
+    assertTrue(s"Quick Documentation did not resolve a PSI target: $targets", hint.isDefined)
+    assertTrue(hint.getOrElse(""), hint.exists(_.contains("String")))
+    assertFalse(hint.getOrElse(""), hint.exists(_.contains(": Int")))
 
   def testExpressionAnnotatorUsesCurrentArgumentType(): Unit =
     val source     =
@@ -215,6 +240,55 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
 
     assertTrue(file.getText, file.getText.contains("def renamed"))
     assertTrue(file.getText, file.getText.contains("val result = renamed"))
+
+  def testInactiveModulePreservesBundledConsumerResultsWithoutBackendWork(): Unit =
+    val settings = MetallurgySettings(getProject)
+    settings.setEnabled(getModule, enabled = false)
+    try
+      val source     =
+        """def takesString(value: String): Unit = ()
+          |takesString(List(1).head)""".stripMargin
+      val file       = myFixture.configureByText("InactiveConsumer.scala", source)
+      val expression = expressionWithText(file, "List(1).head")
+      val backend    = Scala3CompilerBackend.get(getProject)
+
+      assertEquals(
+        CompilerBackendPublication.IgnoredInactive,
+        backend.publish(
+          expression,
+          CompilerBackendRole.ExpressionExact,
+          myFixture.getEditor.getDocument.getModificationStamp,
+          "String"
+        )
+      )
+      assertTrue(
+        "the inactive bundled annotator result must remain unchanged",
+        annotate(file, invocationIn(file)).nonEmpty
+      )
+      assertEquals(0, com.hmemcpy.metallurgy.pc.PcSessionManager.get(getProject).activeSessionCount)
+    finally settings.setEnabled(getModule, enabled = true)
+
+  def testImplementMethodUsesCurrentCompilerReturnType(): Unit =
+    val source   =
+      """trait Parent:
+        |  def value: Int
+        |
+        |class Child extends Parent:
+        |  <caret>
+        |""".stripMargin
+    val file     = myFixture.configureByText("ImplementMethod.scala", source)
+    val function = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .asScala
+      .find(_.name == "value")
+      .get
+    publishType(function, CompilerBackendRole.FunctionResult, "String")
+
+    given Project = getProject
+    given Editor  = myFixture.getEditor
+    ScalaOIUtil.invokeOverrideImplement(file, isImplement = true, Some("value"))
+
+    assertTrue(file.getText, file.getText.contains("override def value: String"))
 
   def testQuickInfoUsesRealBulkCompilerSnapshot(): Unit =
     val source     =
