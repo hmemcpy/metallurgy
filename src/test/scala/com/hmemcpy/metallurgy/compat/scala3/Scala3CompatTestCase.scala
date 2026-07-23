@@ -62,6 +62,11 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   private val StartMarker = "/*start*/"
   private val EndMarker   = "/*end*/"
 
+  // The backported base aliases START/END to IntelliJ's <selection> tags, which `configureByText` consumes; ported
+  // snippets use START/END as expression markers, so alias them to the comment form `selectedExpression` scans for.
+  override protected val START: String = StartMarker
+  override protected val END: String   = EndMarker
+
   // The backend population is asynchronous: the first daemon pass starts it and a later pass consumes it. Await it
   // here so the assertion observes the published result instead of the pre-publication bundled read.
   protected def awaitBackendPublished(): Unit =
