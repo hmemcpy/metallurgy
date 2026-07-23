@@ -5,8 +5,14 @@ import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.execution.actions.{ConfigurationContext, RunConfigurationProducer}
 import com.intellij.execution.application.ApplicationConfiguration
+import com.intellij.execution.configurations.RunConfiguration
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.impl.{DefaultJavaProgramRunner, RunManagerImpl, RunnerAndConfigurationSettingsImpl}
+import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.psi.codeStyle.CodeStyleManager
 import com.intellij.testIntegration.TestFramework
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
@@ -61,6 +67,7 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     assertEquals("Main", configuration.getMainClassName)
     assertEquals(getModule, configuration.getConfigurationModule.getModule)
     assertTrue(configuration.getClass.getName.startsWith("com.intellij.execution.application."))
+    assertBundledExecutionState(configuration)
     assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
 
   def testScala3AnnotatedMainConfigurationRemainsBundled(): Unit =
@@ -78,6 +85,7 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     val configuration = created.getConfiguration.asInstanceOf[ApplicationConfiguration]
     assertEquals("launch", configuration.getMainClassName)
     assertEquals(getModule, configuration.getConfigurationModule.getModule)
+    assertBundledExecutionState(configuration)
 
   def testAllBundledFrameworkFindersPreserveSuiteDiscoveryAcrossActivation(): Unit =
     installFrameworkMarkers()
@@ -121,6 +129,16 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     assertEquals(activeGutters, gutterSignatures)
     assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
 
+  def testSyntaxOnlyFormattingIsInvariantAndDoesNotStartTheBackend(): Unit =
+    val source = "object Main{def value:Int=42}"
+
+    val active   = formatted("ActiveFormatting.scala", source)
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    val inactive = formatted("InactiveFormatting.scala", source)
+
+    assertEquals(inactive, active)
+    assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+
   private def installFrameworkMarkers(): Unit =
     val _ = myFixture.addClass("package org.scalatest; public abstract class Suite {}")
     val _ = myFixture.addClass("package munit; public abstract class Suite {}")
@@ -150,6 +168,28 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     assertNotNull(s"no configuration for $suiteName", created)
     assertEquals(expectedClass, created.getConfiguration.getClass.getSimpleName)
     assertTrue(created.getConfiguration.getName, created.getConfiguration.getName.contains(suiteName))
+    assertBundledExecutionState(created.getConfiguration)
+
+  private def assertBundledExecutionState(configuration: RunConfiguration): Unit =
+    val executor = DefaultRunExecutor()
+    val runner   = DefaultJavaProgramRunner()
+    val settings = RunnerAndConfigurationSettingsImpl(RunManagerImpl.getInstanceImpl(getProject), configuration)
+    val state    = configuration.getState(
+      executor,
+      ExecutionEnvironment(executor, runner, settings, getProject)
+    )
+
+    assertNotNull(s"${configuration.getClass.getName} did not create a bundled execution state", state)
+
+  private def formatted(name: String, source: String): String =
+    val file = myFixture.configureByText(name, source)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit =
+          val _ = CodeStyleManager.getInstance(getProject).reformat(file)
+    )
+    file.getText
 
   private def descendants[A <: com.intellij.psi.PsiElement: reflect.ClassTag](
       element: com.intellij.psi.PsiElement
