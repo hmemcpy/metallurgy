@@ -11,8 +11,10 @@ import com.intellij.ide.util.treeView.smartTree.TreeElement
 import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
 import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
 import com.intellij.lang.refactoring.InlineActionHandler
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.lang.annotation.{AnnotationSession, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.progress.{EmptyProgressIndicator, ProgressIndicator}
@@ -44,6 +46,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.parameterInfo.ScalaFunctionParameterInfoHandler
 import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.changeInfo.ScalaChangeInfo
 import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.{ScalaChangeSignatureProcessor, ScalaParameterInfo}
+import org.jetbrains.plugins.scala.lang.refactoring.extractMethod.ScalaExtractMethodHandler
+import org.jetbrains.plugins.scala.lang.refactoring.introduceVariable.ScalaIntroduceVariableHandler
 import org.jetbrains.plugins.scala.overrideImplement.ScalaOIUtil
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.structureView.ScalaStructureViewModel
@@ -341,6 +345,50 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
 
     assertTrue(file.getText, file.getText.contains("def renamed"))
     assertTrue(file.getText, file.getText.contains("val result = renamed(42)"))
+
+  def testIntroduceVariableRetainsBundledRefactoringWithCompilerSnapshot(): Unit =
+    val source     =
+      """object Main:
+        |  def run = println(<selection>List(1).head</selection>)
+        |""".stripMargin
+    val file       = myFixture.configureByText("IntroduceVariable.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    publish(expression, "String")
+    val options    = ScalaIntroduceVariableHandler.ReplaceTestOptions(
+      definitionName = Some("extracted"),
+      useInplaceRefactoring = Some(false)
+    )
+    val context    = SimpleDataContext.builder
+      .add(ScalaIntroduceVariableHandler.ForcedReplaceTestOptions, options)
+      .build()
+
+    new ScalaIntroduceVariableHandler().invoke(getProject, myFixture.getEditor, file, context)
+    PsiDocumentManager.getInstance(getProject).commitDocument(myFixture.getEditor.getDocument)
+
+    assertTrue(file.getText, file.getText.contains("val extracted"))
+    assertTrue(file.getText, file.getText.contains("List(1).head"))
+    assertTrue(file.getText, file.getText.contains("println(extracted)"))
+
+  def testExtractMethodUsesCurrentCompilerResultType(): Unit =
+    val source     =
+      """object Main {
+        |  def run = {
+        |    val result = <selection>List(1).head</selection>
+        |    println(result)
+        |  }
+        |}
+        |""".stripMargin
+    val file       = myFixture.configureByText("ExtractMethod.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    publish(expression, "String")
+    val context    = SimpleDataContext.getProjectContext(getProject)
+
+    new ScalaExtractMethodHandler().invoke(getProject, myFixture.getEditor, file, context)
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    PsiDocumentManager.getInstance(getProject).commitDocument(myFixture.getEditor.getDocument)
+
+    assertTrue(file.getText, file.getText.contains("def testMethodName: String"))
+    assertTrue(file.getText, file.getText.contains("testMethodName"))
 
   def testQuickInfoUsesRealBulkCompilerSnapshot(): Unit =
     val source     =
