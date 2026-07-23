@@ -10,6 +10,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -18,8 +19,10 @@ import com.intellij.openapi.editor.event.{DocumentEvent, DocumentListener}
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.{ModuleListener, Project}
-import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener, OrderEnumerator}
-import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener}
+import com.intellij.openapi.util.Computable
+import com.intellij.openapi.vfs.{VirtualFile, VirtualFileManager}
+import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
 import java.io.File
@@ -48,6 +51,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val compilerOptionsGenerations = new AtomicLong(0L)
   private val backend                    = Scala3CompilerBackend.get(project)
   private val backendPublisher           = new CompilerBackendSnapshotPublisher(project)
+  private val modelRefreshFiles          = ConcurrentHashMap.newKeySet[String]()
+  private val modelRefreshAlarm          = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
 
   private def cache: PcDiagnosticSetCache   = PcDiagnosticSetCache.get(project)
   private def renderer: PcHighlightRenderer = PcHighlightRenderer.get(project)
@@ -58,7 +63,13 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       ModuleRootListener.TOPIC,
       new ModuleRootListener:
         override def rootsChanged(event: ModuleRootEvent): Unit =
-          managedModules.foreach(discard)
+          val modules = managedModules
+          modules.foreach: module =>
+            Option(moduleFiles.get(module)).foreach:
+              _.forEach: url =>
+                val _ = modelRefreshFiles.add(url)
+            discard(module)
+          scheduleModelRefresh()
     )
     connection.subscribe(
       ModuleListener.TOPIC,
@@ -105,13 +116,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             .getOrElse(scheduleCreation(module, scalaVersion))
 
   def sessionForFile(file: VirtualFile): Option[PcSession] =
-    for
-      module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
-      session  <- sessionFor(module)
-      snapshot <- snapshotFor(file)
-    yield
-      val _ = analyze(session, module, snapshot)
-      session
+    filePreparation(file).flatMap: (module, snapshot) =>
+      sessionFor(module).map: session =>
+        val _ = analyze(session, module, snapshot)
+        session
 
   /** Creates the file's session if necessary and completes after its exact document version has been retypechecked. */
   private[metallurgy] def prepareFile(file: VirtualFile): CompletableFuture[Option[PcSession]] =
@@ -120,8 +128,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
     */
   private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    (Option(ModuleUtilCore.findModuleForFile(file, project)), snapshotFor(file)) match
-      case (Some(module), Some(snapshot)) if isManaged(module) =>
+    filePreparation(file) match
+      case Some((module, snapshot)) if isManaged(module) =>
         val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
         val future = backendInFlight.computeIfAbsent(
           key,
@@ -130,18 +138,14 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         future.whenComplete: (_, _) =>
           val _ = backendInFlight.remove(key, future)
         future
-      case _                                                   => CompletableFuture.completedFuture(None)
+      case _                                             => CompletableFuture.completedFuture(None)
 
   private def prepareFile(
       file: VirtualFile,
       awaitBackendPublication: Boolean,
       retries: Int
   ): CompletableFuture[Option[PcSession]] =
-    val preparation =
-      for
-        module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
-        snapshot <- snapshotFor(file)
-      yield module -> snapshot
+    val preparation = filePreparation(file)
 
     preparation match
       case None                     => CompletableFuture.completedFuture(None)
@@ -207,6 +211,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     inFlight.clear()
     backendInFlight.values().asScala.foreach(_.cancel(true))
     backendInFlight.clear()
+    modelRefreshAlarm.cancelAllRequests()
+    modelRefreshFiles.clear()
     moduleFiles.clear()
     availability.clear()
     sessions.values().asScala.foreach(_.session.close())
@@ -217,6 +223,21 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
 
   private def managedModules: Set[Module] =
     sessions.keySet().asScala.toSet ++ inFlight.keySet().asScala.map(_.module)
+
+  private def scheduleModelRefresh(): Unit =
+    modelRefreshAlarm.cancelAllRequests()
+    modelRefreshAlarm.addRequest(() => refreshFilesAfterModelChange(), 100)
+
+  private def refreshFilesAfterModelChange(): Unit =
+    val urls = modelRefreshFiles.iterator().asScala.toVector
+    urls.foreach(modelRefreshFiles.remove)
+    urls.foreach: url =>
+      Option(VirtualFileManager.getInstance.findFileByUrl(url)).foreach: file =>
+        val schedule: Runnable = () =>
+          val module = ModuleUtilCore.findModuleForFile(file, project)
+          if module != null && isManaged(module) then
+            val _ = prepareCompilerBackend(file)
+        ApplicationManager.getApplication.runReadAction(schedule)
 
   private def scheduleRetypecheck(event: DocumentEvent): Unit =
     for
@@ -231,8 +252,20 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     Set("scala", "sc", "sbt", "mill").contains(file.getExtension)
 
   private def snapshotFor(file: VirtualFile): Option[PcSnapshot] =
-    Option(FileDocumentManager.getInstance.getDocument(file)).map: document =>
-      PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
+    readAction: () =>
+      Option(FileDocumentManager.getInstance.getDocument(file)).map: document =>
+        PcSnapshot(file.getUrl, document.getModificationStamp, document.getText)
+
+  private def filePreparation(file: VirtualFile): Option[(Module, PcSnapshot)] =
+    readAction: () =>
+      for
+        module   <- Option(ModuleUtilCore.findModuleForFile(file, project))
+        snapshot <- snapshotFor(file)
+      yield module -> snapshot
+
+  private def readAction[A](computation: Computable[A]): A =
+    if ApplicationManager.getApplication.isReadAccessAllowed then computation.compute()
+    else ApplicationManager.getApplication.runReadAction(computation)
 
   /** Schedule a debounced retypecheck and mirror its outcome into the diagnostic-set cache: `Pending` while in flight,
     * `CurrentSuccess`/`Failed` when it settles. A superseded outcome leaves the newer pending state intact (the cache
@@ -353,9 +386,23 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       val _ = availability.remove(module)
       None
     else
-      val classpath     = buildClasspath(module)
+      val descriptor    = readModelDescriptor(module) match
+        case CompilerBackendModelState.Ready(value)        => value
+        case CompilerBackendModelState.Pending(detail)     =>
+          val _ = availability.put(module, PcBackendAvailability.Pending(scalaVersion))
+          log.info(s"Compiler backend model is pending for ${module.getName}: $detail")
+          return None
+        case CompilerBackendModelState.Unavailable(detail) =>
+          recordUnavailable(
+            module,
+            PcBackendUnavailableReason.ProjectModel(detail),
+            s"Compiler backend model is unavailable for ${module.getName}: $detail"
+          )
+          return None
+        case CompilerBackendModelState.Inactive            => return None
+      val classpath     = PcSessionManager.exposeBestEffortTastyRoots(descriptor.compileClasspath)
       val classpathHash = PcSessionManager.fingerprintClasspath(classpath)
-      val compilerFlags = ScalacFlagsService.get(project).presentationCompilerOptions(module)
+      val compilerFlags = descriptor.compilerOptions
       val updated       = sessions.compute(
         module,
         (_, existing) =>
@@ -413,23 +460,21 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     val cause = Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq.lastOption.getOrElse(error)
     Option(cause.getMessage).getOrElse(cause.getClass.getSimpleName)
 
-  private def buildClasspath(module: Module): Seq[File] =
-    val roots = OrderEnumerator
-      .orderEntries(module)
-      .recursively
-      .compileOnly
-      .withoutSdk
-      .classes
-      .getPathsList
-      .getPathList
-      .asScala
-      .map(new File(_))
-      .toSeq
-    PcSessionManager.exposeBestEffortTastyRoots(roots)
+  private def modelDescriptor(module: Module): Option[CompilerBackendModuleDescriptor] =
+    readModelDescriptor(module) match
+      case CompilerBackendModelState.Ready(descriptor) => Some(descriptor)
+      case _                                           => None
+
+  private def readModelDescriptor(module: Module): CompilerBackendModelState =
+    val computation: Computable[CompilerBackendModelState] = () => CompilerBackendModuleDescriptor.read(project, module)
+    readAction(computation)
 
   private def sessionEntryIsCurrent(module: Module, entry: SessionEntry): Boolean =
-    entry.compilerOptions == ScalacFlagsService.get(project).presentationCompilerOptions(module) &&
-      entry.classpathHash == PcSessionManager.fingerprintClasspath(buildClasspath(module))
+    modelDescriptor(module).exists: descriptor =>
+      entry.compilerOptions == descriptor.compilerOptions &&
+        entry.classpathHash == PcSessionManager.fingerprintClasspath(
+          PcSessionManager.exposeBestEffortTastyRoots(descriptor.compileClasspath)
+        )
 
   private def applicationIsDispatchThread: Boolean =
     Option(ApplicationManager.getApplication).exists(_.isDispatchThread)
@@ -464,6 +509,7 @@ private[metallurgy] enum PcBackendAvailability:
 
 private[metallurgy] enum PcBackendUnavailableReason:
   case MissingScalaVersion
+  case ProjectModel(detail: String)
   case ArtifactPreparation(scalaVersion: String, detail: String)
   case SessionCreation(scalaVersion: String, detail: String)
 

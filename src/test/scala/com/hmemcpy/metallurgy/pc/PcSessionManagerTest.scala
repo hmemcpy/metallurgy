@@ -13,7 +13,8 @@ import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.{Project, RootsChangeRescanningInfo}
+import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.roots.OrderEnumerator
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.{LocalFileSystem, VirtualFile}
@@ -555,6 +556,35 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       settings.setEnabled(getModule, enabled = false)
       setCompilerBasedHighlighting(enabled = false)
       deleteRecursively(temporaryDirectory)
+
+  def testCommittedProjectModelChangeRetiresAndRepopulatesTrackedFiles(): Unit =
+    val settings = MetallurgySettings(getProject)
+    val manager  = PcSessionManager.get(getProject)
+
+    try
+      settings.setEnabled(getModule, enabled = true)
+      setCompilerBasedHighlighting(enabled = true)
+      val file  = myFixture.configureByText("ModelReload.scala", "object ModelReload:\n  val value = List(1).head\n")
+      val first = PlatformTestUtil.waitForFuture(manager.prepareCompilerBackend(file.getVirtualFile), 60000L).get
+
+      val rootsChange: Runnable = () =>
+        ProjectRootManagerEx
+          .getInstanceEx(getProject)
+          .makeRootsChange(() => (), RootsChangeRescanningInfo.TOTAL_RESCAN)
+      ApplicationManager.getApplication.runWriteAction(rootsChange)
+
+      PlatformTestUtil.waitWithEventsDispatching(
+        "compiler backend did not repopulate after the committed project-model change",
+        () => first.isClosed && manager.activeSessionCount == 1,
+        10000
+      )
+      val replacement = manager.sessionFor(getModule).get
+      assertNotSame(first, replacement)
+      assertTrue(manager.sessionFor(getModule).contains(replacement))
+    finally
+      manager.discard(getModule)
+      settings.setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
 
   def testArtifactResolutionFailureReturnsUnavailableWithoutEscaping(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-session-unavailable")
