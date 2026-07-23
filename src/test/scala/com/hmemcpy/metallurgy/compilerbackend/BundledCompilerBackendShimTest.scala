@@ -31,7 +31,7 @@ import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.ScalaChangeS
 import org.jetbrains.plugins.scala.lang.refactoring.inline.method.ScalaInlineMethodHandler
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertNull, assertSame, assertTrue}
 import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
 
 import java.lang.management.ManagementFactory
@@ -502,6 +502,26 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
   def testUnavailableBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Unavailable)
 
+  def testIntroduceVariableAdapterFallsThroughForPendingStaleAndInactiveSnapshots(): Unit =
+    val file       = myFixture.configureByText("IntroduceVariableFallback.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .asScala
+      .find(_.getText == "List(1).head")
+      .get
+    val version    = myFixture.getEditor.getDocument.getModificationStamp
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    backend.publishState(expression, CompilerBackendRole.ExpressionExact, version, CompilerBackendState.Pending)
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
+    val _ = backend.publish(expression, CompilerBackendRole.ExpressionExact, version - 1L, "String")
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
+    val _ = backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
   def testFailedBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Failed)
 
@@ -664,6 +684,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.compilerTypeTarget.nonEmpty)
     assertTrue(discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
     assertTrue(discovery.resolveTargets.exists(_.methodName == "doResolve"))
+    assertTrue(discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
     assertTrue(discovery.patternImplementations.size >= 17)
     discovery.patternImplementations.foreach: pattern =>
       assertTrue(pattern.className, pattern.hookClassName.nonEmpty)
@@ -726,6 +747,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       assertTrue(variant, discovery.compilerTypeTarget.nonEmpty)
       assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
       assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "doResolve"))
+      assertTrue(variant, discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
       assertTrue(variant, discovery.patternImplementations.exists(_.className.endsWith(s".$variant.PatternImpl")))
       val roles = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
       assertTrue(
@@ -857,6 +879,17 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         interfaces = Array(stableRoot),
         methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "doResolve", stableResolve))
       )
+    classes += syntheticClass(
+      s"org/jetbrains/plugins/scala/lang/refactoring/$variant/FutureRefactoringTypes",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PRIVATE,
+          "typeWithoutExpected",
+          "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
+        )
+      )
+    )
     classes.result()
 
   private def syntheticClass(

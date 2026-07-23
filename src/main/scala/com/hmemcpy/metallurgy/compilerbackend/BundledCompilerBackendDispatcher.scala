@@ -26,6 +26,14 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
         semanticTypeFor(psi, CompilerBackendRole.values(roleOrdinal))
       case _                                                                                      => null
 
+  def rawExpressionType(element: Object): Object =
+    element match
+      case psi: PsiElement =>
+        semanticTypeFor(psi, CompilerBackendRole.ExpressionExact) match
+          case result: Either[?, ?] => result.fold(_ => null, _.asInstanceOf[Object])
+          case _                    => null
+      case _               => null
+
   private def lookup(element: ScTypeElement): Object =
     try
       val module = ModuleUtilCore.findModuleForPsiElement(element)

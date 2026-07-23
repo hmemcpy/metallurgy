@@ -66,6 +66,8 @@ private[compilerbackend] object BundledCompilerBackendShim:
       loadTarget(targetLoader, target.className).map(target -> _)
     val resolveClasses       = discovery.resolveTargets.flatMap: target =>
       loadTarget(targetLoader, target.className).map(target -> _)
+    val rawTypeClasses       = discovery.rawTypeTargets.flatMap: target =>
+      loadTarget(targetLoader, target.className).map(target -> _)
     val semanticLoadFailures =
       discovery.semanticTargets.filterNot(target => semanticClasses.exists(_._1 == target)).map(_.className) ++
         discovery.compilerTypeTarget.toVector
@@ -74,16 +76,22 @@ private[compilerbackend] object BundledCompilerBackendShim:
     val resolveLoadFailures  = discovery.resolveTargets
       .filterNot(target => resolveClasses.exists(_._1 == target))
       .map(_.className)
+    val rawTypeLoadFailures  = discovery.rawTypeTargets
+      .filterNot(target => rawTypeClasses.exists(_._1 == target))
+      .map(_.className)
     val semanticMethods      = ConcurrentHashMap.newKeySet[String]()
     val resolveMethods       = ConcurrentHashMap.newKeySet[String]()
+    val rawTypeMethods       = ConcurrentHashMap.newKeySet[String]()
     val compilerTypeHooked   = new AtomicBoolean(false)
     val transformer          = transformerFor(
       targetLoader,
       discovery.semanticTargets,
       discovery.compilerTypeTarget,
       discovery.resolveTargets,
+      discovery.rawTypeTargets,
       semanticMethods,
       resolveMethods,
+      rawTypeMethods,
       compilerTypeHooked
     )
     val bridge               = defineBridge(anchorClass)
@@ -101,11 +109,18 @@ private[compilerbackend] object BundledCompilerBackendShim:
         .distinct
         .flatMap: targetClass =>
           retransform(instrumentation, targetClass).left.toOption
+      val rawTypeTransformFailures  = rawTypeClasses
+        .map(_._2)
+        .distinct
+        .flatMap: targetClass =>
+          retransform(instrumentation, targetClass).left.toOption
       val expectedMethods           = semanticClasses.flatMap: (target, _) =>
         target.methods.map(methodKey(target, _))
       val missingMethods            = expectedMethods.filterNot(semanticMethods.contains)
       val expectedResolve           = resolveClasses.map((target, _) => resolveMethodKey(target))
       val missingResolve            = expectedResolve.filterNot(resolveMethods.contains)
+      val expectedRawType           = rawTypeClasses.map((target, _) => rawTypeMethodKey(target))
+      val missingRawType            = expectedRawType.filterNot(rawTypeMethods.contains)
       val unavailableRoots          = (
         discovery.unavailableRoots ++
           semanticLoadFailures.map(name => s"unloadable $name") ++
@@ -117,7 +132,10 @@ private[compilerbackend] object BundledCompilerBackendShim:
         discovery.unavailableAdapters ++
           resolveLoadFailures.map(name => s"unloadable $name") ++
           resolveTransformFailures ++
-          missingResolve.map(key => s"untransformed $key")
+          missingResolve.map(key => s"untransformed $key") ++
+          rawTypeLoadFailures.map(name => s"unloadable $name") ++
+          rawTypeTransformFailures ++
+          missingRawType.map(key => s"untransformed $key")
       ).distinct
       if semanticMethods.isEmpty || unavailableRoots.nonEmpty then
         uninstallBackend(bridge)
@@ -128,7 +146,9 @@ private[compilerbackend] object BundledCompilerBackendShim:
       else
         bridge.getMethod("enable").invoke(null)
         CompilerBackendShimStatus.Enabled(
-          semanticMethods.size() + resolveMethods.size() + Option.when(compilerTypeHooked.get())(1).sum,
+          semanticMethods.size() + resolveMethods.size() + rawTypeMethods.size() + Option
+            .when(compilerTypeHooked.get())(1)
+            .sum,
           unavailableAdapters
         )
     catch
@@ -156,12 +176,15 @@ private[compilerbackend] object BundledCompilerBackendShim:
       semanticTargets: Vector[CompilerBackendShimTarget],
       compilerTypeTarget: Option[CompilerTypeShimTarget],
       resolveTargets: Vector[CompilerBackendResolveShimTarget],
+      rawTypeTargets: Vector[CompilerBackendRawTypeShimTarget],
       semanticMethods: java.util.Set[String],
       resolveMethods: java.util.Set[String],
+      rawTypeMethods: java.util.Set[String],
       compilerTypeHooked: AtomicBoolean
   ): ClassFileTransformer =
     val semanticByName = semanticTargets.iterator.map(target => target.internalName -> target).toMap
     val resolveByName  = resolveTargets.iterator.map(target => target.internalName -> target).toMap
+    val rawTypeByName  = rawTypeTargets.iterator.map(target => target.internalName -> target).toMap
     new ClassFileTransformer:
       override def transform(
           loader: ClassLoader,
@@ -178,12 +201,15 @@ private[compilerbackend] object BundledCompilerBackendShim:
               resolveByName.get(className) match
                 case Some(target) => transformResolveTarget(classfileBuffer, target, resolveMethods)
                 case None         =>
-                  compilerTypeTarget.filter(_.internalName == className) match
-                    case Some(target) =>
-                      val output = transformCompilerType(classfileBuffer, target)
-                      compilerTypeHooked.set(true)
-                      output
-                    case None         => null
+                  rawTypeByName.get(className) match
+                    case Some(target) => transformRawTypeTarget(classfileBuffer, target, rawTypeMethods)
+                    case None         =>
+                      compilerTypeTarget.filter(_.internalName == className) match
+                        case Some(target) =>
+                          val output = transformCompilerType(classfileBuffer, target)
+                          compilerTypeHooked.set(true)
+                          output
+                        case None         => null
 
   private def transformSemanticTarget(
       original: Array[Byte],
@@ -324,6 +350,51 @@ private[compilerbackend] object BundledCompilerBackendShim:
       val _ = transformedMethods.add(resolveMethodKey(target))
     writer.toByteArray
 
+  private def transformRawTypeTarget(
+      original: Array[Byte],
+      target: CompilerBackendRawTypeShimTarget,
+      transformedMethods: java.util.Set[String]
+  ): Array[Byte] =
+    val reader = new ClassReader(original)
+    val writer = new ClassWriter(reader, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS)
+    var found  = false
+    reader.accept(
+      new ClassVisitor(Opcodes.ASM9, writer):
+        override def visitMethod(
+            access: Int,
+            name: String,
+            descriptor: String,
+            signature: String,
+            exceptions: Array[String]
+        ): MethodVisitor =
+          val originalMethod = super.visitMethod(access, name, descriptor, signature, exceptions)
+          if name != target.methodName || descriptor != target.descriptor then originalMethod
+          else
+            found = true
+            new AdviceAdapter(Opcodes.ASM9, originalMethod, access, name, descriptor):
+              override def onMethodEnter(): Unit =
+                val fallback = new Label()
+                visitVarInsn(Opcodes.ALOAD, target.elementLocal)
+                visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  BridgeInternalName,
+                  "rawExpressionType",
+                  "(Ljava/lang/Object;)Ljava/lang/Object;",
+                  false
+                )
+                visitInsn(Opcodes.DUP)
+                visitJumpInsn(Opcodes.IFNULL, fallback)
+                visitTypeInsn(Opcodes.CHECKCAST, "org/jetbrains/plugins/scala/lang/psi/types/ScType")
+                visitInsn(Opcodes.ARETURN)
+                visitLabel(fallback)
+                visitInsn(Opcodes.POP)
+      ,
+      ClassReader.EXPAND_FRAMES
+    )
+    if found then
+      val _ = transformedMethods.add(rawTypeMethodKey(target))
+    writer.toByteArray
+
   private def defineBridge(anchorClass: Class[?]): Class[?] =
     try Class.forName(BridgeClassName, false, anchorClass.getClassLoader)
     catch
@@ -349,6 +420,8 @@ private[compilerbackend] object BundledCompilerBackendShim:
       BundledCompilerBackendDispatcher.semanticType(element, role.intValue())
     val resolveBackend: BiFunction[Object, Object, Object]       = (reference, bundled) =>
       ScalaPluginSemanticBridge.referenceResolution(reference, bundled)
+    val rawExpressionTypeBackend: Function[Object, Object]       = expression =>
+      BundledCompilerBackendDispatcher.rawExpressionType(expression)
     val _                                                        = bridge.getMethod("install", classOf[Function[?, ?]]).invoke(null, declaredTypeBackend)
     val _                                                        = bridge
       .getMethod("installCompilerTypeBackend", classOf[Function[?, ?]])
@@ -359,6 +432,9 @@ private[compilerbackend] object BundledCompilerBackendShim:
     val _                                                        = bridge
       .getMethod("installReferenceBackend", classOf[BiFunction[?, ?, ?]])
       .invoke(null, resolveBackend)
+    val _                                                        = bridge
+      .getMethod("installRawExpressionTypeBackend", classOf[Function[?, ?]])
+      .invoke(null, rawExpressionTypeBackend)
 
   private def uninstallBackend(bridge: Class[?]): Unit =
     val _ = bridge.getMethod("uninstall").invoke(null)
@@ -367,4 +443,7 @@ private[compilerbackend] object BundledCompilerBackendShim:
     s"${target.internalName}.${method.name}${method.descriptor}"
 
   private def resolveMethodKey(target: CompilerBackendResolveShimTarget): String =
+    s"${target.internalName}.${target.methodName}${target.descriptor}"
+
+  private def rawTypeMethodKey(target: CompilerBackendRawTypeShimTarget): String =
     s"${target.internalName}.${target.methodName}${target.descriptor}"

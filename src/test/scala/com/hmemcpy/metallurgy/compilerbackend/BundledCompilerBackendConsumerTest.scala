@@ -48,6 +48,7 @@ import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.changeInfo.S
 import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.{ScalaChangeSignatureProcessor, ScalaParameterInfo}
 import org.jetbrains.plugins.scala.lang.refactoring.extractMethod.ScalaExtractMethodHandler
 import org.jetbrains.plugins.scala.lang.refactoring.introduceVariable.ScalaIntroduceVariableHandler
+import org.jetbrains.plugins.scala.lang.formatting.settings.ScalaCodeStyleSettings
 import org.jetbrains.plugins.scala.overrideImplement.ScalaOIUtil
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.structureView.ScalaStructureViewModel
@@ -362,10 +363,15 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       .add(ScalaIntroduceVariableHandler.ForcedReplaceTestOptions, options)
       .build()
 
-    new ScalaIntroduceVariableHandler().invoke(getProject, myFixture.getEditor, file, context)
-    PsiDocumentManager.getInstance(getProject).commitDocument(myFixture.getEditor.getDocument)
+    val codeStyle = ScalaCodeStyleSettings.getInstance(getProject)
+    val previous  = codeStyle.TYPE_ANNOTATION_LOCAL_DEFINITION
+    codeStyle.TYPE_ANNOTATION_LOCAL_DEFINITION = true
+    try
+      new ScalaIntroduceVariableHandler().invoke(getProject, myFixture.getEditor, file, context)
+      PsiDocumentManager.getInstance(getProject).commitDocument(myFixture.getEditor.getDocument)
+    finally codeStyle.TYPE_ANNOTATION_LOCAL_DEFINITION = previous
 
-    assertTrue(file.getText, file.getText.contains("val extracted"))
+    assertTrue(file.getText, file.getText.contains("val extracted: String"))
     assertTrue(file.getText, file.getText.contains("List(1).head"))
     assertTrue(file.getText, file.getText.contains("println(extracted)"))
 

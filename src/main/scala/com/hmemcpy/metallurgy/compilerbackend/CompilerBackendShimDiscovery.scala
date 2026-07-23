@@ -37,6 +37,14 @@ private[compilerbackend] final case class CompilerBackendResolveShimTarget(
 ):
   val internalName: String = className.replace('.', '/')
 
+private[compilerbackend] final case class CompilerBackendRawTypeShimTarget(
+    className: String,
+    methodName: String,
+    descriptor: String,
+    elementLocal: Int
+):
+  val internalName: String = className.replace('.', '/')
+
 private[compilerbackend] final case class CompilerBackendPatternImplementation(
     className: String,
     hookClassName: Option[String]
@@ -46,6 +54,7 @@ private[compilerbackend] final case class CompilerBackendShimDiscoveryResult(
     semanticTargets: Vector[CompilerBackendShimTarget],
     compilerTypeTarget: Option[CompilerTypeShimTarget],
     resolveTargets: Vector[CompilerBackendResolveShimTarget],
+    rawTypeTargets: Vector[CompilerBackendRawTypeShimTarget],
     patternImplementations: Vector[CompilerBackendPatternImplementation],
     unavailableRoots: Vector[String],
     unavailableAdapters: Vector[String]
@@ -152,12 +161,16 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     )
   )
 
-  private val CompilerTypeClass      = "org/jetbrains/plugins/scala/lang/psi/impl/CompilerType$"
-  private val CompilerTypeMethod     = "apply"
-  private val CompilerTypeDescriptor = "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
-  private val ExpectedTypeMethod     = "expectedType$extension"
-  private val ExpectedTypeDescriptor =
+  private val CompilerTypeClass         = "org/jetbrains/plugins/scala/lang/psi/impl/CompilerType$"
+  private val CompilerTypeMethod        = "apply"
+  private val CompilerTypeDescriptor    = "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
+  private val ExpectedTypeMethod        = "expectedType$extension"
+  private val ExpectedTypeDescriptor    =
     "(Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern;)Lscala/Option;"
+  private val RefactoringPrefix         = "org/jetbrains/plugins/scala/lang/refactoring/"
+  private val RefactoringTypeMethod     = "typeWithoutExpected"
+  private val RefactoringTypeDescriptor =
+    "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
 
   def discover(anchor: Class[?]): Either[String, CompilerBackendShimDiscoveryResult] =
     Option(anchor.getProtectionDomain)
@@ -196,8 +209,23 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
           )
     val targets             = combineTargets(ordinaryTargets ++ expectedTargets)
     val resolveTargets      = resolveRootSpecs.flatMap(spec => resolveTargetsFor(spec, shapes))
+    val rawTypeTargets      = shapes.valuesIterator
+      .filter(_.internalName.startsWith(RefactoringPrefix))
+      .flatMap: shape =>
+        shape.methods.collect:
+          case method
+              if method.hasBody && method.name == RefactoringTypeMethod &&
+                method.descriptor == RefactoringTypeDescriptor =>
+            CompilerBackendRawTypeShimTarget(
+              shape.internalName.replace('/', '.'),
+              method.name,
+              method.descriptor,
+              if method.isStatic then 0 else 1
+            )
+      .toVector
     val unavailableAdapters = resolveRootSpecs.collect:
       case spec if !resolveTargets.exists(target => target.methodName == spec.methodName) => spec.label
+    val rawTypeUnavailable  = Option.when(rawTypeTargets.isEmpty)("introduce variable exact type")
     val patterns            = shapes.valuesIterator
       .filter(shape => shape.isConcrete && derivesFrom(shape.internalName, PatternRoot, shapes))
       .map: shape =>
@@ -218,11 +246,12 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       semanticTargets = targets,
       compilerTypeTarget = compilerTypeTarget(shapes),
       resolveTargets = resolveTargets,
+      rawTypeTargets = rawTypeTargets,
       patternImplementations = patterns,
       unavailableRoots = unavailable ++ expectedMissing.toVector ++ uncovered.map(pattern =>
         s"pattern implementation ${pattern.className}"
       ),
-      unavailableAdapters = unavailableAdapters
+      unavailableAdapters = unavailableAdapters ++ rawTypeUnavailable
     )
 
   private def resolveTargetsFor(
@@ -349,7 +378,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
         .toVector
 
   private def isPsiClass(path: String): Boolean =
-    path.startsWith(PsiPrefix) && path.endsWith(".class")
+    path.endsWith(".class") &&
+      (path.startsWith(PsiPrefix) || path.startsWith(RefactoringPrefix))
 
   private def readShape(bytes: Array[Byte]): ClassShape =
     var result: Option[ClassShape] = None

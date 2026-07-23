@@ -13,6 +13,7 @@ public final class MetallurgyCompilerBackendBridge {
   private static volatile Function<Object, Object> compilerTypeBackend;
   private static volatile BiFunction<Object, Integer, Object> semanticTypeBackend;
   private static volatile BiFunction<Object, Object, Object> referenceBackend;
+  private static volatile Function<Object, Object> rawExpressionTypeBackend;
   private static volatile boolean enabled;
   private static final Object MISSING_COMPILER_TYPE = new Object();
 
@@ -34,6 +35,10 @@ public final class MetallurgyCompilerBackendBridge {
     referenceBackend = candidate;
   }
 
+  public static void installRawExpressionTypeBackend(Function<Object, Object> candidate) {
+    rawExpressionTypeBackend = candidate;
+  }
+
   public static Object missingCompilerType() {
     return MISSING_COMPILER_TYPE;
   }
@@ -52,6 +57,7 @@ public final class MetallurgyCompilerBackendBridge {
     compilerTypeBackend = null;
     semanticTypeBackend = null;
     referenceBackend = null;
+    rawExpressionTypeBackend = null;
   }
 
   public static Object declaredType(Object element) {
@@ -76,5 +82,10 @@ public final class MetallurgyCompilerBackendBridge {
   public static Object referenceResolution(Object reference, Object bundledResult) {
     BiFunction<Object, Object, Object> current = referenceBackend;
     return enabled && current != null ? current.apply(reference, bundledResult) : bundledResult;
+  }
+
+  public static Object rawExpressionType(Object expression) {
+    Function<Object, Object> current = rawExpressionTypeBackend;
+    return enabled && current != null ? current.apply(expression) : null;
   }
 }

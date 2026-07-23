@@ -217,7 +217,7 @@ eventually asks an expression for its type; it does not mean the entire subsyste
 | Reference resolve / navigation | `ScReferenceExpressionImpl.multiResolveScala` invokes bundled `ReferenceExpressionResolver` (`.../psi/impl/expr/ScReferenceExpressionImpl.scala:59-79`); qualified stable references have their own slot reader (`.../psi/impl/base/ScStableCodeReferenceImpl.scala:470-493`). | **Indirectly** for qualifier/member resolution; **no** for general symbol identity. | Feed pc receiver types, then add a pc-symbol resolver/synthetic PSI bridge for compiler-only declarations. |
 | Semantic annotator / type mismatch highlighting | `ScalaAnnotator` and element annotators call `getTypeAfterImplicitConversion`; `ScExpressionAnnotator` uses it with expected types (`.../annotator/ScalaAnnotator.scala:92-106`; `.../annotator/element/ScExpressionAnnotator.scala:168-181`). CBH overlays compiler diagnostics separately. | **Yes** for actual expression type. | Expected types, implicit adaptation, and non-expression annotations remain bundled unless the backend dispatcher covers them. Do not duplicate CBH diagnostics. |
 | Inspections / analyzer | Mixed. Type-aware inspections call expression typing or generic `Typeable`; others call `bind()` or are syntactic. Collection inspections explicitly expose a `Typeable` backed by `getTypeWithoutImplicits` (`.../codeInspection/collections/package.scala:516,550-560`). | **Mixed.** | The dispatcher covers type reads; the symbol bridge covers bind-based checks. Syntactic inspections remain unchanged. |
-| Scala UAST (experimental) | Registered behind experimental feature `scala.uast.enabled` (`intellij-scala/scala/uast/resources/scalaCommunity.uast.xml:12-18`). Its adapters commonly call Scala PSI ``type()`` and convert `ScType` to `PsiType`; expression, method-call receiver/return, method, variable, parameter, and resolve adapters also have specialized paths (`.../uast/baseAdapters/ScUExpression.scala:27-28`; `.../uast/expressions/ScUMethodCallExpression.scala:57-83`; `.../uast/declarations/ScUMethod.scala:58-62`). | **Mixed.** Generic expression UAST reads inherit backend types, while specialized declaration, resolve, light-variable, and conversion paths can bypass or lose them. | Test feature disabled/enabled. Audit `getExpressionType`, `getReturnType`, `getReceiverType`, variable/parameter `PsiType`, resolve, evaluation, conversion, caching, and UAST inspections; add bridge work only for demonstrated gaps. |
+| Scala UAST (experimental) | Registered behind experimental feature `scala.uast.enabled` (`intellij-scala/scala/uast/resources/scalaCommunity.uast.xml:12-18`). Its adapters call Scala PSI ``type()`` and convert `ScType` to `PsiType`; method-call receiver and return types are independent reads (`.../uast/expressions/ScUMethodCallExpression.scala:56-62`). The language plugin is globally unavailable whenever any open project has built-in highlighting disabled or incremental highlighting enabled (`.../uast/package.scala:21-25`), which includes the retained CBH failsafe. | **Yes through direct Scala UAST conversion.** Characterization proves expression, declaration, method-call receiver/return, source and compiler-only resolve/multi-resolve, conversion, evaluation, and post-reparse freshness inherit the backend. Platform `UastFacade` discovery remains unavailable under CBH. | Do not register a global replacement UAST language plugin: it could leak behavior into inactive modules/projects. Keep direct converter parity tested and report platform UAST inspections as an explicit CBH-era integration gap until the failsafe is removed or a project/module-scoped platform seam exists. The bundled specialized receiver model may still render its existing `Function1<Object, Object>` result independently of backend correctness. |
 | Inline/type hints | Bundled `ScalaTypeHintsPass` calls value/variable ``type()`` and function `returnType` (`intellij-scala/scala/codeInsight/src/org/jetbrains/plugins/scala/codeInsight/hints/ScalaTypeHintsPass.scala:127-147`). `ImplicitHintsPass` hosts the pass and also runs implicit-resolution hints (`.../codeInsight/implicits/ImplicitHintsPass.scala:42-80,108-135`). | **Untyped values only**, through their initializer; not explicit definitions/functions. | Keep Metallurgy's pc hint renderer initially; after full dispatcher coverage, decide whether it is redundant. |
 | Structure view | Primarily stub/source text: function return type text, val/var declared type text, and parameter type text (`intellij-scala/scala/structure-view/src/org/jetbrains/plugins/scala/structureView/element/Function.scala:20-26`; `ValOrVar.scala:20-24`; `element/package.scala:17-28`). Anonymous-class location resolves a type element (`ScalaAnonymousClassTreeElement.scala:36-42`). | **Generally no.** | This is presentation of source syntax, not inferred semantics. Leave it alone except compiler-synthetic declarations and the anonymous-class resolver. |
 | Find usages | Searchers use indices/`ReferencesSearch` and validate with `PsiReference.resolve`/`isReferenceTo`; e.g. `ObjectTraitReferenceSearcher` (`.../findUsages/typeDef/ObjectTraitReferenceSearcher.scala:12-32`) and operator search (`.../findUsages/OperatorAndBacktickedSearcher.scala:25-100`). | **Only indirectly** when resolve depends on a qualifier type. | Stable pc-symbol-to-PSI identity is required for compiler-only members; type strings alone are insufficient. |
@@ -229,8 +229,11 @@ snapshot. Extract method reads the selected expression's `ScType` directly
 (`ScalaExtractMethodHandler.scala:42-65,79-88`). Introduce Variable is a measured exception: for non-function
 expressions, `ScalaRefactoringUtil.typeWithoutExpected` builds a synthetic dummy function and recomputes the copied
 expression through bundled inference (`ScalaRefactoringUtil.scala:266-287`), so the current physical expression's
-compiler result does not automatically reach the generated type annotation. This path needs a narrow refactoring
-handoff or must suppress an unsafe explicit annotation when compiler and bundled results differ. Change signature
+compiler result does not automatically reach the generated type annotation. The bridge therefore discovers that
+single method by owner, argument and result shape and returns the current physical expression's cached `ScType` before
+the bundled synthetic-copy path runs. If the shape is absent or changes, only this optional adapter is reported
+unavailable and the original implementation runs. Current, pending, stale and inactive fixtures guard the handoff.
+Change signature
 accepts only a `PsiMethod`/`ScMethodLike` after checking writability (`ScalaChangeSignatureHandler.scala:59-86`), and
 inline accepts only writable `ScalaPsiElement` instances (`ScalaInlineActionHandler.scala:42-68`). Compiler-only light
 symbols intentionally satisfy neither contract and are non-writable: rename, change signature, extract/introduce,
@@ -318,6 +321,13 @@ fixture. It installs only mechanisms whose full contract is proven. Unknown Scal
 failed probe disables that adapter and records a structured reason; it never partially patches a root. Instrumentation
 may be process-wide, but its first branch derives the module and checks `ModuleDetectionService.isActive(module)`.
 The false branch delegates directly, adds no cache entry, and schedules no work.
+
+Introduce Variable is the one measured consumer-specific exception. No platform or Scala-plugin EP carries an exact
+type into `ScalaRefactoringUtil.typeWithoutExpected`, and the implementation deliberately discards the physical
+expression by constructing a dummy function from text. The bridge wraps only this discovered method and supplies the
+current expression role; pending, stale, inactive, or incompatible shapes execute the bundled body unchanged. This
+adapter is optional and independently reported, so a minor, EAP, or nightly plugin change cannot disable the central
+type roots.
 
 Replacing `ScalaPsiManager` alone is insufficient. It owns caches and invalidation but not most type production:
 `ScExpression`, `ScTypeElement`, definition/function/parameter implementations, patterns, and reference implementations
@@ -773,7 +783,12 @@ are no-go results.
     highlighting, type-intrinsic, document-compilation, project-loader, debugger, or worksheet paths after the normal
     suite passes. Compatibility discovery must inventory gates for every target build, classify their reachability, and
     test every gate that changes a semantic root, model input, cache, scheduler, or classloader boundary. Unknown enabled
-    gates produce structured diagnostics; they must not silently select a version-specific adapter.
+    gates produce structured diagnostics; they must not silently select a version-specific adapter. The retained CBH
+    failsafe itself disables the bundled Scala UAST language plugin globally (`scala/uast/.../package.scala:21-25`) and
+    disables type-aware debugger breakpoint variants and structural search through equivalent guards
+    (`scala/debugger/.../package.scala:14-15`; `scala/structural-search/.../ScalaStructuralSearchProfile.scala:51-55`).
+    These are explicit integration states to characterize, not reasons to install global replacements that would affect
+    inactive modules.
 18. **Unknown consumer surfaces.** A backend can pass type fixtures while breaking a feature that consumes resolve,
     Java `PsiType`, compiler indices, synthetic PSI, or project metadata indirectly—for example a test-framework finder,
     parameter-info handler, hierarchy provider, debugger evaluator, or code generator. Graduation requires a
