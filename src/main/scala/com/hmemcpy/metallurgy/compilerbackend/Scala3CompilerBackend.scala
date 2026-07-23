@@ -12,9 +12,10 @@ import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager, PsiNameIdentifierOwner, PsiNamedElement}
 import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
-import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiElementFactory
@@ -579,6 +580,8 @@ final class Scala3CompilerBackend(project: Project):
         element.isInstanceOf[ScFunction]
       case CompilerBackendRole.Parameter                                               =>
         element.isInstanceOf[ScParameter]
+      case CompilerBackendRole.Reference                                               =>
+        element.isInstanceOf[ScReferenceExpression] || element.isInstanceOf[ScStableCodeReference]
 
   private def currentPsiFile(fileUrl: String): Option[PsiFile] =
     Option(VirtualFileManager.getInstance().findFileByUrl(fileUrl))

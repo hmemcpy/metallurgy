@@ -11,6 +11,7 @@ private[metallurgy] enum CompilerBackendRole:
   case Parameter
   case Pattern
   case PatternExpected
+  case Reference
 
 private[metallurgy] object CompilerBackendRole:
   def fromOrdinalOrNone(ordinal: Int): Option[CompilerBackendRole] =

@@ -1,20 +1,22 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
-import com.hmemcpy.metallurgy.pc.{PcSessionManager, PcSnapshot}
+import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot, PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
+import com.intellij.psi.{PsiElement, SmartPointerManager}
+import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
-import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScFunction,
   ScFunctionDefinition,
@@ -22,6 +24,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScGivenDefinition
+import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
 import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
@@ -248,6 +251,137 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertEquals("scala.Ordering[Int]", rendered(givenAlias.returnType))
     assertEquals("scala.Ordering[_root_.scala.Predef.String]", rendered(structural.givenType()))
 
+  def testCompilerOnlyReferenceResolvesToStableGenerationIdentity(): Unit =
+    val file       = myFixture.configureByText("CompilerOnlyResolve.scala", "val result = generatedMember")
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("Main.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val first  = reference.multiResolveScala(false)
+    val second = reference.multiResolveScala(false)
+    assertEquals(1, first.length)
+    assertSame(first.head.element, second.head.element)
+    assertEquals("generatedMember", first.head.element.getName)
+    assertTrue(first.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    assertSame(first.head.element, first.head.element.getNavigationElement)
+    assertTrue(
+      ReferencesSearch
+        .search(first.head.element, first.head.element.getUseScope)
+        .findAll()
+        .stream()
+        .anyMatch(_.getElement == reference)
+    )
+
+    backend.markPending(
+      getModule,
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      generation.copy(session = 2L)
+    )
+    assertFalse(first.head.element.isValid)
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+
+  def testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity(): Unit =
+    val file       = myFixture.configureByText("CompilerOnlyStableResolve.scala", "val result: GeneratedType = ???")
+    val reference  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScStableCodeReference])
+      .stream()
+      .filter(_.getText == "GeneratedType")
+      .findFirst()
+      .orElseThrow()
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("Main.GeneratedType", "GeneratedType", Set("Type"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "GeneratedType",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved = reference.multiResolveScala(false)
+    assertEquals(1, resolved.length)
+    assertEquals("GeneratedType", resolved.head.element.getName)
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+
+  def testCompilerSymbolDoesNotReplaceNonEmptyBundledResolution(): Unit =
+    val file       = myFixture.configureByText(
+      "BundledResolvePrecedence.scala",
+      "object Existing\nval result = Existing"
+    )
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val bundled    = reference.multiResolveScala(false)
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("Main.CompilerOnly", "CompilerOnly", Set("Module"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "CompilerOnly.type",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(bundled.nonEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved = reference.multiResolveScala(false)
+    assertEquals(bundled.length, resolved.length)
+    assertSame(bundled.head.element, resolved.head.element)
+    assertFalse(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+
+  def testInactiveReferenceBridgeReturnsTheExactBundledResult(): Unit =
+    val file      = myFixture.configureByText("InactiveReference.scala", "val result = unresolved")
+    val reference = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val bundled   = Array.empty[ScalaResolveResult]
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertSame(bundled, ScalaPluginSemanticBridge.referenceResolution(reference, bundled))
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+
   def testPendingBackendFallsThroughToBundledType(): Unit =
     assertStateFallsThrough(CompilerBackendState.Pending)
 
@@ -412,7 +546,10 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     val roles     = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
 
     assertTrue(discovery.unavailableRoots.mkString(", "), discovery.unavailableRoots.isEmpty)
+    assertTrue(discovery.unavailableAdapters.mkString(", "), discovery.unavailableAdapters.isEmpty)
     assertTrue(discovery.compilerTypeTarget.nonEmpty)
+    assertTrue(discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
+    assertTrue(discovery.resolveTargets.exists(_.methodName == "doResolve"))
     assertTrue(discovery.patternImplementations.size >= 17)
     discovery.patternImplementations.foreach: pattern =>
       assertTrue(pattern.className, pattern.hookClassName.nonEmpty)
@@ -420,7 +557,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       CompilerBackendRole.values.forall(role =>
         roles.contains(role) || role == CompilerBackendRole.Binding ||
           role == CompilerBackendRole.ExpressionExact || role == CompilerBackendRole.ExpressionWidened ||
-          role == CompilerBackendRole.Function
+          role == CompilerBackendRole.Function || role == CompilerBackendRole.Reference
       )
     )
 
@@ -454,13 +591,27 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.unavailableRoots.nonEmpty)
     assertFalse(discovery.canInstall)
 
+  def testMissingResolverAdapterDoesNotDisableCompatibleTypeRoots(): Unit =
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(
+      compatiblePluginShape("future", includeResolve = false)
+    )
+
+    assertTrue(discovery.unavailableRoots.mkString(", "), discovery.canInstall)
+    assertEquals(
+      Set("expression reference resolution", "stable reference resolution"),
+      discovery.unavailableAdapters.toSet
+    )
+
   def testStableEapAndNightlyPluginShapesUseTheSameStructuralDiscovery(): Unit =
     val discoveries = Seq("stable", "eap", "nightly").map: variant =>
       variant -> CompilerBackendShimDiscovery.discoverClassBytes(compatiblePluginShape(variant))
 
     discoveries.foreach: (variant, discovery) =>
       assertTrue(s"$variant: ${discovery.unavailableRoots.mkString(", ")}", discovery.canInstall)
+      assertTrue(variant, discovery.unavailableAdapters.isEmpty)
       assertTrue(variant, discovery.compilerTypeTarget.nonEmpty)
+      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
+      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "doResolve"))
       assertTrue(variant, discovery.patternImplementations.exists(_.className.endsWith(s".$variant.PatternImpl")))
       val roles = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
       assertTrue(
@@ -512,7 +663,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
 
-  private def compatiblePluginShape(variant: String): Vector[Array[Byte]] =
+  private def compatiblePluginShape(variant: String, includeResolve: Boolean = true): Vector[Array[Byte]] =
     val eitherDescriptor = "()Lscala/util/Either;"
     val roots            = Seq(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/ScValueOrVariable"  -> ("type", eitherDescriptor),
@@ -561,6 +712,37 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         )
       )
     )
+    if includeResolve then
+      val resolveArray      = "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
+      val expressionRoot    = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScReferenceExpression"
+      val expressionResolve = s"(Z)$resolveArray"
+      classes += syntheticClass(
+        expressionRoot,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(
+          SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "multiResolveScala", expressionResolve)
+        )
+      )
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/ReferenceExpressionImpl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(expressionRoot),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "multiResolveScala", expressionResolve))
+      )
+      val stableRoot        = "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference"
+      val stableResolve     =
+        s"(Lorg/jetbrains/plugins/scala/lang/resolve/processor/BaseProcessor;Z)$resolveArray"
+      classes += syntheticClass(
+        stableRoot,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "doResolve", stableResolve))
+      )
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/StableCodeReferenceImpl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(stableRoot),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "doResolve", stableResolve))
+      )
     classes.result()
 
   private def syntheticClass(

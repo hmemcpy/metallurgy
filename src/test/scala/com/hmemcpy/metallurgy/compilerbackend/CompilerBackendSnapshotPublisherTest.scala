@@ -13,11 +13,13 @@ import com.intellij.util.FileContentUtilCore
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScTypeDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertNull, assertSame, assertThrows, assertTrue}
 import com.intellij.util.IncorrectOperationException
@@ -260,12 +262,29 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val reference = children[org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression](file)
       .find(_.getText == "answer")
       .get
-    val target    = Scala3CompilerBackend
-      .get(getProject)
-      .symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact)
-      .orNull
+    val backend   = Scala3CompilerBackend.get(getProject)
+    val target    = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).orNull
 
     assertSame(function, target)
+    assertSame(function, backend.symbolTargetFor(reference, getModule, CompilerBackendRole.Reference).orNull)
+
+  def testRealCompilerSnapshotMapsStableReferenceSymbolToSourcePsi(): Unit =
+    val source = "class Answer\nval result: Answer = new Answer\n"
+    val file   = myFixture.configureByText("RealStableSymbolNavigation.scala", source)
+    val _      = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val definition = child[ScTypeDefinition](file)
+    val references = children[ScStableCodeReference](file).filter(_.getText == "Answer")
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(references.nonEmpty)
+    references.foreach: reference =>
+      assertSame(definition, backend.symbolTargetFor(reference, getModule, CompilerBackendRole.Reference).orNull)
 
   def testRejectedGenerationCannotPublishStateOrMutateCompilerTypeSlot(): Unit =
     val file       = myFixture.configureByText("RejectedSnapshot.scala", "object Main:\n  val value = 1\n")

@@ -10,3 +10,4 @@ private[metallurgy] enum PcTypedTreeRole:
   case FunctionResult
   case Pattern
   case PatternExpected
+  case Reference

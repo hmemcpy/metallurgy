@@ -29,6 +29,14 @@ private[compilerbackend] final case class CompilerTypeShimTarget(
 ):
   val internalName: String = className.replace('.', '/')
 
+private[compilerbackend] final case class CompilerBackendResolveShimTarget(
+    className: String,
+    methodName: String,
+    descriptor: String,
+    elementLocal: Int
+):
+  val internalName: String = className.replace('.', '/')
+
 private[compilerbackend] final case class CompilerBackendPatternImplementation(
     className: String,
     hookClassName: Option[String]
@@ -37,8 +45,10 @@ private[compilerbackend] final case class CompilerBackendPatternImplementation(
 private[compilerbackend] final case class CompilerBackendShimDiscoveryResult(
     semanticTargets: Vector[CompilerBackendShimTarget],
     compilerTypeTarget: Option[CompilerTypeShimTarget],
+    resolveTargets: Vector[CompilerBackendResolveShimTarget],
     patternImplementations: Vector[CompilerBackendPatternImplementation],
-    unavailableRoots: Vector[String]
+    unavailableRoots: Vector[String],
+    unavailableAdapters: Vector[String]
 ):
   def canInstall: Boolean = semanticTargets.nonEmpty && unavailableRoots.isEmpty
 
@@ -70,10 +80,19 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       resultInternalName: String
   )
 
+  private final case class ResolveRootSpec(
+      label: String,
+      rootInternalName: String,
+      methodName: String,
+      descriptor: String
+  )
+
   private val PsiPrefix        = "org/jetbrains/plugins/scala/lang/psi/"
   private val EitherResult     = "scala/util/Either"
   private val EitherDescriptor = "()Lscala/util/Either;"
   private val PatternRoot      = "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern"
+  private val ResolveResult    = "org/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult"
+  private val ResolveArray     = s"[L$ResolveResult;"
 
   private val rootSpecs = Vector(
     RootSpec(
@@ -118,6 +137,21 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     )
   )
 
+  private val resolveRootSpecs = Vector(
+    ResolveRootSpec(
+      "expression reference resolution",
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScReferenceExpression",
+      "multiResolveScala",
+      s"(Z)$ResolveArray"
+    ),
+    ResolveRootSpec(
+      "stable reference resolution",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference",
+      "doResolve",
+      s"(Lorg/jetbrains/plugins/scala/lang/resolve/processor/BaseProcessor;Z)$ResolveArray"
+    )
+  )
+
   private val CompilerTypeClass      = "org/jetbrains/plugins/scala/lang/psi/impl/CompilerType$"
   private val CompilerTypeMethod     = "apply"
   private val CompilerTypeDescriptor = "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
@@ -140,8 +174,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     discover(classes.iterator.map(readShape).map(shape => shape.internalName -> shape).toMap)
 
   private def discover(shapes: Map[String, ClassShape]): CompilerBackendShimDiscoveryResult =
-    val ordinaryTargets = rootSpecs.flatMap(spec => targetsFor(spec, shapes))
-    val expectedTargets = shapes.valuesIterator.flatMap: shape =>
+    val ordinaryTargets     = rootSpecs.flatMap(spec => targetsFor(spec, shapes))
+    val expectedTargets     = shapes.valuesIterator.flatMap: shape =>
       shape.methods
         .filter(method =>
           method.hasBody && method.name == ExpectedTypeMethod && method.descriptor == ExpectedTypeDescriptor
@@ -160,8 +194,11 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
               )
             )
           )
-    val targets         = combineTargets(ordinaryTargets ++ expectedTargets)
-    val patterns        = shapes.valuesIterator
+    val targets             = combineTargets(ordinaryTargets ++ expectedTargets)
+    val resolveTargets      = resolveRootSpecs.flatMap(spec => resolveTargetsFor(spec, shapes))
+    val unavailableAdapters = resolveRootSpecs.collect:
+      case spec if !resolveTargets.exists(target => target.methodName == spec.methodName) => spec.label
+    val patterns            = shapes.valuesIterator
       .filter(shape => shape.isConcrete && derivesFrom(shape.internalName, PatternRoot, shapes))
       .map: shape =>
         val hookOwner = concreteMethodOwner(shape.internalName, "type", EitherDescriptor, shapes)
@@ -171,20 +208,42 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
         )
       .toVector
       .sortBy(_.className)
-    val uncovered       = patterns.filter(_.hookClassName.isEmpty)
-    val unavailable     = rootSpecs.collect:
+    val uncovered           = patterns.filter(_.hookClassName.isEmpty)
+    val unavailable         = rootSpecs.collect:
       case spec if !targets.exists(_.methods.exists(_.role == spec.role)) => spec.label
-    val expectedMissing = Option.when(!targets.exists(_.methods.exists(_.role == CompilerBackendRole.PatternExpected)))(
+    val expectedMissing     = Option.when(!targets.exists(_.methods.exists(_.role == CompilerBackendRole.PatternExpected)))(
       "pattern expected type"
     )
     CompilerBackendShimDiscoveryResult(
       semanticTargets = targets,
       compilerTypeTarget = compilerTypeTarget(shapes),
+      resolveTargets = resolveTargets,
       patternImplementations = patterns,
       unavailableRoots = unavailable ++ expectedMissing.toVector ++ uncovered.map(pattern =>
         s"pattern implementation ${pattern.className}"
-      )
+      ),
+      unavailableAdapters = unavailableAdapters
     )
+
+  private def resolveTargetsFor(
+      spec: ResolveRootSpec,
+      shapes: Map[String, ClassShape]
+  ): Vector[CompilerBackendResolveShimTarget] =
+    shapes.valuesIterator
+      .filter(shape => derivesFrom(shape.internalName, spec.rootInternalName, shapes))
+      .flatMap: shape =>
+        shape.methods.collect:
+          case method
+              if method.hasBody && !method.isStatic && method.name == spec.methodName &&
+                method.descriptor == spec.descriptor =>
+            CompilerBackendResolveShimTarget(
+              shape.internalName.replace('/', '.'),
+              method.name,
+              method.descriptor,
+              elementLocal = 0
+            )
+      .toVector
+      .sortBy(_.className)
 
   private def targetsFor(spec: RootSpec, shapes: Map[String, ClassShape]): Vector[CompilerBackendShimTarget] =
     val candidates =

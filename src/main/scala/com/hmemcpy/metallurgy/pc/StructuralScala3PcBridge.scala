@@ -211,12 +211,20 @@ private final class StructuralScala3PcBridge(
       candidates: Vector[ReflectedTreeCandidate]
   ): Vector[ReflectedTreeCandidate] =
     candidates
-      .groupBy(candidate => (candidate.range, candidate.role, candidate.symbol.map(_.id)))
+      .groupBy: candidate =>
+        val symbolId = Option.unless(candidate.role == PcTypedTreeRole.Reference)(candidate.symbol.map(_.id)).flatten
+        (candidate.range, candidate.role, symbolId)
       .valuesIterator
       .map(_.minBy(candidate => (candidate.rank, -candidate.treeSize, candidate.tree.getClass.getName)))
       .toVector
       .sortBy(candidate =>
-        (candidate.range.startOffset, candidate.range.endOffset, candidate.role.ordinal, candidate.rank)
+        (
+          candidate.range.startOffset,
+          candidate.range.endOffset,
+          candidate.role.ordinal,
+          candidate.rank,
+          candidate.symbol.fold("")(_.id)
+        )
       )
 
   private def buildTypedTreeSnapshot(
@@ -317,7 +325,8 @@ private final class StructuralScala3PcBridge(
       Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.Function),
       Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.FunctionResult),
       Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.Pattern),
-      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.PatternExpected)
+      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.PatternExpected),
+      Option.when(symbolAvailable && kind.isReference)(PcTypedTreeRole.Reference)
     ).flatten.distinct
 
   private def startsAfterTypeAscription(sourceText: String, startOffset: Int): Boolean =
@@ -355,6 +364,7 @@ private final class StructuralScala3PcBridge(
       case PcTypedTreeRole.FunctionResult    => 0
       case PcTypedTreeRole.Pattern           => if kind == TypedTreeKind.Bind then 0 else 1
       case PcTypedTreeRole.PatternExpected   => if kind == TypedTreeKind.Bind then 0 else 1
+      case PcTypedTreeRole.Reference         => if kind == TypedTreeKind.Select then 0 else 1
 
   private def symbolDetails(
       symbol: AnyRef,
@@ -606,6 +616,7 @@ private enum TypedTreeKind(simpleName: String):
   case Apply     extends TypedTreeKind("Apply")
   case TypeApply extends TypedTreeKind("TypeApply")
   case Select    extends TypedTreeKind("Select")
+  case Ident     extends TypedTreeKind("Ident")
   case Typed     extends TypedTreeKind("Typed")
   case ValDef    extends TypedTreeKind("ValDef")
   case DefDef    extends TypedTreeKind("DefDef")
@@ -613,6 +624,8 @@ private enum TypedTreeKind(simpleName: String):
   case Other     extends TypedTreeKind("")
 
   def matches(tree: AnyRef): Boolean = tree.getClass.getSimpleName == simpleName
+
+  def isReference: Boolean = this == TypedTreeKind.Select || this == TypedTreeKind.Ident
 
 private object TypedTreeKind:
   def from(tree: AnyRef): TypedTreeKind =

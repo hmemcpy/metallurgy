@@ -1,13 +1,18 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
+import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
+import com.intellij.psi.{PsiElement, PsiNamedElement}
+import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.nio.file.Path
+import scala.util.control.NonFatal
 
 /** IntelliJ-side compatibility seam for bundled Scala-plugin semantics.
   *
@@ -18,6 +23,31 @@ object ScalaPluginSemanticBridge:
 
   def install(): CompilerBackendShimStatus =
     BundledCompilerBackendShim.install()
+
+  /** Preserves every non-empty bundled result and supplies a compiler symbol only when bundled resolution found
+    * nothing. This method is the sole Scala-plugin-private construction point used by the resolver wrapper.
+    */
+  def referenceResolution(reference: Object, bundledResult: Object): Object =
+    bundledResult match
+      case results: Array[?] if results.nonEmpty => bundledResult
+      case _: Array[?]                           =>
+        try
+          reference match
+            case element: PsiElement =>
+              val module = ModuleUtilCore.findModuleForPsiElement(element)
+              if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then bundledResult
+              else
+                Scala3CompilerBackend
+                  .get(element.getProject)
+                  .symbolTargetFor(element, module, CompilerBackendRole.Reference)
+                  .collect:
+                    case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
+                  .getOrElse(bundledResult)
+            case _                   => bundledResult
+        catch
+          case control: ControlFlowException => throw control
+          case NonFatal(_)                   => bundledResult
+      case _                                     => bundledResult
 
   private lazy val bundledClassLoader: ClassLoader =
     Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.CompilerType").getClassLoader

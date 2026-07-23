@@ -20,8 +20,9 @@ import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiFile, PsiManager, Sm
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
-import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 
@@ -198,6 +199,11 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
       case PcTypedTreeRole.PatternExpected   =>
         exactAncestor[ScPattern](file, entry.range)
           .map(mapping(_, CompilerBackendRole.PatternExpected, entry.renderedType, symbol))
+          .toSeq
+      case PcTypedTreeRole.Reference         =>
+        exactAncestor[ScReferenceExpression](file, entry.range)
+          .orElse(exactAncestor[ScStableCodeReference](file, entry.range))
+          .map(mapping(_, CompilerBackendRole.Reference, entry.renderedType, symbol))
           .toSeq
 
   private def mapping(

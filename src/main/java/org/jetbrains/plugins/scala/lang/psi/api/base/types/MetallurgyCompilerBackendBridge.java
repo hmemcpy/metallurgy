@@ -12,6 +12,7 @@ public final class MetallurgyCompilerBackendBridge {
   private static volatile Function<Object, Object> backend;
   private static volatile Function<Object, Object> compilerTypeBackend;
   private static volatile BiFunction<Object, Integer, Object> semanticTypeBackend;
+  private static volatile BiFunction<Object, Object, Object> referenceBackend;
   private static volatile boolean enabled;
   private static final Object MISSING_COMPILER_TYPE = new Object();
 
@@ -27,6 +28,10 @@ public final class MetallurgyCompilerBackendBridge {
 
   public static void installSemanticTypeBackend(BiFunction<Object, Integer, Object> candidate) {
     semanticTypeBackend = candidate;
+  }
+
+  public static void installReferenceBackend(BiFunction<Object, Object, Object> candidate) {
+    referenceBackend = candidate;
   }
 
   public static Object missingCompilerType() {
@@ -46,6 +51,7 @@ public final class MetallurgyCompilerBackendBridge {
     backend = null;
     compilerTypeBackend = null;
     semanticTypeBackend = null;
+    referenceBackend = null;
   }
 
   public static Object declaredType(Object element) {
@@ -65,5 +71,10 @@ public final class MetallurgyCompilerBackendBridge {
   public static Object semanticType(Object element, int role) {
     BiFunction<Object, Integer, Object> current = semanticTypeBackend;
     return enabled && current != null ? current.apply(element, role) : null;
+  }
+
+  public static Object referenceResolution(Object reference, Object bundledResult) {
+    BiFunction<Object, Object, Object> current = referenceBackend;
+    return enabled && current != null ? current.apply(reference, bundledResult) : bundledResult;
   }
 }
