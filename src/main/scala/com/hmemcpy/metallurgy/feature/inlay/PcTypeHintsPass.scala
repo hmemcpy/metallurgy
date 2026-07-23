@@ -8,10 +8,9 @@ import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.util.{Disposer, Key}
 import com.intellij.openapi.util.text.StringUtil
-import com.intellij.psi.{PsiElement, PsiFile}
+import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.DocumentUtil
-import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypedPatternLike
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScValueOrVariableDefinition
 
 import scala.collection.mutable
@@ -60,7 +59,7 @@ final class PcTypeHintsPass(editor: Editor, file: PsiFile) extends EditorBoundHi
         case definition: ScValueOrVariableDefinition if definition.bindings.size == 1 =>
           definition.expr.foreach: _ =>
             definition.bindings.headOption.foreach: binding =>
-              if !PcTypeHintsPass.hasDeclaredType(binding) then
+              if !PcTypeHintsPass.hasDeclaredType(definition) then
                 backend.stateForActiveModule(binding, module, CompilerBackendRole.Binding) match
                   case CompilerBackendState.Current(tpe, _) if PcTypeHintsPass.isMeaningful(tpe) =>
                     hints += PcTypeHintsPass.TypeHint(
@@ -80,8 +79,8 @@ object PcTypeHintsPass:
   private def owns(inlay: com.intellij.openapi.editor.Inlay[?]): Boolean =
     inlay.getUserData(InlayKey) != null
 
-  private def hasDeclaredType(binding: PsiElement): Boolean =
-    Option(binding.getParent).exists(_.isInstanceOf[ScTypedPatternLike])
+  private def hasDeclaredType(definition: ScValueOrVariableDefinition): Boolean =
+    definition.typeElement.isDefined
 
   private def isMeaningful(renderedType: String): Boolean =
     val trimmed = renderedType.trim
