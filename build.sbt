@@ -49,7 +49,7 @@ lazy val intellijTestFrameworkDependencies = Seq(
   "com.jetbrains.intellij.java"     % "java-test-framework-shared"  % intellijTestFrameworkVersion,
   "com.jetbrains.intellij.java"     % "java-test-framework-backend" % intellijTestFrameworkVersion,
   "com.jetbrains.intellij.java"     % "java-test-framework"         % intellijTestFrameworkVersion
-)
+).map(_.exclude("com.google.protobuf", "protobuf-java"))
 
 lazy val intellijPluginDependencies = Seq(
   "com.intellij.java".toPlugin,
