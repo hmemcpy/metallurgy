@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{
+  PcCompilerSymbol,
   PcSnapshotCurrency,
   PcSourceRange,
   PcTypedTreeEntry,
@@ -150,60 +151,60 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
 
   private def mappingsFor(file: PsiFile, entry: PcTypedTreeEntry): Seq[CompilerBackendMapping] =
     ProgressManager.checkCanceled()
-    val symbolId = entry.symbol.map(_.id)
+    val symbol = entry.symbol
     entry.role match
       case PcTypedTreeRole.ExpressionExact   =>
         exactAncestor[ScExpression](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.ExpressionExact, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.ExpressionExact, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.ExpressionWidened =>
         exactAncestor[ScExpression](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.ExpressionWidened, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.ExpressionWidened, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.Declared          =>
         exactAncestor[ScTypeElement](file, entry.range).toSeq.flatMap: declared =>
           val parameter = Option(PsiTreeUtil.getParentOfType(declared, classOf[ScParameter], true))
             .filter(_.typeElement.contains(declared))
-            .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbolId))
-          mapping(declared, CompilerBackendRole.DeclaredType, entry.renderedType, symbolId) +: parameter.toSeq
+            .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbol))
+          mapping(declared, CompilerBackendRole.DeclaredType, entry.renderedType, symbol) +: parameter.toSeq
       case PcTypedTreeRole.Inferred          =>
         exactAncestor[ScValueOrVariableDefinition](file, entry.range).toSeq.flatMap: definition =>
           val binding =
             if definition.bindings.size == 1 then
-              definition.bindings.map(mapping(_, CompilerBackendRole.Binding, entry.renderedType, symbolId))
+              definition.bindings.map(mapping(_, CompilerBackendRole.Binding, entry.renderedType, symbol))
             else Seq.empty
-          mapping(definition, CompilerBackendRole.Definition, entry.renderedType, symbolId) +: binding
+          mapping(definition, CompilerBackendRole.Definition, entry.renderedType, symbol) +: binding
       case PcTypedTreeRole.Parameter         =>
         exactAncestor[ScParameter](file, entry.range)
           .filter(_.typeElement.isEmpty)
-          .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.Parameter, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.Function          =>
         exactAncestor[ScFunction](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.Function, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.Function, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.FunctionResult    =>
         exactAncestor[ScFunction](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.FunctionResult, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.FunctionResult, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.Pattern           =>
         exactAncestor[ScPattern](file, entry.range).toSeq.flatMap:
           case binding: ScBindingPattern =>
             Seq(
-              mapping(binding, CompilerBackendRole.Binding, entry.renderedType, symbolId),
-              mapping(binding, CompilerBackendRole.Pattern, entry.renderedType, symbolId)
+              mapping(binding, CompilerBackendRole.Binding, entry.renderedType, symbol),
+              mapping(binding, CompilerBackendRole.Pattern, entry.renderedType, symbol)
             )
-          case pattern                   => Seq(mapping(pattern, CompilerBackendRole.Pattern, entry.renderedType, symbolId))
+          case pattern                   => Seq(mapping(pattern, CompilerBackendRole.Pattern, entry.renderedType, symbol))
       case PcTypedTreeRole.PatternExpected   =>
         exactAncestor[ScPattern](file, entry.range)
-          .map(mapping(_, CompilerBackendRole.PatternExpected, entry.renderedType, symbolId))
+          .map(mapping(_, CompilerBackendRole.PatternExpected, entry.renderedType, symbol))
           .toSeq
 
   private def mapping(
       element: PsiElement,
       role: CompilerBackendRole,
       renderedType: String,
-      symbolId: Option[String]
+      symbol: Option[PcCompilerSymbol]
   ): CompilerBackendMapping =
     val range = element.getTextRange
     CompilerBackendMapping(
@@ -211,7 +212,8 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
       PcSourceRange(range.getStartOffset, range.getEndOffset),
       role,
       renderedType,
-      symbolId
+      symbol.map(_.id),
+      symbol
     )
 
   private def exactAncestor[A <: PsiElement: reflect.ClassTag](file: PsiFile, range: PcSourceRange): Option[A] =

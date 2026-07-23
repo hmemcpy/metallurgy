@@ -19,7 +19,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.{assertEquals, assertNotSame, assertNull, assertTrue}
+import org.junit.Assert.{assertEquals, assertNotSame, assertNull, assertSame, assertTrue}
 
 import java.nio.file.Path
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -110,6 +110,55 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       assertCurrent(pattern, CompilerBackendRole.Binding, expected)
       assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
 
+  def testSnapshotSymbolNavigationMapsReferenceToStableSourcePsi(): Unit =
+    val source    = "object Main:\n  def answer: Int = 42\n  val result = answer\n"
+    val file      = myFixture.configureByText("MappedSymbol.scala", source)
+    val document  = myFixture.getEditor.getDocument
+    val function  = child[ScFunction](file)
+    val reference = children[org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression](file)
+      .find(_.getText == "answer")
+      .get
+    val nameRange = function.getNameIdentifier.getTextRange
+    val symbol    = PcCompilerSymbol(
+      "Main.answer():Int@19:25",
+      Set("Method"),
+      Some("Main"),
+      Some(
+        PcNavigationTarget(
+          file.getVirtualFile.getUrl,
+          PcSourceRange(nameRange.getStartOffset, nameRange.getEndOffset)
+        )
+      )
+    )
+    val entries   = Seq(
+      symbolEntry(function, PcTypedTreeRole.Function, "(Main.answer : => Int)", symbol),
+      symbolEntry(reference, PcTypedTreeRole.ExpressionExact, "Int", symbol)
+    )
+
+    publishSynchronously(typedTreeSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, entries))
+
+    val backend = Scala3CompilerBackend.get(getProject)
+    val first   = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).orNull
+    val second  = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).orNull
+    assertSame(function, first)
+    assertSame(first, second)
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
+    assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
+
+    backend.markPending(
+      getModule,
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp + 1L,
+      generation.copy(session = generation.session + 1L)
+    )
+    assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
+
+    backend.clear(getModule)
+    assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
+
   def testRealCompilerSnapshotMapsAllSupportedPsiRoles(): Unit =
     val source =
       """object Main:
@@ -145,6 +194,27 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       assertCurrent(pattern, CompilerBackendRole.Binding, expected)
       assertCurrent(pattern, CompilerBackendRole.Pattern, expected)
       assertCurrent(pattern, CompilerBackendRole.PatternExpected, expected)
+
+  def testRealCompilerSnapshotMapsReferenceSymbolToSourcePsi(): Unit =
+    val source = "object Main:\n  def answer: Int = 42\n  val result = answer\n"
+    val file   = myFixture.configureByText("RealSymbolNavigation.scala", source)
+    val _      = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val function  = child[ScFunction](file)
+    val reference = children[org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression](file)
+      .find(_.getText == "answer")
+      .get
+    val target    = Scala3CompilerBackend
+      .get(getProject)
+      .symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact)
+      .orNull
+
+    assertSame(function, target)
 
   def testRejectedGenerationCannotPublishStateOrMutateCompilerTypeSlot(): Unit =
     val file       = myFixture.configureByText("RejectedSnapshot.scala", "object Main:\n  val value = 1\n")
@@ -664,6 +734,15 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
   private def entry(element: PsiElement, role: PcTypedTreeRole, renderedType: String): PcTypedTreeEntry =
     val range = element.getTextRange
     PcTypedTreeEntry(PcSourceRange(range.getStartOffset, range.getEndOffset), role, renderedType, None)
+
+  private def symbolEntry(
+      element: PsiElement,
+      role: PcTypedTreeRole,
+      renderedType: String,
+      symbol: PcCompilerSymbol
+  ): PcTypedTreeEntry =
+    val range = element.getTextRange
+    PcTypedTreeEntry(PcSourceRange(range.getStartOffset, range.getEndOffset), role, renderedType, Some(symbol))
 
   private def typedTreeSnapshot(
       fileUri: String,

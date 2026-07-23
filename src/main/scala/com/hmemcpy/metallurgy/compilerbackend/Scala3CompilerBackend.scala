@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.pc.{PcSnapshotCurrency, PcSourceRange}
+import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSnapshotCurrency, PcSourceRange}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.Document
@@ -10,7 +10,7 @@ import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
-import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
+import com.intellij.psi.{PsiElement, PsiFile, PsiManager, PsiNameIdentifierOwner, PsiNamedElement}
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
@@ -40,6 +40,7 @@ final class Scala3CompilerBackend(project: Project):
       fallback: CompilerBackendState,
       entries: Map[ElementKey, CompilerBackendState],
       entryOrder: Vector[ElementKey],
+      symbols: Map[ElementKey, PcCompilerSymbol],
       compilerTypeSlots: Set[ElementKey]
   )
   private final case class CommitTarget(fileKey: FileKey, previous: FileState)
@@ -106,6 +107,7 @@ final class Scala3CompilerBackend(project: Project):
                 entries = previous.filter(_.documentVersion == documentVersion).map(_.entries).getOrElse(Map.empty),
                 entryOrder =
                   previous.filter(_.documentVersion == documentVersion).map(_.entryOrder).getOrElse(Vector.empty),
+                symbols = previous.filter(_.documentVersion == documentVersion).map(_.symbols).getOrElse(Map.empty),
                 compilerTypeSlots = previous.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
               )
             )
@@ -186,21 +188,26 @@ final class Scala3CompilerBackend(project: Project):
       mappings: Seq[CompilerBackendMapping],
       target: CommitTarget
   ): CommitPlan =
-    val resolved     = mappings.flatMap(resolveMapping(file, _))
-    val entries      = resolved.map: (mapping, element) =>
+    val resolved       = mappings.flatMap(resolveMapping(file, _))
+    val entries        = resolved.map: (mapping, element) =>
       val key = ElementKey(mapping.range, mapping.role, mapping.symbolId)
       key -> parsedState(element, mapping.role, mapping.renderedType).getOrElse(CompilerBackendState.Unavailable)
-    val current      = entries.foldLeft(Map.empty[ElementKey, CompilerBackendState]):
+    val current        = entries.foldLeft(Map.empty[ElementKey, CompilerBackendState]):
       case (ranked, (key, state)) =>
         if ranked.contains(key) then ranked else ranked.updated(key, state)
-    val slotMappings = firstCompilerTypeMappings(
+    val symbols        = resolved.flatMap: (mapping, _) =>
+      mapping.symbol.map: symbol =>
+        ElementKey(mapping.range, mapping.role, mapping.symbolId) -> symbol
+    val currentSymbols = symbols.foldLeft(Map.empty[ElementKey, PcCompilerSymbol]):
+      case (ranked, (key, symbol)) => if ranked.contains(key) then ranked else ranked.updated(key, symbol)
+    val slotMappings   = firstCompilerTypeMappings(
       resolved.filter: (mapping, _) =>
         current
           .get(ElementKey(mapping.range, mapping.role, mapping.symbolId))
           .exists(_.isInstanceOf[CompilerBackendState.Current])
     )
-    val slotKeys     = slotMappings.iterator.map(_._1).toSet
-    val committed    = FileState(
+    val slotKeys       = slotMappings.iterator.map(_._1).toSet
+    val committed      = FileState(
       revision = nextRevision.incrementAndGet(),
       documentVersion = documentVersion,
       identity = CompilerBackendIdentity.Snapshot(generation),
@@ -208,6 +215,7 @@ final class Scala3CompilerBackend(project: Project):
       fallback = CompilerBackendState.Unavailable,
       entries = current,
       entryOrder = entries.iterator.map(_._1).toVector.distinct,
+      symbols = currentSymbols,
       compilerTypeSlots = slotKeys
     )
     CommitPlan(
@@ -276,6 +284,24 @@ final class Scala3CompilerBackend(project: Project):
           state.identity == CompilerBackendIdentity.Snapshot(generation) &&
           state.committed
 
+  private[metallurgy] def symbolTargetFor(
+      element: PsiElement,
+      module: Module,
+      role: CompilerBackendRole
+  ): Option[PsiElement] =
+    if element.getProject != project || !ModuleDetectionService.get(project).isActive(module) then None
+    else
+      for
+        file     <- fileKey(element, module)
+        range    <- elementRange(element)
+        document <- currentDocument(element)
+        state    <- Option(files.get(file))
+        if state.committed && state.documentVersion == document.getModificationStamp
+        key      <- state.entryOrder.find(key => key.range == range && key.role == role)
+        symbol   <- state.symbols.get(key)
+        target   <- sourceTarget(module, symbol)
+      yield target
+
   private[metallurgy] def validatedCompilerType(
       element: PsiElement,
       module: Module,
@@ -326,7 +352,8 @@ final class Scala3CompilerBackend(project: Project):
                 committed = false,
                 fallback = fallback,
                 entries = Map.empty,
-                entryOrder = Vector.empty
+                entryOrder = Vector.empty,
+                symbols = Map.empty
               )
             else state
       transition match
@@ -363,6 +390,7 @@ final class Scala3CompilerBackend(project: Project):
               fallback = CompilerBackendState.Unavailable,
               entries = existing.map(_.entries).getOrElse(Map.empty).updated(key, state),
               entryOrder = existing.map(_.entryOrder).getOrElse(Vector.empty).filterNot(_ == key) :+ key,
+              symbols = existing.map(_.symbols).getOrElse(Map.empty),
               compilerTypeSlots = existing.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
             )
           )
@@ -545,6 +573,33 @@ final class Scala3CompilerBackend(project: Project):
   private def currentPsiFile(fileUrl: String): Option[PsiFile] =
     Option(VirtualFileManager.getInstance().findFileByUrl(fileUrl))
       .flatMap(file => Option(PsiManager.getInstance(project).findFile(file)))
+
+  private def sourceTarget(module: Module, symbol: PcCompilerSymbol): Option[PsiElement] =
+    symbol.navigation
+      .filter(target => fileBelongsToModule(target.fileUri, module))
+      .flatMap: target =>
+        currentPsiFile(target.fileUri).flatMap: file =>
+          Option(file.findElementAt(math.min(target.range.startOffset, math.max(0, file.getTextLength - 1))))
+            .flatMap: leaf =>
+              val ancestors = Iterator
+                .iterate(Option(leaf))(_.flatMap(element => Option(element.getParent)))
+                .takeWhile(_.nonEmpty)
+                .flatten
+                .toSeq
+              ancestors
+                .collectFirst:
+                  case owner: PsiNameIdentifierOwner
+                      if Option(owner.getNameIdentifier).flatMap(elementRange).contains(target.range) =>
+                    owner
+                .orElse:
+                  ancestors
+                    .collect:
+                      case named: PsiNamedElement
+                          if elementRange(named).exists(range =>
+                            range.startOffset <= target.range.startOffset && range.endOffset >= target.range.endOffset
+                          ) =>
+                        named
+                    .minByOption(_.getTextRange.getLength)
 
   private def fileBelongsToModule(fileUrl: String, module: Module): Boolean =
     Option(VirtualFileManager.getInstance().findFileByUrl(fileUrl))
