@@ -11,7 +11,6 @@ import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
-import java.nio.file.Path
 import scala.util.control.NonFatal
 
 /** IntelliJ-side compatibility seam for bundled Scala-plugin semantics.
@@ -214,68 +213,6 @@ object ScalaPluginSemanticBridge:
     val settings = ScalaProjectSettings.getInstance(project)
     settings.isCompilerHighlightingScala3 && settings.isUseCompilerTypes
 
-  // --- Compiler events ---
-
-  private lazy val compilerEventListenerModuleClass =
-    Class.forName("org.jetbrains.plugins.scala.compiler.CompilerEventListener$", true, bundledClassLoader)
-
-  private lazy val compilerEventListenerModule =
-    compilerEventListenerModuleClass.getField("MODULE$").get(null)
-
-  private lazy val compilerEventTopic: com.intellij.util.messages.Topic[?] =
-    compilerEventListenerModuleClass
-      .getMethod("topic")
-      .invoke(compilerEventListenerModule)
-      .asInstanceOf[com.intellij.util.messages.Topic[?]]
-
-  private lazy val compilerEventListenerClass: Class[?] =
-    Class.forName("org.jetbrains.plugins.scala.compiler.CompilerEventListener", true, bundledClassLoader)
-
-  def subscribeToCompilerMessages(project: Project, owner: Disposable)(callback: ScalaCompilerMessage => Unit): Unit =
-    val handler  = new InvocationHandler:
-      override def invoke(proxy: AnyRef, method: Method, args: Array[AnyRef]): AnyRef =
-        if method.getName == "eventReceived" && args != null && args.nonEmpty then
-          compilerMessage(args(0)).foreach(callback)
-        null
-    val listener = Proxy.newProxyInstance(
-      compilerEventListenerClass.getClassLoader,
-      Array(compilerEventListenerClass),
-      handler
-    )
-    project.getMessageBus
-      .connect(owner)
-      .subscribe(
-        compilerEventTopic.asInstanceOf[com.intellij.util.messages.Topic[AnyRef]],
-        listener.asInstanceOf[AnyRef]
-      )
-
-  private def compilerMessage(event: AnyRef): Option[ScalaCompilerMessage] =
-    Option
-      .when(event.getClass.getSimpleName == "MessageEmitted"):
-        val message = event.getClass.getMethod("msg").invoke(event).asInstanceOf[AnyRef]
-        for
-          source <- reflectedOption(message, "source")
-          begin  <- reflectedOption(message, "problemStart")
-          end    <- reflectedOption(message, "problemEnd")
-        yield ScalaCompilerMessage(
-          source.getClass.getMethod("toPath").invoke(source).asInstanceOf[Path],
-          message.getClass.getMethod("text").invoke(message).asInstanceOf[String],
-          positionLine(begin),
-          positionColumn(begin),
-          positionLine(end),
-          positionColumn(end)
-        )
-      .flatten
-
-  private def reflectedOption(owner: AnyRef, methodName: String): Option[AnyRef] =
-    optionValue(owner.getClass.getMethod(methodName).invoke(owner).asInstanceOf[AnyRef])
-
-  private def positionLine(position: AnyRef): Int =
-    position.getClass.getMethod("line").invoke(position).asInstanceOf[Int]
-
-  private def positionColumn(position: AnyRef): Int =
-    position.getClass.getMethod("column").invoke(position).asInstanceOf[Int]
-
   def clearScalaTypeCacheForElement(project: Project, element: PsiElement): Unit =
     val managerModuleClass =
       Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiManager$", true, bundledClassLoader)
@@ -304,12 +241,3 @@ object ScalaPluginSemanticBridge:
     val modTrackerClass = Class.forName("org.jetbrains.plugins.scala.caches.ModTracker$", true, bundledClassLoader)
     val modTracker      = modTrackerClass.getField("MODULE$").get(null)
     modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)
-
-private[metallurgy] final case class ScalaCompilerMessage(
-    path: Path,
-    text: String,
-    beginLine: Int,
-    beginColumn: Int,
-    endLine: Int,
-    endColumn: Int
-)

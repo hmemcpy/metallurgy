@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
-import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
 import com.intellij.openapi.project.Project
@@ -15,9 +15,9 @@ import org.junit.Assert.assertTrue
 
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 
-/** Verifies the type the user would see (the `CompilerType` slot Feature 0 fills) for the wider set of Scala 3
-  * constructs — the same cases [[PcTypeResolutionTest]] proved `pc` resolves. Each case configures a real PsiFile, asks
-  * `pc` to resolve the type via the slot, and asserts the presented text.
+/** Verifies the type the user would see through the bundled `CompilerType` compatibility slot for the wider set of
+  * Scala 3 constructs. Each case starts cold and proves a slot request schedules the shared whole-file population
+  * rather than requiring the highlighting or inlay pass to run first.
   */
 final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -89,10 +89,6 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
   def testPresentedTypes(): Unit =
     val results  = cases.zipWithIndex.map { case ((label, (source, needle, expected)), idx) =>
       val file      = myFixture.configureByText(s"Case$idx.scala", source)
-      val _         = PlatformTestUtil.waitForFuture(
-        PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
-        TimeUnit.SECONDS.toMillis(60)
-      )
       val offset    = source.lastIndexOf(needle)
       val element   = typedElementAt(file, offset, needle.length)
       val presented = presentedType(element)

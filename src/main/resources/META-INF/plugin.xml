@@ -40,8 +40,6 @@
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver"/>
     <projectService
-        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeReportInterceptor"/>
-    <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.diagnostics.PcDiagnosticSetCache"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightRenderer"/>
