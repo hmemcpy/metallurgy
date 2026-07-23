@@ -2,11 +2,14 @@
   "counts": {
     "action": 62,
     "content-module": 26,
+    "experiment-call": 3,
     "extension": 1042,
     "extension-point": 38,
     "group": 8,
     "include": 10,
-    "module-dependency": 23
+    "module-dependency": 23,
+    "registry-call": 31,
+    "registry-manager-call": 4
   },
   "descriptorCount": 37,
   "registrations": [
@@ -625,6 +628,27 @@
       "line": 58,
       "name": "scalaCommunity.worksheet",
       "source": "pluginXml/resources/META-INF/plugin.xml"
+    },
+    {
+      "implementation": "",
+      "kind": "experiment-call",
+      "line": 69,
+      "name": "new.project.wizard",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/project/template/package.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "experiment-call",
+      "line": 73,
+      "name": "new.project.wizard",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/project/template/package.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "experiment-call",
+      "line": 25,
+      "name": "scala.uast.enabled",
+      "source": "scala/uast/src/org/jetbrains/plugins/scala/uast/package.scala"
     },
     {
       "implementation": "org.jetbrains.plugins.scala.internal.ScalaPluginAboutPopupDescriptionProvider",
@@ -8472,8 +8496,253 @@
       "line": 5,
       "name": "scalaCommunity.testing-support",
       "source": "scala/test-integration/testing-support-munit/resources/scalaCommunity.testing-support.munit.xml"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 21,
+      "name": "compiler.process.jdk",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/EraseCompilerProcessJdkOnce.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 53,
+      "name": "doc.onboarding.tips.render",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/template/wizard/buildSystem/package.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 26,
+      "name": "expression:ContinueOnFirstFailure",
+      "source": "scala/worksheet/src/org/jetbrains/plugins/scala/worksheet/WorksheetUtils.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 131,
+      "name": "expression:PLUGIN_ATTACH_KEY",
+      "source": "scala/integration/devKit/src/org/jetbrains/idea/devkit/scala/AttachIntellijSourcesAction.java"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 19,
+      "name": "expression:RegistryKey",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/EraseCompilerProcessJdkOnce.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 22,
+      "name": "expression:RegistryKey",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/EraseCompilerProcessJdkOnce.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 11,
+      "name": "expression:RegistryKey",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/lang/psi/types/TypeParameterDebugRendering.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 27,
+      "name": "expression:ShowReplErrorsInEditor",
+      "source": "scala/worksheet/src/org/jetbrains/plugins/scala/worksheet/WorksheetUtils.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 28,
+      "name": "expression:ShowReplErrorsInEditorInInteractiveMode",
+      "source": "scala/worksheet/src/org/jetbrains/plugins/scala/worksheet/WorksheetUtils.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 85,
+      "name": "expression:key",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/settings/ScalaHighlightingMode.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 44,
+      "name": "external.system.auto.import.disabled",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/SbtOpenProjectProvider.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 33,
+      "name": "platform.feedback",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/survey/SeparateMainTestModulesDisabledFeedback.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 19,
+      "name": "sbt.configuration.update.suggestion",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/UpdateRunConfigurationsNotification.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 23,
+      "name": "sbt.import.time.measurement",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/SbtImportTimingFilesCleaner.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 88,
+      "name": "sbt.import.time.measurement",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/SbtProjectResolver.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 367,
+      "name": "sbt.import.time.measurement",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/SbtProjectResolver.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 171,
+      "name": "sbt.new.shell",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/shell/SbtProcessManager.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 74,
+      "name": "sbt.shell.import.old",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/structure/SbtStructureDumper.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 54,
+      "name": "scala.advanced.onboarding.tips",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/template/wizard/buildSystem/package.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 27,
+      "name": "scala.compile.server.socket.connect.timeout.milliseconds",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/ScalaBuildProcessParametersProvider.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 53,
+      "name": "scala.compiler.highlighting.document.use.in.memory.file",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/DocumentCompiler.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 20,
+      "name": "scala.compiler.highlighting.suppress.java.highlighting",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/annotator/ScalaDefaultHighlightingSettingProvider.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 93,
+      "name": "scala.compiler.highlighting.use.compiler.ranges",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/settings/ScalaHighlightingMode.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 97,
+      "name": "scala.debugger.expression.evaluator.lazy.resolve.enabled",
+      "source": "scala/debugger/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaCodeFragmentFactory.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 101,
+      "name": "scala.debugger.expression.evaluator.lazy.resolve.enabled",
+      "source": "scala/debugger/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaEvaluatorBuilder.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 30,
+      "name": "scala.enable.match.type.intrinsics",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/lang/psi/types/intrinsics/TypeIntrinsics.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 51,
+      "name": "scala.highlighting.tracing",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/incremental/Tracing.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 53,
+      "name": "scala.highlighting.tracing.in.editor",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/incremental/Tracing.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 16,
+      "name": "scala.incremental.highlighting.lookaround",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/incremental/VisibleRange.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 245,
+      "name": "scala.round.hint.corners",
+      "source": "scala/codeInsight/src/org/jetbrains/plugins/scala/codeInsight/implicits/TextPartsHintRenderer.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-call",
+      "line": 54,
+      "name": "spellchecker.grazie.enabled",
+      "source": "scala/integration/textAnalysis/src/org/jetbrains/plugins/scala/textAnalysis/spellchecker/ScalaSpellcheckingStrategy.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-manager-call",
+      "line": 391,
+      "name": "sbt.project.import.reuse.previous.structure.file",
+      "source": "sbt/sbt-impl/src/org/jetbrains/sbt/project/SbtProjectResolver.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-manager-call",
+      "line": 33,
+      "name": "scala.compile.server.socket.connect.timeout.milliseconds",
+      "source": "scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/RemoteServerRunner.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-manager-call",
+      "line": 36,
+      "name": "scala.dependency.manager.use.file.system.resolvers.only",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/DependencyManager.scala"
+    },
+    {
+      "implementation": "",
+      "kind": "registry-manager-call",
+      "line": 119,
+      "name": "scalafmt.min.time.between.format.on.save.action.ms",
+      "source": "scala/scala-impl/src/org/jetbrains/plugins/scala/lang/formatting/scalafmt/ScalafmtReformatOnFileSaveTask.scala"
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "sourceRevision": "8dd22d153b65c847f4ced8917dd7e02b83561e5d"
 }

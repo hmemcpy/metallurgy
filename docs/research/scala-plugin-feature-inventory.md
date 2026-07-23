@@ -29,6 +29,8 @@ descriptors at lines 82-93. Across 37 source descriptors, the catalog contains:
 | extension registrations | 1,042 |
 | actions | 62 |
 | action groups | 8 |
+| production registry call sites | 35 |
+| production experiment call sites | 3 |
 
 The content modules cover BSP, compiler integration, debugger, worksheets, Scala CLI, test support and MUnit, UAST,
 structural search, Gradle, Maven, Bazel, IntelliLang, Java decompiler, ML completion, i18n, text analysis, copyright,
@@ -44,10 +46,12 @@ python3 tools/scala_plugin_inventory.py check ~/git/intellij-scala \
   docs/research/scala-plugin-feature-inventory-source.json
 ```
 
-`check` compares the source revision and every descriptor registration. A new module, EP, extension, action, registry
-key, or experimental feature makes the check fail. Stable, EAP, and nightly validation uses the same command against
-each checkout/artifact source tree and keeps one catalog per graduation target when their registrations differ. The
-catalog is discovery data, never a compatibility switch.
+`check` compares the source revision, every descriptor registration, and production Scala/Java/Kotlin calls through
+`Registry`, `RegistryManager`, and `Experiments`. A new module, EP, extension, action, registry key, experimental feature,
+or source-level gate call makes the check fail. Non-literal arguments are retained as `expression:...` entries so a
+renamed constant or newly indirect lookup cannot disappear from review. Stable, EAP, and nightly validation uses the
+same command against each checkout/artifact source tree and keeps one catalog per graduation target when their
+registrations differ. The catalog is discovery data, never a compatibility switch.
 
 ## Classification
 
@@ -88,7 +92,7 @@ catalog is discovery data, never a compatibility switch.
 | Call/type/method hierarchies | Indirect resolve/index consumers. They should inherit source symbols; compiler-only edges depend on #56. | Providers are registered at `scala-plugin-common.xml:523-525`. Add source and compiler-only hierarchy tests to #58. |
 | Structure and project views | Primarily syntactic/stub-driven and therefore unchanged. Only missing compiler-only declarations justify augmentation. | `ScalaStructureViewFactory` is registered in `structure-view.xml:9`; the Scala `structureViewModelProvider` EP is cataloged. #58 explicitly keeps this source/stub-driven. |
 | Java PSI interoperability and light classes | Alternate semantic model. Scala-to-Java signatures, synthetic classes and Java resolve do not automatically follow `ScType`; they need explicit parity. | Three `java.elementFinder` registrations occur at `scala-plugin-common.xml:519`, including synthetic and Scala 3 main classes. Source signatures and compiler-only members route to #56/#58. |
-| UAST | Alternate semantic model behind a feature gate. Many adapters call Scala PSI and may inherit, but `ScType`→`PsiType`, light PSI, evaluation and specialized receivers need independent coverage. | `ScalaUastLanguagePlugin` is registered in `scalaCommunity.uast.xml:9`; `scala.uast.enabled` is declared at line 14. Entire matrix is owned by #68. |
+| UAST | Alternate semantic model behind a feature gate. Expression, variable, parameter, method-return, receiver/return, source resolve, compiler-only resolve/multi-resolve, conversion and constant-evaluation tests inherit the central backend or remain source-identical. The direct-publication freshness test exposed and now guards the same per-element cache invalidation required by every PSI consumer. | `ScalaUastLanguagePlugin` is registered in `scalaCommunity.uast.xml:9`; `scala.uast.enabled` is declared at line 14. `CompilerBackendUastTest` is the focused inheritance contract; remaining inspection/light-PSI and real feature-state fixtures are owned by #68. |
 | Structural search | Mostly syntactic/PSI-pattern consumer. Semantic constraints may call resolve/type and should inherit. | `ScalaStructuralSearchProfile` is registered in `scalaCommunity.structural-search.xml:8`. Add one syntax-only and one typed constraint invariant test; no adapter is planned. |
 | TASTy/SIG decompiler and compiled PSI | Model/artifact producer. Keep the bundled TASTy reader; PC/BETASTY is a separate exact-artifact input, not a decompiler replacement. | `TastyDecompiler` and `SigFileDecompiler` are registered at `scala-plugin-common.xml:653`. Compiled-source resolve parity routes to #56/#57. |
 | External annotations and qualified names | Indirect PSI consumer or syntactic metadata. Preserve existing behavior. | Annotation support, annotated search, qualified-name and external-text providers are cataloged. Test a Scala/Java annotation round trip in #58. |
@@ -136,8 +140,9 @@ The descriptors declare 27 registry keys and one experimental feature. The relev
 - debugger and worksheets: lazy evaluator resolve and REPL error/evaluation modes (`scalaCommunity.debugger.xml:34`,
   `scalaCommunity.worksheet.xml:57-62`).
 
-Descriptor enumeration is only the first half: `Registry.*`, feature-service and experiment call sites that are not XML
-registrations are owned by #68. Unknown gates must be reported, not silently mapped to a compatibility branch.
+The generated catalog also contains 35 production registry call sites and three experiment call sites. This closes the
+descriptor/source split: literal keys retain their names, while indirect arguments are explicit review items. Unknown
+gates must be reported, not silently mapped to a compatibility branch.
 
 ## Test strategy
 

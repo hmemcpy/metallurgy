@@ -30,6 +30,17 @@ class ScalaPluginInventoryTest(unittest.TestCase):
 </idea-plugin>""",
                 encoding="utf-8",
             )
+            source = root / "plugin" / "src" / "FeatureGates.scala"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                '''object FeatureGates {
+  val literal = Registry.is("scala.literal")
+  val dynamic = Registry.intValue(RegistryKey)
+  val experiment = Experiments.getInstance().isFeatureEnabled("scala.experiment")
+}
+''',
+                encoding="utf-8",
+            )
 
             generated = scala_plugin_inventory.inventory(root)
 
@@ -43,6 +54,9 @@ class ScalaPluginInventoryTest(unittest.TestCase):
             self.assertIn(("extension", "com.intellij.projectService"), identities)
             self.assertIn(("extension", "com.intellij.registryKey:scala.experimental"), identities)
             self.assertIn(("action", "Scala.Run"), identities)
+            self.assertIn(("registry-call", "scala.literal"), identities)
+            self.assertIn(("registry-call", "expression:RegistryKey"), identities)
+            self.assertIn(("experiment-call", "scala.experiment"), identities)
 
     def test_check_detects_a_new_upstream_registration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

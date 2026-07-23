@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -29,6 +30,47 @@ def descriptor_paths(root: Path) -> list[Path]:
     candidates = set(root.glob("**/resources/META-INF/*.xml"))
     candidates.update(root.glob("**/resources/scalaCommunity.*.xml"))
     return sorted(path for path in candidates if path.is_file())
+
+
+SOURCE_SUFFIXES = {".scala", ".java", ".kt"}
+SOURCE_GATE_PATTERNS = (
+    ("registry-call", re.compile(r"\bRegistry\.(?:`is`|is|get|intValue|stringValue|doubleValue)\s*\(\s*([^,)]+)")),
+    ("registry-manager-call", re.compile(r"\bRegistryManager(?:\.getInstance\(\))?\.(?:is|get|intValue|stringValue)\s*\(\s*([^,)]+)")),
+    ("experiment-call", re.compile(r"\b(?:isFeatureEnabled|setFeatureEnabled)\s*\(\s*([^,)]+)")),
+)
+
+
+def source_paths(root: Path) -> list[Path]:
+    ignored = {".git", ".idea", ".bsp", "target", "out", "test", "tests", "testdata"}
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix in SOURCE_SUFFIXES
+        and "src" in path.parts
+        and not ignored.intersection(path.relative_to(root).parts)
+    )
+
+
+def normalize_gate_argument(argument: str) -> str:
+    value = argument.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return f"expression:{value}"
+
+
+def parse_source_gates(root: Path, path: Path) -> list[Registration]:
+    relative = path.relative_to(root).as_posix()
+    registrations: list[Registration] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if line.lstrip().startswith("//"):
+            continue
+        for kind, pattern in SOURCE_GATE_PATTERNS:
+            for match in pattern.finditer(line):
+                registrations.append(
+                    Registration(kind, normalize_gate_argument(match.group(1)), relative, line_number)
+                )
+    return registrations
 
 
 def source_line(path: Path, tag: str, distinguishing_value: str = "") -> int:
@@ -176,15 +218,22 @@ def git_revision(root: Path) -> str:
 def inventory(root: Path) -> dict[str, object]:
     descriptors = descriptor_paths(root)
     registrations = sorted(
-        registration
-        for descriptor in descriptors
-        for registration in parse_descriptor(root, descriptor)
+        [
+            registration
+            for descriptor in descriptors
+            for registration in parse_descriptor(root, descriptor)
+        ]
+        + [
+            registration
+            for source in source_paths(root)
+            for registration in parse_source_gates(root, source)
+        ]
     )
     counts: dict[str, int] = {}
     for registration in registrations:
         counts[registration.kind] = counts.get(registration.kind, 0) + 1
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "sourceRevision": git_revision(root),
         "descriptorCount": len(descriptors),
         "counts": dict(sorted(counts.items())),

@@ -437,7 +437,9 @@ final class Scala3CompilerBackend(project: Project):
               compilerTypeSlots = existing.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
             )
           )
-      if transition._1 != transition._2 then retireLightSymbols(file)
+      if transition._1 != transition._2 then
+        retireLightSymbols(file)
+        invalidate(Seq(element))
 
   private def parsedState(
       element: PsiElement,
