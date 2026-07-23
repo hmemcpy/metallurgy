@@ -4,6 +4,10 @@ import com.hmemcpy.metallurgy.pc.{PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.intention.CommonIntentionAction
 import com.intellij.codeInsight.daemon.impl.HintRenderer
+import com.intellij.codeInsight.hint.ShowParameterInfoContext
+import com.intellij.codeInspection.{InspectionManager, ProblemDescriptor, ProblemsHolder}
+import com.intellij.ide.structureView.StructureViewTreeElement
+import com.intellij.ide.util.treeView.smartTree.TreeElement
 import com.intellij.lang.annotation.{AnnotationSession, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.colors.TextAttributesKey
@@ -12,6 +16,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.{Computable, TextRange}
 import com.intellij.psi.{PsiElement, PsiFile, SmartPointerManager}
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.refactoring.rename.RenameProcessor
 import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.annotations.{Nls, Nullable}
 import org.jetbrains.plugins.scala.ScalaVersion
@@ -24,6 +29,7 @@ import org.jetbrains.plugins.scala.annotator.{
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.codeInsight.hints.ScalaHintsSettings
 import org.jetbrains.plugins.scala.codeInsight.implicits.ImplicitHint
+import org.jetbrains.plugins.scala.codeInspection.collections.UnitInMapInspection
 import org.jetbrains.plugins.scala.editor.documentationProvider.ScalaDocQuickInfoGenerator
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScBindingPattern
@@ -31,7 +37,9 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpression, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
+import org.jetbrains.plugins.scala.lang.parameterInfo.ScalaFunctionParameterInfoHandler
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
+import org.jetbrains.plugins.scala.structureView.ScalaStructureViewModel
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
 
 import java.util.concurrent.{Callable, TimeUnit}
@@ -128,6 +136,85 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       expectedTypes.exists(_.contains("String"))
     )
     assertFalse(s"completion retained the bundled Int context: $expectedTypes", expectedTypes.contains("Int"))
+
+  def testParameterInfoResolvesThroughCurrentReceiverType(): Unit =
+    val source     =
+      """val receiver = List(1).head
+        |receiver.substring(<caret>)""".stripMargin
+    val file       = myFixture.configureByText("ParameterInfo.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    publish(expression, "String")
+
+    val context = new ShowParameterInfoContext(
+      myFixture.getEditor,
+      getProject,
+      file,
+      myFixture.getCaretOffset,
+      -1
+    )
+    val owner   = new ScalaFunctionParameterInfoHandler().findElementForParameterInfo(context)
+    val items   = Option(context.getItemsToShow).fold(Array.empty[AnyRef])(_.asInstanceOf[Array[AnyRef]])
+
+    assertTrue("String.substring parameter owner was not resolved", owner != null)
+    assertTrue("String.substring signatures were not offered", items.nonEmpty)
+
+  def testTypeAwareInspectionReadsCurrentExpressionType(): Unit =
+    val source     =
+      """object Main:
+        |  def run(): Unit =
+        |    List(1).map(_ => List(1).head)
+        |    ()
+        |""".stripMargin
+    val file       = myFixture.configureByText("TypeAwareInspection.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    val before     = unitInMapProblems(file)
+    publish(expression, "Unit")
+    val after      = unitInMapProblems(file)
+
+    assertTrue(s"unexpected Unit-in-map warning before compiler publication: $before", before.isEmpty)
+    assertTrue(s"Unit-in-map inspection did not observe compiler Unit: $after", after.nonEmpty)
+
+  def testStructureViewRemainsSourceDrivenAfterCompilerPublication(): Unit =
+    val source     =
+      """object Main:
+        |  val visible = List(1).head
+        |""".stripMargin
+    val file       = myFixture.configureByText("StructureView.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    publish(expression, "String")
+
+    val model = new ScalaStructureViewModel(file.asInstanceOf[ScalaFile])
+    try
+      val names = Iterator
+        .iterate(Seq[TreeElement](model.getRoot))(_.flatMap(_.getChildren.toSeq))
+        .takeWhile(_.nonEmpty)
+        .flatten
+        .collect { case element: StructureViewTreeElement => element }
+        .flatMap(element => Option(element.getPresentation.getPresentableText))
+        .toSet
+
+      assertTrue(s"source object disappeared from structure view: $names", names.contains("Main"))
+      assertTrue(s"source value disappeared from structure view: $names", names.exists(_.startsWith("visible")))
+    finally model.dispose()
+
+  def testSourceBackedRenameUsesBundledRefactoringWithCompilerSnapshot(): Unit =
+    val source     =
+      """def answer: Int = 42
+        |val result = answer
+        |""".stripMargin
+    val file       = myFixture.configureByText("SourceRename.scala", source)
+    val function   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .asScala
+      .find(_.name == "answer")
+      .get
+    val expression = expressionWithText(file, "42")
+    publish(expression, "Int")
+
+    new RenameProcessor(getProject, function, "renamed", false, false).run()
+
+    assertTrue(file.getText, file.getText.contains("def renamed"))
+    assertTrue(file.getText, file.getText.contains("val result = renamed"))
 
   def testQuickInfoUsesRealBulkCompilerSnapshot(): Unit =
     val source     =
@@ -315,6 +402,18 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
       .executeOnPooledThread(prepare)
       .get(30L, TimeUnit.SECONDS)
     val _                         = applyHints.invoke(pass)
+
+  private def unitInMapProblems(file: PsiFile): Seq[ProblemDescriptor] =
+    val inspection = new UnitInMapInspection
+    val holder     = new ProblemsHolder(InspectionManager.getInstance(getProject), file, true)
+    val visitor    = inspection.buildVisitor(holder, true)
+    PsiTreeUtil.processElements(
+      file,
+      element =>
+        element.accept(visitor)
+        true
+    )
+    holder.getResults.asScala.toSeq
 
   private def expressionWithText(file: PsiElement, text: String): ScExpression =
     PsiTreeUtil
