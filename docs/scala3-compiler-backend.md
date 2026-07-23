@@ -228,7 +228,8 @@ The practical conclusion is that whole-file expression population has high impac
 
 The default expectation for every other Scala-plugin feature is **semantic inheritance**, not a bespoke Metallurgy
 implementation: if the feature obtains types and resolve targets through the corrected central PSI seams, it should
-work unchanged. The complete feature inventory exists to prove that route and preserve it with regression tests. A
+work unchanged. The [source-derived feature inventory](research/scala-plugin-feature-inventory.md) exists to prove that
+route and preserve it with regression tests; its generated catalog makes newly shipped registrations detectable. A
 feature receives its own adapter only when source tracing or a failing parity test demonstrates a bypass such as
 stub/index-only identity, specialized UAST conversion, an execution model, or a separate compiler service.
 

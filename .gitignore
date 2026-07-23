@@ -16,6 +16,10 @@ project/metals.sbt
 .metals
 .scala-build
 
+### Python tooling ###
+__pycache__/
+*.pyc
+
 ### IntelliJ IDEA ###
 .idea/
 *.iml
