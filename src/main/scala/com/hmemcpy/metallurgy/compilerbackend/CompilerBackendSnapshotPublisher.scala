@@ -12,6 +12,7 @@ import com.hmemcpy.metallurgy.pc.{
 import com.intellij.openapi.application.{ModalityState, ReadAction}
 import com.intellij.openapi.diagnostic.{ControlFlowException, Logger}
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.psi.impl.source.resolve.ResolveCache
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.progress.ProgressManager
@@ -128,6 +129,7 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
         val result = backend.commitSnapshot(module, file, snapshot.documentVersion, generation, resolved):
           snapshotCurrency()
         if result != CompilerBackendCommit.Rejected then
+          ResolveCache.getInstance(project).clearCache(true)
           DaemonCodeAnalyzer.getInstance(project).restart(file, "compiler backend snapshot committed")
         result
       .getOrElse(CompilerBackendCommit.Rejected)
