@@ -5,10 +5,12 @@ import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.execution.actions.{ConfigurationContext, RunConfigurationProducer}
 import com.intellij.execution.application.ApplicationConfiguration
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testIntegration.TestFramework
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScFunction
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScTypeDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.runner.ScalaApplicationConfigurationProducer
@@ -61,6 +63,22 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     assertTrue(configuration.getClass.getName.startsWith("com.intellij.execution.application."))
     assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
 
+  def testScala3AnnotatedMainConfigurationRemainsBundled(): Unit =
+    val file    = myFixture.configureByText(
+      "AnnotatedMain.scala",
+      """@main
+        |def launch(argument: String): Unit = ()
+        |""".stripMargin
+    )
+    val target  = descendants[ScFunction](file).find(_.name == "launch").get
+    val created = ScalaApplicationConfigurationProducer()
+      .createConfigurationFromContext(new ConfigurationContext(target.nameId))
+
+    assertNotNull(created)
+    val configuration = created.getConfiguration.asInstanceOf[ApplicationConfiguration]
+    assertEquals("launch", configuration.getMainClassName)
+    assertEquals(getModule, configuration.getConfigurationModule.getModule)
+
   def testAllBundledFrameworkFindersPreserveSuiteDiscoveryAcrossActivation(): Unit =
     installFrameworkMarkers()
     val file       = myFixture.configureByText(
@@ -68,7 +86,7 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
       """class ScalaTestSuite extends org.scalatest.Suite
         |class MUnitSuite extends munit.Suite
         |class Specs2Suite extends org.specs2.mutable.Specification
-        |class UTestSuite extends utest.TestSuite
+        |object UTestSuite extends utest.TestSuite
         |""".stripMargin
     )
     val suites     = descendants[ScTypeDefinition](file).map(definition => definition.name -> definition).toMap
@@ -88,12 +106,19 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
       assertConfiguration(producer, suites(suiteName), suiteName, configurationClass)
       (frameworkName, suiteName, framework)
 
+    myFixture.doHighlighting()
+    val activeGutters = gutterSignatures
+    assertTrue(activeGutters.mkString(", "), activeGutters.size >= expected.size)
+
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    DaemonCodeAnalyzer.getInstance(getProject).restart(file)
+    myFixture.doHighlighting()
     finders.foreach: (frameworkName, suiteName, framework) =>
       assertTrue(
         s"inactive $frameworkName did not discover $suiteName",
         framework.isTestClass(suites(suiteName))
       )
+    assertEquals(activeGutters, gutterSignatures)
     assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
 
   private def installFrameworkMarkers(): Unit =
@@ -107,13 +132,21 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     )
     val _ = myFixture.addClass("package utest; public abstract class TestSuite {}")
 
+  private def gutterSignatures: Seq[(String, String)] =
+    myFixture
+      .findAllGutters()
+      .asScala
+      .map(gutter => Option(gutter.getTooltipText).getOrElse("") -> gutter.getIcon.toString)
+      .sorted
+      .toSeq
+
   private def assertConfiguration(
       producer: RunConfigurationProducer[?],
       suite: ScTypeDefinition,
       suiteName: String,
       expectedClass: String
   ): Unit =
-    val created = producer.createConfigurationFromContext(new ConfigurationContext(suite))
+    val created = producer.createConfigurationFromContext(new ConfigurationContext(suite.nameId))
     assertNotNull(s"no configuration for $suiteName", created)
     assertEquals(expectedClass, created.getConfiguration.getClass.getSimpleName)
     assertTrue(created.getConfiguration.getName, created.getConfiguration.getName.contains(suiteName))
