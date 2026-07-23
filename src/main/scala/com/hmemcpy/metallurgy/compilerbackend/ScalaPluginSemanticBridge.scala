@@ -6,6 +6,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
 import com.intellij.psi.{PsiElement, PsiNamedElement}
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
@@ -20,11 +21,14 @@ import scala.util.control.NonFatal
   */
 object ScalaPluginSemanticBridge:
 
+  private val ResolveResultKey: Key[Object] = Key.create("METALLURGY_RESOLVE_FALLBACK")
+
   def install(): CompilerBackendShimStatus =
     BundledCompilerBackendShim.install()
 
   /** Preserves every non-empty bundled result and supplies a compiler symbol only when bundled resolution found
-    * nothing. This method is the sole Scala-plugin-private construction point used by the resolver wrapper.
+    * nothing. The result is cached per-element via UserData so the recursive type-resolution cascade triggered by the
+    * CompilerType slot does not re-invoke the fallback 20x for the same reference.
     */
   def referenceResolution(reference: Object, bundledResult: Object): Object =
     bundledResult match
@@ -33,22 +37,21 @@ object ScalaPluginSemanticBridge:
         try
           reference match
             case element: PsiElement =>
-              val module = ModuleUtilCore.findModuleForPsiElement(element)
-              if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then bundledResult
+              val cached = element.getUserData(ResolveResultKey)
+              if cached != null then cached
               else
-                val target = Scala3CompilerBackend
-                  .get(element.getProject)
-                  .symbolTargetFor(element, module, CompilerBackendRole.Reference)
-                if target.isDefined then
-                  com.intellij.openapi.diagnostic.Logger
-                    .getInstance(classOf[ScalaPluginSemanticBridge.type])
-                    .warn(
-                      s"referenceResolution fallback for '${element.getText}': ${target.map(t => s"${t.getClass.getSimpleName} '${t.getText}'").orNull}"
-                    )
-                target
-                  .collect:
-                    case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
-                  .getOrElse(bundledResult)
+                val module = ModuleUtilCore.findModuleForPsiElement(element)
+                val result =
+                  if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then null
+                  else
+                    Scala3CompilerBackend
+                      .get(element.getProject)
+                      .symbolTargetFor(element, module, CompilerBackendRole.Reference)
+                      .collect:
+                        case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
+                      .orNull
+                element.putUserData(ResolveResultKey, result)
+                if result != null then result else bundledResult
             case _                   => bundledResult
         catch
           case control: ControlFlowException => throw control
