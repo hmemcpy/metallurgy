@@ -98,6 +98,45 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     assertCurrent(call, CompilerBackendRole.ExpressionExact, "Int")
     assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(call))
 
+  def testSelectorTokenSpanMapsToTheQualifiedReferenceExpression(): Unit =
+    val file      = myFixture.configureByText(
+      "MappedQualifiedReference.scala",
+      "object Main:\n  val result = Option.empty[String].get\n"
+    )
+    val document  = myFixture.getEditor.getDocument
+    val reference = children[org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression](file)
+      .find(_.getText == "Option.empty[String].get")
+      .get
+    val end       = reference.getTextRange.getEndOffset
+    val snapshot  = typedTreeSnapshot(
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      Seq(PcTypedTreeEntry(PcSourceRange(end - "get".length, end), PcTypedTreeRole.ExpressionExact, "String", None))
+    )
+
+    publishSynchronously(snapshot)
+
+    assertCurrent(reference, CompilerBackendRole.ExpressionExact, "String")
+    assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(reference))
+
+  def testDefinitionTreeSuppliesTheReducedTypeToAnExplicitTypeElement(): Unit =
+    val file       = myFixture.configureByText(
+      "MappedReducedDeclaration.scala",
+      "type Reduced = 2 + 2\nval result: Reduced = 4\n"
+    )
+    val document   = myFixture.getEditor.getDocument
+    val definition = child[ScValueOrVariableDefinition](file)
+    val declared   = definition.typeElement.get
+    val snapshot   = typedTreeSnapshot(
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      Seq(entry(definition, PcTypedTreeRole.Inferred, "(4 : Int)"))
+    )
+
+    publishSynchronously(snapshot)
+
+    assertCurrent(declared, CompilerBackendRole.DeclaredType, "(4 : Int)")
+
   def testSnapshotMapsEachDestructuredPatternTypeToBindingAndPatternRoles(): Unit =
     val file     = myFixture.configureByText("MappedPatterns.scala", "object Main:\n  val (number, text) = (1, \"two\")\n")
     val document = myFixture.getEditor.getDocument
@@ -715,6 +754,30 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
         .stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact)
     )
     assertNull(ScalaPluginSemanticBridge.getCompilerType(expression))
+
+  def testCompilerTypeSlotUsesCurrentWidenedTypeWhenExactTypeIsUnparsable(): Unit =
+    val file       = myFixture.configureByText("WidenedSlot.scala", "object Main:\n  val value = List(1).head\n")
+    val document   = myFixture.getEditor.getDocument
+    val expression = children[ScExpression](file).find(_.getText == "List(1).head").get
+
+    publishSynchronously(
+      typedTreeSnapshot(
+        file.getVirtualFile.getUrl,
+        document.getModificationStamp,
+        Seq(
+          entry(expression, PcTypedTreeRole.ExpressionExact, "("),
+          entry(expression, PcTypedTreeRole.ExpressionWidened, "Int")
+        )
+      )
+    )
+
+    assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
+    assertEquals(
+      Some("Int"),
+      Scala3CompilerBackend
+        .get(getProject)
+        .validatedCompilerType(expression, getModule, CompilerBackendRole.ExpressionExact)
+    )
 
   def testDeferredRetirementClearsSlotsNotOwnedByReplacementState(): Unit =
     val file       = myFixture.configureByText("ReplacementState.scala", "object Main:\n  val value = List(1).head\n")

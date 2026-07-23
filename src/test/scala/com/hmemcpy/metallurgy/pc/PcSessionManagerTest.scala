@@ -237,6 +237,18 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         )
       )
 
+      val typedTree = session.typedTreeSnapshot(snapshot).get
+      assertTrue(
+        typedTree.entries.exists(entry =>
+          entry.role == PcTypedTreeRole.ExpressionExact &&
+            entry.range == PcSourceRange(
+              source.lastIndexOf("structural.answer"),
+              source.lastIndexOf("structural.answer") + "structural.answer".length
+            ) &&
+            entry.renderedType == "Int"
+        )
+      )
+
   def testStructuralCompletionIncludesBacktickedMembers(): Unit =
     withRealPcSession("metallurgy-structural-completion"): session =>
       val source   =

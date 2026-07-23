@@ -366,7 +366,7 @@ private final class StructuralScala3PcBridge(
     Vector(
       Option.when(isTermTree)(PcTypedTreeRole.ExpressionExact),
       Option.when(isTermTree)(PcTypedTreeRole.ExpressionWidened),
-      Option.when(isTypeTree && startsAfterTypeAscription(sourceText, startOffset))(PcTypedTreeRole.Declared),
+      Option.when(isTypeTree && startsAfterDeclaredTypeBoundary(sourceText, startOffset))(PcTypedTreeRole.Declared),
       Option.when(kind == TypedTreeKind.ValDef && !parameter && symbolAvailable)(PcTypedTreeRole.Inferred),
       Option.when(kind == TypedTreeKind.ValDef && parameter && symbolAvailable)(PcTypedTreeRole.Parameter),
       Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.Function),
@@ -376,8 +376,13 @@ private final class StructuralScala3PcBridge(
       Option.when(symbolAvailable && kind.isReference)(PcTypedTreeRole.Reference)
     ).flatten.distinct
 
-  private def startsAfterTypeAscription(sourceText: String, startOffset: Int): Boolean =
-    sourceText.substring(0, startOffset).reverseIterator.dropWhile(_.isWhitespace).nextOption.contains(':')
+  private def startsAfterDeclaredTypeBoundary(sourceText: String, startOffset: Int): Boolean =
+    sourceText
+      .substring(0, startOffset)
+      .reverseIterator
+      .dropWhile(_.isWhitespace)
+      .nextOption
+      .exists(character => character == ':' || character == '=')
 
   private def compilerWrapperOverlapCount(candidates: Vector[ReflectedTreeCandidate]): Int =
     candidates
@@ -392,11 +397,12 @@ private final class StructuralScala3PcBridge(
     role match
       case PcTypedTreeRole.ExpressionExact   =>
         kind match
-          case TypedTreeKind.Inlined   => 0
-          case TypedTreeKind.Apply     => 1
-          case TypedTreeKind.TypeApply => 2
-          case TypedTreeKind.Select    => 3
-          case _                       => 4
+          case TypedTreeKind.Inlined                              => 0
+          case TypedTreeKind.TypeApply if isRuntimeTypeCast(tree) => 1
+          case TypedTreeKind.Apply                                => 2
+          case TypedTreeKind.TypeApply                            => 3
+          case TypedTreeKind.Select                               => 4
+          case _                                                  => 5
       case PcTypedTreeRole.ExpressionWidened =>
         kind match
           case TypedTreeKind.Apply     => 0
@@ -520,6 +526,9 @@ private final class StructuralScala3PcBridge(
           invokeContextual(methodType, "finalResultType", context)
         case _                              => treeType
       val rendering = candidate.role match
+        case PcTypedTreeRole.ExpressionExact
+            if TypedTreeKind.TypeApply.matches(candidate.tree) && isRuntimeTypeCast(candidate.tree) =>
+          TypeRendering.Widened
         case PcTypedTreeRole.ExpressionWidened | PcTypedTreeRole.Inferred | PcTypedTreeRole.Parameter |
             PcTypedTreeRole.Pattern | PcTypedTreeRole.PatternExpected =>
           TypeRendering.Widened
@@ -601,9 +610,10 @@ private final class StructuralScala3PcBridge(
     trees.reverse.find(tree => kind.matches(tree) && hasSameExtent(tree, closest))
 
   private def isRuntimeTypeCast(tree: AnyRef): Boolean =
-    val function = tree.getClass.getMethod("fun").invoke(tree)
-    Option(function.getClass.getMethod("name").invoke(function))
-      .exists(_.toString.contains("asInstanceOf"))
+    Try:
+      val function = tree.getClass.getMethod("fun").invoke(tree)
+      function.getClass.getMethod("name").invoke(function).toString.contains("asInstanceOf")
+    .getOrElse(false)
 
   private def pathTrees(path: AnyRef): List[AnyRef] =
     iteratorValues(path).toList

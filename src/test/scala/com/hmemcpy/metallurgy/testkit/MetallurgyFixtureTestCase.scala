@@ -1,7 +1,12 @@
 package com.hmemcpy.metallurgy.testkit
 
 import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
-import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import com.hmemcpy.metallurgy.compilerbackend.{
+  CompilerBackendRole,
+  CompilerBackendState,
+  Scala3CompilerBackend,
+  ScalaPluginSemanticBridge
+}
 import com.hmemcpy.metallurgy.pc.{PcSession, PcSessionManager}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
@@ -9,14 +14,14 @@ import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.editor.Document
-import com.intellij.openapi.module.ModuleManager
+import com.intellij.openapi.module.{ModuleManager, ModuleUtilCore}
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiFile}
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.JavaCodeInsightTestFixture
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParameterizedTypeElement, ScTypeElement}
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
 import java.nio.charset.StandardCharsets
@@ -49,10 +54,11 @@ abstract class MetallurgyFixtureTestCase extends ScalaLightCodeInsightFixtureTes
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
     configureBundledCompilerTypes(enabled = true)
     val context = openFixture()
-    // The production fetcher queues its Backgroundable from the EDT; the returned future completes on pooled threads.
+    // The production fetcher queues its Backgroundable from the EDT; the returned future completes only after the
+    // exact document generation has been published into the compiler backend.
     val session = PlatformTestUtil
       .waitForFuture(
-        PcSessionManager.get(getProject).prepareFile(context.file.getVirtualFile),
+        PcSessionManager.get(getProject).prepareCompilerBackend(context.file.getVirtualFile),
         TimeUnit.SECONDS.toMillis(120)
       )
       .getOrElse(abort(s"Could not prepare PC session for $fixtureName"))
@@ -151,9 +157,18 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
     val element = semanticElementAt(context.file, offset.value)
     val actual  = session match
       case Some(_) =>
-        requestCompilerType(element) match
-          case MetallurgyStatus.Resolved(_, _) => Option(ScalaPluginSemanticBridge.getCompilerType(element))
-          case status                          => throw new AssertionError(s"Compiler type request ended with $status")
+        element match
+          case typeElement: ScTypeElement => declaredCompilerType(typeElement)
+          case expression: ScExpression   =>
+            currentCompilerType(expression, CompilerBackendRole.ExpressionExact).orElse:
+              requestCompilerType(element) match
+                case MetallurgyStatus.Resolved(_, _) => Option(ScalaPluginSemanticBridge.getCompilerType(element))
+                case status                          =>
+                  throw new AssertionError(
+                    s"Compiler type request ended with $status for ${element.getClass.getSimpleName} " +
+                      s"'${element.getText}' ${element.getTextRange}"
+                  )
+          case _                          => Option(ScalaPluginSemanticBridge.getCompilerType(element))
       case None    => Option(ScalaPluginSemanticBridge.getCompilerType(element))
 
     if expected == "<empty>" then
@@ -259,6 +274,23 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
       CompilerTypeRequestResolver(project).request(element)
       PlatformTestUtil.waitForFuture(completion, TimeUnit.SECONDS.toMillis(120))
     finally connection.disconnect()
+
+  private def declaredCompilerType(element: ScTypeElement): Option[String] =
+    currentCompilerType(element, CompilerBackendRole.DeclaredType) match
+      case current @ Some(_) => current
+      case None              => throw new AssertionError("Declared compiler type is unavailable")
+
+  private def currentCompilerType(element: PsiElement, role: CompilerBackendRole): Option[String] =
+    Option(ModuleUtilCore.findModuleForPsiElement(element)).flatMap: module =>
+      Scala3CompilerBackend.get(element.getProject).stateForActiveModule(element, module, role) match
+        case CompilerBackendState.Current(renderedType, _)    => Some(renderedType)
+        case _ if role == CompilerBackendRole.ExpressionExact =>
+          Scala3CompilerBackend
+            .get(element.getProject)
+            .stateForActiveModule(element, module, CompilerBackendRole.ExpressionWidened) match
+            case CompilerBackendState.Current(renderedType, _) => Some(renderedType)
+            case _                                             => None
+        case _                                                => None
 
   private def descriptions(infos: Iterable[HighlightInfo]): String =
     infos.flatMap(info => Option(info.getDescription)).mkString(", ")

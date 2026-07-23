@@ -156,10 +156,12 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
     entry.role match
       case PcTypedTreeRole.ExpressionExact   =>
         exactAncestor[ScExpression](file, entry.range)
+          .orElse(endAnchoredAncestor[ScExpression](file, entry.range))
           .map(mapping(_, CompilerBackendRole.ExpressionExact, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.ExpressionWidened =>
         exactAncestor[ScExpression](file, entry.range)
+          .orElse(endAnchoredAncestor[ScExpression](file, entry.range))
           .map(mapping(_, CompilerBackendRole.ExpressionWidened, entry.renderedType, symbol))
           .toSeq
       case PcTypedTreeRole.Declared          =>
@@ -170,11 +172,13 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
           mapping(declared, CompilerBackendRole.DeclaredType, entry.renderedType, symbol) +: parameter.toSeq
       case PcTypedTreeRole.Inferred          =>
         exactAncestor[ScValueOrVariableDefinition](file, entry.range).toSeq.flatMap: definition =>
-          val binding =
+          val binding  =
             if definition.bindings.size == 1 then
               definition.bindings.map(mapping(_, CompilerBackendRole.Binding, entry.renderedType, symbol))
             else Seq.empty
-          mapping(definition, CompilerBackendRole.Definition, entry.renderedType, symbol) +: binding
+          val declared = definition.typeElement.toSeq.map: typeElement =>
+            mapping(typeElement, CompilerBackendRole.DeclaredType, entry.renderedType, symbol)
+          mapping(definition, CompilerBackendRole.Definition, entry.renderedType, symbol) +: (binding ++ declared)
       case PcTypedTreeRole.Parameter         =>
         exactAncestor[ScParameter](file, entry.range)
           .filter(_.typeElement.isEmpty)
@@ -202,7 +206,9 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
           .toSeq
       case PcTypedTreeRole.Reference         =>
         exactAncestor[ScReferenceExpression](file, entry.range)
+          .orElse(endAnchoredAncestor[ScReferenceExpression](file, entry.range))
           .orElse(exactAncestor[ScStableCodeReference](file, entry.range))
+          .orElse(endAnchoredAncestor[ScStableCodeReference](file, entry.range))
           .map(mapping(_, CompilerBackendRole.Reference, entry.renderedType, symbol))
           .toSeq
 
@@ -235,5 +241,25 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
             runtimeClass.isInstance(element) &&
             textRange != null &&
             textRange.getStartOffset == range.startOffset &&
+            textRange.getEndOffset == range.endOffset
+          .map(_.asInstanceOf[A])
+
+  /** A compiler `Select` span may cover only the selector token while Scala PSI represents the complete qualified
+    * reference as one expression. Sharing the right boundary identifies that PSI wrapper without letting an inner
+    * compiler tree overwrite an arbitrary enclosing expression.
+    */
+  private def endAnchoredAncestor[A <: PsiElement: reflect.ClassTag](file: PsiFile, range: PcSourceRange): Option[A] =
+    val runtimeClass = summon[reflect.ClassTag[A]].runtimeClass
+    Option(file.findElementAt(math.min(range.startOffset, math.max(0, file.getTextLength - 1))))
+      .flatMap: leaf =>
+        Iterator
+          .iterate(Option(leaf))(_.flatMap(element => Option(element.getParent)))
+          .takeWhile(_.nonEmpty)
+          .flatten
+          .find: element =>
+            val textRange = element.getTextRange
+            runtimeClass.isInstance(element) &&
+            textRange != null &&
+            textRange.getStartOffset <= range.startOffset &&
             textRange.getEndOffset == range.endOffset
           .map(_.asInstanceOf[A])

@@ -348,7 +348,12 @@ final class Scala3CompilerBackend(project: Project):
   ): Option[String] =
     if !ModuleDetectionService.get(project).isActive(module) then None
     else
-      stateForActiveModule(element, module, role) match
+      val selected = stateForActiveModule(element, module, role) match
+        case current: CompilerBackendState.Current            => current
+        case _ if role == CompilerBackendRole.ExpressionExact =>
+          stateForActiveModule(element, module, CompilerBackendRole.ExpressionWidened)
+        case state                                            => state
+      selected match
         case CompilerBackendState.Current(renderedType, _) =>
           if Option(ScalaPluginSemanticBridge.getCompilerType(element)).forall(_ != renderedType) then
             ScalaPluginSemanticBridge.setCompilerType(element, renderedType)
@@ -498,10 +503,16 @@ final class Scala3CompilerBackend(project: Project):
   private def firstCompilerTypeMappings(
       mappings: Seq[(CompilerBackendMapping, PsiElement)]
   ): Vector[(ElementKey, String)] =
-    mappings
+    val exact   = mappings
       .collect:
         case (mapping, _) if mapping.role == CompilerBackendRole.ExpressionExact => mapping
       .distinctBy(_.range)
+    val widened = mappings
+      .collect:
+        case (mapping, _) if mapping.role == CompilerBackendRole.ExpressionWidened => mapping
+      .filterNot(mapping => exact.exists(_.range == mapping.range))
+      .distinctBy(_.range)
+    (exact ++ widened)
       .map: mapping =>
         ElementKey(mapping.range, CompilerBackendRole.ExpressionExact, None) -> mapping.renderedType
       .toVector
