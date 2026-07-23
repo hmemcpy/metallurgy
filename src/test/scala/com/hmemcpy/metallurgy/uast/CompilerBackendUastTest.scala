@@ -5,7 +5,7 @@ import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
-import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiNamedElement, SmartPointerManager}
+import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiNamedElement, PsiVariable, SmartPointerManager}
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
@@ -123,6 +123,7 @@ final class CompilerBackendUastTest extends ScalaLightCodeInsightFixtureTestCase
     val uParameter = parameter.convertWithParentTo[UParameter]().get
 
     assertEquals("java.lang.String", uVariable.getType.getCanonicalText)
+    assertEquals("java.lang.String", uVariable.getJavaPsi.asInstanceOf[PsiVariable].getType.getCanonicalText)
     assertEquals("java.lang.String", uMethod.getReturnType.getCanonicalText)
     assertEquals("java.lang.String", uParameter.getType.getCanonicalText)
 
