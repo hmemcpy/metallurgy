@@ -95,6 +95,15 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
     val present = excluded.filter(items.contains)
     assertTrue(s"unexpected completion items present: $present", present.isEmpty)
 
+  protected def assertSmartCompletionContains(text: String, expected: String*): Unit =
+    myFixture.configureByText(ScalaFileType.INSTANCE, wrapForHighlighting(text.trim))
+    awaitBackendPublished()
+    val items   = Option(myFixture.complete(CompletionType.SMART, 2))
+      .map(_.iterator.map(_.getLookupString).toSet)
+      .getOrElse(Set.empty)
+    val missing = expected.filterNot(items.contains)
+    assertTrue(s"smart completion missing: $missing; got: ${items.toList.sorted.take(20)}", missing.isEmpty)
+
   private def completionLookupStrings: Set[String] =
     Option(myFixture.complete(CompletionType.BASIC, 1))
       .map(_.iterator.map(_.getLookupString).toSet)
