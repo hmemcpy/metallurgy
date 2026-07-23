@@ -2,10 +2,11 @@ package com.hmemcpy.metallurgy.compilerbackend
 
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
-import java.nio.file.{Files, Path}
+import java.net.URI
+import java.nio.file.{Files, Path, Paths}
 import java.util.jar.JarFile
 import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import scala.util.{Try, Using}
 
 private[compilerbackend] final case class CompilerBackendShimMethod(
     name: String,
@@ -173,13 +174,39 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
 
   def discover(anchor: Class[?]): Either[String, CompilerBackendShimDiscoveryResult] =
+    findClassRoot(anchor)
+      .toRight(s"no code source for ${anchor.getName}")
+      .flatMap: location =>
+        try Right(discover(readShapes(location)))
+        catch case error: Exception => Left(s"cannot inspect installed Scala plugin: ${error.getMessage}")
+
+  private def findClassRoot(anchor: Class[?]): Option[Path] =
+    // Primary: protection domain code source (works for most production installs)
     Option(anchor.getProtectionDomain)
       .flatMap(domain => Option(domain.getCodeSource))
       .flatMap(source => Option(source.getLocation))
-      .toRight(s"no code source for ${anchor.getName}")
-      .flatMap: location =>
-        try Right(discover(readShapes(Path.of(location.toURI))))
-        catch case error: Exception => Left(s"cannot inspect installed Scala plugin: ${error.getMessage}")
+      .flatMap(location => Try(Path.of(location.toURI)).toOption)
+      .orElse:
+        // Fallback: resolve via the class resource URL. IntelliJ's PluginClassLoader does not always populate
+        // the protection domain's code source, so the JAR or class-directory root is derived from the resource.
+        val className = anchor.getName.replace('.', '/') + ".class"
+        Option(anchor.getResource("/" + className)).flatMap(rootFromResourceUrl(_, className))
+
+  private def rootFromResourceUrl(url: java.net.URL, className: String): Option[Path] =
+    Try:
+      url.getProtocol match
+        case "jar"  =>
+          val file      = url.getFile
+          val separator = file.indexOf("!")
+          Path.of(URI.create(file.substring(0, separator)))
+        case "file" =>
+          val path  = Paths.get(url.toURI)
+          val depth = className.count(_ == '/') + 1
+          var root  = path
+          for _ <- 0 until depth do root = root.getParent
+          root
+        case _      => null.asInstanceOf[Path]
+    .toOption.filter(_ != null)
 
   private[compilerbackend] def discoverClassBytes(
       classes: Iterable[Array[Byte]]
