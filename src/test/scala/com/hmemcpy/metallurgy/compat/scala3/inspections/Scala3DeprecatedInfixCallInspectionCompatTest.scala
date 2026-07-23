@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.compat.scala3.inspections
 
 import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import org.jetbrains.plugins.scala.codeInspection.deprecation.Scala3DeprecatedAlphanumericInfixCallInspection
 
 /** Port of the bundled Scala plugin's `Scala3DeprecatedAlphanumericInfixCallInspectionTest` (a representative subset).
   * The upstream wraps each case in a shared `testText` template and enables the inspection + `-deprecation`. Here:
@@ -16,10 +17,7 @@ final class Scala3DeprecatedInfixCallInspectionCompatTest extends Scala3CompatTe
   override protected def setUp(): Unit =
     super.setUp()
     ScalaPluginSemanticBridge.setAdditionalCompilerOptions(getModule, Seq("-deprecation"))
-    val cls = Class
-      .forName("org.jetbrains.plugins.scala.codeInspection.deprecation.Scala3DeprecatedAlphanumericInfixCallInspection")
-      .asInstanceOf[Class[? <: com.intellij.codeInspection.LocalInspectionTool]]
-    myFixture.enableInspections(cls)
+    myFixture.enableInspections(classOf[Scala3DeprecatedAlphanumericInfixCallInspection])
 
   private def testText(fileText: String): String =
     s"""class C:

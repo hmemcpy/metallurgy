@@ -1,15 +1,13 @@
 package com.hmemcpy.metallurgy.compat.scala3.inspections
 
 import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
+import org.jetbrains.plugins.scala.codeInspection.deprecation.Scala3DeprecatedPackageObjectInspection
 
 final class Scala3DeprecatedPackageObjectInspectionCompatTest extends Scala3CompatTestCase:
 
   override protected def setUp(): Unit =
     super.setUp()
-    val cls = Class
-      .forName("org.jetbrains.plugins.scala.codeInspection.deprecation.Scala3DeprecatedPackageObjectInspection")
-      .asInstanceOf[Class[? <: com.intellij.codeInspection.LocalInspectionTool]]
-    myFixture.enableInspections(cls)
+    myFixture.enableInspections(classOf[Scala3DeprecatedPackageObjectInspection])
 
   def testDeprecatedPackageObject(): Unit = checkHasErrorAroundCaret(
     s"""
