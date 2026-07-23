@@ -28,7 +28,7 @@ final class CompilerBackendMultiModuleDescriptorTest
   def testDependencyOrderAndClasspathComeFromTheNormalizedModuleGraph(): Unit =
     val dependencyOutput = myFixture.getTempDirFixture.findOrCreateDir("otherModule/target/classes")
     PsiTestUtil.setCompilerOutputPath(otherModule, dependencyOutput.getUrl, false)
-    val descriptor = CompilerBackendModuleDescriptor.read(getProject, getModule) match
+    val descriptor       = CompilerBackendModuleDescriptor.read(getProject, getModule) match
       case CompilerBackendModelState.Ready(value) => value
       case state                                  => throw new AssertionError(s"expected ready descriptor, got $state")
 
