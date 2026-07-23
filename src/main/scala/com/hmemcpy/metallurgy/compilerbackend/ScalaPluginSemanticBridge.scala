@@ -36,16 +36,27 @@ object ScalaPluginSemanticBridge:
               val module = ModuleUtilCore.findModuleForPsiElement(element)
               if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then bundledResult
               else
-                Scala3CompilerBackend
+                val target = Scala3CompilerBackend
                   .get(element.getProject)
                   .symbolTargetFor(element, module, CompilerBackendRole.Reference)
+                if target.isDefined then
+                  com.intellij.openapi.diagnostic.Logger
+                    .getInstance(classOf[ScalaPluginSemanticBridge.type])
+                    .warn(
+                      s"referenceResolution fallback for '${element.getText}': ${target.map(t => s"${t.getClass.getSimpleName} '${t.getText}'").orNull}"
+                    )
+                target
                   .collect:
                     case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
                   .getOrElse(bundledResult)
             case _                   => bundledResult
         catch
           case control: ControlFlowException => throw control
-          case NonFatal(_)                   => bundledResult
+          case NonFatal(error)               =>
+            com.intellij.openapi.diagnostic.Logger
+              .getInstance(classOf[ScalaPluginSemanticBridge.type])
+              .warn(s"referenceResolution fallback failed for $reference", error)
+            bundledResult
       case _                                     => bundledResult
 
   private lazy val bundledClassLoader: ClassLoader =
