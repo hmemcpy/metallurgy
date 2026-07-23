@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.compat.scala3
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.module.ModuleUtilCore
@@ -78,6 +79,26 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       .getOrElse(
         throw BackendUnavailableException(s"PC backend did not publish a snapshot for ${getFile.getName}")
       )
+
+  // Completion helpers: invoke basic completion at the caret and assert lookup strings are present / absent.
+  protected def assertCompletionContains(text: String, expected: String*): Unit =
+    myFixture.configureByText(ScalaFileType.INSTANCE, wrapForHighlighting(text.trim))
+    awaitBackendPublished()
+    val items   = completionLookupStrings
+    val missing = expected.filterNot(items.contains)
+    assertTrue(s"completion missing: $missing; got: ${items.toList.sorted.take(20)}", missing.isEmpty)
+
+  protected def assertCompletionExcludes(text: String, excluded: String*): Unit =
+    myFixture.configureByText(ScalaFileType.INSTANCE, wrapForHighlighting(text.trim))
+    awaitBackendPublished()
+    val items   = completionLookupStrings
+    val present = excluded.filter(items.contains)
+    assertTrue(s"unexpected completion items present: $present", present.isEmpty)
+
+  private def completionLookupStrings: Set[String] =
+    Option(myFixture.complete(CompletionType.BASIC, 1))
+      .map(_.iterator.map(_.getLookupString).toSet)
+      .getOrElse(Set.empty)
 
   // Runs `checkTextHasNoErrors` over many snippets (the parameterized `SimpleTestData` classes unfold to this) and
   // reports every failing snippet by its 1-based index instead of stopping at the first.
