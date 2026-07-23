@@ -99,6 +99,53 @@ private final class StructuralScala3PcBridge(
                     )
                   )
 
+  def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence] =
+    val moduleClass = Class.forName("dotty.tools.dotc.semanticdb.TextDocument$", true, classloader)
+    val module      = moduleClass.getField("MODULE$").get(null)
+    val document    = moduleClass.getMethods
+      .find(method =>
+        method.getName == "parseFrom" && method.getParameterTypes.sameElements(Array(classOf[Array[Byte]]))
+      )
+      .getOrElse(throw new NoSuchMethodException("TextDocument.parseFrom(byte[])"))
+      .invoke(module, bytes)
+    val lineStarts  = sourceLineStarts(sourceText)
+    iteratorValues(document.getClass.getMethod("occurrences").invoke(document)).flatMap { occurrence =>
+      val symbol = occurrence.getClass.getMethod("symbol").invoke(occurrence).toString
+      val range  = occurrence.getClass.getMethod("getRange").invoke(occurrence)
+      val start  = sourceOffset(
+        sourceText,
+        lineStarts,
+        range.getClass.getMethod("startLine").invoke(range).asInstanceOf[Int],
+        range.getClass.getMethod("startCharacter").invoke(range).asInstanceOf[Int]
+      )
+      val end    = sourceOffset(
+        sourceText,
+        lineStarts,
+        range.getClass.getMethod("endLine").invoke(range).asInstanceOf[Int],
+        range.getClass.getMethod("endCharacter").invoke(range).asInstanceOf[Int]
+      )
+      for
+        startOffset <- start.iterator
+        endOffset   <- end.iterator
+        if symbol.nonEmpty && endOffset > startOffset
+      yield PcSemanticdbOccurrence(
+        PcSourceRange(startOffset, endOffset),
+        symbol,
+        sourceText.substring(startOffset, endOffset)
+      )
+    }.toVector
+
+  private def sourceLineStarts(sourceText: String): Vector[Int] =
+    0 +: sourceText.iterator.zipWithIndex.collect { case ('\n', index) => index + 1 }.toVector
+
+  private def sourceOffset(
+      sourceText: String,
+      lineStarts: Vector[Int],
+      line: Int,
+      character: Int
+  ): Option[Int] =
+    lineStarts.lift(line).map(_ + character).filter(offset => offset >= 0 && offset <= sourceText.length)
+
   def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion] = synchronized:
     require(
       typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
@@ -373,14 +420,17 @@ private final class StructuralScala3PcBridge(
       context: AnyRef
   ): Option[PcCompilerSymbol] =
     Try:
-      val id      = stableSymbolId(symbol, context)
-      val name    = invokeContextual(symbol, "name", context).toString
-      val denot   = invokeContextual(symbol, "denot", context)
-      val flags   = symbolFlags(symbol, context)
-      val owner   = denot.getClass.getMethod("owner").invoke(denot)
-      val ownerId = Try(stableSymbolId(owner, context)).toOption
-      val span    = symbol.getClass.getMethod("span").invoke(symbol)
-      val nav     = for
+      val id       = stableSymbolId(symbol, context)
+      val name     = invokeContextual(symbol, "name", context).toString
+      val denot    = invokeContextual(symbol, "denot", context)
+      val flags    = symbolFlags(symbol, context)
+      val isType   = Try(invokeContextual(symbol, "isType", context).asInstanceOf[Boolean]).getOrElse(false)
+      val fullName = Option.when(isType):
+        invokeContextual(symbol, "showFullName", context).toString
+      val owner    = denot.getClass.getMethod("owner").invoke(denot)
+      val ownerId  = Try(stableSymbolId(owner, context)).toOption
+      val span     = symbol.getClass.getMethod("span").invoke(symbol)
+      val nav      = for
         navigationUri <- symbolNavigationUri(symbol, fileUri, context)
         existingSpan  <- Option.when(spanExists(span))(span)
         target        <-
@@ -390,7 +440,16 @@ private final class StructuralScala3PcBridge(
           Option.when(start >= 0 && end >= start && withinCurrentSource):
             PcNavigationTarget(navigationUri, PcSourceRange(start, end))
       yield target
-      PcCompilerSymbol(id, name, flags, ownerId, nav)
+      PcCompilerSymbol(
+        id,
+        name,
+        flags,
+        ownerId,
+        nav,
+        isType,
+        fullName,
+        isDeferred = symbolHasFlag(symbol, "Deferred", context)
+      )
     .toOption
 
   private def symbolNavigationUri(symbol: AnyRef, fileUri: String, context: AnyRef): Option[String] =
@@ -408,11 +467,28 @@ private final class StructuralScala3PcBridge(
     .toOption.flatten
 
   private def stableSymbolId(symbol: AnyRef, context: AnyRef): String =
-    val fullName  = invokeContextual(symbol, "showFullName", context).toString
-    val signature = Try(invokeContextual(symbol, "signature", context).toString).filter(_ != "NotAMethod").toOption
-    val span      = symbol.getClass.getMethod("span").invoke(symbol)
-    val location  = Option.when(spanExists(span))(s"${spanStart(span)}:${spanEnd(span)}")
-    s"$fullName${signature.fold("")(value => s"$value")}${location.fold("")(value => s"@$value")}"
+    semanticdbSymbolId(symbol, context).getOrElse:
+      val fullName  = invokeContextual(symbol, "showFullName", context).toString
+      val signature = Try(invokeContextual(symbol, "signature", context).toString).filter(_ != "NotAMethod").toOption
+      val span      = symbol.getClass.getMethod("span").invoke(symbol)
+      val location  = Option.when(spanExists(span))(s"${spanStart(span)}:${spanEnd(span)}")
+      s"$fullName${signature.fold("")(value => s"$value")}${location.fold("")(value => s"@$value")}"
+
+  private def semanticdbSymbolId(symbol: AnyRef, context: AnyRef): Option[String] =
+    Try:
+      val moduleClass = Class.forName("dotty.tools.pc.SemanticdbSymbols$", true, classloader)
+      val module      = moduleClass.getField("MODULE$").get(null)
+      moduleClass.getMethods
+        .find: method =>
+          val parameters = method.getParameterTypes
+          method.getName == "symbolName" && method.getParameterCount == 2 &&
+          parameters.head.isInstance(symbol) && parameters.apply(1).isInstance(context)
+        .getOrElse(throw new NoSuchMethodException("SemanticdbSymbols.symbolName"))
+        .invoke(module, symbol, context)
+        .toString
+    .toOption
+      .map(_.trim)
+      .filter(value => value.nonEmpty && value != "<no-symbol>")
 
   private def symbolFlags(symbol: AnyRef, context: AnyRef): Set[String] =
     Try:

@@ -1,12 +1,13 @@
 package com.hmemcpy.metallurgy.pc
 
+import com.google.gson.JsonElement
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.{ProcessCanceledException, ProgressManager}
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
-import org.eclipse.lsp4j.CompletionItem
+import org.eclipse.lsp4j.{CompletionItem, CompletionItemKind}
 import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler}
 
 import java.io.File
@@ -119,8 +120,13 @@ final class PcSession private (
                     snapshots.matching(snapshot.fileUri, snapshot.documentVersion).exists(_ eq active)
                   then PcSnapshotCurrency.Current
                   else PcSnapshotCurrency.Superseded
-                val extraction = Option(inlineTypeDrivers.get(snapshot.fileUri))
-                  .flatMap(_.use(_.typedTreeSnapshot(snapshot, currency)))
+                val extraction = Option(inlineTypeDrivers.get(snapshot.fileUri)).flatMap:
+                  _.use: driver =>
+                    driver.typedTreeSnapshot(snapshot, currency) match
+                      case PcTypedTreeExtraction.Completed(extracted) =>
+                        val occurrences = querySemanticdbOccurrences(snapshot, driver)
+                        PcTypedTreeExtraction.Completed(mergeReferenceOccurrences(extracted, occurrences))
+                      case other                                      => other
                 extraction.collect:
                   case PcTypedTreeExtraction.Completed(extracted) if currency() == PcSnapshotCurrency.Current =>
                     extracted
@@ -130,6 +136,73 @@ final class PcSession private (
                   Log.warn(s"PC typed-tree extraction failed for ${snapshot.fileUri}", error)
                   None
       case _                                            => None
+
+  private def querySemanticdbOccurrences(
+      snapshot: PcSnapshot,
+      driver: Scala3PcBridge
+  ): Option[Vector[PcSemanticdbOccurrence]] =
+    if !capabilities.semanticdb.isAvailable then None
+    else
+      ProgressManager.checkCanceled()
+      val future = compiler.semanticdbTextDocument(PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText)
+      try
+        val bytes = future.get(5, TimeUnit.SECONDS)
+        ProgressManager.checkCanceled()
+        Some(driver.semanticdbOccurrences(bytes, snapshot.sourceText))
+      catch
+        case canceled: ProcessCanceledException => throw canceled
+        case NonFatal(error) =>
+          val _ = future.cancel(true)
+          Log.warn(s"PC SemanticDB extraction failed for ${snapshot.fileUri}", error)
+          None
+
+  private def mergeReferenceOccurrences(
+      snapshot: PcTypedTreeSnapshot,
+      occurrences: Option[Vector[PcSemanticdbOccurrence]]
+  ): PcTypedTreeSnapshot =
+    val available = occurrences.getOrElse(Vector.empty)
+    snapshot.copy(entries = snapshot.entries.map: entry =>
+      if entry.role != PcTypedTreeRole.Reference then entry
+      else
+        val occurrence = available
+          .filter(candidate =>
+            candidate.range.startOffset >= entry.range.startOffset &&
+              candidate.range.endOffset <= entry.range.endOffset
+          )
+          .sortBy(candidate => (candidate.range.endOffset == entry.range.endOffset, candidate.range.startOffset))
+          .lastOption
+        occurrence match
+          case None            => entry
+          case Some(candidate) =>
+            val sourceName = candidate.name.trim.split('.').lastOption.getOrElse(candidate.name)
+            val deferred   = snapshot.entries.iterator
+              .flatMap(_.symbol)
+              .filter(symbol => symbol.isDeferred && symbol.name == sourceName)
+              .toVector
+              .distinctBy(_.id)
+            val metadata   = snapshot.entries.iterator
+              .filter(other => other.role != PcTypedTreeRole.Reference && other.range == entry.range)
+              .flatMap(_.symbol)
+              .find(_.name == sourceName)
+              .orElse(entry.symbol)
+            val resolved   = Option
+              .when(deferred.size == 1)(deferred.head)
+              .orElse(metadata.map(_.copy(id = candidate.symbolId, name = sourceName)))
+            entry.copy(
+              symbol = Some(
+                resolved
+                  .getOrElse:
+                    PcCompilerSymbol(
+                      candidate.symbolId,
+                      sourceName,
+                      Set.empty,
+                      None,
+                      None,
+                      isType = entry.symbol.exists(_.isType)
+                    )
+              )
+            )
+    )
 
   private[metallurgy] def snapshotCount: Int = snapshots.size
 
@@ -180,12 +253,24 @@ final class PcSession private (
       ProgressManager.checkCanceled()
       val items          = completionList.getItems.asScala.flatMap(decodeItem).toSeq
       val refinements    = structuralCompletions(snapshot, offset)
-      Some((items ++ refinements).distinctBy(_.lookupName))
+      val declarations   =
+        cachedTypedTreeSnapshot(snapshot).toSeq.flatMap(_.entries).flatMap(_.symbol).filter(_.isDeferred)
+      val canonical      = (items ++ refinements).map: item =>
+        val matches = declarations
+          .filter(symbol => refinements.exists(_.lookupName == item.lookupName) && symbol.name == item.lookupName)
+          .distinctBy(_.id)
+        if matches.size == 1 then item.copy(symbol = Some(matches.head.id)) else item
+      Some(canonical.distinctBy(_.lookupName))
     catch
       case NonFatal(error) =>
         val _ = future.cancel(true)
         Log.warn(s"PC completion failed for ${snapshot.fileUri} at $offset", error)
         None
+
+  private def cachedTypedTreeSnapshot(snapshot: PcSnapshot): Option[PcTypedTreeSnapshot] =
+    snapshots
+      .matching(snapshot.fileUri, snapshot.documentVersion)
+      .flatMap(_.cached[Option[PcTypedTreeSnapshot]](QueryKey.TypedTreeSnapshot, System.nanoTime()).flatten)
 
   private def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion] =
     try
@@ -283,7 +368,30 @@ final class PcSession private (
     Option(item.getLabel).map: label =>
       val filterText = Option(item.getFilterText)
       val detail     = Option(item.getDetail)
-      PcCompletion(filterText.getOrElse(label.takeWhile(_ != '(')), label, detail)
+      PcCompletion(
+        filterText.getOrElse(label.takeWhile(_ != '(')),
+        label,
+        detail,
+        completionSymbol(item.getData),
+        completionIsType(item.getKind)
+      )
+
+  private def completionSymbol(data: Object): Option[String] =
+    data match
+      case json: JsonElement if json.isJsonObject =>
+        Option(json.getAsJsonObject.get("symbol"))
+          .filterNot(_.isJsonNull)
+          .map(_.getAsString.trim)
+          .filter(value => value.nonEmpty && value != "<no-symbol>")
+      case values: java.util.Map[?, ?]            =>
+        Option(values.get("symbol"))
+          .map(_.toString.trim)
+          .filter(value => value.nonEmpty && value != "<no-symbol>")
+      case _                                      => None
+
+  private def completionIsType(kind: CompletionItemKind): Boolean =
+    kind == CompletionItemKind.Class || kind == CompletionItemKind.Interface || kind == CompletionItemKind.Enum ||
+      kind == CompletionItemKind.Struct || kind == CompletionItemKind.TypeParameter
 
   private def applicationIsDispatchThread: Boolean =
     Option(ApplicationManager.getApplication).exists(_.isDispatchThread)
@@ -299,7 +407,9 @@ final class PcSession private (
 private[metallurgy] final case class PcCompletion(
     lookupName: String,
     label: String,
-    detail: Option[String]
+    detail: Option[String],
+    symbol: Option[String] = None,
+    isType: Boolean = false
 )
 
 private[metallurgy] final case class PcDiagnostic(range: TextRange, isError: Boolean, message: String)

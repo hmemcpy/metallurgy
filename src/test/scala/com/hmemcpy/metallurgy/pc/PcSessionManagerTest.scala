@@ -367,13 +367,16 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   def testTypedTreeSnapshotContainsBoundarySafeSymbolMetadata(): Unit =
     withRealPcSession("metallurgy-typed-tree-metadata"): session =>
-      val source    = "object Main:\n  def answer(value: Int): Int = value\n"
+      val source    = "object Main:\n  class Answer\n  def answer(value: Int): Int = value\n"
       val extracted = extractTypedTreeSnapshot(session, "TypedTreeMetadata", source)
       val symbols   = extracted.entries.flatMap(_.symbol)
 
       assertTrue(symbols.nonEmpty)
       assertTrue(symbols.forall(_.name.nonEmpty))
+      assertFalse(symbols.exists(_.id.contains("@")))
+      assertTrue(symbols.exists(symbol => symbol.id.contains("Main") && symbol.id.contains("answer")))
       assertTrue(symbols.exists(_.ownerId.nonEmpty))
+      assertTrue(symbols.exists(_.isType))
       assertTrue(symbols.exists(_.navigation.exists(_.fileUri == "file:///TypedTreeMetadata.scala")))
       assertTrue(
         extracted.entries.forall(entry => entry.range.startOffset >= 0 && entry.range.endOffset <= source.length)

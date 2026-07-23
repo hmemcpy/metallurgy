@@ -9,13 +9,15 @@ import com.intellij.codeInsight.lookup.{
   LookupElementPresentation,
   LookupElementRenderer
 }
+import com.intellij.psi.PsiElement
 
 private[completion] object PcCompletionMerger:
 
   def mergeRemainingContributors(
       parameters: CompletionParameters,
       result: CompletionResultSet,
-      compilerItems: Seq[PcCompletion]
+      compilerItems: Seq[PcCompletion],
+      symbolTarget: PcCompletion => Option[PsiElement] = _ => None
   ): Unit =
     val scalaResult   = result.withPrefixMatcher(ScalaBacktickPrefixMatcher(result.getPrefixMatcher))
     var nativeResults = Vector.empty[CompletionResult]
@@ -25,7 +27,7 @@ private[completion] object PcCompletionMerger:
     )
 
     mergeResults(compilerItems, nativeResults).foreach:
-      case Left(compilerItem)  => scalaResult.addElement(compilerLookupElement(compilerItem))
+      case Left(compilerItem)  => scalaResult.addElement(compilerLookupElement(compilerItem, symbolTarget(compilerItem)))
       case Right(nativeResult) => scalaResult.passResult(nativeResult)
 
   def mergeResults(
@@ -39,19 +41,23 @@ private[completion] object PcCompletionMerger:
 
   def mergeLookupElements(
       compilerItems: Seq[PcCompletion],
-      nativeItems: Seq[LookupElement]
+      nativeItems: Seq[LookupElement],
+      symbolTarget: PcCompletion => Option[PsiElement] = _ => None
   ): Seq[LookupElement] =
     merge(compilerItems, nativeItems)(
       _.getLookupString,
       (nativeItem, compilerItem) => decorate(nativeItem, compilerItem)
     ).map:
-      case Left(compilerItem) => compilerLookupElement(compilerItem)
+      case Left(compilerItem) => compilerLookupElement(compilerItem, symbolTarget(compilerItem))
       case Right(nativeItem)  => nativeItem
 
-  def compilerLookupElement(item: PcCompletion): LookupElement =
+  def compilerLookupElement(item: PcCompletion, symbolTarget: Option[PsiElement] = None): LookupElement =
+    val builder = symbolTarget
+      .fold(LookupElementBuilder.create(item.lookupName))(
+        LookupElementBuilder.create(_, item.lookupName)
+      )
     decorate(
-      LookupElementBuilder
-        .create(item.lookupName)
+      builder
         .withPresentableText(item.lookupName),
       item
     )

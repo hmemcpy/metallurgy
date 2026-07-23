@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.feature.completion
 
+import com.hmemcpy.metallurgy.compilerbackend.Scala3CompilerBackend
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.intellij.codeInsight.completion.{CompletionContributor, CompletionParameters, CompletionResultSet}
@@ -41,4 +42,20 @@ final class Scala3PcCompletionContributor extends CompletionContributor:
       .map(_.complete(vfile.getUrl, document.getText, document.getModificationStamp, parameters.getOffset))
       .foreach: items =>
         Log.debug(s"PC completion returned ${items.size} items for ${vfile.getName}:${parameters.getOffset}")
-        PcCompletionMerger.mergeRemainingContributors(parameters, result, items)
+        val backend = Scala3CompilerBackend.get(project)
+        PcCompletionMerger.mergeRemainingContributors(
+          parameters,
+          result,
+          items,
+          item =>
+            item.symbol.flatMap: symbolId =>
+              backend.symbolTargetForCompletion(
+                file,
+                module,
+                document.getModificationStamp,
+                symbolId,
+                item.lookupName,
+                item.detail.getOrElse(item.label),
+                item.isType
+              )
+        )

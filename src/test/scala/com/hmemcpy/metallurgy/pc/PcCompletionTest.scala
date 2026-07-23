@@ -45,18 +45,38 @@ final class PcCompletionTest extends ScalaLightCodeInsightFixtureTestCase:
 
   def testPcCompletion(): Unit = withSession: session =>
     val results  = cases.zipWithIndex.map { case ((label, (source, expected)), idx) =>
-      val snapshot    = PcSnapshot(s"file:///Completion$idx.scala", 1L, source)
-      val _           = session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
-      val items       = session.complete(snapshot.fileUri, snapshot.sourceText, snapshot.documentVersion, source.length)
-      val lookupNames = items.map(_.lookupName).toSet
-      val ok          = expected.subsetOf(lookupNames)
+      val snapshot        = PcSnapshot(s"file:///Completion$idx.scala", 1L, source)
+      val _               = session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
+      val _               = session.typedTreeSnapshot(snapshot)
+      val items           = session.complete(snapshot.fileUri, snapshot.sourceText, snapshot.documentVersion, source.length)
+      val lookupNames     = items.map(_.lookupName).toSet
+      val expectedItems   = items.filter(item => expected(item.lookupName))
+      val comparedSymbols = expectedItems.map: item =>
+        val completedSource   = source.take(source.lastIndexOf('.') + 1) + item.lookupName
+        val completedSnapshot = PcSnapshot(snapshot.fileUri, 2L, completedSource)
+        val _                 = session.scheduleRetypecheck(completedSnapshot).get(30, TimeUnit.SECONDS)
+        val snapshotEntries   = session.typedTreeSnapshot(completedSnapshot).toSeq.flatMap(_.entries)
+        val referenceEntries  = snapshotEntries.filter(_.role == PcTypedTreeRole.Reference)
+        val referenceSymbols  = referenceEntries
+          .filter: entry =>
+            val text = completedSource.substring(entry.range.startOffset, entry.range.endOffset)
+            text == item.lookupName || text.endsWith(s".${item.lookupName}")
+          .flatMap(_.symbol)
+          .map(_.id)
+          .toSet
+        item -> referenceSymbols
+      val sharedSymbols   = comparedSymbols.forall: (item, referenceSymbols) =>
+        item.symbol.exists(referenceSymbols)
+      val ok              = expected.subsetOf(lookupNames) && sharedSymbols
       println(f"[complete] ${if ok then "OK  " else "FAIL"} $label%-20s -> ${lookupNames.toSeq.sorted.mkString(", ")}")
-      (ok, label, lookupNames.toSeq.sorted.mkString(", "), expected)
+      (ok, label, lookupNames.toSeq.sorted.mkString(", "), expected, comparedSymbols)
     }
     val failures = results.filterNot(_._1)
     assertTrue(
       s"${failures.size}/${cases.size} completion cases failed:\n" +
-        failures.map(f => s"  - ${f._2}: got '${f._3}', required ${f._4.mkString("[", ",", "]")}").mkString("\n"),
+        failures
+          .map(f => s"  - ${f._2}: got '${f._3}', required ${f._4.mkString("[", ",", "]")}, symbols=${f._5}")
+          .mkString("\n"),
       failures.isEmpty
     )
 

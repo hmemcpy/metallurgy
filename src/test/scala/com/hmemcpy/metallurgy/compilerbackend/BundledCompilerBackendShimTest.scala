@@ -6,7 +6,7 @@ import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.project.Project
-import com.intellij.psi.{PsiElement, SmartPointerManager}
+import com.intellij.psi.{PsiClass, PsiElement, SmartPointerManager}
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
@@ -312,7 +312,15 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     val document   = myFixture.getEditor.getDocument
     val range      = reference.getTextRange
     val generation = CompilerBackendGeneration(1L, 1L, 1L)
-    val symbol     = PcCompilerSymbol("Main.GeneratedType", "GeneratedType", Set("Type"), None, None)
+    val symbol     = PcCompilerSymbol(
+      "Main.GeneratedType",
+      "GeneratedType",
+      Set("Type"),
+      None,
+      None,
+      isType = true,
+      qualifiedName = Some("Main.GeneratedType")
+    )
     val mapping    = CompilerBackendMapping(
       SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
       PcSourceRange(range.getStartOffset, range.getEndOffset),
@@ -335,7 +343,9 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     val resolved = reference.multiResolveScala(false)
     assertEquals(1, resolved.length)
     assertEquals("GeneratedType", resolved.head.element.getName)
-    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightClass])
+    assertTrue(resolved.head.element.isInstanceOf[PsiClass])
+    assertEquals("_root_.Main.GeneratedType", rendered(PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])))
 
   def testCompilerSymbolDoesNotReplaceNonEmptyBundledResolution(): Unit =
     val file       = myFixture.configureByText(

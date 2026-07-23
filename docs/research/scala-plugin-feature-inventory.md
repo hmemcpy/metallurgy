@@ -168,8 +168,8 @@ backend work when inactive.
   imports, generation and refactorings.
 - #65 owns loader-neutral sbt/BSP and other imported-project descriptors.
 - #66 owns ecosystem parity; #67 owns deferred worksheet/REPL semantics; #68 owns UAST and hidden gates.
-- A new execution-parity subissue must own application/test-framework discovery and debugger behavior. This is the only
-  uncovered implementation/testing work found by this inventory.
+- #70 owns application/test-framework discovery, debugger behavior, and execution invariance. It was the only
+  implementation/testing gap found by this inventory.
 - #60 owns the final bounded upstream Scala 3 graduation suite.
 
 No other feature-specific adapter is currently justified. New work is created only when source tracing or a parity test

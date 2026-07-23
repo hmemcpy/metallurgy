@@ -185,18 +185,57 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
 
     publishSynchronously(snapshot)
 
-    val backend = Scala3CompilerBackend.get(getProject)
-    val first   = backend
+    val backend        = Scala3CompilerBackend.get(getProject)
+    val first          = backend
       .symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact)
       .get
       .asInstanceOf[CompilerBackendLightSymbol]
-    val second  = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).get
+    val second         = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).get
     assertSame(first, second)
     assertEquals("generatedMember", first.getName)
     assertEquals("String", first.renderedType)
     assertFalse(first.isWritable)
     assertTrue(first.getUseScope.isInstanceOf[com.intellij.psi.search.LocalSearchScope])
-    val _       = assertThrows(
+    assertSame(
+      first,
+      backend
+        .symbolTargetForCompletion(
+          file,
+          getModule,
+          document.getModificationStamp,
+          symbol.id,
+          symbol.name,
+          "String",
+          isType = false
+        )
+        .orNull
+    )
+    val completionOnly = backend
+      .symbolTargetForCompletion(
+        file,
+        getModule,
+        document.getModificationStamp,
+        "external.Owner.completionOnly().",
+        "completionOnly",
+        "Int",
+        isType = false
+      )
+      .get
+    assertSame(
+      completionOnly,
+      backend
+        .symbolTargetForCompletion(
+          file,
+          getModule,
+          document.getModificationStamp,
+          "external.Owner.completionOnly().",
+          "completionOnly",
+          "Int",
+          isType = false
+        )
+        .orNull
+    )
+    val _              = assertThrows(
       classOf[IncorrectOperationException],
       () =>
         val _ = first.setName("wrong")

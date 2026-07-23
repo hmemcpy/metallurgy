@@ -5,5 +5,8 @@ private[metallurgy] final case class PcCompilerSymbol(
     name: String,
     flags: Set[String],
     ownerId: Option[String],
-    navigation: Option[PcNavigationTarget]
+    navigation: Option[PcNavigationTarget],
+    isType: Boolean = false,
+    qualifiedName: Option[String] = None,
+    isDeferred: Boolean = false
 )

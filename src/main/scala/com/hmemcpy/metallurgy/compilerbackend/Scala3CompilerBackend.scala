@@ -55,7 +55,7 @@ final class Scala3CompilerBackend(project: Project):
   )
 
   private val files         = new ConcurrentHashMap[FileKey, FileState]()
-  private val lightSymbols  = new ConcurrentHashMap[LightSymbolKey, CompilerBackendLightSymbol]()
+  private val lightSymbols  = new ConcurrentHashMap[LightSymbolKey, PsiNamedElement]()
   private val nextRevision  = new AtomicLong(0L)
   private val mutationLocks = Array.fill(64)(new Object())
 
@@ -306,6 +306,39 @@ final class Scala3CompilerBackend(project: Project):
         key      <- state.entryOrder.find(key => key.range == range && key.role == role)
         symbol   <- state.symbols.get(key)
         target   <- sourceTarget(module, symbol).orElse(lightTarget(file, state, key, symbol))
+      yield target
+
+  private[metallurgy] def symbolTargetForCompletion(
+      file: PsiFile,
+      module: Module,
+      documentVersion: Long,
+      symbolId: String,
+      name: String,
+      renderedType: String,
+      isType: Boolean
+  ): Option[PsiElement] =
+    if file.getProject != project || !ModuleDetectionService.get(project).isActive(module) then None
+    else
+      for
+        virtualFile <- Option(file.getVirtualFile)
+        if ModuleUtilCore.findModuleForFile(virtualFile, project) == module
+        document    <- currentDocument(file)
+        if document.getModificationStamp == documentVersion
+        fileKey      = FileKey(module, virtualFile.getUrl)
+        state       <- Option(files.get(fileKey))
+        if state.committed && state.documentVersion == documentVersion
+        target      <- state.entryOrder.iterator
+                         .flatMap(elementKey => state.symbols.get(elementKey).map(elementKey -> _))
+                         .find((_, symbol) => symbol.id == symbolId)
+                         .flatMap: (elementKey, symbol) =>
+                           sourceTarget(module, symbol).orElse(lightTarget(fileKey, state, elementKey, symbol))
+                         .orElse:
+                           lightTarget(
+                             fileKey,
+                             state,
+                             PcCompilerSymbol(symbolId, name, Set.empty, None, None, isType),
+                             renderedType
+                           )
       yield target
 
   private[metallurgy] def validatedCompilerType(
@@ -619,25 +652,47 @@ final class Scala3CompilerBackend(project: Project):
       state: FileState,
       elementKey: ElementKey,
       symbol: PcCompilerSymbol
-  ): Option[CompilerBackendLightSymbol] =
+  ): Option[PsiElement] =
     renderedType(state.entries.get(elementKey)).flatMap: tpe =>
-      currentPsiFile(fileKey.fileUrl).map: file =>
-        val key = LightSymbolKey(fileKey, state.revision, symbol.id)
-        lightSymbols.computeIfAbsent(
-          key,
-          _ =>
+      lightTarget(fileKey, state, symbol, tpe)
+
+  private def lightTarget(
+      fileKey: FileKey,
+      state: FileState,
+      symbol: PcCompilerSymbol,
+      renderedType: String
+  ): Option[PsiElement] =
+    currentPsiFile(fileKey.fileUrl).map: file =>
+      val key = LightSymbolKey(fileKey, state.revision, symbol.id)
+      lightSymbols.computeIfAbsent(
+        key,
+        _ =>
+          val current = () =>
+            ModuleDetectionService.get(project).isActive(fileKey.module) &&
+              Option(files.get(fileKey)).exists(candidate =>
+                candidate.committed && candidate.revision == state.revision
+              )
+          if symbol.isType then
+            new CompilerBackendLightClass(
+              file,
+              symbol.id,
+              symbol.name,
+              symbol.qualifiedName,
+              renderedType,
+              symbol.flags,
+              current
+            )
+          else
             new CompilerBackendLightSymbol(
               PsiManager.getInstance(project),
               file,
               symbol.id,
               symbol.name,
-              tpe,
+              renderedType,
               symbol.flags,
-              () =>
-                ModuleDetectionService.get(project).isActive(fileKey.module) &&
-                  Option(files.get(fileKey)).exists(current => current.committed && current.revision == state.revision)
+              current
             )
-        )
+      )
 
   private def renderedType(state: Option[CompilerBackendState]): Option[String] =
     state.collect:

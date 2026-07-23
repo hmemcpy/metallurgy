@@ -3,6 +3,8 @@ package com.hmemcpy.metallurgy.feature.completion
 import com.hmemcpy.metallurgy.pc.PcCompletion
 import com.intellij.codeInsight.lookup.{LookupElement, LookupElementBuilder, LookupElementDecorator}
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.fileTypes.PlainTextLanguage
+import com.intellij.psi.PsiFileFactory
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import org.jetbrains.plugins.scala.lang.completion3.base.ScalaCompletionTestFixture.createPresentation
 import org.junit.Assert.{assertEquals, assertSame}
@@ -48,6 +50,17 @@ final class PcCompletionMergerTest extends BasePlatformTestCase:
     val merged = PcCompletionMerger.mergeLookupElements(Seq(compiler), Seq(native))
 
     assertEquals(Seq("notifyAll", "age"), merged.map(_.getLookupString))
+
+  def testUnmatchedCompilerCompletionCarriesItsBackendPsiIdentity(): Unit =
+    val compiler = PcCompletion("generated", "generated: Int", Some("Int"), Some("Owner.generated()."))
+    val target   = PsiFileFactory
+      .getInstance(getProject)
+      .createFileFromText("Generated.scala", PlainTextLanguage.INSTANCE, "generated")
+
+    val merged = PcCompletionMerger.mergeLookupElements(Seq(compiler), Seq.empty, _ => Some(target))
+
+    assertEquals(1, merged.size)
+    assertSame(target, merged.head.getPsiElement)
 
   def testOverloadsAreMergedOneToOne(): Unit =
     val native   = Seq(

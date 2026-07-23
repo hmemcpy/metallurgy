@@ -19,6 +19,8 @@ private[pc] trait Scala3PcBridge extends AutoCloseable:
 
   def typedTreeSnapshot(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): PcTypedTreeExtraction
 
+  def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence]
+
   def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion]
 
 private[pc] object Scala3PcBridge:
@@ -47,12 +49,22 @@ private[pc] object Scala3PcBridge:
     )
     val inlineTypes                                  = driver.flatMap(requireMethods(_, Set("openedFiles" -> 0, "openedTrees" -> 0)))
     val snapshots                                    = driver.flatMap(requireMethods(_, Set("compilationUnits" -> 0)))
+    val semanticdbParser                             = classShape(
+      classloader,
+      "dotty.tools.dotc.semanticdb.TextDocument$",
+      Set("parseFrom" -> 1)
+    )
     val settings                                     = loadClass(classloader, "dotty.tools.dotc.config.YSettings")
 
     Scala3PcBridgeCapabilities(
       basePresentationCompiler = basePresentationCompiler,
       completion = publicOperation(basePresentationCompiler, publicOperations, "complete"),
       hover = publicOperation(basePresentationCompiler, publicOperations, "hover"),
+      semanticdb = publicOperation(basePresentationCompiler, publicOperations, "semanticdbTextDocument") match
+        case PcCapabilityStatus.Available if semanticdbParser.nonEmpty => PcCapabilityStatus.Available
+        case PcCapabilityStatus.Available                              =>
+          PcCapabilityStatus.Unavailable("the exact compiler does not expose a SemanticDB parser")
+        case unavailable: PcCapabilityStatus.Unavailable               => unavailable,
       inlineTypes = inlineTypes.toStatus("InteractiveDriver does not expose typed expression lookup"),
       typedTreeSnapshots = snapshots.toStatus("InteractiveDriver does not expose retained compilation units"),
       structuralCompletions = inlineTypes.toStatus("InteractiveDriver does not expose typed qualifier lookup"),
@@ -125,6 +137,7 @@ private[metallurgy] final case class Scala3PcBridgeCapabilities(
     basePresentationCompiler: PcCapabilityStatus,
     completion: PcCapabilityStatus,
     hover: PcCapabilityStatus,
+    semanticdb: PcCapabilityStatus,
     inlineTypes: PcCapabilityStatus,
     typedTreeSnapshots: PcCapabilityStatus,
     structuralCompletions: PcCapabilityStatus,
@@ -154,6 +167,7 @@ private[metallurgy] object Scala3PcBridgeCapabilities:
     basePresentationCompiler = PcCapabilityStatus.Unavailable("not discovered"),
     completion = PcCapabilityStatus.Unavailable("not discovered"),
     hover = PcCapabilityStatus.Unavailable("not discovered"),
+    semanticdb = PcCapabilityStatus.Unavailable("not discovered"),
     inlineTypes = PcCapabilityStatus.Unavailable("not discovered"),
     typedTreeSnapshots = PcCapabilityStatus.Unavailable("not discovered"),
     structuralCompletions = PcCapabilityStatus.Unavailable("not discovered"),
