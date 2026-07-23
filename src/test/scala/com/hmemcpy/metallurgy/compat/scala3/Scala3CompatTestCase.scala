@@ -79,6 +79,18 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
         throw BackendUnavailableException(s"PC backend did not publish a snapshot for ${getFile.getName}")
       )
 
+  // Runs `checkTextHasNoErrors` over many snippets (the parameterized `SimpleTestData` classes unfold to this) and
+  // reports every failing snippet by its 1-based index instead of stopping at the first.
+  protected def checkNoErrorsAll(snippets: String*): Unit =
+    val failed = snippets.iterator.zipWithIndex
+      .flatMap: (code, idx) =>
+        var errored = false
+        try checkTextHasNoErrors(code.trim)
+        catch case _: AssertionError => errored = true
+        Option.when(errored)(idx + 1)
+      .toList
+    if failed.nonEmpty then fail(s"errors in parameterized snippets: ${failed.mkString(", ")}")
+
   // Mirror of the Scala plugin's no-error assertion, with the async publication awaited between configure and the
   // daemon highlight so the annotator reads the published types.
   override protected def checkTextHasNoErrors(text: String): Unit =
