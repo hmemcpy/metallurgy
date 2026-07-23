@@ -546,7 +546,14 @@ private final class StructuralScala3PcBridge(
             PcTypedTreeRole.Pattern | PcTypedTreeRole.PatternExpected =>
           TypeRendering.Widened
         case _ => TypeRendering.Exact
-      val rendered  = renderCompilerType(normalizedType(rawType, rendering, context), context)
+      val rendered  = candidate.role match
+        case PcTypedTreeRole.Function =>
+          // A method reference is a TermRef whose dotc rendering is `(owner.name : signature)`. Widening it
+          // strips the owner qualifier and leaves a bare method type that may parse ambiguously, so the raw
+          // rendering is kept; parsedState stores it as Rendered because method signatures are not valid types.
+          renderCompilerType(rawType, context)
+        case _                        =>
+          renderCompilerType(normalizedType(rawType, rendering, context), context)
       Option.when(isPublishableType(rendered)):
         PcTypedTreeEntry(
           candidate.range,
