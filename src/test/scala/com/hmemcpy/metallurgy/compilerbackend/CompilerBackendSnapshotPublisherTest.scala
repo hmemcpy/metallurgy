@@ -19,7 +19,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.{assertEquals, assertNotSame, assertNull, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertNull, assertSame, assertThrows, assertTrue}
+import com.intellij.util.IncorrectOperationException
 
 import java.nio.file.Path
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -121,6 +122,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val nameRange = function.getNameIdentifier.getTextRange
     val symbol    = PcCompilerSymbol(
       "Main.answer():Int@19:25",
+      "answer",
       Set("Method"),
       Some("Main"),
       Some(
@@ -157,6 +159,55 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
 
     backend.clear(getModule)
+    assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
+
+  def testCompilerOnlySymbolGetsGenerationScopedLightPsi(): Unit =
+    val source    = "object Main:\n  val result = generatedMember\n"
+    val file      = myFixture.configureByText("CompilerOnlySymbol.scala", source)
+    val document  = myFixture.getEditor.getDocument
+    val reference = children[org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression](file)
+      .find(_.getText == "generatedMember")
+      .get
+    val symbol    = PcCompilerSymbol(
+      "external.Owner.generatedMember():String",
+      "generatedMember",
+      Set("Method"),
+      Some("external.Owner"),
+      None
+    )
+    val snapshot  = typedTreeSnapshot(
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      Seq(symbolEntry(reference, PcTypedTreeRole.ExpressionExact, "String", symbol))
+    )
+
+    publishSynchronously(snapshot)
+
+    val backend = Scala3CompilerBackend.get(getProject)
+    val first   = backend
+      .symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact)
+      .get
+      .asInstanceOf[CompilerBackendLightSymbol]
+    val second  = backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).get
+    assertSame(first, second)
+    assertEquals("generatedMember", first.getName)
+    assertEquals("String", first.renderedType)
+    assertFalse(first.isWritable)
+    assertTrue(first.getUseScope.isInstanceOf[com.intellij.psi.search.LocalSearchScope])
+    val _       = assertThrows(
+      classOf[IncorrectOperationException],
+      () =>
+        val _ = first.setName("wrong")
+        ()
+    )
+
+    backend.markPending(
+      getModule,
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp + 1L,
+      generation.copy(session = generation.session + 1L)
+    )
+    assertFalse(first.isValid)
     assertTrue(backend.symbolTargetFor(reference, getModule, CompilerBackendRole.ExpressionExact).isEmpty)
 
   def testRealCompilerSnapshotMapsAllSupportedPsiRoles(): Unit =

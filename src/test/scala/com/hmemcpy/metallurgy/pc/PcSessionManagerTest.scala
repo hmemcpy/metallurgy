@@ -372,6 +372,7 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       val symbols   = extracted.entries.flatMap(_.symbol)
 
       assertTrue(symbols.nonEmpty)
+      assertTrue(symbols.forall(_.name.nonEmpty))
       assertTrue(symbols.exists(_.ownerId.nonEmpty))
       assertTrue(symbols.exists(_.navigation.exists(_.fileUri == "file:///TypedTreeMetadata.scala")))
       assertTrue(

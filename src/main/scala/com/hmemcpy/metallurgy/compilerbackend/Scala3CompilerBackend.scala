@@ -31,6 +31,7 @@ import scala.util.control.NonFatal
 final class Scala3CompilerBackend(project: Project):
 
   private final case class FileKey(module: Module, fileUrl: String)
+  private final case class LightSymbolKey(file: FileKey, revision: Long, symbolId: String)
   private final case class ElementKey(range: PcSourceRange, role: CompilerBackendRole, symbolId: Option[String])
   private final case class FileState(
       revision: Long,
@@ -53,6 +54,7 @@ final class Scala3CompilerBackend(project: Project):
   )
 
   private val files         = new ConcurrentHashMap[FileKey, FileState]()
+  private val lightSymbols  = new ConcurrentHashMap[LightSymbolKey, CompilerBackendLightSymbol]()
   private val nextRevision  = new AtomicLong(0L)
   private val mutationLocks = Array.fill(64)(new Object())
 
@@ -113,6 +115,7 @@ final class Scala3CompilerBackend(project: Project):
             )
       transition match
         case (before, Some(pending)) if before != Some(pending) =>
+          retireLightSymbols(key)
           retireMappedValues(
             key,
             pending.revision,
@@ -160,7 +163,9 @@ final class Scala3CompilerBackend(project: Project):
                 else if currency != PcSnapshotCurrency.Current then
                   val _ = files.replace(currentTarget.fileKey, plan.committed, currentTarget.previous)
                   CompilerBackendCommit.Rejected
-                else applyCommit(file, plan)
+                else
+                  retireLightSymbols(currentTarget.fileKey)
+                  applyCommit(file, plan)
 
   private def commitTarget(
       module: Module,
@@ -299,7 +304,7 @@ final class Scala3CompilerBackend(project: Project):
         if state.committed && state.documentVersion == document.getModificationStamp
         key      <- state.entryOrder.find(key => key.range == range && key.role == role)
         symbol   <- state.symbols.get(key)
-        target   <- sourceTarget(module, symbol)
+        target   <- sourceTarget(module, symbol).orElse(lightTarget(file, state, key, symbol))
       yield target
 
   private[metallurgy] def validatedCompilerType(
@@ -323,13 +328,16 @@ final class Scala3CompilerBackend(project: Project):
     val retired = files.entrySet().asScala.map(entry => entry.getKey -> entry.getValue).toSeq
     retired.foreach: (key, state) =>
       val removed = withFileMutation(key)(files.remove(key, state))
-      if removed then retireRemovedState(key, state.entries.keySet, ownedCompilerTypeSlots(state))
+      if removed then
+        retireLightSymbols(key)
+        retireRemovedState(key, state.entries.keySet, ownedCompilerTypeSlots(state))
 
   def clear(module: Module): Unit =
     val retired = files.entrySet().asScala.filter(_.getKey.module == module).toSeq
     retired.foreach: entry =>
       val removed = withFileMutation(entry.getKey)(files.remove(entry.getKey, entry.getValue))
       if removed then
+        retireLightSymbols(entry.getKey)
         retireRemovedState(entry.getKey, entry.getValue.entries.keySet, ownedCompilerTypeSlots(entry.getValue))
 
   private def updateFallback(
@@ -358,6 +366,7 @@ final class Scala3CompilerBackend(project: Project):
             else state
       transition match
         case (before, Some(updated)) if before != Some(updated) =>
+          retireLightSymbols(key)
           retireMappedValues(
             key,
             updated.revision,
@@ -377,8 +386,8 @@ final class Scala3CompilerBackend(project: Project):
       file  <- fileKey(element, module)
       range <- elementRange(element)
     do
-      val key = ElementKey(range, role, None)
-      val _   = withFileMutation(file):
+      val key        = ElementKey(range, role, None)
+      val transition = withFileMutation(file):
         transitionFile(file): previous =>
           val existing = previous.filter(_.documentVersion == documentVersion)
           Some(
@@ -394,6 +403,7 @@ final class Scala3CompilerBackend(project: Project):
               compilerTypeSlots = existing.map(ownedCompilerTypeSlots).getOrElse(Set.empty)
             )
           )
+      if transition._1 != transition._2 then retireLightSymbols(file)
 
   private def parsedState(
       element: PsiElement,
@@ -600,6 +610,39 @@ final class Scala3CompilerBackend(project: Project):
                           ) =>
                         named
                     .minByOption(_.getTextRange.getLength)
+
+  private def lightTarget(
+      fileKey: FileKey,
+      state: FileState,
+      elementKey: ElementKey,
+      symbol: PcCompilerSymbol
+  ): Option[CompilerBackendLightSymbol] =
+    renderedType(state.entries.get(elementKey)).flatMap: tpe =>
+      currentPsiFile(fileKey.fileUrl).map: file =>
+        val key = LightSymbolKey(fileKey, state.revision, symbol.id)
+        lightSymbols.computeIfAbsent(
+          key,
+          _ =>
+            new CompilerBackendLightSymbol(
+              PsiManager.getInstance(project),
+              file,
+              symbol.id,
+              symbol.name,
+              tpe,
+              symbol.flags,
+              () =>
+                ModuleDetectionService.get(project).isActive(fileKey.module) &&
+                  Option(files.get(fileKey)).exists(current => current.committed && current.revision == state.revision)
+            )
+        )
+
+  private def renderedType(state: Option[CompilerBackendState]): Option[String] =
+    state.collect:
+      case CompilerBackendState.Current(value, _) => value
+      case CompilerBackendState.Rendered(value)   => value
+
+  private def retireLightSymbols(fileKey: FileKey): Unit =
+    val _ = lightSymbols.keySet().removeIf(_.file == fileKey)
 
   private def fileBelongsToModule(fileUrl: String, module: Module): Boolean =
     Option(VirtualFileManager.getInstance().findFileByUrl(fileUrl))

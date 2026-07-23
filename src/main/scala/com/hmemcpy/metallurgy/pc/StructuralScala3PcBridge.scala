@@ -364,6 +364,7 @@ private final class StructuralScala3PcBridge(
   ): Option[PcCompilerSymbol] =
     Try:
       val id      = stableSymbolId(symbol, context)
+      val name    = invokeContextual(symbol, "name", context).toString
       val denot   = invokeContextual(symbol, "denot", context)
       val flags   = symbolFlags(symbol, context)
       val owner   = denot.getClass.getMethod("owner").invoke(denot)
@@ -379,7 +380,7 @@ private final class StructuralScala3PcBridge(
           Option.when(start >= 0 && end >= start && withinCurrentSource):
             PcNavigationTarget(navigationUri, PcSourceRange(start, end))
       yield target
-      PcCompilerSymbol(id, flags, ownerId, nav)
+      PcCompilerSymbol(id, name, flags, ownerId, nav)
     .toOption
 
   private def symbolNavigationUri(symbol: AnyRef, fileUri: String, context: AnyRef): Option[String] =
