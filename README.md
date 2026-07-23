@@ -2,23 +2,28 @@
 
 An IntelliJ plugin that replaces IntelliJ's Scala type backend with the real Scala 3 compiler.
 
-> **Pre-alpha, post-PoC.** Compiler-backed type resolution, inline type hints, completion, and best-effort operation are
-> working. The next phase carries the Scala 3 backend across every IntelliJ type consumer.
+> **Pre-alpha.** The replacement backend is implemented and undergoing its final compatibility and regression
+> graduation.
 
-## Target architecture
+## What it does
 
-The plugin runs the real Scala 3 compiler — the same one [Metals](https://scalameta.org/metals/) uses — inside IntelliJ,
-then exposes its types and symbols through Scala PSI so existing IDE features continue to work.
+Metallurgy runs the module's real Scala 3 presentation compiler through
+[Scalameta's published interfaces](https://scalameta.org/metals/) and exposes its types and symbols through the existing
+Scala PSI model. IntelliJ keeps its editor, project import, build, test, debugger, and refactoring infrastructure while
+Scala 3 supplies the semantic backend.
+
+Compiler-backed types, symbol resolution, completion, hover, inline hints, navigation, and best-effort cross-module
+operation are working. The implementation is tested against substantial Scala 3 codebases including Cats, Cats Effect,
+ZIO, Shapeless 3, Tapir, and FS2.
 
 The idea — running the Scala compiler directly inside IntelliJ, without LSP — comes from
-[Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SNc7xeHrKnQ&t=3931s) (*The best Scala IDE
+[Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SlPDmwhxeok&t=3931s) (*The best Scala IDE
 inside your favourite Scala IDE*).
 
 ## Requirements
 
-- IntelliJ IDEA **2026.1+**
-- **Scala 3** with a published presentation-compiler artifact
-- The Scala plugin, with **compiler-based highlighting** enabled
+- IntelliJ IDEA **2026.1+** with the Scala plugin
+- A **Scala 3** project
 
 ## Install
 
