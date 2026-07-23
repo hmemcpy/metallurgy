@@ -637,9 +637,16 @@ private final class StructuralScala3PcBridge(
     normalizedType(rawType, selection.rendering, context)
 
   private def normalizedType(rawType: AnyRef, rendering: TypeRendering, context: AnyRef): AnyRef =
+    // A term reference is a singleton type, and dotc renders every singleton type as `( ref : underlying )` — not the
+    // underlying type alone — via `PlainPrinter.toTextSingleton`:
+    // https://github.com/scala/scala3/blob/7c8ee3cb7e1e69f46cdad16ff88b2076d916e58a/compiler/src/dotty/tools/dotc/printing/PlainPrinter.scala#L364
+    // That is correct compiler behaviour. The widened type is what we want to show, so widen term references before
+    // rendering. `widenTermRefExpr` collapses a term reference to its underlying type while leaving constant
+    // (singleton literal) types intact, so exact rendering still preserves literals.
+    val widened    = invokeContextual(rawType, "widenTermRefExpr", context)
     val base       = rendering match
-      case TypeRendering.Exact   => rawType
-      case TypeRendering.Widened => invokeContextual(rawType, "widenTermRefExpr", context)
+      case TypeRendering.Exact   => widened
+      case TypeRendering.Widened => widened
     val dealiased  = invokeContextual(base, "dealias", context)
     val normalized = invokeContextual(dealiased, "normalized", context)
     invokeContextual(normalized, "simplified", context)

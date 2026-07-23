@@ -278,6 +278,16 @@ final class Scala3CompilerBackend(project: Project):
             case None                                                                  => CompilerBackendState.Unavailable
         case _                                         => CompilerBackendState.Unavailable
 
+  private[metallurgy] def describeEntry(module: Module, fileUrl: String): String =
+    Option(files.get(FileKey(module, fileUrl))) match
+      case None    => s"no entry for $fileUrl"
+      case Some(s) =>
+        val lines = s.entryOrder.map: key =>
+          val st = s.entries.get(key).map(_.productPrefix).getOrElse("-")
+          f"  [${key.range.startOffset}%4d-${key.range.endOffset}%4d] ${key.role}%-16s $st"
+        s"committed=${s.committed} entries=${s.entries.size} slots=${s.compilerTypeSlots.size}\n" +
+          lines.mkString("")
+
   private[metallurgy] def hasCommittedSnapshot(
       module: Module,
       fileUrl: String,

@@ -13,8 +13,14 @@ through Scalameta's published `scala.meta.pc` interfaces while retaining the exi
 
 ## Discipline (non-negotiable)
 
-- **"pc is never wrong."** A surprising result from the presentation compiler / dotc almost always means your snippet,
-  needle, or assumption is wrong — not a `pc` limitation. Fix the test, don't blame the compiler.
+- **"pc is never wrong" — and neither is dotc.** Assume the compiler is always correct and work from that assumption.
+  A surprising result (a type that renders unexpectedly, a snippet that won't compile, a resolve that differs from the
+  bundled plugin) almost always means your snippet, needle, or assumption is wrong — or that you are reading dotc's raw
+  internal representation where you should read a normalized one. Only conclude a compiler fault with irrefutable proof,
+  and before that, confirm the behaviour against the scala3 source and `-Xprint:typer` / REPL. (Worked example: a term
+  reference rendered as `(y : Int)` looked like a bug; it is dotc's canonical singleton-type rendering — every
+  `SingletonType` prints as `( ref : underlying )` via `PlainPrinter.toTextSingleton`. The bridge was showing a raw
+  `TermRef` where it should have shown the widened type.)
 - **The [scala/scala3](https://github.com/scala/scala3) repo is the source of truth for Scala language and compiler
   behaviour.** When something doesn't work where it seemingly should (a snippet that won't compile, a type that resolves
   unexpectedly, a macro that doesn't expand), check the upstream implementation, its tests (`tests/run`,
@@ -44,6 +50,30 @@ through Scalameta's published `scala.meta.pc` interfaces while retaining the exi
   `sed` do not require a timeout. When piping a bounded command through `tail` or another formatter, enable shell
   `pipefail` so the formatter cannot mask a test failure or timeout exit.
 - No `Thread.sleep` for timing in production code — use latches/futures.
+
+## Code smells
+
+Source code is self-contained. It knows nothing about agents, review processes, planning docs, or other files in
+the tree. A comment is either omitted, or it explains a non-obvious *why* in the present tense, describing the code it
+sits on. Anything else is a smell:
+
+- **No pointers to other places.** Not `// see AGENTS.md`, not `// see docs/scala3-compiler-backend.md`, not an upstream
+  path like `// mirrors TypeInferenceTestFixture.assert…`, and not `// upstream: scala-impl/test/…/X.scala#testName`. The
+  reader has only this file open; a reference they cannot resolve from here is noise.
+- **No process or scaffolding language.** Not `// Layer 1: …`, not `// provenance:`, not "the refocus", "rollout
+  failsafe", "how we got here". Architectural decisions live in the canonical design document, not in code.
+- **No foreign identifiers in comments.** No issue numbers, SCL IDs, ADR numbers, or agent/skill names.
+- **Omit before narrating.** Obvious code gets no comment. When a non-obvious constraint or failure mode must be
+  recorded, write one sentence about *what breaks if you change this* — e.g. "Snapshot lookup is keyed by file URI and
+  document version; a reused name returns another case's snapshot."
+- **One exception warrants a comment — and an upstream link: resolving a non-obvious, *incorrectly-assumed* problem.**
+  The rules above yield when code looks wrong but is correct — usually because it reads a dotc/IntelliJ internal
+  representation where intuition expects the normalized form — and a reader would otherwise "fix" it back into a bug.
+  Then a present-tense note earns its place, and it may cite the authoritative upstream source (a resolvable scala/scala3
+  URL) that confirms the behaviour is intended; this is the sole case where an external link belongs in source. (Example:
+  widening a term reference before rendering, because dotc prints every `SingletonType` as `( ref : underlying )` via
+  `PlainPrinter.toTextSingleton`.)
+- Traceability and provenance belong in commit messages, PR descriptions, or a separate manifest — never inside source.
 
 ## Build & test
 
@@ -104,6 +134,10 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 - **Feature flags per construct:** named tuples need `-language:experimental.namedTuples`; opaque types must be
   object-scoped *and* used outside for pc to show the alias. When a case fails, suspect the snippet/flags first (see
   "pc is never wrong") and confirm usage against `scala/scala3`.
+- **Diagnosing dotc-vs-PSI type disagreements:** run the snippet through the compiler with `-Xprint:typer` (e.g.
+  `scala-cli compile --scala <version> --scala-opt -Xprint:typer`) to see exactly how dotc typed it. If dotc's rendering
+  differs from what the PSI/backend shows, the divergence is in the Metallurgy pipeline, not the compiler. Pair this
+  with a REPL probe (`scala-cli repl --scala <version>`) for `:type` checks.
 - **MacroAnnotation cannot add user-visible members** (Scala 3 design restriction) — don't try to test or support it.
 
 ## Tests

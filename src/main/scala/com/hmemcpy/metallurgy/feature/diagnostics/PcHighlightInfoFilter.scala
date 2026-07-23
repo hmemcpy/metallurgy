@@ -1,31 +1,12 @@
 package com.hmemcpy.metallurgy.feature.diagnostics
 
-import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.codeInsight.daemon.impl.{HighlightInfo, HighlightInfoFilter}
-import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.psi.PsiFile
 
-/** Suppresses the bundled semantic annotator's errors once pc has spoken for the current document version (an empty pc
-  * `CurrentSuccess` means clean), and blanks them while pc analysis is in flight (blank-while-pending). Parser errors,
-  * warnings, and anything from a non-active module are left untouched. pc's own diagnostics are rendered on a separate
-  * markup layer by [[PcHighlightRenderer]]; this filter only removes the bundled annotator's competing semantic red.
+/** Passes every highlight through unchanged. The bundled plugin layers its diagnostics on top of the resolved PSI,
+  * oblivious to the backend compiler, and pc renders its own diagnostics on a separate markup layer
+  * ([[PcHighlightRenderer]]); both sets are shown. A construct flagged by both currently yields two highlights.
   */
 final class PcHighlightInfoFilter extends HighlightInfoFilter:
 
-  override def accept(info: HighlightInfo, file: PsiFile): Boolean =
-    if !isSemanticError(info) then true
-    else
-      val project = file.getProject
-      Option(ModuleUtilCore.findModuleForPsiElement(file)) match
-        case Some(module) if ModuleDetectionService.get(project).isActive(module) =>
-          val virtualFile = file.getVirtualFile
-          if virtualFile == null then true
-          else
-            PcDiagnosticSetCache.get(project).stateForFile(virtualFile) match
-              case SnapshotState.Pending(_) | SnapshotState.CurrentSuccess(_, _) => false
-              case SnapshotState.Failed(_) | SnapshotState.Unavailable           => true
-        case _                                                                    => true
-
-  private def isSemanticError(info: HighlightInfo): Boolean =
-    info.getSeverity == HighlightSeverity.ERROR && info.isFromAnnotator
+  override def accept(info: HighlightInfo, file: PsiFile): Boolean = true
