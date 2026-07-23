@@ -55,6 +55,11 @@
         language="Scala"
         implementationClass="com.hmemcpy.metallurgy.feature.completion.Scala3PcCompletionContributor"
         order="before scalaCompletionContrubutor"/>
+    <lang.documentationProvider
+        id="MetallurgyCompilerBackendDocumentationProvider"
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendDocumentationProvider"
+        order="before ScalaDocumentationProvider"/>
     <daemon.highlightInfoFilter
         implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
     <highlightingPassFactory

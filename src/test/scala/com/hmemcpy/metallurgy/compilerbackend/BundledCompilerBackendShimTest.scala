@@ -3,6 +3,8 @@ package com.hmemcpy.metallurgy.compilerbackend
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot, PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
+import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
 import com.intellij.openapi.project.Project
@@ -32,6 +34,7 @@ import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
 import java.lang.management.ManagementFactory
 import java.util.Arrays
 import java.util.concurrent.TimeUnit
+import scala.jdk.CollectionConverters.*
 
 final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -277,8 +280,8 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       )
     )
 
-    val first  = reference.multiResolveScala(false)
-    val second = reference.multiResolveScala(false)
+    val first                = reference.multiResolveScala(false)
+    val second               = reference.multiResolveScala(false)
     assertEquals(1, first.length)
     assertSame(first.head.element, second.head.element)
     assertEquals("generatedMember", first.head.element.getName)
@@ -291,6 +294,16 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         .stream()
         .anyMatch(_.getElement == reference)
     )
+    myFixture.getEditor.getCaretModel.moveToOffset(reference.nameId.getTextOffset)
+    val documentationTargets = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, file, reference.nameId.getTextOffset)
+      .asScala
+    val documentationTarget  = documentationTargets.collectFirst:
+      case target: PsiElementDocumentationTarget if target.getTargetElement eq first.head.element => target
+    assertTrue(documentationTarget.isDefined)
+    assertEquals("def generatedMember: String", documentationTarget.get.computeDocumentationHint())
+    val documentationPointer = documentationTarget.get.createPointer()
 
     backend.markPending(
       getModule,
@@ -299,6 +312,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       generation.copy(session = 2L)
     )
     assertFalse(first.head.element.isValid)
+    assertEquals(null, documentationPointer.dereference())
     assertTrue(reference.multiResolveScala(false).isEmpty)
 
   def testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity(): Unit =
@@ -346,6 +360,61 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightClass])
     assertTrue(resolved.head.element.isInstanceOf[PsiClass])
     assertEquals("_root_.Main.GeneratedType", rendered(PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])))
+    assertEquals(
+      "type GeneratedType = GeneratedType",
+      new CompilerBackendDocumentationProvider().getQuickNavigateInfo(resolved.head.element, reference)
+    )
+
+  def testCompilerOnlyQualifiedReferenceResolvesThroughTheSameBridge(): Unit =
+    val file       = myFixture.configureByText(
+      "CompilerOnlyQualifiedResolve.scala",
+      "object receiver\nval result = receiver.generatedMember"
+    )
+    val reference  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScReferenceExpression])
+      .stream()
+      .filter(_.refName == "generatedMember")
+      .findFirst()
+      .orElseThrow()
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("receiver.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved            = reference.multiResolveScala(false)
+    assertEquals(1, resolved.length)
+    assertEquals("generatedMember", resolved.head.element.getName)
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    myFixture.getEditor.getCaretModel.moveToOffset(reference.nameId.getTextOffset)
+    val documentationTarget = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, file, reference.nameId.getTextOffset)
+      .asScala
+      .collectFirst:
+        case target: PsiElementDocumentationTarget if target.getTargetElement eq resolved.head.element => target
+    assertTrue(documentationTarget.isDefined)
+    assertEquals(
+      "def generatedMember: String",
+      documentationTarget.get.computeDocumentationHint()
+    )
 
   def testCompilerSymbolDoesNotReplaceNonEmptyBundledResolution(): Unit =
     val file       = myFixture.configureByText(
