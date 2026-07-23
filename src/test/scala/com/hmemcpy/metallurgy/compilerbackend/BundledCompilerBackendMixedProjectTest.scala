@@ -71,27 +71,27 @@ final class BundledCompilerBackendMixedProjectTest
     assertEquals("_root_.scala.Predef.String", rendered(inactiveTypeElement))
 
   def testSnapshotCannotCrossItsOwningModuleBoundary(): Unit =
-    val inactiveFile                                         = myFixture.addFileToProject(
+    val inactiveFile                                = myFixture.addFileToProject(
       s"$otherModuleSourceDir/OwnedByOther.scala",
       "val value: String = \"text\""
     )
-    val typeElement                                          = PsiTreeUtil.findChildOfType(inactiveFile, classOf[ScTypeElement])
-    val document                                             = PsiDocumentManager.getInstance(getProject).getDocument(inactiveFile)
-    val range                                                = typeElement.getTextRange
-    val entry                                                = PcTypedTreeEntry(
+    val typeElement                                 = PsiTreeUtil.findChildOfType(inactiveFile, classOf[ScTypeElement])
+    val document                                    = PsiDocumentManager.getInstance(getProject).getDocument(inactiveFile)
+    val range                                       = typeElement.getTextRange
+    val entry                                       = PcTypedTreeEntry(
       PcSourceRange(range.getStartOffset, range.getEndOffset),
       PcTypedTreeRole.Declared,
       "Int",
       None
     )
-    val snapshot                                             = PcTypedTreeSnapshot(
+    val snapshot                                    = PcTypedTreeSnapshot(
       inactiveFile.getVirtualFile.getUrl,
       document.getModificationStamp,
       Vector(entry),
       PcTypedTreeMetrics(0.nanos, 0.nanos, 0.nanos, 0, 0, 1, 1, 0, 0, 1)
     )
-    val publisher                                            = new CompilerBackendSnapshotPublisher(getProject)
-    val computation: Computable[Seq[CompilerBackendMapping]] = () => publisher.mapCurrentFile(getModule, snapshot)
+    val publisher                                   = new CompilerBackendSnapshotPublisher(getProject)
+    val computation: Computable[Seq[ResolvedEntry]] = () => publisher.prepareMappings(getModule, snapshot)
 
     assertTrue(ApplicationManager.getApplication.runReadAction(computation).isEmpty)
 
@@ -154,7 +154,7 @@ final class BundledCompilerBackendMixedProjectTest
       None
     )
     val commit: Computable[CompilerBackendCommit] = () =>
-      backend.commitSnapshot(module, file, version, generation, Seq(mapping))(PcSnapshotCurrency.Current)
+      backend.commitSnapshotWithMappings(module, file, version, generation, Seq(mapping))(PcSnapshotCurrency.Current)
     ApplicationManager.getApplication.runReadAction(commit)
 
   private def assertCurrent(

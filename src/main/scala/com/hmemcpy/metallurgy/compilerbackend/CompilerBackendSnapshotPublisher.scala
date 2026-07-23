@@ -68,7 +68,7 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
             val promise = ReadAction
               .nonBlocking(() =>
                 beforeMap()
-                mapCurrentFile(module, snapshot)
+                prepareMappings(module, snapshot)
               )
               .inSmartMode(project)
               .coalesceBy(this, module, snapshot.fileUri)
@@ -76,8 +76,8 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
               .expireWhen(() => !isCurrent(module, snapshot, snapshotCurrency))
               .finishOnUiThread(
                 ModalityState.nonModal(),
-                mappings =>
-                  val _ = completion.complete(commit(module, snapshot, generation, snapshotCurrency, mappings))
+                resolved =>
+                  val _ = completion.complete(commit(module, snapshot, generation, snapshotCurrency, resolved))
               )
               .submit(AppExecutorUtil.getAppExecutorService)
             val _       = promise.onError: error =>
@@ -101,17 +101,18 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
               val _ = completion.complete(CompilerBackendCommit.Rejected)
           completion
 
-  private[metallurgy] def mapCurrentFile(
+  private[metallurgy] def prepareMappings(
       module: Module,
       snapshot: PcTypedTreeSnapshot
-  ): Seq[CompilerBackendMapping] =
+  ): Seq[ResolvedEntry] =
     currentFile(module, snapshot)
       .map: file =>
-        snapshot.entries.iterator
+        val mappings = snapshot.entries.iterator
           .flatMap: entry =>
             ProgressManager.checkCanceled()
             mappingsFor(file, entry)
           .toSeq
+        backend.resolveAndParseStates(file, mappings)
       .getOrElse(Seq.empty)
 
   private def commit(
@@ -119,11 +120,11 @@ private[metallurgy] final class CompilerBackendSnapshotPublisher(
       snapshot: PcTypedTreeSnapshot,
       generation: CompilerBackendGeneration,
       snapshotCurrency: () => PcSnapshotCurrency,
-      mappings: Seq[CompilerBackendMapping]
+      resolved: Seq[ResolvedEntry]
   ): CompilerBackendCommit =
     currentFile(module, snapshot)
       .map: file =>
-        backend.commitSnapshot(module, file, snapshot.documentVersion, generation, mappings):
+        backend.commitSnapshot(module, file, snapshot.documentVersion, generation, resolved):
           snapshotCurrency()
       .getOrElse(CompilerBackendCommit.Rejected)
 

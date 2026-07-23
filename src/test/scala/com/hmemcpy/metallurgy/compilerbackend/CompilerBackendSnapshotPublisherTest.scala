@@ -377,7 +377,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
 
     val publisher = new CompilerBackendSnapshotPublisher(getProject)
-    val mappings  = readAction(publisher.mapCurrentFile(getModule, snapshot))
+    val mappings  = readAction(publisher.prepareMappings(getModule, snapshot))
     val _         = readAction:
       backend.commitSnapshot(getModule, file, snapshot.documentVersion, generation, mappings)(
         PcSnapshotCurrency.Superseded
@@ -398,7 +398,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
 
     val result = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         document.getModificationStamp,
@@ -480,7 +480,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       Seq(entry(originalDefinition, PcTypedTreeRole.Inferred, "Int"))
     )
     val publisher          = new CompilerBackendSnapshotPublisher(getProject)
-    val mappings           = readAction(publisher.mapCurrentFile(getModule, snapshot))
+    val mappings           = readAction(publisher.prepareMappings(getModule, snapshot))
     val backend            = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
 
@@ -515,13 +515,13 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val before     = ScalaPluginSemanticBridge.scalaPsiModificationCount
 
     val first       = readAction:
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     val afterFirst  = ScalaPluginSemanticBridge.scalaPsiModificationCount
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     val second      = readAction:
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     val afterSecond = ScalaPluginSemanticBridge.scalaPsiModificationCount
@@ -570,7 +570,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val version    = document.getModificationStamp
     backend.markPending(getModule, fileUri, version, generation)
     val _          = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         version,
@@ -608,7 +608,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     var checks     = 0
 
     val result = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         version,
@@ -636,7 +636,9 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     myFixture.`type`(" ")
 
     val result = readAction:
-      backend.commitSnapshot(getModule, file, version, generation, Seq(backendMapping))(PcSnapshotCurrency.Current)
+      backend.commitSnapshotWithMappings(getModule, file, version, generation, Seq(backendMapping))(
+        PcSnapshotCurrency.Current
+      )
 
     assertEquals(CompilerBackendCommit.Rejected, result)
     assertNull(ScalaPluginSemanticBridge.getCompilerType(definition))
@@ -659,7 +661,13 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
       assertEquals(
         CompilerBackendCommit.Rejected,
         readAction:
-          backend.commitSnapshot(getModule, file, document.getModificationStamp, mismatch, Seq(mappedEntry))(
+          backend.commitSnapshotWithMappings(
+            getModule,
+            file,
+            document.getModificationStamp,
+            mismatch,
+            Seq(mappedEntry)
+          )(
             PcSnapshotCurrency.Current
           )
       )
@@ -672,13 +680,19 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val backendMapping = mapping(expression, CompilerBackendRole.ExpressionExact, "Int")
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     val _              = readAction:
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(backendMapping))(
+      backend.commitSnapshotWithMappings(
+        getModule,
+        file,
+        document.getModificationStamp,
+        generation,
+        Seq(backendMapping)
+      )(
         PcSnapshotCurrency.Current
       )
     assertEquals("Int", ScalaPluginSemanticBridge.getCompilerType(expression))
 
     val removed = readAction:
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq.empty)(
+      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq.empty[ResolvedEntry])(
         PcSnapshotCurrency.Current
       )
 
@@ -694,7 +708,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
 
     val result = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         document.getModificationStamp,
@@ -715,7 +729,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val backend    = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     val _          = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         document.getModificationStamp,
@@ -789,7 +803,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val version    = document.getModificationStamp
     backend.markPending(getModule, fileUri, version, generation)
     val _          = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         version,
@@ -803,7 +817,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val replacement     = generation.copy(session = 2L)
     backend.markPending(getModule, fileUri, version, replacement)
     val _               = readAction:
-      backend.commitSnapshot(
+      backend.commitSnapshotWithMappings(
         getModule,
         file,
         version,
@@ -844,7 +858,13 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val backendMapping = mapping(expression, CompilerBackendRole.ExpressionExact, "Int")
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     val _              = readAction:
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(backendMapping))(
+      backend.commitSnapshotWithMappings(
+        getModule,
+        file,
+        document.getModificationStamp,
+        generation,
+        Seq(backendMapping)
+      )(
         PcSnapshotCurrency.Current
       )
 
@@ -860,7 +880,7 @@ final class CompilerBackendSnapshotPublisherTest extends ScalaLightCodeInsightFi
     val publisher = new CompilerBackendSnapshotPublisher(getProject)
     val backend   = Scala3CompilerBackend.get(getProject)
     backend.markPending(getModule, snapshot.fileUri, snapshot.documentVersion, generation)
-    val mappings  = readAction(publisher.mapCurrentFile(getModule, snapshot))
+    val mappings  = readAction(publisher.prepareMappings(getModule, snapshot))
     val file      = myFixture.getFile
     val _         = readAction:
       backend.commitSnapshot(getModule, file, snapshot.documentVersion, generation, mappings)(

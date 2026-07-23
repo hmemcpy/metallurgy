@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Condition
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -141,12 +142,39 @@ final class Scala3CompilerBackend(project: Project):
   ): Unit =
     updateFallback(module, fileUrl, documentVersion, generation, CompilerBackendState.Unavailable)
 
-  private[metallurgy] def commitSnapshot(
+  /** Resolves smart pointers to live PSI elements and parses each rendered type off the calling thread.
+    * `ScalaPsiElementFactory.createTypeFromText` triggers stub-index resolution, which is a slow operation prohibited
+    * on the EDT, so this must run in the background read action before the UI-thread commit.
+    */
+  private[metallurgy] def resolveAndParseStates(
+      file: PsiFile,
+      mappings: Seq[CompilerBackendMapping]
+  ): Seq[ResolvedEntry] =
+    mappings.flatMap: mapping =>
+      ProgressManager.checkCanceled()
+      resolveMapping(file, mapping).map: (resolved, element) =>
+        val state = parsedState(element, resolved.role, resolved.renderedType)
+          .getOrElse(CompilerBackendState.Unavailable)
+        ResolvedEntry(resolved, element, state)
+
+  /** Resolves raw mappings and commits in one call. Production resolves off-EDT via `resolveAndParseStates` first; this
+    * convenience is for tests that build mappings directly without a separate background phase.
+    */
+  private[metallurgy] def commitSnapshotWithMappings(
       module: Module,
       file: PsiFile,
       documentVersion: Long,
       generation: CompilerBackendGeneration,
       mappings: Seq[CompilerBackendMapping]
+  )(currency: => PcSnapshotCurrency): CompilerBackendCommit =
+    commitSnapshot(module, file, documentVersion, generation, resolveAndParseStates(file, mappings))(currency)
+
+  private[metallurgy] def commitSnapshot(
+      module: Module,
+      file: PsiFile,
+      documentVersion: Long,
+      generation: CompilerBackendGeneration,
+      resolved: Seq[ResolvedEntry]
   )(currency: => PcSnapshotCurrency): CompilerBackendCommit =
     if currency != PcSnapshotCurrency.Current then CompilerBackendCommit.Rejected
     else
@@ -157,7 +185,7 @@ final class Scala3CompilerBackend(project: Project):
             commitTarget(module, file, documentVersion, generation) match
               case None                => CompilerBackendCommit.Rejected
               case Some(currentTarget) =>
-                val plan = prepareCommit(file, documentVersion, generation, mappings, currentTarget)
+                val plan = prepareCommit(documentVersion, generation, resolved, currentTarget)
                 if currency != PcSnapshotCurrency.Current ||
                   !files.replace(currentTarget.fileKey, currentTarget.previous, plan.committed)
                 then CompilerBackendCommit.Rejected
@@ -188,26 +216,25 @@ final class Scala3CompilerBackend(project: Project):
     yield CommitTarget(fileKey, previous)
 
   private def prepareCommit(
-      file: PsiFile,
       documentVersion: Long,
       generation: CompilerBackendGeneration,
-      mappings: Seq[CompilerBackendMapping],
+      resolved: Seq[ResolvedEntry],
       target: CommitTarget
   ): CommitPlan =
-    val resolved       = mappings.flatMap(resolveMapping(file, _))
-    val entries        = resolved.map: (mapping, element) =>
-      val key = ElementKey(mapping.range, mapping.role, mapping.symbolId)
-      key -> parsedState(element, mapping.role, mapping.renderedType).getOrElse(CompilerBackendState.Unavailable)
+    val entries        = resolved.map: entry =>
+      val key = ElementKey(entry.mapping.range, entry.mapping.role, entry.mapping.symbolId)
+      key -> entry.state
     val current        = entries.foldLeft(Map.empty[ElementKey, CompilerBackendState]):
       case (ranked, (key, state)) =>
         if ranked.contains(key) then ranked else ranked.updated(key, state)
-    val symbols        = resolved.flatMap: (mapping, _) =>
-      mapping.symbol.map: symbol =>
-        ElementKey(mapping.range, mapping.role, mapping.symbolId) -> symbol
+    val symbols        = resolved.flatMap: entry =>
+      entry.mapping.symbol.map: symbol =>
+        ElementKey(entry.mapping.range, entry.mapping.role, entry.mapping.symbolId) -> symbol
     val currentSymbols = symbols.foldLeft(Map.empty[ElementKey, PcCompilerSymbol]):
       case (ranked, (key, symbol)) => if ranked.contains(key) then ranked else ranked.updated(key, symbol)
+    val resolvedPairs  = resolved.map(entry => (entry.mapping, entry.element))
     val slotMappings   = firstCompilerTypeMappings(
-      resolved.filter: (mapping, _) =>
+      resolvedPairs.filter: (mapping, _) =>
         current
           .get(ElementKey(mapping.range, mapping.role, mapping.symbolId))
           .exists(_.isInstanceOf[CompilerBackendState.Current])
@@ -226,7 +253,7 @@ final class Scala3CompilerBackend(project: Project):
     )
     CommitPlan(
       committed,
-      resolved,
+      resolvedPairs,
       slotMappings,
       changedElementKeys(target.previous.entries, current),
       ownedCompilerTypeSlots(target.previous) -- slotKeys

@@ -278,7 +278,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     assertEquals(
       CompilerBackendCommit.Committed(1),
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     )
@@ -384,7 +384,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     assertEquals(
       CompilerBackendCommit.Committed(1),
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     )
@@ -429,7 +429,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     assertEquals(
       CompilerBackendCommit.Committed(1),
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     )
@@ -476,7 +476,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     assertEquals(
       CompilerBackendCommit.Committed(1),
-      backend.commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
         PcSnapshotCurrency.Current
       )
     )
@@ -939,7 +939,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
     assertTrue(
       backend
-        .commitSnapshot(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        .commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
           PcSnapshotCurrency.Current
         )
         .isInstanceOf[CompilerBackendCommit.Committed]

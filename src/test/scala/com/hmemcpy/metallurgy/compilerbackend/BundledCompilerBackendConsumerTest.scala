@@ -541,7 +541,7 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
     )
     backend.markPending(getModule, fileUrl, version, generation)
     val commit: Computable[CompilerBackendCommit] = () =>
-      backend.commitSnapshot(getModule, file, version, generation, Seq(mapping))(PcSnapshotCurrency.Current)
+      backend.commitSnapshotWithMappings(getModule, file, version, generation, Seq(mapping))(PcSnapshotCurrency.Current)
     val result                                    = ApplicationManager.getApplication.runReadAction(commit)
     assertTrue(result.toString, result.isInstanceOf[CompilerBackendCommit.Committed])
 
