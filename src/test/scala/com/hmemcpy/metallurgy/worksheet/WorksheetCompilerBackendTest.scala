@@ -3,8 +3,10 @@ package com.hmemcpy.metallurgy.worksheet
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
@@ -96,6 +98,16 @@ final class WorksheetCompilerBackendTest extends ScalaLightCodeInsightFixtureTes
 
     assertTrue(prepared.isEmpty)
     assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+
+  def testSyntheticInteractiveConsoleRemainsAnExplicitBundledFallback(): Unit =
+    val consoleClass = Class.forName("org.jetbrains.plugins.scala.console.ScalaLanguageConsole")
+    val console      = consoleClass.getConstructor(classOf[com.intellij.openapi.module.Module]).newInstance(getModule)
+    try
+      val file = consoleClass.getMethod("getFile").invoke(console).asInstanceOf[PsiFile]
+
+      assertTrue(file.getVirtualFile.getClass.getName.contains("LightVirtualFile"))
+      assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+    finally Disposer.dispose(console.asInstanceOf[Disposable])
 
   private def configureWorksheet(
       name: String,
