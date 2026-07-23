@@ -111,7 +111,7 @@ final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTe
     assertTrue(activeGutters.mkString(", "), activeGutters.size >= expected.size)
 
     MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
-    DaemonCodeAnalyzer.getInstance(getProject).restart(file)
+    DaemonCodeAnalyzer.getInstance(getProject).restart(file, "Metallurgy activation changed")
     myFixture.doHighlighting()
     finders.foreach: (frameworkName, suiteName, framework) =>
       assertTrue(
