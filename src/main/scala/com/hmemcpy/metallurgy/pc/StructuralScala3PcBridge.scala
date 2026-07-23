@@ -392,24 +392,37 @@ private final class StructuralScala3PcBridge(
         val kinds = sameKey.iterator.map(candidate => TypedTreeKind.from(candidate.tree)).toSet
         Set(TypedTreeKind.Inlined, TypedTreeKind.Apply, TypedTreeKind.TypeApply).count(kinds.contains) >= 2
 
+  private def isLambdaBlock(tree: AnyRef): Boolean =
+    // A placeholder/named lambda desugars to `Block(DefDef, Closure)`; only such a block stands for the whole
+    // expression, so it is preferred over its body. Other blocks (compiler-inserted wrappers, plain term blocks)
+    // are not, because their own type can be less precise than the body the bundled plugin expects.
+    Try:
+      val expr = tree.getClass.getMethod("expr").invoke(tree)
+      expr != null && expr.getClass.getSimpleName == "Closure"
+    .getOrElse(false)
+
   private def treeRank(tree: AnyRef, role: PcTypedTreeRole): Int =
     val kind = TypedTreeKind.from(tree)
     role match
       case PcTypedTreeRole.ExpressionExact   =>
         kind match
-          case TypedTreeKind.Inlined                              => 0
-          case TypedTreeKind.TypeApply if isRuntimeTypeCast(tree) => 1
-          case TypedTreeKind.Apply                                => 2
-          case TypedTreeKind.TypeApply                            => 3
-          case TypedTreeKind.Select                               => 4
-          case _                                                  => 5
+          case TypedTreeKind.Block if isLambdaBlock(tree)         => 0
+          case TypedTreeKind.Closure                              => 0
+          case TypedTreeKind.Inlined                              => 1
+          case TypedTreeKind.TypeApply if isRuntimeTypeCast(tree) => 2
+          case TypedTreeKind.Apply                                => 3
+          case TypedTreeKind.TypeApply                            => 4
+          case TypedTreeKind.Select                               => 5
+          case _                                                  => 6
       case PcTypedTreeRole.ExpressionWidened =>
         kind match
-          case TypedTreeKind.Apply     => 0
-          case TypedTreeKind.TypeApply => 1
-          case TypedTreeKind.Select    => 2
-          case TypedTreeKind.Inlined   => 3
-          case _                       => 4
+          case TypedTreeKind.Block if isLambdaBlock(tree) => 0
+          case TypedTreeKind.Closure                      => 0
+          case TypedTreeKind.Apply                        => 1
+          case TypedTreeKind.TypeApply                    => 2
+          case TypedTreeKind.Select                       => 3
+          case TypedTreeKind.Inlined                      => 4
+          case _                                          => 5
       case PcTypedTreeRole.Declared          => if kind == TypedTreeKind.Typed then 0 else 1
       case PcTypedTreeRole.Inferred          => 0
       case PcTypedTreeRole.Parameter         => 0
@@ -710,6 +723,8 @@ private enum TypedTreeKind(simpleName: String):
   case TypeApply extends TypedTreeKind("TypeApply")
   case Select    extends TypedTreeKind("Select")
   case Ident     extends TypedTreeKind("Ident")
+  case Block     extends TypedTreeKind("Block")
+  case Closure   extends TypedTreeKind("Closure")
   case Typed     extends TypedTreeKind("Typed")
   case ValDef    extends TypedTreeKind("ValDef")
   case DefDef    extends TypedTreeKind("DefDef")
