@@ -10,6 +10,7 @@ import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.ide.util.treeView.smartTree.TreeElement
 import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
 import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
+import com.intellij.lang.refactoring.InlineActionHandler
 import com.intellij.lang.annotation.{AnnotationSession, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
@@ -17,7 +18,7 @@ import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.progress.{EmptyProgressIndicator, ProgressIndicator}
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.{Computable, TextRange}
-import com.intellij.psi.{PsiElement, PsiFile, SmartPointerManager}
+import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiFile, SmartPointerManager}
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
 import com.intellij.testFramework.PlatformTestUtil
@@ -41,6 +42,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.{MethodInvocation, ScExpres
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScValueOrVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.parameterInfo.ScalaFunctionParameterInfoHandler
+import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.changeInfo.ScalaChangeInfo
+import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.{ScalaChangeSignatureProcessor, ScalaParameterInfo}
 import org.jetbrains.plugins.scala.overrideImplement.ScalaOIUtil
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.structureView.ScalaStructureViewModel
@@ -289,6 +292,55 @@ final class BundledCompilerBackendConsumerTest extends ScalaLightCodeInsightFixt
     ScalaOIUtil.invokeOverrideImplement(file, isImplement = true, Some("value"))
 
     assertTrue(file.getText, file.getText.contains("override def value: String"))
+
+  def testSourceBackedInlineUsesBundledRefactoringWithCompilerSnapshot(): Unit =
+    val source     =
+      """object Main:
+        |  val answer = List(1).head
+        |  val result = ans<caret>wer
+        |""".stripMargin
+    val file       = myFixture.configureByText("InlineValue.scala", source)
+    val expression = expressionWithText(file, "List(1).head")
+    val reference  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScReferenceExpression])
+      .asScala
+      .find(_.refName == "answer")
+      .get
+    val target     = reference.resolve()
+    publish(expression, "String")
+
+    val handler = InlineActionHandler.EP_NAME.getExtensionList.asScala.find(_.canInlineElement(target))
+    assertTrue("no bundled inline handler accepted the source value", handler.isDefined)
+    handler.get.inlineElement(getProject, myFixture.getEditor, target)
+    PsiDocumentManager.getInstance(getProject).commitDocument(myFixture.getEditor.getDocument)
+
+    assertTrue(file.getText, file.getText.contains("val result = List(1).head"))
+
+  def testSourceBackedChangeSignatureUsesBundledRefactoringWithCompilerSnapshot(): Unit =
+    val source   =
+      """def answer(value: Int): Int = value
+        |val result = answer(42)
+        |""".stripMargin
+    val file     = myFixture.configureByText("ChangeSignature.scala", source)
+    val function = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .asScala
+      .find(_.name == "answer")
+      .get
+    publishType(function, CompilerBackendRole.FunctionResult, "String")
+    val info     = ScalaChangeInfo(
+      null,
+      function,
+      "renamed",
+      function.returnType.get,
+      Seq(function.parameters.map(new ScalaParameterInfo(_))),
+      isAddDefaultArgs = false
+    )
+
+    new ScalaChangeSignatureProcessor(info)(using getProject).run()
+
+    assertTrue(file.getText, file.getText.contains("def renamed"))
+    assertTrue(file.getText, file.getText.contains("val result = renamed(42)"))
 
   def testQuickInfoUsesRealBulkCompilerSnapshot(): Unit =
     val source     =

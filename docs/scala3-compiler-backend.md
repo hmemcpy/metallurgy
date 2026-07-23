@@ -223,6 +223,16 @@ eventually asks an expression for its type; it does not mean the entire subsyste
 | Find usages | Searchers use indices/`ReferencesSearch` and validate with `PsiReference.resolve`/`isReferenceTo`; e.g. `ObjectTraitReferenceSearcher` (`.../findUsages/typeDef/ObjectTraitReferenceSearcher.scala:12-32`) and operator search (`.../findUsages/OperatorAndBacktickedSearcher.scala:25-100`). | **Only indirectly** when resolve depends on a qualifier type. | Stable pc-symbol-to-PSI identity is required for compiler-only members; type strings alone are insufficient. |
 | Refactorings | Mixed: rename/move/find-super use PSI references and search; extract/introduce/change-signature/inline also call ``type()``, `returnType`, expected types, conformance, and Java `PsiType` bridges. `TypeAnnotationRenderer` itself lists override/implement and member-info consumers (`.../types/api/presentation/TypeAnnotationRenderer.scala:43-50`). | **Mixed.** | Treat refactorings as the highest-risk compatibility suite: type dispatcher plus stable symbol identity, with per-refactoring fallbacks when pc-to-PSI mapping is unavailable. |
 
+Refactoring policy follows PSI ownership. Source-backed declarations remain writable bundled Scala PSI: rename and
+override/implement are end-to-end parity-tested with current compiler types, while extract/introduce operate on the
+selected source PSI and inherit its `ScType` reads (`ScalaExtractMethodHandler.scala:42-65,79-88`). Change signature
+accepts only a `PsiMethod`/`ScMethodLike` after checking writability (`ScalaChangeSignatureHandler.scala:59-86`), and
+inline accepts only writable `ScalaPsiElement` instances (`ScalaInlineActionHandler.scala:42-68`). Compiler-only light
+symbols intentionally satisfy neither contract and are non-writable: rename, change signature, extract/introduce,
+inline, and override/implement must remain unavailable rather than mutating generated compiler state. A compiler-only
+operation is enabled later only if it can be translated to a writable source declaration with an exact navigation
+target; there is no text-edit fallback against light PSI.
+
 The practical conclusion is that whole-file expression population has high impact, but it is not the definition of
 “all.” Typed definitions and symbol identity are separate architectural workstreams.
 

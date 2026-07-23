@@ -27,6 +27,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScGivenDefinition
+import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.ScalaChangeSignatureHandler
+import org.jetbrains.plugins.scala.lang.refactoring.inline.method.ScalaInlineMethodHandler
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
@@ -340,6 +342,13 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     val hoverDoc    = provider.generateDoc(hoverTarget, fixture.reference)
     assertTrue(hoverDoc, hoverDoc.contains("generatedMember"))
     assertTrue(hoverDoc, hoverDoc.contains("String"))
+
+  def testCompilerOnlyRefactoringsRemainUnavailable(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("CompilerOnlyRefactoring.scala")
+
+    assertFalse(fixture.target.isWritable)
+    assertFalse(new ScalaInlineMethodHandler().canInlineElement(fixture.target))
+    assertEquals(null, new ScalaChangeSignatureHandler().findTargetMember(fixture.target))
 
   def testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity(): Unit =
     val file       = myFixture.configureByText("CompilerOnlyStableResolve.scala", "val result: GeneratedType = ???")
