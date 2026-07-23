@@ -4,6 +4,8 @@ import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.pc.PcSessionManager
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.openapi.externalSystem.ExternalSystemModulePropertyManager
+import com.intellij.openapi.externalSystem.model.ProjectSystemId
 import com.intellij.openapi.project.Project
 import com.intellij.testFramework.PsiTestUtil
 import org.jetbrains.jps.model.java.{JavaSourceRootProperties, JavaSourceRootType}
@@ -44,6 +46,16 @@ final class CompilerBackendModuleDescriptorTest extends ScalaLightCodeInsightFix
     assertFalse(first.compileClasspath.isEmpty)
     assertEquals(first, second)
     assertTrue(CompilerBackendModuleDescriptor.diff(first, second).isEmpty)
+
+  def testNativeSbtAndIntellijBspOwnershipProduceTheSameDescriptor(): Unit =
+    val properties = ExternalSystemModulePropertyManager.getInstance(getModule)
+    properties.setExternalId(new ProjectSystemId("SBT"))
+    val sbt        = readyDescriptor()
+    properties.setExternalId(new ProjectSystemId("BSP"))
+    val bsp        = readyDescriptor()
+
+    assertEquals(sbt, bsp)
+    assertTrue(CompilerBackendModuleDescriptor.diff(sbt, bsp).isEmpty)
 
   def testCompilerProfileChangesAreExplicitDescriptorChanges(): Unit =
     val service  = ScalacFlagsService.get(getProject)
