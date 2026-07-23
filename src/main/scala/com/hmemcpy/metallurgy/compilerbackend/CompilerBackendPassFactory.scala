@@ -1,6 +1,5 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
-import com.hmemcpy.metallurgy.feature.inlay.PcTypeHintsPassFactory
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.codeHighlighting.{
   Pass,
@@ -15,7 +14,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 
-/** Registers semantic population before its visible type-hint consumer. */
+/** Registers the semantic population pass that fills the CompilerType slot. The bundled Scala plugin's own
+  * ScalaTypeHintsPass reads the slot through ScExpression.getTypeWithoutImplicits and renders hints with its native
+  * settings, x-ray mode, and obvious-type filtering.
+  */
 final class CompilerBackendPassFactory
     extends TextEditorHighlightingPassFactory
     with TextEditorHighlightingPassFactoryRegistrar:
@@ -28,14 +30,7 @@ final class CompilerBackendPassFactory
       registrar: TextEditorHighlightingPassRegistrar,
       project: Project
   ): Unit =
-    val populationPass = registrar.registerTextEditorHighlightingPass(this, Array(Pass.UPDATE_ALL), null, false, -1)
-    val _              = registrar.registerTextEditorHighlightingPass(
-      new PcTypeHintsPassFactory,
-      Array(populationPass),
-      null,
-      false,
-      -1
-    )
+    val _ = registrar.registerTextEditorHighlightingPass(this, Array(Pass.UPDATE_ALL), null, false, -1)
 
 private[metallurgy] object CompilerBackendPassFactory:
   def isActiveScala(file: PsiFile): Boolean =
