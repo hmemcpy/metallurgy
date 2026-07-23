@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.uast
 import com.hmemcpy.metallurgy.compilerbackend.*
 import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.openapi.application.Experiments
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiNamedElement, PsiVariable, SmartPointerManager}
@@ -209,10 +210,18 @@ final class CompilerBackendUastTest extends ScalaLightCodeInsightFixtureTestCase
     publish(reparsedExpression, "Long")
     assertEquals("long", reparsedExpression.convertWithParentTo[UExpression]().get.getExpressionType.getCanonicalText)
 
-  def testPlatformUastPluginIsUnavailableUnderTheRetainedCbhFailsafe(): Unit =
-    val file = myFixture.configureByText("CbhUast.scala", "val value = 1")
+  def testPlatformUastPluginIsUnavailableUnderTheRetainedCbhFailsafeForEveryExperimentState(): Unit =
+    val file        = myFixture.configureByText("CbhUast.scala", "val value = 1")
+    val experiments = Experiments.getInstance()
+    val feature     = "scala.uast.enabled"
+    val previous    = experiments.isFeatureEnabled(feature)
 
-    assertNull(UastFacade.INSTANCE.findPlugin(file))
+    try
+      experiments.setFeatureEnabled(feature, false)
+      assertNull(UastFacade.INSTANCE.findPlugin(file))
+      experiments.setFeatureEnabled(feature, true)
+      assertNull(UastFacade.INSTANCE.findPlugin(file))
+    finally experiments.setFeatureEnabled(feature, previous)
 
   private def publish(expression: ScExpression, renderedType: String): Unit =
     assertEquals(
