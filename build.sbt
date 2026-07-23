@@ -53,6 +53,7 @@ lazy val intellijTestFrameworkDependencies = Seq(
 
 lazy val intellijPluginDependencies = Seq(
   "com.intellij.java".toPlugin,
+  "JUnit".toPlugin,
   s"org.intellij.scala:$scalaPluginVersion".toPlugin
 )
 
