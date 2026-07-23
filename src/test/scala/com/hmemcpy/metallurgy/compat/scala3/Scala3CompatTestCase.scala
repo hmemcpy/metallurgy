@@ -222,7 +222,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   private def wrapInDef(code: String): String =
     s"def __metallurgy_wrap__ =\n  {\n$code\n  }\n"
 
-  private def wrapInObject(code: String): String =
+  protected def wrapInObject(code: String): String =
     s"object __metallurgy_wrap__ {\n$code\n}\n"
 
   private def definesType(code: String): Boolean =
