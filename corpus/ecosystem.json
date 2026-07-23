@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "projects": [
+    {
+      "name": "cats",
+      "repository": "typelevel/cats",
+      "revision": "75888eca239fd22f1a53666b80e206a0da021ac5",
+      "scalaVersions": ["3.3.8"],
+      "sbtCommands": ["++3.3.8!", "catsJVM/compile"],
+      "timeoutSeconds": 900
+    },
+    {
+      "name": "cats-effect",
+      "repository": "typelevel/cats-effect",
+      "revision": "18fdf52498b00f9908caea77b8c132664656c781",
+      "scalaVersions": ["3.3.7"],
+      "sbtCommands": ["++3.3.7!", "rootJVM/compile"],
+      "timeoutSeconds": 900
+    },
+    {
+      "name": "zio",
+      "repository": "zio/zio",
+      "revision": "d7d2ecb918d6d96ffcf817a6232375ad2b479e8c",
+      "scalaVersions": ["3.3.8"],
+      "sbtCommands": ["++3.3.8!", "root3/Test/compile"],
+      "timeoutSeconds": 1200
+    },
+    {
+      "name": "shapeless-3",
+      "repository": "typelevel/shapeless-3",
+      "revision": "33d7438c92b45345bef3ccc88467b166e31e1fb1",
+      "scalaVersions": ["3.3.8"],
+      "sbtCommands": ["compile"],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "tapir",
+      "repository": "softwaremill/tapir",
+      "revision": "6a0d3c349046c4357e9d53126ef4e7f0ac5dbee5",
+      "scalaVersions": ["3.3.8", "3.7.4"],
+      "sbtCommands": ["compileScoped 3 JVM"],
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "fs2",
+      "repository": "typelevel/fs2",
+      "revision": "8f3ae75ab38e061031d7a4daaf5277af29b40cb0",
+      "scalaVersions": ["3.3.8"],
+      "sbtCommands": ["++3.3.8!", "rootJVM/compile"],
+      "timeoutSeconds": 900
+    }
+  ]
+}
