@@ -7,6 +7,10 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
   */
 final class Scala3NamedTypeArgumentsInferenceCompatTest extends Scala3CompatTestCase:
 
+  // These snippets import an experimental language feature, which dotc only accepts at the package/top level — a
+  // local (in-def) import is rejected. The snippets are valid top level (import + def + val), so do not wrap them.
+  override protected def wrapForCompilation(code: String): String = code
+
   private val START = "/*start*/"
   private val END   = "/*end*/"
 
