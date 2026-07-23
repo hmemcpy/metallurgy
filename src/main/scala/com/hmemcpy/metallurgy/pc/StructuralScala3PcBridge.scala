@@ -185,11 +185,23 @@ private final class StructuralScala3PcBridge(
   private def run(snapshot: PcSnapshot): Unit =
     ProgressManager.checkCanceled()
     typedDocument.get().filterNot(_.fileUri == snapshot.fileUri).foreach(closeDocument)
-    driverClass
-      .getMethod("run", classOf[URI], classOf[String])
-      .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText)
+    withCompilerClassloader:
+      driverClass
+        .getMethod("run", classOf[URI], classOf[String])
+        .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText)
     ProgressManager.checkCanceled()
     typedDocument.set(Some(TypedDocument(snapshot.fileUri, snapshot.documentVersion)))
+
+  /** The dotc compiler and its dependencies use Thread.currentThread.getContextClassLoader to load scala-library
+    * classes. Pooled threads inherit the plugin classloader, which excludes scala-library, so the compiler's own
+    * classloader must be installed for the duration of each driver interaction.
+    */
+  private def withCompilerClassloader[A](body: => A): A =
+    val thread   = Thread.currentThread
+    val previous = thread.getContextClassLoader
+    thread.setContextClassLoader(classloader)
+    try body
+    finally thread.setContextClassLoader(previous)
 
   private def closeDocument(document: TypedDocument): Unit =
     val _ = driverClass.getMethod("close", classOf[URI]).invoke(driver, PcSourceUri.normalize(document.fileUri))
