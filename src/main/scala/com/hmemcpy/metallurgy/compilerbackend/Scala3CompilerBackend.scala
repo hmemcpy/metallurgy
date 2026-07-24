@@ -632,7 +632,6 @@ final class Scala3CompilerBackend(project: Project):
 
   private def invalidate(elements: Iterable[PsiElement]): Unit =
     val distinct = elements.iterator.filter(_.isValid).toSeq.distinct
-    distinct.foreach(ScalaPluginSemanticBridge.clearScalaTypeCacheForElement(project, _))
     if distinct.nonEmpty then ScalaPluginSemanticBridge.invalidateScalaTypeCaches()
 
   private def findElement(file: PsiFile, key: ElementKey): Option[PsiElement] =
