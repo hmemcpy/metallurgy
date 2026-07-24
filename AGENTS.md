@@ -21,6 +21,13 @@ through Scalameta's published `scala.meta.pc` interfaces while retaining the exi
   reference rendered as `(y : Int)` looked like a bug; it is dotc's canonical singleton-type rendering — every
   `SingletonType` prints as `( ref : underlying )` via `PlainPrinter.toTextSingleton`. The bridge was showing a raw
   `TermRef` where it should have shown the widened type.)
+- **NEVER suppress errors.** If code compiles in dotc but Metallurgy's pipeline reports an ERROR highlight,
+  the bug is in Metallurgy. Find the root cause and fix it. Do not suppress via `HighlightInfoFilter`,
+  `ComparisonFailure` catches, test-harness string matching, `@volatile` flags, or any other mechanism.
+  No exception exists to this rule. (Worked example: test snippets with top-level `def`/`val`/`import` were
+  wrapped in an object because `definesType` only checked for `object`/`class`/`trait`/`enum`. The wrapping
+  moved `import` to a local scope and changed package semantics, causing cascading PSI errors. The fix was
+  to recognise all Scala 3 top-level constructs, not to suppress the errors.)
 - **The [scala/scala3](https://github.com/scala/scala3) repo is the source of truth for Scala language and compiler
   behaviour.** When something doesn't work where it seemingly should (a snippet that won't compile, a type that resolves
   unexpectedly, a macro that doesn't expand), check the upstream implementation, its tests (`tests/run`,

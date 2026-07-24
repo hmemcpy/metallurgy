@@ -226,10 +226,17 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
     s"object __metallurgy_wrap__ {\n$code\n}\n"
 
   private def definesType(code: String): Boolean =
+    // In Scala 3, any top-level definition (including def, val, import, given, extension, type, opaque type,
+    // package) means the code is top-level and must NOT be wrapped — wrapping changes the PSI structure and
+    // causes the parser to mishandle language imports, package clauses, and top-level syntax.
     code.linesIterator.exists: line =>
       val trimmed = line.trim
       trimmed.startsWith("object ") || trimmed.startsWith("class ") || trimmed.startsWith("implicit class") ||
-      trimmed.startsWith("trait ") || trimmed.startsWith("enum ")
+      trimmed.startsWith("trait ") || trimmed.startsWith("enum ") ||
+      trimmed.startsWith("def ") || trimmed.startsWith("val ") || trimmed.startsWith("var ") ||
+      trimmed.startsWith("import ") || trimmed.startsWith("given ") || trimmed.startsWith("extension ") ||
+      trimmed.startsWith("type ") || trimmed.startsWith("opaque type") ||
+      trimmed.startsWith("package ")
 
   private def splitExpected(source: String): (String, String) =
     val text     = source.trim

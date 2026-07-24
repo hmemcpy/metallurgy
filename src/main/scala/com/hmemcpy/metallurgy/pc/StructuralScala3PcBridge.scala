@@ -544,13 +544,13 @@ private final class StructuralScala3PcBridge(
       context: AnyRef
   ): Option[PcTypedTreeEntry] =
     try
-      val treeType  = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
-      val rawType   = candidate.role match
+      val treeType      = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
+      val rawType       = candidate.role match
         case PcTypedTreeRole.FunctionResult =>
           val methodType = invokeContextual(treeType, "widenTermRefExpr", context)
           invokeContextual(methodType, "finalResultType", context)
         case _                              => treeType
-      val rendering = candidate.role match
+      val rendering     = candidate.role match
         case PcTypedTreeRole.ExpressionExact
             if TypedTreeKind.TypeApply.matches(candidate.tree) && isRuntimeTypeCast(candidate.tree) =>
           TypeRendering.Widened
@@ -558,15 +558,28 @@ private final class StructuralScala3PcBridge(
             PcTypedTreeRole.Pattern | PcTypedTreeRole.PatternExpected =>
           TypeRendering.Widened
         case _ => TypeRendering.Exact
-      val rendered  = candidate.role match
+      val rendered      = candidate.role match
         case PcTypedTreeRole.Function =>
-          // A method reference is a TermRef whose dotc rendering is `(owner.name : signature)`. Widening it
-          // strips the owner qualifier and leaves a bare method type that may parse ambiguously, so the raw
-          // rendering is kept; parsedState stores it as Rendered because method signatures are not valid types.
           renderCompilerType(rawType, context)
         case _                        =>
           renderCompilerType(normalizedType(rawType, rendering, context), context)
-      Option.when(isPublishableType(rendered)):
+      // A TermRef is a singleton type. widenTermRefExpr collapses it to its underlying type, losing the singleton.
+      // The Scala plugin's createTypeFromText cannot parse dotc's `( ref : underlying )` rendering, and widening
+      // causes false conformance errors for singleton return types (e.g. F.type). Skip the CompilerType slot for
+      // TermRefs — the bundled resolver handles them correctly.
+      val isSingleton   = Try:
+        val widened = invokeContextual(rawType, "widenTermRefExpr", context)
+        !widened.eq(rawType)
+      .getOrElse(false)
+      val treeKind      = TypedTreeKind.from(candidate.tree)
+      val skipSingleton = isSingleton &&
+        candidate.role != PcTypedTreeRole.Function &&
+        candidate.role != PcTypedTreeRole.Reference &&
+        treeKind != TypedTreeKind.ValDef &&
+        treeKind != TypedTreeKind.Select
+      Option.when(
+        isPublishableType(rendered) && !shouldSkipForMethodType(candidate, rawType, context) && !skipSingleton
+      ):
         PcTypedTreeEntry(
           candidate.range,
           candidate.role,
@@ -618,6 +631,19 @@ private final class StructuralScala3PcBridge(
     selectTree(pathTrees(path))
       .map(selection => renderTreeType(selection, context))
       .filter(isPublishableType)
+
+  private def shouldSkipForMethodType(candidate: ReflectedTreeCandidate, rawType: AnyRef, context: AnyRef): Boolean =
+    // The Function role intentionally publishes method signatures (parsedState stores them as Rendered).
+    // For expression roles, a method type in the CompilerType slot causes the bundled annotator to report
+    // "does not take parameters." Check the widened type because a TermRef to a method widens to MethodType.
+    candidate.role != PcTypedTreeRole.Function &&
+      Try(isMethodLikeType(invokeContextual(rawType, "widenTermRefExpr", context))).getOrElse(false)
+
+  private def isMethodLikeType(tpe: AnyRef): Boolean =
+    // A MethodType or ExprType is a method signature, not a valid expression type. Publishing it causes the
+    // bundled annotator to report "does not take parameters" when it reads the CompilerType slot.
+    val name = tpe.getClass.getSimpleName
+    name == "MethodType" || name == "JavaMethodType" || name == "ExprType"
 
   private def isPublishableType(rendered: String): Boolean =
     rendered.nonEmpty && rendered != "<empty>" && !rendered.contains("<error")

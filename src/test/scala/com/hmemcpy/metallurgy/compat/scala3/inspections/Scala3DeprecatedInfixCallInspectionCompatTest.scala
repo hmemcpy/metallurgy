@@ -48,12 +48,20 @@ final class Scala3DeprecatedInfixCallInspectionCompatTest extends Scala3CompatTe
   def testSymbolicMethodInfixCall(): Unit          = checkTextHasNoErrors(testText("c + 2"))
   def testSymbolicExtensionMethodInfixCall(): Unit = checkTextHasNoErrors(testText("c ++ 2"))
   def testMethodCall(): Unit                       = checkTextHasNoErrors(testText("c.meth(2)"))
+  def testExtensionMethodCall(): Unit              = checkTextHasNoErrors(testText("c.mop(2)"))
   def testInfixMethodCall(): Unit                  = checkTextHasNoErrors(testText("c.op(2)"))
+  def testInfixExtensionMethodCall(): Unit         = checkTextHasNoErrors(testText("c.iop(2)"))
+  def testSymbolicMethodCall(): Unit               = checkTextHasNoErrors(testText("c.+(2)"))
+  def testSymbolicExtensionMethodCall(): Unit      = checkTextHasNoErrors(testText("c.++(2)"))
+  def testBacktickedMethodInfixCall(): Unit        = checkTextHasNoErrors(testText("c `bop` 2"))
+  def testMethodDefinedInScala2InfixCall(): Unit   = checkTextHasNoErrors(testText("1 to 2"))
   def testInfixScala3ClassInInfixType(): Unit      = checkTextHasNoErrors(testText("val x1: Int Or String = ???"))
+  def testClassInBacktickedInfixType(): Unit       = checkTextHasNoErrors(testText("val x3: Int `AndC` String = ???"))
 
   // === Invalid (deprecated — error expected) ===
-  def testMethodInfixCall(): Unit          = checkHasErrorAroundCaret(testText(s"c ${CARET}meth 2"))
-  def testExtensionMethodInfixCall(): Unit = checkHasErrorAroundCaret(testText(s"c ${CARET}mop 2"))
-  def testClassInInfixType(): Unit         = checkHasErrorAroundCaret(
+  def testMethodInfixCall(): Unit                     = checkHasErrorAroundCaret(testText(s"c ${CARET}meth 2"))
+  def testExtensionMethodInfixCall(): Unit            = checkHasErrorAroundCaret(testText(s"c ${CARET}mop 2"))
+  def testClassInInfixType(): Unit                    = checkHasErrorAroundCaret(
     testText(s"val x2: Int ${CARET}AndC String = ???")
   )
+  def testBacktickedMethodInfixBacktickedCall(): Unit = checkTextHasNoErrors(testText("c `bop` 2"))
