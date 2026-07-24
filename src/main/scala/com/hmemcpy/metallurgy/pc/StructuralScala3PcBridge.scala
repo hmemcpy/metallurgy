@@ -679,7 +679,9 @@ private final class StructuralScala3PcBridge(
     val base       = rendering match
       case TypeRendering.Exact   => widened
       case TypeRendering.Widened => widened
-    val dealiased  = invokeContextual(base, "dealias", context)
+    val dealiased  =
+      if isOpaqueAlias(base, context) then base
+      else invokeContextual(base, "dealias", context)
     val normalized = invokeContextual(dealiased, "normalized", context)
     invokeContextual(normalized, "simplified", context)
 
@@ -710,6 +712,15 @@ private final class StructuralScala3PcBridge(
 
   private def escapedIdentifier(name: String): String =
     if name.matches("[A-Za-z_$][A-Za-z0-9_$]*") then name else s"`$name`"
+
+  private def isOpaqueAlias(tpe: AnyRef, context: AnyRef): Boolean =
+    // An opaque type alias is transparent only within its companion scope. The PC's context includes that scope,
+    // so dealias reveals the underlying type (V -> Double). The Scala plugin's type checker cannot verify this
+    // transparency, so keeping the opaque alias avoids false conformance errors.
+    Try:
+      val symbol = invokeContextual(tpe, "typeSymbol", context)
+      symbolHasFlag(symbol, "Opaque", context)
+    .getOrElse(false)
 
   private def renderCompilerType(tpe: AnyRef, context: AnyRef): String =
     tpe.getClass.getMethods
