@@ -544,41 +544,44 @@ private final class StructuralScala3PcBridge(
       context: AnyRef
   ): Option[PcTypedTreeEntry] =
     try
-      val treeType      = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
-      val rawType       = candidate.role match
+      val treeType                = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
+      val rawType                 = candidate.role match
         case PcTypedTreeRole.FunctionResult =>
           val methodType = invokeContextual(treeType, "widenTermRefExpr", context)
           invokeContextual(methodType, "finalResultType", context)
         case _                              => treeType
-      val rendering     = candidate.role match
+      val _                       = candidate.role match
         case PcTypedTreeRole.ExpressionExact
             if TypedTreeKind.TypeApply.matches(candidate.tree) && isRuntimeTypeCast(candidate.tree) =>
-          TypeRendering.Widened
-        case PcTypedTreeRole.ExpressionWidened | PcTypedTreeRole.Inferred | PcTypedTreeRole.Parameter |
-            PcTypedTreeRole.Pattern | PcTypedTreeRole.PatternExpected =>
-          TypeRendering.Widened
-        case _ => TypeRendering.Exact
-      val rendered      = candidate.role match
+          ()
+        case _ => ()
+      val rendered                = candidate.role match
         case PcTypedTreeRole.Function =>
           renderCompilerType(rawType, context)
         case _                        =>
-          renderCompilerType(normalizedType(rawType, rendering, context), context)
+          renderCompilerType(normalizedType(rawType, context), context)
       // A TermRef is a singleton type. widenTermRefExpr collapses it to its underlying type, losing the singleton.
       // The Scala plugin's createTypeFromText cannot parse dotc's `( ref : underlying )` rendering, and widening
       // causes false conformance errors for singleton return types (e.g. F.type). Skip the CompilerType slot for
       // TermRefs — the bundled resolver handles them correctly.
-      val isSingleton   = Try:
+      val isSingleton             = Try:
         val widened = invokeContextual(rawType, "widenTermRefExpr", context)
         !widened.eq(rawType)
       .getOrElse(false)
-      val treeKind      = TypedTreeKind.from(candidate.tree)
-      val skipSingleton = isSingleton &&
+      val treeKind                = TypedTreeKind.from(candidate.tree)
+      val skipSingleton           = isSingleton &&
         candidate.role != PcTypedTreeRole.Function &&
         candidate.role != PcTypedTreeRole.Reference &&
         treeKind != TypedTreeKind.ValDef &&
         treeKind != TypedTreeKind.Select
+      // The normalization pipeline renders HKTypeLambda params as anonymous `_` instead of named `T`,
+      // which createTypeFromText cannot parse into a conforming type. Skip publishing — the bundled
+      // resolver infers the correct type from the expected type annotation.
+      val skipAnonymousTypeParams = rendered.contains("[_") &&
+        candidate.role != PcTypedTreeRole.Function
       Option.when(
-        isPublishableType(rendered) && !shouldSkipForMethodType(candidate, rawType, context) && !skipSingleton
+        isPublishableType(rendered) && !shouldSkipForMethodType(candidate, rawType, context) &&
+          !skipSingleton && !skipAnonymousTypeParams
       ):
         PcTypedTreeEntry(
           candidate.range,
@@ -692,24 +695,21 @@ private final class StructuralScala3PcBridge(
 
   private def treeType(selection: TypedTreeSelection, context: AnyRef): AnyRef =
     val rawType = selection.tree.getClass.getMethod("tpe").invoke(selection.tree)
-    normalizedType(rawType, selection.rendering, context)
+    normalizedType(rawType, context)
 
-  private def normalizedType(rawType: AnyRef, rendering: TypeRendering, context: AnyRef): AnyRef =
-    // A term reference is a singleton type, and dotc renders every singleton type as `( ref : underlying )` — not the
-    // underlying type alone — via `PlainPrinter.toTextSingleton`:
-    // https://github.com/scala/scala3/blob/7c8ee3cb7e1e69f46cdad16ff88b2076d916e58a/compiler/src/dotty/tools/dotc/printing/PlainPrinter.scala#L364
-    // That is correct compiler behaviour. The widened type is what we want to show, so widen term references before
-    // rendering. `widenTermRefExpr` collapses a term reference to its underlying type while leaving constant
-    // (singleton literal) types intact, so exact rendering still preserves literals.
-    val widened    = invokeContextual(rawType, "widenTermRefExpr", context)
-    val base       = rendering match
-      case TypeRendering.Exact   => widened
-      case TypeRendering.Widened => widened
-    val dealiased  =
-      if isOpaqueAlias(base, context) then base
-      else invokeContextual(base, "dealias", context)
-    val normalized = invokeContextual(dealiased, "normalized", context)
-    invokeContextual(normalized, "simplified", context)
+  private def normalizedType(rawType: AnyRef, context: AnyRef): AnyRef =
+    val widened        = invokeContextual(rawType, "widenTermRefExpr", context)
+    val dealiased      =
+      if isOpaqueAlias(widened, context) then widened
+      else invokeContextual(widened, "dealias", context)
+    // normalized on an HKTypeLambda returns resultType.normalized, stripping the type-parameter wrapper
+    // and leaving unbound TypeParamRefs that render as `Any`. Skip it.
+    val isHKTypeLambda = dealiased.getClass.getName.matches(".*(HKTypeLambda|PolyType)")
+    // normalized on an HKTypeLambda returns resultType.normalized, stripping the type-parameter wrapper.
+    // simplified widens TypeParamRefs to their bounds (Any), turning [T] => T into [_] => Any.
+    // Both lose precision. Skip the entire normalization pipeline for HKTypeLambdas.
+    if isHKTypeLambda then dealiased
+    else invokeContextual(invokeContextual(dealiased, "normalized", context), "simplified", context)
 
   private def refinementCompletions(tpe: AnyRef, context: AnyRef): List[PcCompletion] =
     Iterator
