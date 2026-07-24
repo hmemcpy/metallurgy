@@ -7,6 +7,10 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
   */
 final class FunctionLiteralToPartialFunctionCompatTest extends Scala3CompatTestCase:
 
+  // Snippets have bare top-level method calls (seq.collect, takeFunctionLike) which the PSI parser
+  // rejects on re-highlight after CompilerType slots are filled. Wrap in an object — semantically identical.
+  override protected def wrapForHighlighting(code: String): String = wrapInObject(code)
+
   def testPartialFunctionSynthesis(): Unit = checkTextHasNoErrors(
     """
       |val seq = Seq("a", "b")
