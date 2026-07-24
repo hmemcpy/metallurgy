@@ -396,8 +396,7 @@ final class Scala3ExtensionsCompatTest extends Scala3CompatTestCase:
       |""".stripMargin
   )
 
-  def testTopLevelExtensionOverloadedMethods(): Unit = checkTextHasNoErrors(
-    """
+  def testTopLevelExtensionOverloadedMethods(): Unit = checkTextHasNoErrors(wrapInObject("""
       |extension (s: String) {
       |  def foo(x: Int) = "Int"
       |  def foo(x: String) = "Int"
@@ -406,8 +405,7 @@ final class Scala3ExtensionsCompatTest extends Scala3CompatTestCase:
       |val s = "abc"
       |s.foo(3)
       |s.foo("abc")
-      |""".stripMargin
-  )
+      |""".stripMargin))
 
   def testImportedExtensionWithOverloadedApply(): Unit = checkTextHasNoErrors(
     """
@@ -689,8 +687,7 @@ final class Scala3ExtensionsCompatTest extends Scala3CompatTestCase:
       |""".stripMargin
   )
 
-  def testExtensionMethodsWithBackticks(): Unit = checkTextHasNoErrors(
-    """
+  def testExtensionMethodsWithBackticks(): Unit = checkTextHasNoErrors(wrapInObject("""
       |implicit class Blub(s: String) {
       |  def test1 = 3
       |  def `test2` = 3
@@ -710,8 +707,7 @@ final class Scala3ExtensionsCompatTest extends Scala3CompatTestCase:
       |
       |"".test4
       |"".`test4`
-      |""".stripMargin
-  )
+      |""".stripMargin))
 
   def testExtensionResolvedViaTypeclassGiven(): Unit = checkTextHasNoErrors(
     """
