@@ -16,7 +16,6 @@ import java.util.concurrent.{CompletableFuture, CompletionStage, ConcurrentHashM
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
 import scala.jdk.CollectionConverters.*
-import scala.util.Try
 import scala.util.control.NonFatal
 
 final class PcSession private (
@@ -505,15 +504,6 @@ object PcSession:
 
     val urls        = (cachedJars ++ classpath).map(_.toURI.toURL).toArray
     val classloader = new PcClassLoader(urls, classOf[PcSession].getClassLoader)
-
-    Try(classloader.loadClass("scala.util.control.NonFatal$")).failed.foreach: error =>
-      val scalaLibs = urls.iterator.map(_.getFile).filter(_.contains("scala-library")).mkString(", ")
-      com.intellij.openapi.diagnostic.Logger
-        .getInstance("com.hmemcpy.metallurgy.pc.PcSession")
-        .warn(
-          "NonFatal not loadable from PC classloader; scala-library urls: " + scalaLibs + "; total: " + urls.length,
-          error
-        )
 
     val provider     = PresentationCompilerDiscovery.load(classloader, cachedJars.toIndexedSeq)
     val capabilities = Scala3PcBridge.discoverCapabilities(classloader, provider)

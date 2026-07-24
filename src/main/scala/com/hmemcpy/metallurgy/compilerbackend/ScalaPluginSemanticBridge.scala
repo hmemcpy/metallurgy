@@ -6,7 +6,6 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
 import com.intellij.psi.{PsiElement, PsiNamedElement}
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
@@ -21,14 +20,18 @@ import scala.util.control.NonFatal
   */
 object ScalaPluginSemanticBridge:
 
-  private val ResolveResultKey: Key[java.util.Optional[Object]] = Key.create("METALLURGY_RESOLVE_FALLBACK")
+  private val resolveGuard: ThreadLocal[java.util.Set[PsiElement]] =
+    ThreadLocal.withInitial(() =>
+      java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[PsiElement, java.lang.Boolean]())
+    )
 
   def install(): CompilerBackendShimStatus =
     BundledCompilerBackendShim.install()
 
   /** Preserves every non-empty bundled result and supplies a compiler symbol only when bundled resolution found
-    * nothing. The result is cached per-element via UserData so the recursive type-resolution cascade triggered by the
-    * CompilerType slot does not re-invoke the fallback 20x for the same reference.
+    * nothing. A ThreadLocal recursion guard prevents the same reference from being re-resolved within a single
+    * type-resolution cascade (the CompilerType slot triggers createTypeFromText which resolves more references) without
+    * caching stale results across highlighting passes.
     */
   def referenceResolution(reference: Object, bundledResult: Object): Object =
     bundledResult match
@@ -37,21 +40,23 @@ object ScalaPluginSemanticBridge:
         try
           reference match
             case element: PsiElement =>
-              val cached = element.getUserData(ResolveResultKey)
-              if cached != null then cached.orElse(bundledResult)
+              val guard = resolveGuard.get()
+              if guard.contains(element) then bundledResult
               else
-                val module = ModuleUtilCore.findModuleForPsiElement(element)
-                val result =
-                  if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then null
-                  else
-                    Scala3CompilerBackend
-                      .get(element.getProject)
-                      .symbolTargetFor(element, module, CompilerBackendRole.Reference)
-                      .collect:
-                        case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
-                      .orNull
-                element.putUserData(ResolveResultKey, java.util.Optional.ofNullable(result))
-                if result != null then result else bundledResult
+                guard.add(element)
+                try
+                  val module = ModuleUtilCore.findModuleForPsiElement(element)
+                  val result =
+                    if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then null
+                    else
+                      Scala3CompilerBackend
+                        .get(element.getProject)
+                        .symbolTargetFor(element, module, CompilerBackendRole.Reference)
+                        .collect:
+                          case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
+                        .orNull
+                  if result != null then result else bundledResult
+                finally { guard.remove(element); () }
             case _                   => bundledResult
         catch
           case control: ControlFlowException => throw control
