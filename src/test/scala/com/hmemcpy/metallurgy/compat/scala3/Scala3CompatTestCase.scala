@@ -216,8 +216,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   protected def wrapForCompilation(code: String): String =
     if definesType(code) then code else wrapInDef(code)
 
-  protected def wrapForHighlighting(code: String): String =
-    if definesType(code) then code else wrapInObject(code)
+  protected def wrapForHighlighting(code: String): String = code
 
   private def wrapInDef(code: String): String =
     s"def __metallurgy_wrap__ =\n  {\n$code\n  }\n"
