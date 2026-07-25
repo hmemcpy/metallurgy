@@ -107,6 +107,39 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
         )
       finally DotcTreeSource.clear()
 
+  def testProducesNamedTypeArgMethodCallWithStringLiteralArg(): Unit =
+    withSession: session =>
+      val source   =
+        """def pair[A, B](a: A, b: B): (A, B) = (a, b)
+          |val v = pair[A = Int](1, "text")
+          |""".stripMargin
+      val snapshot = PcSnapshot("file:///PairCase.scala", 0L, source)
+      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+
+      val extraction = session.compilerTreeExtraction(snapshot)
+      assertTrue("dotc tree extraction present", extraction.isDefined)
+      val e          = extraction.get
+      assertTrue("dotc typed the call", e.tree.physicalNodes.exists(_.kind == "Apply"))
+
+      DotcTreeSource.install(source, e)
+      try
+        ApplicationManager.getApplication.runReadAction(
+          new Computable[Unit]:
+            override def compute(): Unit =
+              val file = PsiFileFactory
+                .getInstance(getProject)
+                .createFileFromText("PairCase.scala", Scala3DotcLanguage.INSTANCE, source)
+
+              val call = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
+              assertNotNull("pair[A = Int](1, \"text\") is a method-call expression", call)
+              assertEquals("pair[A = Int](1, \"text\")", call.getText)
+              assertTrue(
+                "the dotc-authored region contains no parser errors",
+                PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
+              )
+        )
+      finally DotcTreeSource.clear()
+
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-dotc-producer")
     val fetcher            = new MtagsFetcher(
