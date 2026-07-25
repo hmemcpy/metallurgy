@@ -9,10 +9,10 @@ import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.impl.ScalaFileImpl
 import org.jetbrains.plugins.scala.lang.psi.stubs.elements.ScStubFileElementType
 
-/** Parser definition for the Metallurgy Scala 3 dialect. Lexing and parsing delegate to the bundled Scala 3 parser
-  * (identical syntax for now); only file creation is dialect-aware, passing [[Scala3DotcLanguage]] so the file accepts
-  * the dialect and IntelliJ's dialect-aware extension lookup applies. A dialect-owned [[ScStubFileElementType]] keeps
-  * the stub root distinct (the stub builder asks the view provider for the exact language).
+/** Parser definition for the Metallurgy Scala 3 dialect. Lexing and parsing delegate to the bundled Scala 3 parser;
+  * only file creation is dialect-aware, passing [[Scala3DotcLanguage]] so the file accepts the dialect and IntelliJ's
+  * dialect-aware extension lookup applies. A dialect-owned [[ScStubFileElementType]] keeps the stub root distinct (the
+  * stub builder asks the view provider for the exact language).
   */
 final class Scala3DotcParserDefinition extends ScalaParserDefinitionBase:
   override def getFileNodeType: ScStubFileElementType                = Scala3DotcParserDefinition.FileNodeType

@@ -65,6 +65,10 @@
     <lang.parserDefinition
         language="Scala 3 (dotc)"
         implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcParserDefinition"/>
+    <lang.substitutor
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcLanguageSubstitutor"
+        order="before org.jetbrains.plugins.scala.lang.parser.ScalaLanguageSubstitutor"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
