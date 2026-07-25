@@ -22,4 +22,4 @@ final class Scala3DotcParserDefinition extends ScalaParserDefinitionBase:
     new ScalaFileImpl(viewProvider, ScalaFileType.INSTANCE, Scala3DotcLanguage.INSTANCE)
 
 object Scala3DotcParserDefinition:
-  val FileNodeType: ScStubFileElementType = ScStubFileElementType(Scala3DotcLanguage.INSTANCE)
+  val FileNodeType: ScStubFileElementType = new Scala3DotcFileElementType
