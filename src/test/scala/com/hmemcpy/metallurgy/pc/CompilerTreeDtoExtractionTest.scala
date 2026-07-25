@@ -49,6 +49,15 @@ final class CompilerTreeDtoExtractionTest extends ScalaLightCodeInsightFixtureTe
       assertTrue("extraction carries the tree", e.tree.physicalNodes.nonEmpty)
       assertTrue("extraction carries the compiler diagnostics from the same run", e.diagnostics.nonEmpty)
 
+  def testRejectsNonIdentityProjection(): Unit =
+    // The producer accepts only the document's verbatim text; a compatibility fixture's wrapping must not reach it.
+    withSession: session =>
+      val projection =
+        PcCompilationProjection.withInsertions("class A\n", Seq(PcProjectionInsertion(0, "object Wrap {\n")))
+      val snapshot   = PcSnapshot.atTime("file:///Projected.scala", 0L, projection, System.nanoTime())
+      val _          = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+      assertTrue("non-identity projection yields no extraction", session.compilerTreeDto(snapshot).isEmpty)
+
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-dto-extraction")
     val fetcher            = new MtagsFetcher(

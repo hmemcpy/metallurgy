@@ -103,26 +103,29 @@ private final class StructuralScala3PcBridge(
                   )
 
   def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto] =
-    require(
-      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
-      "typed-tree extraction requires a matching typed document"
-    )
-    val uri  = PcSourceUri.normalize(snapshot.fileUri)
-    val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
-    val root = unit.getClass.getMethod("tpdTree").invoke(unit)
-    collectTreeHierarchy(root, currency).map: entries =>
-      val nodes = entries.zipWithIndex.map:
-        case ((tree, parentId), index) =>
-          val span        = tree.getClass.getMethod("span").invoke(tree)
-          val exists      = spanExists(span)
-          val derived     = spanIsSourceDerived(span)
-          val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
-          val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
-          val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
-          val range       =
-            if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
-          CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
-      CompilerTreeDto(nodes)
+    // Production accepts only the document's verbatim text; compatibility-fixture wrapping cannot reach the producer.
+    if !snapshot.projection.isIdentity then None
+    else
+      require(
+        typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+        "typed-tree extraction requires a matching typed document"
+      )
+      val uri  = PcSourceUri.normalize(snapshot.fileUri)
+      val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
+      val root = unit.getClass.getMethod("tpdTree").invoke(unit)
+      collectTreeHierarchy(root, currency).map: entries =>
+        val nodes = entries.zipWithIndex.map:
+          case ((tree, parentId), index) =>
+            val span        = tree.getClass.getMethod("span").invoke(tree)
+            val exists      = spanExists(span)
+            val derived     = spanIsSourceDerived(span)
+            val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
+            val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
+            val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
+            val range       =
+              if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
+            CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
+        CompilerTreeDto(nodes)
 
   def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction] =
     compilerTreeDto(snapshot, currency).map(CompilerTreeExtraction(_, diagnostics(snapshot)))
