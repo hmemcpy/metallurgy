@@ -3,7 +3,9 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.lang.Language
+import com.intellij.psi.LanguageSubstitutors
 import org.jetbrains.plugins.scala.Scala3Language
+import org.jetbrains.plugins.scala.ScalaLanguage
 import org.junit.Assert.{assertEquals, assertNull, assertTrue}
 
 /** The substitutor returns the dialect for a file in an active module and `null` otherwise, so the bundled substitutor
@@ -28,3 +30,12 @@ final class Scala3DotcLanguageSubstitutorTest extends Scala3CompatTestCase:
 
   def testDialectIsKindOfScala3(): Unit =
     assertTrue(Scala3DotcLanguage.INSTANCE.isKindOf(Scala3Language.INSTANCE))
+
+  def testPlatformSubstitutionChainReturnsDialect(): Unit =
+    val vf          = myFixture.addFileToProject("ChainProbe.scala", "class Foo\n").getVirtualFile
+    val substituted = LanguageSubstitutors.getInstance.substituteLanguage(ScalaLanguage.INSTANCE, vf, getProject)
+    assertEquals(
+      "platform substitution chain returns the dialect for an active module",
+      Scala3DotcLanguage.INSTANCE,
+      substituted
+    )
