@@ -54,7 +54,7 @@ typed PSI subtrees an active module observes; it does not replace every IntelliJ
 This applies **only** when `ModuleDetectionService.isActive(module)` is true. Its target definition is:
 
 ```text
-the module uses Scala 3  AND  the module is opted in  AND  Scala 3 CBH/compiler types are enabled
+the module uses Scala 3  AND  the module is opted in
 ```
 
 Compiler versions are artifact coordinates and diagnostic metadata, never compatibility tables. Every Scala 3 version
@@ -168,7 +168,9 @@ participate. A pc-derived `ScType` reaches many of these algorithms as an input;
 
 ### 2.5 Compiler integration and CBH
 
-CBH is a parallel asynchronous producer, not the core PSI type engine. `CompilerHighlightingService` serializes
+CBH is a parallel asynchronous producer, not the core PSI type engine, and is **not a Metallurgy gate**: Metallurgy
+is opt-in on its own setting for Scala 3 modules regardless of whether Scala compiler-based highlighting is on.
+`CompilerHighlightingService` serializes
 compilation requests on a bounded executor, schedules document/incremental work, and invokes `DocumentCompiler`
 (`intellij-scala/scala/compiler-integration/src/org/jetbrains/plugins/scala/compiler/highlighting/CompilerHighlightingService.scala:47-65,105-166,294-313`).
 `DocumentCompiler` compiles current document text through the remote compile-server connector
@@ -182,10 +184,9 @@ types only to exact-range `ScExpression` or `ScStableCodeReference` nodes in the
 clears Scala caches for every changed element, increments `anyScalaPsiChange`, and refreshes hints
 (`ExternalHighlightersService.scala:104-145`).
 
-CBH remains a deliberate rollout failsafe and one available build/artifact producer; the replacement backend does not
-technically require CBH to type a document. Its diagnostics are not a substitute for pc type population, and its type
-reports must not be allowed to overwrite a newer pc generation in active modules. Once isolation and build-loop
-ownership are proven independently, removing the CBH interlock is a separate product decision.
+CBH is no longer a gate or interlock — Metallurgy is active on Scala 3 + opt-in independent of CBH. Its diagnostics
+are not a substitute for pc type population, and its type reports must not be allowed to overwrite a newer pc
+generation in active modules. CBH may still be present as an independent build/artifact producer.
 
 ### 2.6 Cache topology
 
@@ -823,9 +824,8 @@ are no-go results.
 Prior ADR and research documents have been removed; the target architecture is epic #73. The implementation
 constraints recorded here remain in force:
 
-- CBH plus compiler types stays in `ModuleDetectionService.isActive` as a rollout failsafe and can supply compiled /
-  best-effort artifacts; PSI production does not technically depend on it. Every new hook inherits the gate until a
-  separate decision removes the interlock.
+- The gate is Scala 3 + user opt-in, independent of the bundled plugin's compiler-highlighting backend (CBH).
+  CBH may still be present as an independent build/artifact producer; it is not a Metallurgy prerequisite.
 - Native-clean steady-state highlighting justifies leaving diagnostics alone; it does not establish that bundled PSI types
   are compiler-equivalent.
 - Permanent support uses published Scalameta interfaces, capability discovery, and isolated IntelliJ-side bridges.

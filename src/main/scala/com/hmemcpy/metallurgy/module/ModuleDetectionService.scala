@@ -43,14 +43,14 @@ final class ModuleDetectionService(project: Project) extends Disposable:
   def isEligibleFile(file: VirtualFile): Boolean =
     Option(ModuleUtilCore.findModuleForFile(file, project)).exists(isEligible)
 
-  /** Metallurgy is active for a module iff it uses Scala 3, the user enabled the backend, and compiler-based
-    * highlighting is on. Exact presentation-compiler artifact resolution determines backend availability
-    * asynchronously; optional facilities such as BETASTY are discovered independently.
+  /** Metallurgy is active for a module iff it uses Scala 3 and the user enabled the backend. It is independent of the
+    * bundled plugin's compiler-highlighting backend (CBH): Metallurgy is opt-in on its own setting regardless of
+    * whether Scala compiler-based highlighting is on. Exact presentation-compiler artifact resolution determines
+    * backend availability asynchronously; optional facilities such as BETASTY are discovered independently.
     */
   def isActive(module: Module): Boolean =
     isEligible(module) &&
-      MetallurgySettings(project).isEnabled(module) &&
-      ScalaPluginSemanticBridge.usesCompilerTypes(project)
+      MetallurgySettings(project).isEnabled(module)
 
   override def dispose(): Unit = cache.clear()
 

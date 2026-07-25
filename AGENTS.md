@@ -150,11 +150,11 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 
 ## Architecture (data flow)
 
-- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 **and** user opt-in **and** CBH on. CBH is retained as a
-  rollout failsafe, not because the replacement backend technically depends on it.
+- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 **and** user opt-in. Metallurgy is opt-in on its own
+  setting, independent of the bundled plugin's compiler-highlighting backend (CBH) — it does not require CBH to be on.
   Everything else is a hard no-op without it. Compiler versions never select behavior; optional facilities such as
-  BETASTY are enabled only when discovered as capabilities. `ScalaPluginSemanticBridge.usesCompilerTypes(project)` reads the
-  CBH settings. Exact PC artifact availability and optional facilities such as BETASTY are discovered independently.
+  BETASTY are enabled only when discovered as capabilities. Exact PC artifact availability and optional facilities such
+  as BETASTY are discovered independently.
 - **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
   published Scalameta `PresentationCompiler` interface → bulk semantic snapshot. When no public PC operation exposes the
   required snapshot, a capability-probed compiler bridge may structurally read the retained driver and export only
