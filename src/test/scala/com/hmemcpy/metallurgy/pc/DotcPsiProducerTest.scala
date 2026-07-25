@@ -11,7 +11,7 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.PsiErrorElement
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScMethodCall, ScReferenceExpression}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -65,6 +65,41 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
               val start = source.indexOf("f[A = Int]")
               assertEquals(new TextRange(start, start + "f[A = Int]".length), call.getTextRange)
 
+              assertTrue(
+                "the dotc-authored region contains no parser errors",
+                PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
+              )
+        )
+      finally DotcTreeSource.clear()
+
+  def testProducesMethodCallWithArgumentsFromDotc(): Unit =
+    withSession: session =>
+      val source   =
+        """def f[A](x: Int): Int = x
+          |val v = f[A = Int](1)
+          |""".stripMargin
+      val snapshot = PcSnapshot("file:///MethodCallCase.scala", 0L, source)
+      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+
+      val extraction = session.compilerTreeExtraction(snapshot)
+      assertTrue("dotc tree extraction present", extraction.isDefined)
+      val e          = extraction.get
+      assertTrue("dotc typed f[A = Int](1) as a method call", e.tree.physicalNodes.exists(_.kind == "Apply"))
+      DotcTreeSource.install(source, e)
+      try
+        ApplicationManager.getApplication.runReadAction(
+          new Computable[Unit]:
+            override def compute(): Unit =
+              val file = PsiFileFactory
+                .getInstance(getProject)
+                .createFileFromText("MethodCallCase.scala", Scala3DotcLanguage.INSTANCE, source)
+
+              val call    = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
+              assertNotNull("f[A = Int](1) is a method-call expression", call)
+              assertEquals("f[A = Int](1)", call.getText)
+              val generic = PsiTreeUtil.findChildOfType(file, classOf[ScGenericCall])
+              assertNotNull("the method call wraps a generic call", generic)
+              assertEquals("f[A = Int]", generic.getText)
               assertTrue(
                 "the dotc-authored region contains no parser errors",
                 PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty

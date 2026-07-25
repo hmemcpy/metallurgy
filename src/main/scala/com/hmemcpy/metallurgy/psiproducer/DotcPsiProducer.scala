@@ -25,8 +25,22 @@ object DotcPsiProducer:
 
   private def emit(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.kind match
+      case "Apply"     => emitApply(node, ctx)
       case "TypeApply" => emitTypeApply(node, ctx)
       case _           => emitRaw(node, ctx)
+
+  private def emitApply(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder    = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val methodCall = builder.mark()
+      val children   = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      children.headOption.foreach(emit(_, ctx))
+      val argExprs   = builder.mark()
+      children.tail.foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      argExprs.done(ScalaElementType.ARG_EXPRS)
+      methodCall.done(ScalaElementType.METHOD_CALL)
 
   private def emitRaw(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
