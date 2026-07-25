@@ -1,0 +1,3 @@
+# Filled by the exact Scala 3 typed tree, then consumed through CompilerType.
+typeAt:269:Config{val name: String; val age: Int}
+notRed:line:8

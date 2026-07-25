@@ -1,0 +1,3 @@
+# Transparent inline access is reported as its singleton result type.
+typeAt:178:(8080 : Int)
+notRed:line:6

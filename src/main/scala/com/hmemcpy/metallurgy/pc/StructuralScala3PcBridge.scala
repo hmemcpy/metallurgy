@@ -1,0 +1,948 @@
+package com.hmemcpy.metallurgy.pc
+
+import com.intellij.openapi.progress.{ProcessCanceledException, ProgressManager}
+import com.intellij.openapi.util.TextRange
+
+import java.io.File
+import java.net.URI
+import java.util
+import java.util.concurrent.atomic.AtomicReference
+import java.util.IdentityHashMap
+import scala.jdk.CollectionConverters.*
+import scala.util.Try
+import scala.concurrent.duration.*
+import scala.util.control.NonFatal
+
+/** Session-owned bridge to the exact-version Scala compiler's typed trees.
+  *
+  * The bundled `PresentationCompiler` API deliberately renders ordinary hover signatures, which widens the result of
+  * transparent inline expansion. Metallurgy needs the `Inlined` tree's type for the Scala plugin's `CompilerType` slot.
+  * All reflected values stay behind this boundary so child-classloader Scala values never escape into the plugin.
+  */
+private final class StructuralScala3PcBridge(
+    classloader: ClassLoader,
+    compilerClasspath: Seq[File],
+    compilerOptions: Seq[String]
+) extends Scala3PcBridge:
+
+  private val driverClass   = Class.forName("dotty.tools.dotc.interactive.InteractiveDriver", true, classloader)
+  private val driver        = driverClass
+    .getConstructor(Class.forName("scala.collection.immutable.List", true, classloader))
+    .newInstance(compilerSettings())
+  private val typedDocument = new AtomicReference[Option[TypedDocument]](None)
+
+  /** `InteractiveDriver` mutates its compilation state on `run`, so the session admits one writer at a time. */
+  def typeAt(snapshot: PcSnapshot, range: TextRange): Option[String] = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "inline type queries require a matching typed document"
+    )
+    val uri           = PcSourceUri.normalize(snapshot.fileUri)
+    val context       = driverClass.getMethod("currentCtx").invoke(driver)
+    val sourceFile    = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
+    val trees         = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
+    val compilerRange = snapshot.projection.toCompilerRange(range.getStartOffset, range.getEndOffset)
+    val span          = querySpan(TextRange(compilerRange.startOffset, compilerRange.endOffset))
+    val position      = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
+
+    renderType(pathTo(trees, position, context), context)
+
+  def diagnostics(snapshot: PcSnapshot): Seq[PcDiagnostic] = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "diagnostic queries require a matching typed document"
+    )
+    val context  = driverClass.getMethod("currentCtx").invoke(driver)
+    val reporter = context.getClass.getMethod("reporter").invoke(context)
+    val errors   =
+      diagnosticList(reporter.getClass.getMethod("allErrors").invoke(reporter), isError = true, snapshot.projection)
+    val warnings =
+      diagnosticList(reporter.getClass.getMethod("allWarnings").invoke(reporter), isError = false, snapshot.projection)
+    errors ++ warnings
+
+  def typedTreeSnapshot(
+      snapshot: PcSnapshot,
+      currency: () => PcSnapshotCurrency
+  ): PcTypedTreeExtraction = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "typed-tree extraction requires a matching typed document"
+    )
+    val startedAt          = System.nanoTime()
+    val context            = driverClass.getMethod("currentCtx").invoke(driver)
+    val uri                = PcSourceUri.normalize(snapshot.fileUri)
+    val unit               = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
+    val root               = unit.getClass.getMethod("tpdTree").invoke(unit)
+    val traversalStartedAt = System.nanoTime()
+    collectTrees(root, currency) match
+      case None            => PcTypedTreeExtraction.Superseded
+      case Some(traversal) =>
+        collectCandidates(traversal.trees, snapshot, context, currency) match
+          case None             => PcTypedTreeExtraction.Superseded
+          case Some(candidates) =>
+            val retained           = suppressInsidePolyFunctions(retainCanonicalCandidates(candidates), context)
+            val traversalDuration  = (System.nanoTime() - traversalStartedAt).nanos
+            val renderingStartedAt = System.nanoTime()
+            renderCandidates(retained, context, currency) match
+              case None          => PcTypedTreeExtraction.Superseded
+              case Some(entries) =>
+                val renderingDuration = (System.nanoTime() - renderingStartedAt).nanos
+                if !isCurrent(currency) then PcTypedTreeExtraction.Superseded
+                else
+                  PcTypedTreeExtraction.Completed(
+                    buildTypedTreeSnapshot(
+                      snapshot,
+                      entries,
+                      traversal,
+                      candidates,
+                      retained.size,
+                      startedAt,
+                      traversalDuration,
+                      renderingDuration
+                    )
+                  )
+
+  def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence] =
+    val moduleClass = Class.forName("dotty.tools.dotc.semanticdb.TextDocument$", true, classloader)
+    val module      = moduleClass.getField("MODULE$").get(null)
+    val document    = moduleClass.getMethods
+      .find(method =>
+        method.getName == "parseFrom" && method.getParameterTypes.sameElements(Array(classOf[Array[Byte]]))
+      )
+      .getOrElse(throw new NoSuchMethodException("TextDocument.parseFrom(byte[])"))
+      .invoke(module, bytes)
+    val lineStarts  = sourceLineStarts(sourceText)
+    iteratorValues(document.getClass.getMethod("occurrences").invoke(document)).flatMap { occurrence =>
+      val symbol = occurrence.getClass.getMethod("symbol").invoke(occurrence).toString
+      val range  = occurrence.getClass.getMethod("getRange").invoke(occurrence)
+      val start  = sourceOffset(
+        sourceText,
+        lineStarts,
+        range.getClass.getMethod("startLine").invoke(range).asInstanceOf[Int],
+        range.getClass.getMethod("startCharacter").invoke(range).asInstanceOf[Int]
+      )
+      val end    = sourceOffset(
+        sourceText,
+        lineStarts,
+        range.getClass.getMethod("endLine").invoke(range).asInstanceOf[Int],
+        range.getClass.getMethod("endCharacter").invoke(range).asInstanceOf[Int]
+      )
+      for
+        startOffset <- start.iterator
+        endOffset   <- end.iterator
+        if symbol.nonEmpty && endOffset > startOffset
+      yield PcSemanticdbOccurrence(
+        PcSourceRange(startOffset, endOffset),
+        symbol,
+        sourceText.substring(startOffset, endOffset)
+      )
+    }.toVector
+
+  private def sourceLineStarts(sourceText: String): Vector[Int] =
+    0 +: sourceText.iterator.zipWithIndex.collect { case ('\n', index) => index + 1 }.toVector
+
+  private def sourceOffset(
+      sourceText: String,
+      lineStarts: Vector[Int],
+      line: Int,
+      character: Int
+  ): Option[Int] =
+    lineStarts.lift(line).map(_ + character).filter(offset => offset >= 0 && offset <= sourceText.length)
+
+  def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion] = synchronized:
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "structural completion queries require a matching typed document"
+    )
+    val dotOffset = snapshot.sourceText.lastIndexOf('.', math.max(0, offset - 1))
+    if dotOffset <= 0 then Seq.empty
+    else
+      val uri        = PcSourceUri.normalize(snapshot.fileUri)
+      val context    = driverClass.getMethod("currentCtx").invoke(driver)
+      val sourceFile = mapValue(driverClass.getMethod("openedFiles").invoke(driver), uri)
+      val trees      = mapValue(driverClass.getMethod("openedTrees").invoke(driver), uri)
+      val span       = querySpan(TextRange.from(snapshot.projection.toCompilerPoint(dotOffset - 1), 1))
+      val position   = sourceFile.getClass.getMethod("atSpan", java.lang.Long.TYPE).invoke(sourceFile, span)
+      val path       = pathTrees(pathTo(trees, position, context))
+      selectTree(path).toSeq.flatMap: selection =>
+        val tpe = treeType(selection, context)
+        refinementCompletions(tpe, context)
+
+  private def querySpan(range: TextRange): AnyRef =
+    if range.isEmpty then
+      spansModule.getClass.getMethod("Span", classOf[Int]).invoke(spansModule, Int.box(range.getStartOffset))
+    else
+      spansModule.getClass
+        .getMethod("Span", classOf[Int], classOf[Int])
+        .invoke(spansModule, Int.box(range.getStartOffset), Int.box(range.getEndOffset))
+
+  def retypecheck(snapshot: PcSnapshot): Unit = synchronized:
+    ensureTyped(snapshot)
+
+  def close(): Unit = synchronized:
+    typedDocument.getAndSet(None).foreach(closeDocument)
+
+  private def ensureTyped(snapshot: PcSnapshot): Unit =
+    if !typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)) then run(snapshot)
+
+  private def run(snapshot: PcSnapshot): Unit =
+    ProgressManager.checkCanceled()
+    typedDocument.get().filterNot(_.fileUri == snapshot.fileUri).foreach(closeDocument)
+    withCompilerClassloader:
+      driverClass
+        .getMethod("run", classOf[URI], classOf[String])
+        .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.compilerText)
+    ProgressManager.checkCanceled()
+    typedDocument.set(Some(TypedDocument(snapshot.fileUri, snapshot.documentVersion)))
+
+  /** The dotc compiler and its dependencies use Thread.currentThread.getContextClassLoader to load scala-library
+    * classes. Pooled threads inherit the plugin classloader, which excludes scala-library, so the compiler's own
+    * classloader must be installed for the duration of each driver interaction.
+    */
+  private def withCompilerClassloader[A](body: => A): A =
+    val thread   = Thread.currentThread
+    val previous = thread.getContextClassLoader
+    thread.setContextClassLoader(classloader)
+    try body
+    finally thread.setContextClassLoader(previous)
+
+  private def closeDocument(document: TypedDocument): Unit =
+    val _ = driverClass.getMethod("close", classOf[URI]).invoke(driver, PcSourceUri.normalize(document.fileUri))
+
+  private def compilerSettings(): AnyRef =
+    val options     = Seq(
+      "-classpath",
+      compilerClasspath.map(_.getAbsolutePath).mkString(File.pathSeparator)
+    ) ++ compilerOptions
+    val converters  = Class.forName("scala.jdk.javaapi.CollectionConverters", true, classloader)
+    val scalaBuffer = converters.getMethod("asScala", classOf[util.List[?]]).invoke(null, options.asJava)
+    scalaBuffer.getClass.getMethod("toList").invoke(scalaBuffer)
+
+  private def mapValue(scalaMap: AnyRef, key: AnyRef): AnyRef =
+    scalaMap.getClass.getMethod("apply", classOf[Object]).invoke(scalaMap, key)
+
+  private def collectTrees(root: AnyRef, currency: () => PcSnapshotCurrency): Option[TreeTraversal] =
+    val treeClass  = Class.forName("dotty.tools.dotc.ast.Trees$Tree", true, classloader)
+    val seen       = new IdentityHashMap[AnyRef, java.lang.Boolean]()
+    val collected  = Vector.newBuilder[AnyRef]
+    var visited    = 0
+    var positioned = 0
+    var current    = true
+
+    def visit(value: AnyRef): Unit =
+      if current && visited % 32 == 0 then current = isCurrent(currency)
+      if current && treeClass.isInstance(value) && seen.put(value, java.lang.Boolean.TRUE) == null then
+        visited += 1
+        if isPositionedTypedTree(value) then positioned += 1
+        collected += value
+        productValues(value).takeWhile(_ => current).foreach(visit)
+      else if current && isScalaIterable(value) then iteratorValues(value).takeWhile(_ => current).foreach(visit)
+
+    visit(root)
+    Option.when(current && isCurrent(currency))(TreeTraversal(collected.result(), visited, positioned))
+
+  private def collectCandidates(
+      trees: Vector[AnyRef],
+      snapshot: PcSnapshot,
+      context: AnyRef,
+      currency: () => PcSnapshotCurrency
+  ): Option[Vector[ReflectedTreeCandidate]] =
+    val candidates = Vector.newBuilder[ReflectedTreeCandidate]
+    val iterator   = trees.iterator.zipWithIndex
+    var current    = true
+    while iterator.hasNext && current do
+      val (tree, index) = iterator.next()
+      if index % 32 == 0 then current = isCurrent(currency)
+      if current then candidates ++= treeCandidates(tree, snapshot, context)
+    Option.when(current && isCurrent(currency))(candidates.result())
+
+  private def renderCandidates(
+      candidates: Vector[ReflectedTreeCandidate],
+      context: AnyRef,
+      currency: () => PcSnapshotCurrency
+  ): Option[Vector[PcTypedTreeEntry]] =
+    val entries  = Vector.newBuilder[PcTypedTreeEntry]
+    val iterator = candidates.iterator
+    var current  = true
+    while iterator.hasNext && current do
+      current = isCurrent(currency)
+      if current then renderCandidate(iterator.next(), context).foreach(entries += _)
+    Option.when(current && isCurrent(currency))(entries.result())
+
+  private def retainCanonicalCandidates(
+      candidates: Vector[ReflectedTreeCandidate]
+  ): Vector[ReflectedTreeCandidate] =
+    candidates
+      .groupBy: candidate =>
+        val symbolId = Option.unless(candidate.role == PcTypedTreeRole.Reference)(candidate.symbol.map(_.id)).flatten
+        (candidate.range, candidate.role, symbolId)
+      .valuesIterator
+      .map(_.minBy(candidate => (candidate.rank, -candidate.treeSize, candidate.tree.getClass.getName)))
+      .toVector
+      .sortBy(candidate =>
+        (
+          candidate.range.startOffset,
+          candidate.range.endOffset,
+          candidate.role.ordinal,
+          candidate.rank,
+          candidate.symbol.fold("")(_.id)
+        )
+      )
+
+  // A sub-expression inside a polymorphic-function value (the body lambdas of `[T] => (x: T) => ...`) carries a
+  // free TypeParamRef that renders as `?`; standalone it is meaningless and poisons the slot. Drop candidates whose
+  // range lies strictly inside a poly-function value's range — only the enclosing poly-function is published.
+  private def suppressInsidePolyFunctions(
+      candidates: Vector[ReflectedTreeCandidate],
+      context: AnyRef
+  ): Vector[ReflectedTreeCandidate] =
+    val polyRanges = candidates.flatMap: candidate =>
+      Try(candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)).toOption
+        .filter(isPolyFunctionRefinement(_, context))
+        .map(_ => candidate.range)
+    if polyRanges.isEmpty then candidates
+    else
+      candidates.filterNot: candidate =>
+        polyRanges.exists(range =>
+          candidate.range.startOffset > range.startOffset && candidate.range.endOffset <= range.endOffset
+        )
+
+  private def buildTypedTreeSnapshot(
+      snapshot: PcSnapshot,
+      entries: Vector[PcTypedTreeEntry],
+      traversal: TreeTraversal,
+      candidates: Vector[ReflectedTreeCandidate],
+      retainedCount: Int,
+      startedAt: Long,
+      traversalDuration: FiniteDuration,
+      renderingDuration: FiniteDuration
+  ): PcTypedTreeSnapshot =
+    PcTypedTreeSnapshot(
+      snapshot.fileUri,
+      snapshot.documentVersion,
+      entries,
+      PcTypedTreeMetrics(
+        extractionDuration = (System.nanoTime() - startedAt).nanos,
+        traversalDuration = traversalDuration,
+        renderingDuration = renderingDuration,
+        visitedTreeCount = traversal.visited,
+        positionedTreeCount = traversal.positioned,
+        candidateCount = candidates.size,
+        retainedEntryCount = entries.size,
+        deduplicatedCandidateCount = candidates.size - retainedCount,
+        compilerWrapperOverlapCount = compilerWrapperOverlapCount(candidates),
+        renderedTypeCount = entries.size
+      )
+    )
+
+  private def productValues(value: AnyRef): Iterator[AnyRef] =
+    Try(value.getClass.getMethod("productIterator").invoke(value)).toOption.iterator.flatMap(iteratorValues)
+
+  private def isScalaIterable(value: AnyRef): Boolean =
+    value.getClass.getMethods.exists(method => method.getName == "iterator" && method.getParameterCount == 0)
+
+  private def iteratorValues(value: AnyRef): Iterator[AnyRef] =
+    val iterator = value.getClass.getMethod("iterator").invoke(value)
+    val hasNext  = iterator.getClass.getMethod("hasNext")
+    val next     = iterator.getClass.getMethod("next")
+    Iterator
+      .continually(iterator)
+      .takeWhile(current => hasNext.invoke(current).asInstanceOf[Boolean])
+      .flatMap(current => Option(next.invoke(current).asInstanceOf[AnyRef]))
+
+  private def isPositionedTypedTree(tree: AnyRef): Boolean =
+    val hasType = tree.getClass.getMethod("hasType").invoke(tree).asInstanceOf[Boolean]
+    val span    = tree.getClass.getMethod("span").invoke(tree)
+    hasType && spanExists(span)
+
+  private def treeCandidates(tree: AnyRef, snapshot: PcSnapshot, context: AnyRef): Vector[ReflectedTreeCandidate] =
+    val hasType = tree.getClass.getMethod("hasType").invoke(tree).asInstanceOf[Boolean]
+    val span    = tree.getClass.getMethod("span").invoke(tree)
+    Option
+      .when(hasType && spanExists(span))(span)
+      .toVector
+      .flatMap: existingSpan =>
+        val start = spanStart(existingSpan)
+        val end   = spanEnd(existingSpan)
+        Option
+          .when(start >= 0 && end > start && end <= snapshot.compilerText.length)(())
+          .toVector
+          .flatMap: _ =>
+            snapshot.projection
+              .toDocumentRange(start, end)
+              .toVector
+              .flatMap: documentRange =>
+                val symbol    = Try(invokeContextual(tree, "symbol", context)).toOption
+                val details   = symbol.flatMap(
+                  symbolDetails(_, snapshot.fileUri, snapshot.compilerText.length, snapshot.projection, context)
+                )
+                val parameter = symbol.exists(symbolHasFlag(_, "Param", context))
+                treeRoles(tree, parameter, details.nonEmpty, snapshot.compilerText, start).map: role =>
+                  ReflectedTreeCandidate(
+                    tree,
+                    documentRange,
+                    role,
+                    treeRank(tree, role),
+                    tree.getClass.getMethod("treeSize").invoke(tree).asInstanceOf[Int],
+                    details
+                  )
+
+  /** A compiler wrapper may represent several IntelliJ semantic questions at the same source range. Expression roles
+    * are therefore retained independently, while definition and pattern roles require a compiler symbol that the PSI
+    * mapper can use to identify the individual declaration.
+    */
+  private def treeRoles(
+      tree: AnyRef,
+      parameter: Boolean,
+      symbolAvailable: Boolean,
+      sourceText: String,
+      startOffset: Int
+  ): Vector[PcTypedTreeRole] =
+    val kind       = TypedTreeKind.from(tree)
+    val isTermTree = tree.getClass.getMethod("isTerm").invoke(tree).asInstanceOf[Boolean]
+    val isTypeTree = tree.getClass.getMethod("isType").invoke(tree).asInstanceOf[Boolean]
+    val isPattern  = tree.getClass.getMethod("isPattern").invoke(tree).asInstanceOf[Boolean]
+    Vector(
+      Option.when(isTermTree)(PcTypedTreeRole.ExpressionExact),
+      Option.when(isTermTree)(PcTypedTreeRole.ExpressionWidened),
+      Option.when(isTypeTree && startsAfterDeclaredTypeBoundary(sourceText, startOffset))(PcTypedTreeRole.Declared),
+      Option.when(kind == TypedTreeKind.ValDef && !parameter && symbolAvailable)(PcTypedTreeRole.Inferred),
+      Option.when(kind == TypedTreeKind.ValDef && parameter && symbolAvailable)(PcTypedTreeRole.Parameter),
+      Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.Function),
+      Option.when(kind == TypedTreeKind.DefDef && symbolAvailable)(PcTypedTreeRole.FunctionResult),
+      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.Pattern),
+      Option.when((kind == TypedTreeKind.Bind || isPattern) && symbolAvailable)(PcTypedTreeRole.PatternExpected),
+      Option.when(symbolAvailable && kind.isReference)(PcTypedTreeRole.Reference)
+    ).flatten.distinct
+
+  private def startsAfterDeclaredTypeBoundary(sourceText: String, startOffset: Int): Boolean =
+    sourceText
+      .substring(0, startOffset)
+      .reverseIterator
+      .dropWhile(_.isWhitespace)
+      .nextOption
+      .exists(character => character == ':' || character == '=')
+
+  private def compilerWrapperOverlapCount(candidates: Vector[ReflectedTreeCandidate]): Int =
+    candidates
+      .groupBy(_.range.startOffset)
+      .valuesIterator
+      .count: sameKey =>
+        val kinds = sameKey.iterator.map(candidate => TypedTreeKind.from(candidate.tree)).toSet
+        Set(TypedTreeKind.Inlined, TypedTreeKind.Apply, TypedTreeKind.TypeApply).count(kinds.contains) >= 2
+
+  private def isLambdaBlock(tree: AnyRef): Boolean =
+    // A placeholder/named lambda desugars to `Block(DefDef, Closure)`; only such a block stands for the whole
+    // expression, so it is preferred over its body. Other blocks (compiler-inserted wrappers, plain term blocks)
+    // are not, because their own type can be less precise than the body the bundled plugin expects.
+    Try:
+      val expr = tree.getClass.getMethod("expr").invoke(tree)
+      expr != null && expr.getClass.getSimpleName == "Closure"
+    .getOrElse(false)
+
+  private def treeRank(tree: AnyRef, role: PcTypedTreeRole): Int =
+    val kind = TypedTreeKind.from(tree)
+    role match
+      case PcTypedTreeRole.ExpressionExact   =>
+        kind match
+          case TypedTreeKind.Block if isLambdaBlock(tree)         => 0
+          case TypedTreeKind.Closure                              => 0
+          case TypedTreeKind.Inlined                              => 1
+          case TypedTreeKind.TypeApply if isRuntimeTypeCast(tree) => 2
+          case TypedTreeKind.Apply                                => 3
+          case TypedTreeKind.TypeApply                            => 4
+          case TypedTreeKind.Select                               => 5
+          case _                                                  => 6
+      case PcTypedTreeRole.ExpressionWidened =>
+        kind match
+          case TypedTreeKind.Block if isLambdaBlock(tree) => 0
+          case TypedTreeKind.Closure                      => 0
+          case TypedTreeKind.Apply                        => 1
+          case TypedTreeKind.TypeApply                    => 2
+          case TypedTreeKind.Select                       => 3
+          case TypedTreeKind.Inlined                      => 4
+          case _                                          => 5
+      case PcTypedTreeRole.Declared          => if kind == TypedTreeKind.Typed then 0 else 1
+      case PcTypedTreeRole.Inferred          => 0
+      case PcTypedTreeRole.Parameter         => 0
+      case PcTypedTreeRole.Function          => 0
+      case PcTypedTreeRole.FunctionResult    => 0
+      case PcTypedTreeRole.Pattern           => if kind == TypedTreeKind.Bind then 0 else 1
+      case PcTypedTreeRole.PatternExpected   => if kind == TypedTreeKind.Bind then 0 else 1
+      case PcTypedTreeRole.Reference         => if kind == TypedTreeKind.Select then 0 else 1
+
+  private def symbolDetails(
+      symbol: AnyRef,
+      fileUri: String,
+      sourceLength: Int,
+      projection: PcCompilationProjection,
+      context: AnyRef
+  ): Option[PcCompilerSymbol] =
+    Try:
+      val id          = stableSymbolId(symbol, context)
+      val name        = invokeContextual(symbol, "name", context).toString
+      val denot       = invokeContextual(symbol, "denot", context)
+      val flags       = symbolFlags(symbol, context)
+      val isType      = Try(invokeContextual(symbol, "isType", context).asInstanceOf[Boolean]).getOrElse(false)
+      val fullName    = Option.when(isType):
+        invokeContextual(symbol, "showFullName", context).toString
+      val owner       = denot.getClass.getMethod("owner").invoke(denot)
+      val ownerId     = Try(stableSymbolId(owner, context)).toOption
+      val span        = symbol.getClass.getMethod("span").invoke(symbol)
+      val nav         =
+        for
+          navigationUri <- symbolNavigationUri(symbol, fileUri, context)
+          existingSpan  <- Option.when(spanExists(span))(span)
+        yield
+          val start = spanStart(existingSpan)
+          val end   = spanEnd(existingSpan)
+          if navigationUri == fileUri then
+            projection.toDocumentRange(start, end).map(r => PcNavigationTarget(navigationUri, r))
+          else
+            Option.when(start >= 0 && end >= start && end <= sourceLength)(
+              PcNavigationTarget(navigationUri, PcSourceRange(start, end))
+            )
+      val resolvedNav = nav.flatten
+      PcCompilerSymbol(
+        id,
+        name,
+        flags,
+        ownerId,
+        resolvedNav,
+        isType,
+        fullName,
+        isDeferred = symbolHasFlag(symbol, "Deferred", context)
+      )
+    .toOption
+
+  private def symbolNavigationUri(symbol: AnyRef, fileUri: String, context: AnyRef): Option[String] =
+    Try:
+      val source      = invokeContextual(symbol, "source", context)
+      val sourcePath  = source.getClass.getMethod("path").invoke(source).toString
+      val normalized  = PcSourceUri.normalize(fileUri)
+      val currentPath = Option(normalized.getPath).getOrElse("")
+      val currentName = new File(currentPath).getName
+      val isCurrent   = Set(fileUri, normalized.toString, currentPath, currentPath.stripPrefix("/"), currentName)
+        .contains(sourcePath)
+      if isCurrent then Some(fileUri)
+      else if sourcePath.startsWith("file:") then Some(URI.create(sourcePath).toString)
+      else Option.when(new File(sourcePath).isAbsolute)(new File(sourcePath).toURI.toString)
+    .toOption.flatten
+
+  private def stableSymbolId(symbol: AnyRef, context: AnyRef): String =
+    semanticdbSymbolId(symbol, context).getOrElse:
+      val fullName  = invokeContextual(symbol, "showFullName", context).toString
+      val signature = Try(invokeContextual(symbol, "signature", context).toString).filter(_ != "NotAMethod").toOption
+      val span      = symbol.getClass.getMethod("span").invoke(symbol)
+      val location  = Option.when(spanExists(span))(s"${spanStart(span)}:${spanEnd(span)}")
+      s"$fullName${signature.fold("")(value => s"$value")}${location.fold("")(value => s"@$value")}"
+
+  private def semanticdbSymbolId(symbol: AnyRef, context: AnyRef): Option[String] =
+    Try:
+      val moduleClass = Class.forName("dotty.tools.pc.SemanticdbSymbols$", true, classloader)
+      val module      = moduleClass.getField("MODULE$").get(null)
+      moduleClass.getMethods
+        .find: method =>
+          val parameters = method.getParameterTypes
+          method.getName == "symbolName" && method.getParameterCount == 2 &&
+          parameters.head.isInstance(symbol) && parameters.apply(1).isInstance(context)
+        .getOrElse(throw new NoSuchMethodException("SemanticdbSymbols.symbolName"))
+        .invoke(module, symbol, context)
+        .toString
+    .toOption
+      .map(_.trim)
+      .filter(value => value.nonEmpty && value != "<no-symbol>")
+
+  private def symbolFlags(symbol: AnyRef, context: AnyRef): Set[String] =
+    Try:
+      val denotation = invokeContextual(symbol, "denot", context)
+      invokeContextual(denotation, "flagsString", context).toString.split("[\\s,]+").filter(_.nonEmpty).toSet
+    .getOrElse(Set.empty)
+
+  private def symbolHasFlag(symbol: AnyRef, flagName: String, context: AnyRef): Boolean =
+    Try:
+      val flagsModule = Class.forName("dotty.tools.dotc.core.Flags$", true, classloader).getField("MODULE$").get(null)
+      val flag        = flagsModule.getClass.getMethod(flagName).invoke(flagsModule)
+      val denotation  = invokeContextual(symbol, "denot", context)
+      denotation.getClass.getMethods
+        .find(method => method.getName == "is" && method.getParameterCount == 2)
+        .getOrElse(throw new NoSuchMethodException("SymDenotation.is"))
+        .invoke(denotation, flag, context)
+        .asInstanceOf[Boolean]
+    .getOrElse(false)
+
+  private def renderCandidate(
+      candidate: ReflectedTreeCandidate,
+      context: AnyRef
+  ): Option[PcTypedTreeEntry] =
+    try
+      val treeType     = candidate.tree.getClass.getMethod("tpe").invoke(candidate.tree)
+      val rawType      = candidate.role match
+        case PcTypedTreeRole.FunctionResult =>
+          val methodType = invokeContextual(treeType, "widenTermRefExpr", context)
+          invokeContextual(methodType, "finalResultType", context)
+        case _                              => treeType
+      val _            = candidate.role match
+        case PcTypedTreeRole.ExpressionExact
+            if TypedTreeKind.TypeApply.matches(candidate.tree) && isRuntimeTypeCast(candidate.tree) =>
+          ()
+        case _ => ()
+      val typeToRender = candidate.role match
+        case PcTypedTreeRole.Function => rawType
+        case _                        => normalizedType(rawType, context)
+      if isPolyMethodType(typeToRender) then None
+      else
+        val rendered = candidate.role match
+          case PcTypedTreeRole.Function => renderCompilerType(typeToRender, context)
+          case _                        =>
+            moduleSingletonText(rawType, context)
+              .orElse(anonymousPolyFunctionText(rawType, context))
+              .getOrElse(renderCompilerType(typeToRender, context))
+        Option.when(isPublishableType(rendered)):
+          PcTypedTreeEntry(
+            candidate.range,
+            candidate.role,
+            rendered,
+            candidate.symbol
+          )
+    catch
+      case canceled: ProcessCanceledException => throw canceled
+      case NonFatal(_) => None
+
+  private def isCurrent(currency: () => PcSnapshotCurrency): Boolean =
+    ProgressManager.checkCanceled()
+    currency() == PcSnapshotCurrency.Current
+
+  private def spansModule: AnyRef =
+    Class.forName("dotty.tools.dotc.util.Spans$", true, classloader).getField("MODULE$").get(null)
+
+  private def spanStart(span: AnyRef): Int = spanExtension("start$extension", span)
+
+  private def spanEnd(span: AnyRef): Int = spanExtension("end$extension", span)
+
+  private def spanExists(span: AnyRef): Boolean =
+    val module = Class.forName("dotty.tools.dotc.util.Spans$Span$", true, classloader).getField("MODULE$").get(null)
+    module.getClass.getMethod("exists$extension", java.lang.Long.TYPE).invoke(module, span).asInstanceOf[Boolean]
+
+  private def hasSameExtent(left: AnyRef, right: AnyRef): Boolean =
+    val leftSpan  = left.getClass.getMethod("span").invoke(left)
+    val rightSpan = right.getClass.getMethod("span").invoke(right)
+    spanStart(leftSpan) == spanStart(rightSpan) && spanEnd(leftSpan) == spanEnd(rightSpan)
+
+  private def spanExtension(methodName: String, span: AnyRef): Int =
+    val module = Class.forName("dotty.tools.dotc.util.Spans$Span$", true, classloader).getField("MODULE$").get(null)
+    module.getClass.getMethod(methodName, java.lang.Long.TYPE).invoke(module, span).asInstanceOf[Int]
+
+  private def pathTo(trees: AnyRef, position: AnyRef, context: AnyRef): AnyRef =
+    val interactive = Class
+      .forName("dotty.tools.dotc.interactive.Interactive$", true, classloader)
+      .getField("MODULE$")
+      .get(null)
+    val arguments   = Array(trees, position, context)
+    interactive.getClass.getMethods
+      .find: method =>
+        method.getName == "pathTo" &&
+          method.getParameterTypes.zip(arguments).forall((parameter, argument) => parameter.isInstance(argument))
+      .getOrElse(throw new NoSuchMethodException("Interactive.pathTo"))
+      .invoke(interactive, arguments*)
+
+  private def renderType(path: AnyRef, context: AnyRef): Option[String] =
+    selectTree(pathTrees(path))
+      .map(selection => renderTreeType(selection, context))
+      .filter(isPublishableType)
+
+  private def isPublishableType(rendered: String): Boolean =
+    rendered.nonEmpty && rendered != "<empty>" && !rendered.contains("<error")
+
+  private def selectTree(trees: List[AnyRef]): Option[TypedTreeSelection] =
+    trees.headOption.map: closest =>
+      sameExtentTree(trees, closest, TypedTreeKind.Inlined)
+        .map(TypedTreeSelection(_, TypeRendering.Exact))
+        .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.TypeApply)
+            .filter(isRuntimeTypeCast)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.Apply)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .orElse:
+          sameExtentTree(trees, closest, TypedTreeKind.TypeApply)
+            .map(TypedTreeSelection(_, TypeRendering.Widened))
+        .getOrElse(TypedTreeSelection(closest, TypeRendering.Widened))
+
+  private def sameExtentTree(trees: List[AnyRef], closest: AnyRef, kind: TypedTreeKind): Option[AnyRef] =
+    trees.reverse.find(tree => kind.matches(tree) && hasSameExtent(tree, closest))
+
+  private def isRuntimeTypeCast(tree: AnyRef): Boolean =
+    Try:
+      val function = tree.getClass.getMethod("fun").invoke(tree)
+      function.getClass.getMethod("name").invoke(function).toString.contains("asInstanceOf")
+    .getOrElse(false)
+
+  private def pathTrees(path: AnyRef): List[AnyRef] =
+    iteratorValues(path).toList
+
+  private def diagnosticList(
+      diagnostics: AnyRef,
+      isError: Boolean,
+      projection: PcCompilationProjection
+  ): List[PcDiagnostic] =
+    pathTrees(diagnostics).flatMap: diagnostic =>
+      val position = diagnostic.getClass.getMethod("position").invoke(diagnostic)
+      if !position.getClass.getMethod("isPresent").invoke(position).asInstanceOf[Boolean] then None
+      else
+        val sourcePosition = position.getClass.getMethod("get").invoke(position)
+        val start          = sourcePosition.getClass.getMethod("start").invoke(sourcePosition).asInstanceOf[Int]
+        val end            = sourcePosition.getClass.getMethod("end").invoke(sourcePosition).asInstanceOf[Int]
+        val message        = diagnostic.getClass.getMethod("message").invoke(diagnostic).toString
+        projection
+          .toDocumentRange(start, end)
+          .map: docRange =>
+            PcDiagnostic(TextRange(docRange.startOffset, docRange.endOffset), isError, message)
+
+  private def renderTreeType(selection: TypedTreeSelection, context: AnyRef): String =
+    renderCompilerType(treeType(selection, context), context)
+
+  private def treeType(selection: TypedTreeSelection, context: AnyRef): AnyRef =
+    val rawType = selection.tree.getClass.getMethod("tpe").invoke(selection.tree)
+    normalizedType(rawType, context)
+
+  private def normalizedType(rawType: AnyRef, context: AnyRef): AnyRef =
+    val widened   = invokeContextual(rawType, "widenTermRefExpr", context)
+    val dealiased =
+      if isOpaqueAlias(widened, context) then widened
+      else invokeContextual(widened, "dealias", context)
+    // MethodType must be converted to a function type before rendering. PlainPrinter renders MethodType as
+    // (param: Type): Result, which createTypeFromText cannot parse, causing "does not take parameters" errors.
+    if isMethodType(dealiased) then Try(methodToFunctionType(dealiased, context)).getOrElse(dealiased)
+    else
+      // normalized on an HKTypeLambda returns resultType.normalized, stripping the type-parameter wrapper
+      // and leaving unbound TypeParamRefs that render as `Any`. Skip it.
+      val isHKTypeLambda = dealiased.getClass.getName.matches(".*(HKTypeLambda|PolyType)")
+      if isHKTypeLambda then dealiased
+      else invokeContextual(invokeContextual(dealiased, "normalized", context), "simplified", context)
+
+  // A module/companion TermRef widens to its underlying class/trait, dropping the stable object identity the
+  // bundled resolver relies on. For a static module the declaration full name resolves (showFullName); for a
+  // path-dependent module (`o.Inner`) showFullName uses the class owner (`Outer.Inner`, unresolvable), so render via
+  // dotc's Type.show, which preserves the value prefix and appends `.type`.
+  private def moduleSingletonText(rawType: AnyRef, context: AnyRef): Option[String] =
+    eventualModuleTermRef(rawType, context).map: moduleRef =>
+      if isPathDependentModule(moduleRef, context) then renderCompilerType(rawType, context)
+      else
+        val symbol   = invokeContextual(moduleRef, "symbol", context)
+        val fullName = invokeContextual(symbol, "showFullName", context).toString
+        s"$fullName.type"
+
+  // A path-dependent module (`o.Inner`, nested in a class) is not static; showFullName would use the class owner
+  // (`Outer.Inner`, unresolvable) instead of the value prefix (`o.Inner`), so those render via dotc's Type.show.
+  // Static modules (top-level or in a static owner) keep the resolvable declaration full name.
+  private def isPathDependentModule(moduleRef: AnyRef, context: AnyRef): Boolean =
+    Try:
+      val symbol = invokeContextual(moduleRef, "symbol", context)
+      !invokeContextual(symbol, "isStatic", context).asInstanceOf[Boolean]
+    .getOrElse(false)
+
+  private def eventualModuleTermRef(tpe: AnyRef, context: AnyRef): Option[AnyRef] =
+    def isTermRef(ref: AnyRef): Boolean               =
+      val name = ref.getClass.getName
+      name.endsWith("TermRef")
+    def isModule(ref: AnyRef): Boolean                =
+      Try:
+        val symbol = invokeContextual(ref, "symbol", context)
+        symbolHasFlag(symbol, "Module", context)
+      .getOrElse(false)
+    def peel(ref: AnyRef, depth: Int): Option[AnyRef] =
+      if depth > 16 || !isTermRef(ref) then None
+      else if isModule(ref) then Some(ref)
+      else Try(invokeContextual(ref, "underlying", context)).toOption.flatMap(peel(_, depth + 1))
+    peel(tpe, 0)
+
+  // A polymorphic function value is dotc's RefinedType(scala.PolyFunction, apply, PolyType(...)). When the
+  // PolyType binders are anonymous, Type.show prints them as `_$0` and widens the dependent TypeParamRefs, so the
+  // result cannot conform to a named `[T] => T => U`. Rename the binders to stable names (newLikeThis substitutes
+  // every bound TypeParamRef) and rebuild the refinement so RefinedPrinter emits the faithful source form.
+  private def anonymousPolyFunctionText(rawType: AnyRef, context: AnyRef): Option[String] =
+    if !isPolyFunctionRefinement(rawType, context) then None
+    else
+      Try:
+        val refinedInfo = rawType.getClass.getMethod("refinedInfo").invoke(rawType)
+        val namesList   = iteratorValues(refinedInfo.getClass.getMethod("paramNames").invoke(refinedInfo)).toList
+        if !namesList.exists(isWildcardParamName) then None
+        else
+          val parent      = rawType.getClass.getMethod("parent").invoke(rawType)
+          val refinedName = rawType.getClass.getMethod("refinedName").invoke(rawType)
+          val paramInfos  = refinedInfo.getClass.getMethod("paramInfos").invoke(refinedInfo)
+          val resType     = refinedInfo.getClass.getMethod("resType").invoke(refinedInfo)
+          val newNames    = renamedTypeNames(namesList.size)
+          val renamed     = invokeCtx(refinedInfo, "newLikeThis", context, newNames, paramInfos, resType)
+          val rebuilt     = invokeCtx(rawType, "derivedRefinedType", context, parent, refinedName, renamed)
+          Some(renderCompilerType(rebuilt, context))
+      .toOption.flatten
+
+  private def isPolyFunctionRefinement(tpe: AnyRef, context: AnyRef): Boolean =
+    isRefinedType(tpe) &&
+      Try:
+        val parent       = tpe.getClass.getMethod("parent").invoke(tpe)
+        val refinedName  = tpe.getClass.getMethod("refinedName").invoke(tpe)
+        val refinedInfo  = tpe.getClass.getMethod("refinedInfo").invoke(tpe)
+        val definitions  = context.getClass.getMethod("definitions").invoke(context)
+        val polyFunClass = definitions.getClass.getMethod("PolyFunctionClass").invoke(definitions)
+        refinedName.toString == "apply" && isPolyType(refinedInfo) &&
+        invokeCtx(parent, "derivesFrom", context, polyFunClass).asInstanceOf[Boolean]
+      .getOrElse(false)
+
+  private def isPolyType(tpe: AnyRef): Boolean =
+    tpe.getClass.getName.endsWith("PolyType")
+
+  private def isWildcardParamName(name: AnyRef): Boolean =
+    Try:
+      val nameKindsModule =
+        Class.forName("dotty.tools.dotc.core.NameKinds$", true, classloader).getField("MODULE$").get(null)
+      val wildcard        = nameKindsModule.getClass.getMethod("WildcardParamName").invoke(nameKindsModule)
+      name.getClass.getMethods
+        .find(method =>
+          method.getName == "is" && method.getParameterCount == 1 && method.getParameterTypes.head.isInstance(wildcard)
+        )
+        .exists(_.invoke(name, wildcard).asInstanceOf[Boolean])
+    .getOrElse(false)
+
+  private def renamedTypeNames(count: Int): AnyRef =
+    val namesModule    = Class.forName("dotty.tools.dotc.core.Names$", true, classloader).getField("MODULE$").get(null)
+    val typeNameMethod = namesModule.getClass.getMethods
+      .find(method =>
+        method.getName == "typeName" && method.getParameterCount == 1 && method.getParameterTypes.head == classOf[
+          String
+        ]
+      )
+      .getOrElse(throw new NoSuchMethodException("Names.typeName"))
+    val jdkList        = (0 until count).map(idx => typeNameMethod.invoke(namesModule, s"T$idx")).toList.asJava
+    val converters     = Class.forName("scala.jdk.javaapi.CollectionConverters", true, classloader)
+    val scalaBuffer    = converters.getMethod("asScala", classOf[util.List[?]]).invoke(null, jdkList)
+    scalaBuffer.getClass.getMethod("toList").invoke(scalaBuffer)
+
+  private def invokeCtx(receiver: AnyRef, methodName: String, context: AnyRef, valueArgs: AnyRef*): AnyRef =
+    val all = (valueArgs :+ context).toArray[AnyRef]
+    receiver.getClass.getMethods
+      .find: method =>
+        method.getName == methodName && method.getParameterCount == all.length &&
+          method.getParameterTypes.last.isInstance(context) &&
+          all.zip(method.getParameterTypes).forall((arg, parameterType) => parameterType.isInstance(arg))
+      .getOrElse(throw new NoSuchMethodException(s"$methodName/${all.length}"))
+      .invoke(receiver, all*)
+
+  private def refinementCompletions(tpe: AnyRef, context: AnyRef): List[PcCompletion] =
+    Iterator
+      .iterate(Option(tpe)):
+        case Some(refined) if isRefinedType(refined) =>
+          Option(refined.getClass.getMethod("parent").invoke(refined))
+        case _                                       => None
+      .takeWhile(_.nonEmpty)
+      .flatMap: candidate =>
+        candidate
+          .filter(isRefinedType)
+          .flatMap: refined =>
+            val name = refined.getClass.getMethod("refinedName").invoke(refined)
+            val term = name.getClass.getMethod("isTermName").invoke(name).asInstanceOf[Boolean]
+            Option.when(term):
+              val lookup = escapedIdentifier(name.toString)
+              val info   = refined.getClass.getMethod("refinedInfo").invoke(refined)
+              val detail = renderCompilerType(info, context)
+              PcCompletion(lookup, s"$lookup: $detail", Some(detail))
+      .toList
+      .distinctBy(_.lookupName)
+
+  private def isRefinedType(tpe: AnyRef): Boolean =
+    val methods = tpe.getClass.getMethods.iterator.map(_.getName).toSet
+    Set("parent", "refinedName", "refinedInfo").subsetOf(methods)
+
+  private def escapedIdentifier(name: String): String =
+    if name.matches("[A-Za-z_$][A-Za-z0-9_$]*") then name else s"`$name`"
+
+  private def isOpaqueAlias(tpe: AnyRef, context: AnyRef): Boolean =
+    // An opaque type alias is transparent only within its companion scope. The PC's context includes that scope,
+    // so dealias reveals the underlying type (V -> Double). The Scala plugin's type checker cannot verify this
+    // transparency, so keeping the opaque alias avoids false conformance errors.
+    Try:
+      val symbol = invokeContextual(tpe, "typeSymbol", context)
+      symbolHasFlag(symbol, "Opaque", context)
+    .getOrElse(false)
+
+  private def renderCompilerType(tpe: AnyRef, context: AnyRef): String =
+    tpe.getClass.getMethods
+      .find(method => method.getName == "show" && method.getParameterCount == 1)
+      .getOrElse(throw new NoSuchMethodException("Type.show"))
+      .invoke(tpe, context)
+      .toString
+      .replaceAll("\\u001B\\[[;\\d]*m", "")
+
+  private def isMethodType(tpe: AnyRef): Boolean =
+    val name = tpe.getClass.getSimpleName
+    name == "MethodType" || name == "JavaMethodType" || name == "ExprType"
+
+  // A PolyType is a method-type binder; a value expression cannot faithfully carry one, and dotc renders it as
+  // `[A]: R`, which createTypeFromText degrades. Skip such candidates so the bundled resolver stays responsible.
+  // HKTypeLambda (a true type lambda `[A] =>> R`) is NOT a method type and renders faithfully, so it is kept.
+  private def isPolyMethodType(tpe: AnyRef): Boolean =
+    tpe.getClass.getName.endsWith("$PolyType")
+
+  private def methodToFunctionType(methodType: AnyRef, context: AnyRef): AnyRef =
+    val contextClass = Class.forName("dotty.tools.dotc.core.Contexts$Context", true, classloader)
+    val name         = methodType.getClass.getSimpleName
+    if name == "ExprType" then
+      // ExprType (by-name parameter type => T) is not a MethodType; widen to its result type.
+      invokeContextual(methodType, "resultType", context)
+    else
+      methodType.getClass
+        .getMethod("toFunctionType", classOf[Boolean], classOf[Boolean], contextClass)
+        .invoke(methodType, java.lang.Boolean.FALSE, java.lang.Boolean.FALSE, context)
+
+  private def invokeContextual(receiver: AnyRef, methodName: String, context: AnyRef): AnyRef =
+    receiver.getClass.getMethods
+      .find: method =>
+        method.getName == methodName &&
+          method.getParameterCount == 1 &&
+          method.getParameterTypes.head.isInstance(context)
+      .getOrElse(throw new NoSuchMethodException(s"Type.$methodName"))
+      .invoke(receiver, context)
+
+private final case class TypedDocument(fileUri: String, documentVersion: Long)
+
+private final case class TypedTreeSelection(tree: AnyRef, rendering: TypeRendering)
+
+private enum TypeRendering:
+  case Exact
+  case Widened
+
+private enum TypedTreeKind(simpleName: String):
+  case Inlined   extends TypedTreeKind("Inlined")
+  case Apply     extends TypedTreeKind("Apply")
+  case TypeApply extends TypedTreeKind("TypeApply")
+  case Select    extends TypedTreeKind("Select")
+  case Ident     extends TypedTreeKind("Ident")
+  case Block     extends TypedTreeKind("Block")
+  case Closure   extends TypedTreeKind("Closure")
+  case Typed     extends TypedTreeKind("Typed")
+  case ValDef    extends TypedTreeKind("ValDef")
+  case DefDef    extends TypedTreeKind("DefDef")
+  case Bind      extends TypedTreeKind("Bind")
+  case Other     extends TypedTreeKind("")
+
+  def matches(tree: AnyRef): Boolean = tree.getClass.getSimpleName == simpleName
+
+  def isReference: Boolean = this == TypedTreeKind.Select || this == TypedTreeKind.Ident
+
+private object TypedTreeKind:
+  def from(tree: AnyRef): TypedTreeKind =
+    TypedTreeKind.values.find(_.matches(tree)).getOrElse(TypedTreeKind.Other)
+
+private[pc] final case class TreeTraversal(trees: Vector[AnyRef], visited: Int, positioned: Int)
+
+private[pc] final case class ReflectedTreeCandidate(
+    tree: AnyRef,
+    range: PcSourceRange,
+    role: PcTypedTreeRole,
+    rank: Int,
+    treeSize: Int,
+    symbol: Option[PcCompilerSymbol]
+)

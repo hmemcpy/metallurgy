@@ -1,0 +1,207 @@
+package com.hmemcpy.metallurgy.execution
+
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import com.hmemcpy.metallurgy.pc.PcSessionManager
+import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.execution.actions.{ConfigurationContext, RunConfigurationProducer}
+import com.intellij.execution.application.ApplicationConfiguration
+import com.intellij.execution.configurations.RunConfiguration
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.impl.{DefaultJavaProgramRunner, RunManagerImpl, RunnerAndConfigurationSettingsImpl}
+import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.psi.codeStyle.CodeStyleManager
+import com.intellij.testIntegration.TestFramework
+import org.jetbrains.plugins.scala.ScalaVersion
+import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScFunction
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScTypeDefinition
+import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
+import org.jetbrains.plugins.scala.runner.ScalaApplicationConfigurationProducer
+import org.jetbrains.plugins.scala.testingSupport.test.munit.MUnitConfigurationProducer
+import org.jetbrains.plugins.scala.testingSupport.test.scalatest.ScalaTestConfigurationProducer
+import org.jetbrains.plugins.scala.testingSupport.test.specs2.Specs2ConfigurationProducer
+import org.jetbrains.plugins.scala.testingSupport.test.utest.UTestConfigurationProducer
+import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
+
+import scala.jdk.CollectionConverters.*
+
+final class BundledExecutionDiscoveryTest extends ScalaLightCodeInsightFixtureTestCase:
+
+  override protected def supportedIn(version: ScalaVersion): Boolean =
+    version == ScalaVersion.fromString("3.5.2").get
+
+  override protected def defaultVersionOverride: Option[ScalaVersion] =
+    Some(new ScalaVersion(ScalaLanguageLevel.Scala_3_5, "2"))
+
+  override def getTestDataPath: String =
+    java.nio.file.Path.of("src", "test", "testdata").toAbsolutePath.toString
+
+  override protected def setUp(): Unit =
+    super.setUp()
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
+    setCompilerBasedHighlighting(enabled = true)
+    assertTrue(ScalaPluginSemanticBridge.install().isEnabled)
+
+  override protected def tearDown(): Unit =
+    try
+      MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+    finally super.tearDown()
+
+  def testScala3MainConfigurationRemainsBundledAndDoesNotStartTheBackend(): Unit =
+    val file    = myFixture.configureByText(
+      "ApplicationDiscovery.scala",
+      """object Main:
+        |  def main(args: Array[String]): Unit = ()
+        |""".stripMargin
+    )
+    val target  = descendants[ScTypeDefinition](file).find(_.name == "Main").get
+    val created = ScalaApplicationConfigurationProducer()
+      .createConfigurationFromContext(new ConfigurationContext(target))
+
+    assertNotNull(created)
+    val configuration = created.getConfiguration.asInstanceOf[ApplicationConfiguration]
+    assertEquals("Main", configuration.getMainClassName)
+    assertEquals(getModule, configuration.getConfigurationModule.getModule)
+    assertTrue(configuration.getClass.getName.startsWith("com.intellij.execution.application."))
+    assertBundledExecutionState(configuration)
+    assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+
+  def testScala3AnnotatedMainConfigurationRemainsBundled(): Unit =
+    val file    = myFixture.configureByText(
+      "AnnotatedMain.scala",
+      """@main
+        |def launch(argument: String): Unit = ()
+        |""".stripMargin
+    )
+    val target  = descendants[ScFunction](file).find(_.name == "launch").get
+    val created = ScalaApplicationConfigurationProducer()
+      .createConfigurationFromContext(new ConfigurationContext(target.nameId))
+
+    assertNotNull(created)
+    val configuration = created.getConfiguration.asInstanceOf[ApplicationConfiguration]
+    assertEquals("launch", configuration.getMainClassName)
+    assertEquals(getModule, configuration.getConfigurationModule.getModule)
+    assertBundledExecutionState(configuration)
+
+  def testAllBundledFrameworkFindersPreserveSuiteDiscoveryAcrossActivation(): Unit =
+    installFrameworkMarkers()
+    val file       = myFixture.configureByText(
+      "FrameworkDiscovery.scala",
+      """class ScalaTestSuite extends org.scalatest.Suite
+        |class MUnitSuite extends munit.Suite
+        |class Specs2Suite extends org.specs2.mutable.Specification
+        |object UTestSuite extends utest.TestSuite
+        |""".stripMargin
+    )
+    val suites     = descendants[ScTypeDefinition](file).map(definition => definition.name -> definition).toMap
+    val frameworks =
+      TestFramework.EXTENSION_NAME.getExtensionList.asScala.map(framework => framework.getName -> framework).toMap
+    val expected   = Seq(
+      ("ScalaTest", "ScalaTestSuite", ScalaTestConfigurationProducer(), "ScalaTestRunConfiguration"),
+      ("MUnit", "MUnitSuite", MUnitConfigurationProducer(), "MUnitConfiguration"),
+      ("Specs2", "Specs2Suite", Specs2ConfigurationProducer(), "Specs2RunConfiguration"),
+      ("uTest", "UTestSuite", UTestConfigurationProducer(), "UTestRunConfiguration")
+    )
+
+    val finders = expected.map: (frameworkName, suiteName, producer, configurationClass) =>
+      val framework = frameworks.getOrElse(frameworkName, throw new AssertionError(s"missing $frameworkName finder"))
+      assertTrue(framework.getClass.getName, framework.getClass.getName.startsWith("org.jetbrains.plugins.scala."))
+      assertTrue(s"$frameworkName did not discover $suiteName", framework.isTestClass(suites(suiteName)))
+      assertConfiguration(producer, suites(suiteName), suiteName, configurationClass)
+      (frameworkName, suiteName, framework)
+
+    myFixture.doHighlighting()
+    val activeGutters = gutterSignatures
+    assertTrue(activeGutters.mkString(", "), activeGutters.size >= expected.size)
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    DaemonCodeAnalyzer.getInstance(getProject).restart(file, "Metallurgy activation changed")
+    myFixture.doHighlighting()
+    finders.foreach: (frameworkName, suiteName, framework) =>
+      assertTrue(
+        s"inactive $frameworkName did not discover $suiteName",
+        framework.isTestClass(suites(suiteName))
+      )
+    assertEquals(activeGutters, gutterSignatures)
+    assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+
+  def testSyntaxOnlyFormattingIsInvariantAndDoesNotStartTheBackend(): Unit =
+    val source = "object Main{def value:Int=42}"
+
+    val active   = formatted("ActiveFormatting.scala", source)
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    val inactive = formatted("InactiveFormatting.scala", source)
+
+    assertEquals(inactive, active)
+    assertEquals(0, PcSessionManager.get(getProject).activeSessionCount)
+
+  private def installFrameworkMarkers(): Unit =
+    val _ = myFixture.addClass("package org.scalatest; public abstract class Suite {}")
+    val _ = myFixture.addClass("package munit; public abstract class Suite {}")
+    val _ = myFixture.addClass(
+      "package org.specs2.specification; public interface SpecificationStructure {}"
+    )
+    val _ = myFixture.addClass(
+      "package org.specs2.mutable; public class Specification implements org.specs2.specification.SpecificationStructure {}"
+    )
+    val _ = myFixture.addClass("package utest; public abstract class TestSuite {}")
+
+  private def gutterSignatures: Seq[(String, String)] =
+    myFixture
+      .findAllGutters()
+      .asScala
+      .map(gutter => Option(gutter.getTooltipText).getOrElse("") -> gutter.getIcon.toString)
+      .sorted
+      .toSeq
+
+  private def assertConfiguration(
+      producer: RunConfigurationProducer[?],
+      suite: ScTypeDefinition,
+      suiteName: String,
+      expectedClass: String
+  ): Unit =
+    val created = producer.createConfigurationFromContext(new ConfigurationContext(suite.nameId))
+    assertNotNull(s"no configuration for $suiteName", created)
+    assertEquals(expectedClass, created.getConfiguration.getClass.getSimpleName)
+    assertTrue(created.getConfiguration.getName, created.getConfiguration.getName.contains(suiteName))
+    assertBundledExecutionState(created.getConfiguration)
+
+  private def assertBundledExecutionState(configuration: RunConfiguration): Unit =
+    val executor = DefaultRunExecutor()
+    val runner   = DefaultJavaProgramRunner()
+    val settings = RunnerAndConfigurationSettingsImpl(RunManagerImpl.getInstanceImpl(getProject), configuration)
+    val state    = configuration.getState(
+      executor,
+      ExecutionEnvironment(executor, runner, settings, getProject)
+    )
+
+    assertNotNull(s"${configuration.getClass.getName} did not create a bundled execution state", state)
+
+  private def formatted(name: String, source: String): String =
+    val file = myFixture.configureByText(name, source)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit =
+          val _ = CodeStyleManager.getInstance(getProject).reformat(file)
+    )
+    file.getText
+
+  private def descendants[A <: com.intellij.psi.PsiElement: reflect.ClassTag](
+      element: com.intellij.psi.PsiElement
+  ): Seq[A] =
+    PsiTreeUtil
+      .findChildrenOfType(element, reflect.classTag[A].runtimeClass.asInstanceOf[Class[A]])
+      .asScala
+      .toSeq
+
+  private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
+    val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
+    val s   = cls.getMethod("getInstance", classOf[com.intellij.openapi.project.Project]).invoke(null, getProject)
+    val on  = java.lang.Boolean.valueOf(enabled)
+    val _   = cls.getMethod("setCompilerHighlightingScala3", classOf[Boolean]).invoke(s, on)
+    val _   = cls.getMethod("setUseCompilerTypes", classOf[Boolean]).invoke(s, on)

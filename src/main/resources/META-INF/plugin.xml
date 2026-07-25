@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<idea-plugin>
+  <id>com.hmemcpy.metallurgy</id>
+  <name>Metallurgy</name>
+  <vendor email="hmemcpy@gmail.com" url="https://github.com/hmemcpy/metallurgy">Igal Tabachnik</vendor>
+
+  <description><![CDATA[
+    <p><b>Metallurgy</b> replaces IntelliJ's Scala type backend with the real Scala 3 compiler.</p>
+    <p>It retains Scala PSI as IntelliJ's integration model while selecting a versioned Scala 3 compiler snapshot
+    for type inference, resolution, completion, and other type consumers.</p>
+    <p><b>Status:</b> pre-alpha, post-PoC. Compiler-type resolution and completion are available; replacing the
+    bundled type backend is the active implementation program.
+    See <a href="https://github.com/hmemcpy/metallurgy/blob/main/docs/scala3-compiler-backend.md">the definitive architecture</a>
+    for the roadmap.</p>
+  ]]></description>
+
+  <change-notes><![CDATA[
+    <b>0.1.0-SNAPSHOT</b> — pre-alpha compiler-type resolution build.
+  ]]></change-notes>
+
+  <idea-version since-build="261" until-build="261.*"/>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.java</depends>
+  <depends>org.intellij.scala</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.settings.MetallurgySettings"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.module.ModuleDetectionService"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.pc.MtagsFetcher"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.build.ScalacFlagsService"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.compilerbackend.Scala3CompilerBackend"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.diagnostics.PcDiagnosticSetCache"/>
+    <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightRenderer"/>
+    <postStartupActivity
+        implementation="com.hmemcpy.metallurgy.MetallurgyProjectActivity"/>
+    <statusBarWidgetFactory
+        id="Metallurgy"
+        implementation="com.hmemcpy.metallurgy.status.MetallurgyStatusBarWidgetFactory"
+        order="before Position"/>
+    <completion.contributor
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.feature.completion.Scala3PcCompletionContributor"
+        order="before scalaCompletionContrubutor"/>
+    <lang.documentationProvider
+        id="MetallurgyCompilerBackendDocumentationProvider"
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendDocumentationProvider"
+        order="before ScalaDocumentationProvider"/>
+    <daemon.highlightInfoFilter
+        implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
+    <highlightingPassFactory
+        implementation="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendPassFactory"/>
+    <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
+  </extensions>
+</idea-plugin>

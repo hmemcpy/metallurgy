@@ -1,0 +1,3 @@
+# Without Metallurgy, the compiler-type slot remains untouched.
+typeAt:224:<empty>
+red:line:11

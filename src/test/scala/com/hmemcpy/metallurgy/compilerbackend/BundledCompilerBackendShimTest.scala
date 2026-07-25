@@ -1,0 +1,1007 @@
+package com.hmemcpy.metallurgy.compilerbackend
+
+import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
+import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot, PcSnapshotCurrency, PcSourceRange}
+import com.hmemcpy.metallurgy.settings.MetallurgySettings
+import com.intellij.codeInsight.documentation.DocumentationManager
+import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
+import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
+import com.intellij.openapi.project.Project
+import com.intellij.psi.{PsiClass, PsiElement, SmartPointerManager}
+import com.intellij.psi.search.searches.ReferencesSearch
+import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.util.ui.UIUtil
+import org.jetbrains.plugins.scala.ScalaVersion
+import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{
+  ScFunction,
+  ScFunctionDefinition,
+  ScValueOrVariableDefinition
+}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScGivenDefinition
+import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.ScalaChangeSignatureHandler
+import org.jetbrains.plugins.scala.lang.refactoring.inline.method.ScalaInlineMethodHandler
+import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
+import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
+import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertNull, assertSame, assertTrue}
+import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
+
+import java.lang.management.ManagementFactory
+import java.util.Arrays
+import java.util.concurrent.TimeUnit
+import scala.jdk.CollectionConverters.*
+
+final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureTestCase:
+
+  private final case class FastPathMeasurement(bytesPerCall: Double, p50: Long, p95: Long, max: Long, result: Object)
+
+  override protected def supportedIn(version: ScalaVersion): Boolean =
+    version == ScalaVersion.fromString("3.5.2").get
+
+  override protected def defaultVersionOverride: Option[ScalaVersion] =
+    Some(new ScalaVersion(ScalaLanguageLevel.Scala_3_5, "2"))
+
+  override def getTestDataPath: String =
+    java.nio.file.Path.of("src", "test", "testdata").toAbsolutePath.toString
+
+  override protected def setUp(): Unit =
+    super.setUp()
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
+    setCompilerBasedHighlighting(enabled = true)
+    assertTrue(ScalaPluginSemanticBridge.install().isEnabled)
+
+  override protected def tearDown(): Unit =
+    try
+      Scala3CompilerBackend.get(getProject).clear()
+      MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+      setCompilerBasedHighlighting(enabled = false)
+    finally super.tearDown()
+
+  def testPublishedCompilerTypeReplacesDeclaredType(): Unit =
+    val file        = myFixture.configureByText("DeclaredType.scala", "val value: String = \"text\"")
+    val typeElement = PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])
+    val version     = myFixture.getEditor.getDocument.getModificationStamp
+
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+    assertEquals(
+      CompilerBackendPublication.Published,
+      Scala3CompilerBackend.get(getProject).publish(typeElement, CompilerBackendRole.DeclaredType, version, "Int")
+    )
+    assertEquals("Int", rendered(typeElement))
+
+  def testRealPresentationCompilerResultFlowsThroughDeclaredTypeBackend(): Unit =
+    val source       = "val value: String = \"text\""
+    val file         = myFixture.configureByText("PcDeclaredType.scala", source)
+    val typeElement  = PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])
+    val document     = myFixture.getEditor.getDocument
+    val session      = PlatformTestUtil
+      .waitForFuture(PcSessionManager.get(getProject).prepareFile(file.getVirtualFile), 60000L)
+      .getOrElse(throw new AssertionError("presentation compiler session was unavailable"))
+    val snapshot     = PcSnapshot(file.getVirtualFile.getUrl, document.getModificationStamp, document.getText)
+    val typeRange    = typeElement.getTextRange
+    val compilerType = ApplicationManager.getApplication
+      .executeOnPooledThread(() => TypeRenderer.render(session, snapshot, typeRange))
+      .get(30, TimeUnit.SECONDS)
+      .getOrElse(throw new AssertionError("presentation compiler returned no declared type"))
+    assertEquals(
+      CompilerBackendPublication.Published,
+      Scala3CompilerBackend
+        .get(getProject)
+        .publish(typeElement, CompilerBackendRole.DeclaredType, snapshot.documentVersion, compilerType)
+    )
+    val selectedType = typeElement.`type`().fold(failure => throw new AssertionError(failure.toString), identity)
+    Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(typeElement, getModule, CompilerBackendRole.DeclaredType) match
+      case CompilerBackendState.Current(renderedType, result) =>
+        assertEquals(compilerType, renderedType)
+        assertSame(selectedType, result.fold(failure => throw new AssertionError(failure.toString), identity))
+      case state                                              => throw new AssertionError(s"expected current compiler result, got $state")
+
+  def testPublishedDefinitionTypeReplacesBundledDeclaredType(): Unit =
+    val file       = myFixture.configureByText("DefinitionType.scala", "val value: String = \"text\"")
+    val definition = PsiTreeUtil.findChildOfType(file, classOf[ScValueOrVariableDefinition])
+
+    publish(definition, CompilerBackendRole.Definition, "Int")
+
+    assertEquals("Int", rendered(definition.`type`()))
+
+  def testPublishedFunctionResultFlowsThroughScalaAndJavaPsi(): Unit =
+    val file     = myFixture.configureByText("FunctionResult.scala", "def function: String = \"text\"")
+    val function = PsiTreeUtil.findChildOfType(file, classOf[ScFunction])
+
+    publish(function, CompilerBackendRole.FunctionResult, "Int")
+
+    assertEquals("Int", rendered(function.returnType))
+    assertEquals("int", function.getReturnType.getCanonicalText)
+
+  def testPublishedParameterTypePreservesParameterViewsAndJavaPsi(): Unit =
+    val file      = myFixture.configureByText("ParameterType.scala", "def function(value: String): Unit = ()")
+    val parameter = PsiTreeUtil.findChildOfType(file, classOf[ScParameter])
+
+    publish(parameter, CompilerBackendRole.Parameter, "Int")
+
+    assertEquals("Int", rendered(parameter.`type`()))
+    assertEquals("Int", rendered(parameter.insideParamType))
+    assertEquals("Int", rendered(parameter.outsideParamType))
+    assertEquals("int", parameter.getType.getCanonicalText)
+
+  def testPublishedPatternAndExpectedTypesReplaceBundledResults(): Unit =
+    val file    = myFixture.configureByText("PatternType.scala", "val (value, _) = (1, \"text\")")
+    val pattern = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .stream()
+      .filter(_.getText == "value")
+      .findFirst()
+      .orElseThrow()
+
+    publish(pattern, CompilerBackendRole.Pattern, "String")
+    publish(pattern, CompilerBackendRole.PatternExpected, "Boolean")
+
+    assertEquals("_root_.scala.Predef.String", rendered(pattern.`type`()))
+    assertEquals("Boolean", pattern.expectedType.map(_.canonicalText).orNull)
+
+  def testRealSnapshotDrivesFunctionsParametersAndDestructuredBindings(): Unit =
+    val source =
+      """object Main:
+        |  def literal = 1
+        |  def polymorphic[A](value: A): A = value
+        |  def parameters(byName: => String, repeated: Int*): Unit = ()
+        |  var mutable = "three"
+        |  val (number, text) = (1, "two")
+        |""".stripMargin
+    val file   = myFixture.configureByText("SemanticRoots.scala", source)
+
+    val _ = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val functions   = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
+    val parameters  = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).stream().toList
+    val bindings    = PsiTreeUtil.findChildrenOfType(file, classOf[ScBindingPattern]).stream().toList
+    val definitions = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .stream()
+      .toList
+
+    val literal     = functions.stream().filter(_.name == "literal").findFirst().orElseThrow()
+    val polymorphic = functions.stream().filter(_.name == "polymorphic").findFirst().orElseThrow()
+    assertEquals("Int", rendered(literal.returnType))
+    assertEquals("A", rendered(polymorphic.returnType))
+    Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(polymorphic, getModule, CompilerBackendRole.Function) match
+      case CompilerBackendState.Rendered(renderedType) =>
+        assertEquals("(Main.polymorphic : [A](value: A): A)", renderedType)
+      case state                                       => throw new AssertionError(s"expected rendered polymorphic method type, got $state")
+
+    val byName   = parameters.stream().filter(_.name == "byName").findFirst().orElseThrow()
+    val repeated = parameters.stream().filter(_.name == "repeated").findFirst().orElseThrow()
+    assertEquals("_root_.scala.Predef.String", rendered(byName.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(byName.insideParamType))
+    assertEquals("Int", rendered(repeated.`type`()))
+    assertEquals("scala.Seq[Int]", rendered(repeated.outsideParamType))
+
+    val number  = bindings.stream().filter(_.name == "number").findFirst().orElseThrow()
+    val text    = bindings.stream().filter(_.name == "text").findFirst().orElseThrow()
+    val mutable = definitions
+      .stream()
+      .filter(_.bindings.exists(_.name == "mutable"))
+      .findFirst()
+      .orElseThrow()
+    assertEquals("Int", rendered(number.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(text.`type`()))
+    assertEquals("Int", number.expectedType.map(_.canonicalText).orNull)
+    assertEquals("_root_.scala.Predef.String", text.expectedType.map(_.canonicalText).orNull)
+    assertEquals("_root_.scala.Predef.String", rendered(mutable.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(mutable.bindings.head.`type`()))
+
+  def testRealSnapshotPreservesSingletonOverrideAndGivenResults(): Unit =
+    val source =
+      """trait Base:
+        |  def overridden: Any
+        |object Main extends Base:
+        |  override def overridden = "text"
+        |  val singleton: "literal" = "literal"
+        |  given ordering: Ordering[Int] = Ordering.Int
+        |  given structural: Ordering[String] with
+        |    def compare(left: String, right: String): Int = left.compareTo(right)
+        |""".stripMargin
+    val file   = myFixture.configureByText("ExactSemanticRoots.scala", source)
+
+    val _ = PlatformTestUtil.waitForFuture(
+      PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
+      60000L
+    )
+    NonBlockingReadActionImpl.waitForAsyncTaskCompletion()
+    UIUtil.dispatchAllInvocationEvents()
+
+    val functions  = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).stream().toList
+    val overridden = functions
+      .stream()
+      .filter(function => function.name == "overridden" && function.isInstanceOf[ScFunctionDefinition])
+      .findFirst()
+      .orElseThrow()
+    val givenAlias = functions.stream().filter(_.name == "ordering").findFirst().orElseThrow()
+    val singleton  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeElement])
+      .stream()
+      .filter(_.getText == "\"literal\"")
+      .findFirst()
+      .orElseThrow()
+    val structural = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScGivenDefinition])
+      .stream()
+      .filter(_.name == "structural")
+      .findFirst()
+      .orElseThrow()
+
+    Scala3CompilerBackend
+      .get(getProject)
+      .stateForActiveModule(overridden, getModule, CompilerBackendRole.FunctionResult) match
+      case CompilerBackendState.Current(renderedType, _) => assertEquals("Any", renderedType)
+      case state                                         => throw new AssertionError(s"expected current compiler result, got $state")
+    assertEquals("Any", rendered(overridden.returnType))
+    assertEquals("\"literal\"", rendered(singleton.`type`()))
+    assertEquals("scala.Ordering[Int]", rendered(givenAlias.returnType))
+    assertEquals("scala.Ordering[_root_.scala.Predef.String]", rendered(structural.givenType()))
+
+  def testCompilerOnlyReferenceResolvesToStableGenerationIdentity(): Unit =
+    val file       = myFixture.configureByText("CompilerOnlyResolve.scala", "val result = generatedMember")
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("Main.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val first                = reference.multiResolveScala(false)
+    val second               = reference.multiResolveScala(false)
+    assertEquals(1, first.length)
+    assertSame(first.head.element, second.head.element)
+    assertEquals("generatedMember", first.head.element.getName)
+    assertTrue(first.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    assertSame(first.head.element, first.head.element.getNavigationElement)
+    assertTrue(
+      ReferencesSearch
+        .search(first.head.element, first.head.element.getUseScope)
+        .findAll()
+        .stream()
+        .anyMatch(_.getElement == reference)
+    )
+    myFixture.getEditor.getCaretModel.moveToOffset(reference.nameId.getTextOffset)
+    val documentationTargets = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, file, reference.nameId.getTextOffset)
+      .asScala
+    val documentationTarget  = documentationTargets.collectFirst:
+      case target: PsiElementDocumentationTarget if target.getTargetElement eq first.head.element => target
+    assertTrue(documentationTarget.isDefined)
+    assertEquals("def generatedMember: String", documentationTarget.get.computeDocumentationHint())
+    val documentationPointer = documentationTarget.get.createPointer()
+
+    backend.markPending(
+      getModule,
+      file.getVirtualFile.getUrl,
+      document.getModificationStamp,
+      generation.copy(session = 2L)
+    )
+    assertFalse(first.head.element.isValid)
+    assertEquals(null, documentationPointer.dereference())
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+
+  def testExplicitQuickDocumentationTargetsCompilerOnlySymbol(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("ExplicitCompilerOnlyDocumentation.scala")
+    val targets = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, fixture.file, fixture.reference.nameId.getTextOffset)
+      .asScala
+
+    val target = targets.collectFirst:
+      case documentation: PsiElementDocumentationTarget if documentation.getTargetElement eq fixture.target =>
+        documentation
+    assertTrue(target.isDefined)
+    assertEquals("def generatedMember: String", target.get.computeDocumentationHint())
+
+  def testAutomaticEditorHoverTargetsCompilerOnlySymbol(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("HoverCompilerOnlyDocumentation.scala")
+    val manager = DocumentationManager.getInstance(getProject)
+    myFixture.getEditor.getCaretModel.moveToOffset(fixture.reference.nameId.getTextOffset)
+
+    val hoverTarget = manager.findTargetElement(myFixture.getEditor, fixture.file)
+    assertSame(fixture.target, hoverTarget)
+    val provider    = DocumentationManager.getProviderFromElement(hoverTarget, fixture.reference)
+    val hoverDoc    = provider.generateDoc(hoverTarget, fixture.reference)
+    assertTrue(hoverDoc, hoverDoc.contains("generatedMember"))
+    assertTrue(hoverDoc, hoverDoc.contains("String"))
+
+  def testCompilerOnlyRefactoringsRemainUnavailable(): Unit =
+    val fixture = compilerOnlyDocumentationFixture("CompilerOnlyRefactoring.scala")
+
+    assertFalse(fixture.target.isWritable)
+    assertFalse(new ScalaInlineMethodHandler().canInlineElement(fixture.target))
+    assertEquals(null, new ScalaChangeSignatureHandler().findTargetMember(fixture.target))
+
+  def testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity(): Unit =
+    val file       = myFixture.configureByText("CompilerOnlyStableResolve.scala", "val result: GeneratedType = ???")
+    val reference  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScStableCodeReference])
+      .stream()
+      .filter(_.getText == "GeneratedType")
+      .findFirst()
+      .orElseThrow()
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol(
+      "Main.GeneratedType",
+      "GeneratedType",
+      Set("Type"),
+      None,
+      None,
+      isType = true,
+      qualifiedName = Some("Main.GeneratedType")
+    )
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "GeneratedType",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved = reference.multiResolveScala(false)
+    assertEquals(1, resolved.length)
+    assertEquals("GeneratedType", resolved.head.element.getName)
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightClass])
+    assertTrue(resolved.head.element.isInstanceOf[PsiClass])
+    assertEquals("_root_.Main.GeneratedType", rendered(PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])))
+    assertEquals(
+      "type GeneratedType = GeneratedType",
+      new CompilerBackendDocumentationProvider().getQuickNavigateInfo(resolved.head.element, reference)
+    )
+
+  def testCompilerOnlyQualifiedReferenceResolvesThroughTheSameBridge(): Unit =
+    val file       = myFixture.configureByText(
+      "CompilerOnlyQualifiedResolve.scala",
+      "object receiver\nval result = receiver.generatedMember"
+    )
+    val reference  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScReferenceExpression])
+      .stream()
+      .filter(_.refName == "generatedMember")
+      .findFirst()
+      .orElseThrow()
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("receiver.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved            = reference.multiResolveScala(false)
+    assertEquals(1, resolved.length)
+    assertEquals("generatedMember", resolved.head.element.getName)
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    myFixture.getEditor.getCaretModel.moveToOffset(reference.nameId.getTextOffset)
+    val documentationTarget = IdeDocumentationTargetProvider
+      .getInstance(getProject)
+      .documentationTargets(myFixture.getEditor, file, reference.nameId.getTextOffset)
+      .asScala
+      .collectFirst:
+        case target: PsiElementDocumentationTarget if target.getTargetElement eq resolved.head.element => target
+    assertTrue(documentationTarget.isDefined)
+    assertEquals(
+      "def generatedMember: String",
+      documentationTarget.get.computeDocumentationHint()
+    )
+
+  def testCompilerSymbolDoesNotReplaceNonEmptyBundledResolution(): Unit =
+    val file       = myFixture.configureByText(
+      "BundledResolvePrecedence.scala",
+      "object Existing\nval result = Existing"
+    )
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val bundled    = reference.multiResolveScala(false)
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(1L, 1L, 1L)
+    val symbol     = PcCompilerSymbol("Main.CompilerOnly", "CompilerOnly", Set("Module"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "CompilerOnly.type",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertTrue(bundled.nonEmpty)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertEquals(
+      CompilerBackendCommit.Committed(1),
+      backend.commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+        PcSnapshotCurrency.Current
+      )
+    )
+
+    val resolved = reference.multiResolveScala(false)
+    assertEquals(bundled.length, resolved.length)
+    assertSame(bundled.head.element, resolved.head.element)
+    assertFalse(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+
+  def testInactiveReferenceBridgeReturnsTheExactBundledResult(): Unit =
+    val file      = myFixture.configureByText("InactiveReference.scala", "val result = unresolved")
+    val reference = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val bundled   = Array.empty[ScalaResolveResult]
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertSame(bundled, ScalaPluginSemanticBridge.referenceResolution(reference, bundled))
+    assertTrue(reference.multiResolveScala(false).isEmpty)
+
+  def testPendingBackendFallsThroughToBundledType(): Unit =
+    assertStateFallsThrough(CompilerBackendState.Pending)
+
+  def testUnavailableBackendFallsThroughToBundledType(): Unit =
+    assertStateFallsThrough(CompilerBackendState.Unavailable)
+
+  def testIntroduceVariableAdapterFallsThroughForPendingStaleAndInactiveSnapshots(): Unit =
+    val file       = myFixture.configureByText("IntroduceVariableFallback.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .asScala
+      .find(_.getText == "List(1).head")
+      .get
+    val version    = myFixture.getEditor.getDocument.getModificationStamp
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    backend.publishState(expression, CompilerBackendRole.ExpressionExact, version, CompilerBackendState.Pending)
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
+    val _ = backend.publish(expression, CompilerBackendRole.ExpressionExact, version - 1L, "String")
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
+    val _ = backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    assertNull(BundledCompilerBackendDispatcher.rawExpressionType(expression))
+
+  def testFailedBackendFallsThroughToBundledType(): Unit =
+    assertStateFallsThrough(CompilerBackendState.Failed)
+
+  def testStaleDocumentVersionFallsThroughToBundledType(): Unit =
+    val (typeElement, version) = declaredString("StaleVersion.scala")
+    val _                      = Scala3CompilerBackend
+      .get(getProject)
+      .publish(typeElement, CompilerBackendRole.DeclaredType, version - 1L, "Int")
+
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  def testNonOptedInModuleFallsThroughToBundledType(): Unit =
+    val (typeElement, version) = declaredString("NotOptedIn.scala")
+    val _                      = Scala3CompilerBackend
+      .get(getProject)
+      .publish(typeElement, CompilerBackendRole.DeclaredType, version, "Int")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  def testInactiveModuleFallsThroughAtEverySemanticRoot(): Unit =
+    val source =
+      """object Main:
+        |  val definition: String = "text"
+        |  def function: String = "text"
+        |  def owner(parameter: String): Unit = ()
+        |  val (pattern, _) = (1, "text")
+        |""".stripMargin
+    val file   = myFixture.configureByText("InactiveSemanticRoots.scala", source)
+
+    val definition = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueOrVariableDefinition])
+      .stream()
+      .filter(_.bindings.exists(_.name == "definition"))
+      .findFirst()
+      .orElseThrow()
+    val function   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunction])
+      .stream()
+      .filter(_.name == "function")
+      .findFirst()
+      .orElseThrow()
+    val parameter  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParameter])
+      .stream()
+      .filter(_.name == "parameter")
+      .findFirst()
+      .orElseThrow()
+    val pattern    = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScBindingPattern])
+      .stream()
+      .filter(_.name == "pattern")
+      .findFirst()
+      .orElseThrow()
+
+    publish(definition, CompilerBackendRole.Definition, "Int")
+    publish(function, CompilerBackendRole.FunctionResult, "Int")
+    publish(parameter, CompilerBackendRole.Parameter, "Int")
+    publish(pattern, CompilerBackendRole.Pattern, "String")
+    assertEquals("Int", rendered(definition.`type`()))
+    assertEquals("Int", rendered(function.returnType))
+    assertEquals("Int", rendered(parameter.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(pattern.`type`()))
+
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals("_root_.scala.Predef.String", rendered(definition.`type`()))
+    assertEquals("_root_.scala.Predef.String", rendered(function.returnType))
+    assertEquals("_root_.scala.Predef.String", rendered(parameter.`type`()))
+    assertEquals("Int", rendered(pattern.`type`()))
+
+  def testInactiveModuleRejectsPublication(): Unit =
+    val (typeElement, version) = declaredString("RejectedPublication.scala")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals(
+      CompilerBackendPublication.IgnoredInactive,
+      Scala3CompilerBackend.get(getProject).publish(typeElement, CompilerBackendRole.DeclaredType, version, "Int")
+    )
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  def testActiveCompilerTypeReadRejectsCopiedSlotWithoutCurrentSideTableEntry(): Unit =
+    val file       = myFixture.configureByText("RejectedCopiedSlot.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    ScalaPluginSemanticBridge.setCompilerType(expression, "String")
+    val copied     = expression.copy().asInstanceOf[ScExpression]
+
+    assertTrue(compilerType(copied).isEmpty)
+    assertTrue(Option(ScalaPluginSemanticBridge.getCompilerType(copied)).isEmpty)
+    assertTrue(compilerType(expression).isEmpty)
+    assertTrue(Option(ScalaPluginSemanticBridge.getCompilerType(expression)).isEmpty)
+
+  def testInactiveCompilerTypeReadPreservesBundledSlot(): Unit =
+    val file       = myFixture.configureByText("InactiveCopiedSlot.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    ScalaPluginSemanticBridge.setCompilerType(expression, "String")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+
+    assertEquals(Some("String"), compilerType(expression))
+    assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(expression))
+
+  def testCurrentExpressionRepairsLateBundledCompilerTypeWrite(): Unit =
+    val file       = myFixture.configureByText("LateCompilerType.scala", "val value = List(1).head")
+    val expression = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "List(1).head")
+      .findFirst()
+      .orElseThrow()
+    val version    = myFixture.getEditor.getDocument.getModificationStamp
+    val backend    = Scala3CompilerBackend.get(getProject)
+    assertEquals(
+      CompilerBackendPublication.Published,
+      backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+    )
+    ScalaPluginSemanticBridge.setCompilerType(expression, "Boolean")
+
+    assertEquals(Some("String"), compilerType(expression))
+    assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(expression))
+
+  def testLocalOptOutKeepsPublishedTypeWhenGlobalOptInRemainsActive(): Unit =
+    val settings               = MetallurgySettings(getProject)
+    val (typeElement, version) = declaredString("GlobalOptIn.scala")
+    val _                      = Scala3CompilerBackend
+      .get(getProject)
+      .publish(typeElement, CompilerBackendRole.DeclaredType, version, "Int")
+    settings.setGloballyEnabled(enabled = true)
+    settings.setEnabled(getModule, enabled = false)
+
+    try assertEquals("Int", rendered(typeElement))
+    finally settings.setGloballyEnabled(enabled = false)
+
+  def testCompilerHighlightingOffFallsThroughToBundledType(): Unit =
+    val (typeElement, version) = declaredString("CompilerHighlightingOff.scala")
+    val _                      = Scala3CompilerBackend
+      .get(getProject)
+      .publish(typeElement, CompilerBackendRole.DeclaredType, version, "Int")
+    setCompilerBasedHighlighting(enabled = false)
+
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  def testDiscoveryCoversInstalledSemanticRoots(): Unit =
+    val discovery = CompilerBackendShimDiscovery
+      .discover(classOf[ScTypeElement])
+      .fold(reason => throw new AssertionError(reason), identity)
+    val roles     = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
+
+    assertTrue(discovery.unavailableRoots.mkString(", "), discovery.unavailableRoots.isEmpty)
+    assertTrue(discovery.unavailableAdapters.mkString(", "), discovery.unavailableAdapters.isEmpty)
+    assertTrue(discovery.compilerTypeTarget.nonEmpty)
+    assertTrue(discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
+    assertTrue(discovery.resolveTargets.exists(_.methodName == "doResolve"))
+    assertTrue(discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
+    assertTrue(discovery.patternImplementations.size >= 17)
+    discovery.patternImplementations.foreach: pattern =>
+      assertTrue(pattern.className, pattern.hookClassName.nonEmpty)
+    assertTrue(
+      CompilerBackendRole.values.forall(role =>
+        roles.contains(role) || role == CompilerBackendRole.Binding ||
+          role == CompilerBackendRole.ExpressionExact || role == CompilerBackendRole.ExpressionWidened ||
+          role == CompilerBackendRole.Function || role == CompilerBackendRole.Reference
+      )
+    )
+
+  def testStructurallyIncompatiblePluginCannotInstall(): Unit =
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(Vector.empty)
+
+    assertFalse(discovery.canInstall)
+    assertTrue(discovery.unavailableRoots.nonEmpty)
+
+  def testPartiallyCompatiblePluginCannotInstall(): Unit =
+    val writer = new ClassWriter(0)
+    writer.visit(
+      Opcodes.V17,
+      Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+      "org/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement",
+      null,
+      "java/lang/Object",
+      Array.empty
+    )
+    val method = writer.visitMethod(Opcodes.ACC_PUBLIC, "type", "()Lscala/util/Either;", null, null)
+    method.visitCode()
+    method.visitInsn(Opcodes.ACONST_NULL)
+    method.visitInsn(Opcodes.ARETURN)
+    method.visitMaxs(1, 1)
+    method.visitEnd()
+    writer.visitEnd()
+
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(Vector(writer.toByteArray))
+
+    assertTrue(discovery.semanticTargets.nonEmpty)
+    assertTrue(discovery.unavailableRoots.nonEmpty)
+    assertFalse(discovery.canInstall)
+
+  def testMissingResolverAdapterDoesNotDisableCompatibleTypeRoots(): Unit =
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(
+      compatiblePluginShape("future", includeResolve = false)
+    )
+
+    assertTrue(discovery.unavailableRoots.mkString(", "), discovery.canInstall)
+    assertEquals(
+      Set("expression reference resolution", "stable reference resolution"),
+      discovery.unavailableAdapters.toSet
+    )
+
+  def testStableEapAndNightlyPluginShapesUseTheSameStructuralDiscovery(): Unit =
+    val discoveries = Seq("stable", "eap", "nightly").map: variant =>
+      variant -> CompilerBackendShimDiscovery.discoverClassBytes(compatiblePluginShape(variant))
+
+    discoveries.foreach: (variant, discovery) =>
+      assertTrue(s"$variant: ${discovery.unavailableRoots.mkString(", ")}", discovery.canInstall)
+      assertTrue(variant, discovery.unavailableAdapters.isEmpty)
+      assertTrue(variant, discovery.compilerTypeTarget.nonEmpty)
+      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
+      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "doResolve"))
+      assertTrue(variant, discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
+      assertTrue(variant, discovery.patternImplementations.exists(_.className.endsWith(s".$variant.PatternImpl")))
+      val roles = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
+      assertTrue(
+        variant,
+        Set(
+          CompilerBackendRole.DeclaredType,
+          CompilerBackendRole.Definition,
+          CompilerBackendRole.FunctionResult,
+          CompilerBackendRole.Parameter,
+          CompilerBackendRole.Pattern,
+          CompilerBackendRole.PatternExpected
+        ).subsetOf(roles)
+      )
+
+  def testInactiveBackendSelectorAllocationAndLatency(): Unit =
+    val (typeElement, _) = declaredString("FastPath.scala")
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
+    val bridge           = Class.forName(
+      "org.jetbrains.plugins.scala.lang.psi.api.base.types.MetallurgyCompilerBackendBridge",
+      false,
+      classOf[ScTypeElement].getClassLoader
+    )
+    val iterations       = 20000
+    val baseline         =
+      try
+        val _ = bridge.getMethod("disable").invoke(null)
+        measureFastPath(iterations)(typeElement.`type`().asInstanceOf[Object])
+      finally
+        val _ = bridge.getMethod("enable").invoke(null)
+    val hooked           = measureFastPath(iterations)(typeElement.`type`().asInstanceOf[Object])
+    val byteCost         = math.max(0.0, hooked.bytesPerCall - baseline.bytesPerCall)
+    println(
+      f"[compiler-backend-fast-path] calls=$iterations " +
+        f"baseline=${baseline.bytesPerCall}%.2fB/${baseline.p50}ns/${baseline.p95}ns/${baseline.max}ns " +
+        f"inactive=${hooked.bytesPerCall}%.2fB/${hooked.p50}ns/${hooked.p95}ns/${hooked.max}ns " +
+        f"incremental=$byteCost%.2fB"
+    )
+
+    assertNotNull(baseline.result)
+    assertNotNull(hooked.result)
+    // Wall-clock latency is reported for the go/no-go record but is not a stable CI assertion on shared hosts.
+    assertTrue(s"inactive installed path allocated $byteCost incremental bytes/call", byteCost <= 64.0)
+
+  private def assertStateFallsThrough(state: CompilerBackendState): Unit =
+    val (typeElement, version) = declaredString(s"${state.productPrefix}.scala")
+    Scala3CompilerBackend
+      .get(getProject)
+      .publishState(typeElement, CompilerBackendRole.DeclaredType, version, state)
+
+    assertEquals("_root_.scala.Predef.String", rendered(typeElement))
+
+  private def compatiblePluginShape(variant: String, includeResolve: Boolean = true): Vector[Array[Byte]] =
+    val eitherDescriptor = "()Lscala/util/Either;"
+    val roots            = Seq(
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/ScValueOrVariable"  -> ("type", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/ScFunction"         -> ("returnType", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/params/ScParameter" -> ("type", eitherDescriptor),
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern"       -> ("type", eitherDescriptor)
+    )
+    val classes          = Vector.newBuilder[Array[Byte]]
+    classes += syntheticClass(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement",
+      Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT,
+      methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "type", eitherDescriptor))
+    )
+    roots.foreach: (root, method) =>
+      classes += syntheticClass(
+        root,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, method._1, method._2))
+      )
+      val simpleName = root.substring(root.lastIndexOf('/') + 1).stripPrefix("Sc")
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/${simpleName}Impl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(root),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, method._1, method._2))
+      )
+    classes += syntheticClass(
+      s"org/jetbrains/plugins/scala/generated/$variant/ExpectedTypes",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+          "expectedType$extension",
+          "(Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern;)Lscala/Option;"
+        )
+      )
+    )
+    classes += syntheticClass(
+      "org/jetbrains/plugins/scala/lang/psi/impl/CompilerType$",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PUBLIC,
+          "apply",
+          "(Lcom/intellij/psi/PsiElement;)Lscala/Option;"
+        )
+      )
+    )
+    if includeResolve then
+      val resolveArray      = "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
+      val expressionRoot    = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScReferenceExpression"
+      val expressionResolve = s"(Z)$resolveArray"
+      classes += syntheticClass(
+        expressionRoot,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(
+          SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "multiResolveScala", expressionResolve)
+        )
+      )
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/ReferenceExpressionImpl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(expressionRoot),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "multiResolveScala", expressionResolve))
+      )
+      val stableRoot        = "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference"
+      val stableResolve     =
+        s"(Lorg/jetbrains/plugins/scala/lang/resolve/processor/BaseProcessor;Z)$resolveArray"
+      classes += syntheticClass(
+        stableRoot,
+        Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "doResolve", stableResolve))
+      )
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/generated/$variant/StableCodeReferenceImpl",
+        Opcodes.ACC_PUBLIC,
+        interfaces = Array(stableRoot),
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "doResolve", stableResolve))
+      )
+    classes += syntheticClass(
+      s"org/jetbrains/plugins/scala/lang/refactoring/$variant/FutureRefactoringTypes",
+      Opcodes.ACC_PUBLIC,
+      methods = Seq(
+        SyntheticMethod(
+          Opcodes.ACC_PRIVATE,
+          "typeWithoutExpected",
+          "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
+        )
+      )
+    )
+    classes.result()
+
+  private def syntheticClass(
+      internalName: String,
+      access: Int,
+      superName: String = "java/lang/Object",
+      interfaces: Array[String] = Array.empty,
+      methods: Seq[SyntheticMethod]
+  ): Array[Byte] =
+    val writer = new ClassWriter(0)
+    writer.visit(Opcodes.V17, access, internalName, null, superName, interfaces)
+    methods.foreach: method =>
+      val visitor = writer.visitMethod(method.access, method.name, method.descriptor, null, null)
+      if (method.access & Opcodes.ACC_ABSTRACT) == 0 then
+        visitor.visitCode()
+        visitor.visitInsn(Opcodes.ACONST_NULL)
+        visitor.visitInsn(Opcodes.ARETURN)
+        visitor.visitMaxs(1, 2)
+      visitor.visitEnd()
+    writer.visitEnd()
+    writer.toByteArray
+
+  private final case class SyntheticMethod(access: Int, name: String, descriptor: String)
+
+  private final case class CompilerOnlyDocumentationFixture(
+      file: com.intellij.psi.PsiFile,
+      reference: ScReferenceExpression,
+      target: PsiElement
+  )
+
+  private def compilerOnlyDocumentationFixture(fileName: String): CompilerOnlyDocumentationFixture =
+    val file       = myFixture.configureByText(fileName, "val result = generatedMember")
+    val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+    val document   = myFixture.getEditor.getDocument
+    val range      = reference.getTextRange
+    val generation = CompilerBackendGeneration(41L, 41L, 41L)
+    val symbol     = PcCompilerSymbol("Main.generatedMember", "generatedMember", Set("Method"), None, None)
+    val mapping    = CompilerBackendMapping(
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
+      PcSourceRange(range.getStartOffset, range.getEndOffset),
+      CompilerBackendRole.Reference,
+      "String",
+      Some(symbol.id),
+      Some(symbol)
+    )
+    val backend    = Scala3CompilerBackend.get(getProject)
+    backend.markPending(getModule, file.getVirtualFile.getUrl, document.getModificationStamp, generation)
+    assertTrue(
+      backend
+        .commitSnapshotWithMappings(getModule, file, document.getModificationStamp, generation, Seq(mapping))(
+          PcSnapshotCurrency.Current
+        )
+        .isInstanceOf[CompilerBackendCommit.Committed]
+    )
+    val target     = reference.multiResolveScala(false).head.element
+    CompilerOnlyDocumentationFixture(file, reference, target)
+
+  private def declaredString(fileName: String): (ScTypeElement, Long) =
+    val file        = myFixture.configureByText(fileName, "val value: String = \"text\"")
+    val typeElement = PsiTreeUtil.findChildOfType(file, classOf[ScTypeElement])
+    typeElement -> myFixture.getEditor.getDocument.getModificationStamp
+
+  private def rendered(typeElement: ScTypeElement): String =
+    typeElement.`type`().fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
+
+  private def rendered(result: org.jetbrains.plugins.scala.lang.psi.types.result.TypeResult): String =
+    result.fold(failure => throw new AssertionError(failure.toString), _.canonicalText)
+
+  private def publish(element: PsiElement, role: CompilerBackendRole, renderedType: String): Unit =
+    assertEquals(
+      CompilerBackendPublication.Published,
+      Scala3CompilerBackend
+        .get(getProject)
+        .publish(element, role, myFixture.getEditor.getDocument.getModificationStamp, renderedType)
+    )
+
+  private def compilerType(element: PsiElement): Option[String] =
+    val moduleClass = Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.CompilerType$")
+    val module      = moduleClass.getField("MODULE$").get(null)
+    val option      = moduleClass.getMethod("apply", classOf[PsiElement]).invoke(module, element).asInstanceOf[AnyRef]
+    ScalaPluginSemanticBridge.optionValue(option).map(_.toString)
+
+  private def measureFastPath(iterations: Int)(operation: => Object): FastPathMeasurement =
+    var warmup = 0
+    while warmup < 5000 do
+      val _ = operation
+      warmup += 1
+
+    val timings         = new Array[Long](iterations)
+    val threadBean      = ManagementFactory.getThreadMXBean.asInstanceOf[com.sun.management.ThreadMXBean]
+    val threadId        = Thread.currentThread().threadId()
+    val allocatedBefore = threadBean.getThreadAllocatedBytes(threadId)
+    var result: Object  = null
+    var index           = 0
+    while index < iterations do
+      val started = System.nanoTime()
+      result = operation
+      timings(index) = System.nanoTime() - started
+      index += 1
+    val allocatedAfter  = threadBean.getThreadAllocatedBytes(threadId)
+    Arrays.sort(timings)
+    FastPathMeasurement(
+      bytesPerCall = (allocatedAfter - allocatedBefore).toDouble / iterations,
+      p50 = timings(iterations / 2),
+      p95 = timings((iterations * 95) / 100),
+      max = timings.last,
+      result = result
+    )
+
+  private def setCompilerBasedHighlighting(enabled: Boolean): Unit =
+    val cls = Class.forName("org.jetbrains.plugins.scala.settings.ScalaProjectSettings")
+    val s   = cls.getMethod("getInstance", classOf[Project]).invoke(null, getProject)
+    val on  = java.lang.Boolean.valueOf(enabled)
+    val _   = cls.getMethod("setCompilerHighlightingScala3", classOf[Boolean]).invoke(s, on)
+    val _   = cls.getMethod("setUseCompilerTypes", classOf[Boolean]).invoke(s, on)
