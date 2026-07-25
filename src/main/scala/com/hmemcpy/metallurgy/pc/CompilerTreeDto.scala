@@ -19,6 +19,12 @@ final case class CompilerSourceNode(
 /** The compiler's typed tree as neutral DTOs, partitioned by source provenance. */
 final case class CompilerTreeDto(physicalNodes: Vector[CompilerSourceNode], syntheticNodes: Vector[CompilerSourceNode])
 
+/** The typed tree and the compiler's diagnostics for the same snapshot, extracted together so a consumer never observes
+  * a tree from one compiler run and diagnostics from another. Diagnostics are the authority for the
+  * no-error-suppression invariant: a range the compiler rejected is never represented as valid PSI.
+  */
+final case class CompilerTreeExtraction(tree: CompilerTreeDto, diagnostics: Seq[PcDiagnostic])
+
 object CompilerTreeDto:
 
   /** Admit a compiler tree to the physical collection only when its span is a real, non-zero, source-derived range. No

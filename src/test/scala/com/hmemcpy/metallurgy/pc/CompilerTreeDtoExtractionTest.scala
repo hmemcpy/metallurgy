@@ -38,6 +38,17 @@ final class CompilerTreeDtoExtractionTest extends ScalaLightCodeInsightFixtureTe
       assertTrue("nodes carry parent ids (hierarchy)", all.exists(_.parentId.isDefined))
       assertTrue("every parent id resolves to a known node", all.flatMap(_.parentId).forall(ids.contains))
 
+  def testExtractionIsAtomicTreeAndDiagnostics(): Unit =
+    withSession: session =>
+      val source     = "object O {\n  val x: Int = undefined\n}\n" // dotc rejects `undefined`
+      val snapshot   = PcSnapshot("file:///ErrCase.scala", 0L, source)
+      val _          = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+      val extraction = session.compilerTreeExtraction(snapshot)
+      assertTrue("atomic extraction present", extraction.isDefined)
+      val e          = extraction.get
+      assertTrue("extraction carries the tree", e.tree.physicalNodes.nonEmpty)
+      assertTrue("extraction carries the compiler diagnostics from the same run", e.diagnostics.nonEmpty)
+
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-dto-extraction")
     val fetcher            = new MtagsFetcher(

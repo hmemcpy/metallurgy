@@ -124,6 +124,9 @@ private final class StructuralScala3PcBridge(
           CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
       CompilerTreeDto(nodes)
 
+  def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction] =
+    compilerTreeDto(snapshot, currency).map(CompilerTreeExtraction(_, diagnostics(snapshot)))
+
   /** A hierarchical walk of the typed tree: each tree paired with its parent's id (the parent is the enclosing tree,
     * never an intermediate collection). Emitted in pre-order so a node's index is its id and parent ids resolve against
     * earlier entries.
