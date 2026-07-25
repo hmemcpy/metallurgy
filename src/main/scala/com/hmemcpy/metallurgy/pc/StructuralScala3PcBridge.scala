@@ -110,18 +110,46 @@ private final class StructuralScala3PcBridge(
     val uri  = PcSourceUri.normalize(snapshot.fileUri)
     val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
     val root = unit.getClass.getMethod("tpdTree").invoke(unit)
-    collectTrees(root, currency).map: traversal =>
-      val nodes = traversal.trees.zipWithIndex.map: (tree, index) =>
-        val span        = tree.getClass.getMethod("span").invoke(tree)
-        val exists      = spanExists(span)
-        val derived     = spanIsSourceDerived(span)
-        val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
-        val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
-        val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
-        val range       =
-          if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
-        CompilerSourceNode(index.toLong, None, tree.getClass.getSimpleName, range, sourceClass)
+    collectTreeHierarchy(root, currency).map: entries =>
+      val nodes = entries.zipWithIndex.map:
+        case ((tree, parentId), index) =>
+          val span        = tree.getClass.getMethod("span").invoke(tree)
+          val exists      = spanExists(span)
+          val derived     = spanIsSourceDerived(span)
+          val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
+          val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
+          val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
+          val range       =
+            if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
+          CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
       CompilerTreeDto(nodes)
+
+  /** A hierarchical walk of the typed tree: each tree paired with its parent's id (the parent is the enclosing tree,
+    * never an intermediate collection). Emitted in pre-order so a node's index is its id and parent ids resolve against
+    * earlier entries.
+    */
+  private def collectTreeHierarchy(
+      root: AnyRef,
+      currency: () => PcSnapshotCurrency
+  ): Option[Vector[(AnyRef, Option[Long])]] =
+    val treeClass = Class.forName("dotty.tools.dotc.ast.Trees$Tree", true, classloader)
+    val seen      = new IdentityHashMap[AnyRef, java.lang.Boolean]()
+    val entries   = Vector.newBuilder[(AnyRef, Option[Long])]
+    var nextId    = 0L
+    var current   = true
+
+    def visit(value: AnyRef, parentId: Option[Long]): Unit =
+      if current && nextId % 32 == 0 then current = isCurrent(currency)
+      if current && treeClass.isInstance(value) && seen.put(value, java.lang.Boolean.TRUE) == null then
+        val id = nextId
+        nextId += 1
+        entries += value -> parentId
+        productValues(value).takeWhile(_ => current).foreach(visit(_, Some(id)))
+      else if current && isScalaIterable(value) then
+        iteratorValues(value).takeWhile(_ => current).foreach(visit(_, parentId))
+
+    visit(root, None)
+    Option.when(current && isCurrent(currency))(entries.result())
 
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence] =
     val moduleClass = Class.forName("dotty.tools.dotc.semanticdb.TextDocument$", true, classloader)

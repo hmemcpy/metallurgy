@@ -33,6 +33,10 @@ final class CompilerTreeDtoExtractionTest extends ScalaLightCodeInsightFixtureTe
       assertTrue("has physical (source-derived) nodes", extracted.physicalNodes.nonEmpty)
       assertTrue("every physical node carries a source range", extracted.physicalNodes.forall(_.range.isDefined))
       assertTrue("a ValDef is among the physical nodes", extracted.physicalNodes.exists(_.kind == "ValDef"))
+      val all       = extracted.physicalNodes ++ extracted.syntheticNodes
+      val ids       = all.map(_.id).toSet
+      assertTrue("nodes carry parent ids (hierarchy)", all.exists(_.parentId.isDefined))
+      assertTrue("every parent id resolves to a known node", all.flatMap(_.parentId).forall(ids.contains))
 
   private def withSession(test: PcSession => Unit): Unit =
     val temporaryDirectory = Files.createTempDirectory("pc-dto-extraction")
