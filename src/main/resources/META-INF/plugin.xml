@@ -62,6 +62,9 @@
         implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
     <highlightingPassFactory
         implementation="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendPassFactory"/>
+    <lang.parserDefinition
+        language="Scala 3 (dotc)"
+        implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcParserDefinition"/>
     <notificationGroup id="metallurgy.general" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
