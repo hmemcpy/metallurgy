@@ -115,8 +115,18 @@ sits on. Anything else is a smell:
   path like `// mirrors TypeInferenceTestFixture.assert…`, and not `// upstream: scala-impl/test/…/X.scala#testName`. The
   reader has only this file open; a reference they cannot resolve from here is noise.
 - **No process or scaffolding language.** Not `// Layer 1: …`, not `// provenance:`, not "the refocus", "rollout
-  failsafe", "how we got here". Architectural decisions live in the canonical design document, not in code.
-- **No foreign identifiers in comments.** No issue numbers, SCL IDs, ADR numbers, or agent/skill names.
+  failsafe", "how we got here". No history narration: not "previously…", "rolls out from", "once X lands", "per
+  <review>". The reader cannot act on history. Architectural decisions live in the canonical design document, not in
+  code.
+- **No process artifacts or foreign identifiers, in names or comments.** No epic, issue, PR, ticket, task, or
+  initiative identifier or framing — not `epic #215`, `#210`, `T0`/`T1`/`T2`, and not naming things `epic_*`,
+  `consolidation_*`, `*_initiative`. No issue numbers, SCL IDs, or ADR numbers. A name or comment must make sense to
+  someone who has never heard of the effort.
+- **No AI/LLM attribution.** Never name a model, agent, or reviewer in names or comments — not "codex", "Claude",
+  "copilot", or "AI-generated". Code does not care who or what produced it.
+- **No changelog comments.** A comment must not record why a change was made, what it replaced, or its review status.
+  State a constraint as a fact on its own merits, never its provenance. If a comment only restates the code or narrates
+  a past decision, delete it.
 - **Omit before narrating.** Obvious code gets no comment. When a non-obvious constraint or failure mode must be
   recorded, write one sentence about *what breaks if you change this* — e.g. "Snapshot lookup is keyed by file URI and
   document version; a reused name returns another case's snapshot."
