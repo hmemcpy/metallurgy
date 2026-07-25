@@ -102,6 +102,27 @@ private final class StructuralScala3PcBridge(
                     )
                   )
 
+  def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto] =
+    require(
+      typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
+      "typed-tree extraction requires a matching typed document"
+    )
+    val uri  = PcSourceUri.normalize(snapshot.fileUri)
+    val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
+    val root = unit.getClass.getMethod("tpdTree").invoke(unit)
+    collectTrees(root, currency).map: traversal =>
+      val nodes = traversal.trees.zipWithIndex.map: (tree, index) =>
+        val span        = tree.getClass.getMethod("span").invoke(tree)
+        val exists      = spanExists(span)
+        val derived     = spanIsSourceDerived(span)
+        val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
+        val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
+        val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
+        val range       =
+          if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
+        CompilerSourceNode(index.toLong, None, tree.getClass.getSimpleName, range, sourceClass)
+      CompilerTreeDto(nodes)
+
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence] =
     val moduleClass = Class.forName("dotty.tools.dotc.semanticdb.TextDocument$", true, classloader)
     val module      = moduleClass.getField("MODULE$").get(null)
@@ -621,8 +642,14 @@ private final class StructuralScala3PcBridge(
   private def spanEnd(span: AnyRef): Int = spanExtension("end$extension", span)
 
   private def spanExists(span: AnyRef): Boolean =
+    spanBoolean(span, "exists$extension")
+
+  private def spanIsSourceDerived(span: AnyRef): Boolean =
+    spanBoolean(span, "isSourceDerived$extension")
+
+  private def spanBoolean(span: AnyRef, methodName: String): Boolean =
     val module = Class.forName("dotty.tools.dotc.util.Spans$Span$", true, classloader).getField("MODULE$").get(null)
-    module.getClass.getMethod("exists$extension", java.lang.Long.TYPE).invoke(module, span).asInstanceOf[Boolean]
+    module.getClass.getMethod(methodName, java.lang.Long.TYPE).invoke(module, span).asInstanceOf[Boolean]
 
   private def hasSameExtent(left: AnyRef, right: AnyRef): Boolean =
     val leftSpan  = left.getClass.getMethod("span").invoke(left)

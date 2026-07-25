@@ -19,6 +19,11 @@ private[pc] trait Scala3PcBridge extends AutoCloseable:
 
   def typedTreeSnapshot(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): PcTypedTreeExtraction
 
+  /** The typed tree as source-classified DTOs: physical nodes (real, non-zero, source-derived spans) separated from
+    * synthetic ones. A separate extraction path from the slot overlay; used by PSI production.
+    */
+  def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto]
+
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence]
 
   def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion]
