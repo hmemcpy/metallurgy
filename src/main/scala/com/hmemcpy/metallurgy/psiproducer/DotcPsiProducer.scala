@@ -219,7 +219,20 @@ object DotcPsiProducer:
       val prefix    = source.subSequence(range.startOffset, nameStart).toString
       if prefix.contains("trait") then emitTemplateDefinition(node, ctx, ScalaElementType.TraitDefinition)
       else if prefix.contains("class") then emitTemplateDefinition(node, ctx, ScalaElementType.ClassDefinition)
+      else if prefix.contains("type") then emitTypeAlias(node, ctx)
       else emitRaw(node, ctx)
+
+  private def emitTypeAlias(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark()
+      node.name.foreach: name =>
+        advanceToToken(name, range.endOffset, builder)
+        builder.advanceLexer()
+      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.TYPE_DEFINITION)
 
   private def emitTemplateDefinition(
       node: CompilerSourceNode,
