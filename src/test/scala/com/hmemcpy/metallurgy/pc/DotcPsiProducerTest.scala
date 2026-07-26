@@ -124,6 +124,20 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
 
+  def testNamedTypeArgCallResolvesAndTypes(): Unit =
+    withDotcProducedFile(
+      """import scala.language.experimental.namedTypeArguments
+        |def pair[A, B](a: A, b: B): (A, B) = (a, b)
+        |val value = pair[A = Int](1, "text")
+        |""".stripMargin
+    ): file =>
+      val call     = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
+      assertNotNull("pair[A = Int](1, \"text\") produced as a ScMethodCall", call)
+      val ref      = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
+      assertNotNull("a reference produced", ref)
+      val resolved = ref.resolve()
+      assertNotNull(s"pair resolves to its definition", resolved)
+
   def testCallExpressionComputesType(): Unit =
     withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
       val call = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])

@@ -205,6 +205,22 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
   differs from what the PSI/backend shows, the divergence is in the Metallurgy pipeline, not the compiler. Pair this
   with a REPL probe (`scala-cli repl --scala <version>`) for `:type` checks.
 - **MacroAnnotation cannot add user-visible members** (Scala 3 design restriction) — don't try to test or support it.
+- **`doParseContents` must return the unwrapped first child.** The producer builds the file content under a root
+  marker `done(fileElementType)`, then `doParseContents` returns `builder.getTreeBuilt.getFirstChildNode` (mirroring
+  the platform default `ILazyParseableElementType.doParseContents`). Returning the wrapped root nests an extra
+  `ASTWrapperPsiElement(FILE)` that hides top-level declarations from `ScDeclarationSequenceHolder.processDeclarations`
+  — lexical resolve silently breaks with no error. See `psiproducer/AGENTS.md` for the full grammar contracts.
+- **Producer PSI must match the bundled grammar the resolver reads, not just look right in the viewer.** `leaf()`/
+  `collapse()` render like composites in "View PSI Structure" but are leaves — use balanced `marker.done(TYPE)`. A
+  `def`'s name must be a direct `tIDENTIFIER` child of `FUNCTION_DEFINITION`; params are `PARAMETER` in `PARAM_CLAUSE`
+  (dotc models a param as a `ValDef` under a `DefDef`); a `val`'s name needs a `REFERENCE_PATTERN` inside `PATTERN_LIST`;
+  free-standing `Ident`/`Select` need `REFERENCE_EXPRESSION`; types go in `SIMPLE_TYPE`/`PARAM_TYPE`.
+- **`LanguageSubstitutor` does not run for `createFileFromText(name, explicitLanguage, text)`** — an explicit language
+  wins, so a bundled-parse probe keyed on `Scala3Language.INSTANCE` is correct (the substitutor is a red herring).
+- **Key pending-parse state by file URI, not source text.** A PSI copy or index parse of the same content can win the
+  `Unknown→Pending` race, schedule on a file with no physical `VirtualFile`, and strand the real file in `Pending`.
+- **IntelliJ `Logger.info` writes to `idea.log`** (~/.metallurgyPluginIC/system/log/idea.log), not stdout; only SEVERE
+  reaches the `runIDE` stdout redirect. Grepping the stdout log for INFO finds nothing.
 
 ## Tests
 
