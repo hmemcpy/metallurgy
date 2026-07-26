@@ -129,6 +129,14 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
 
+  def testTypeParametersAreDeclared(): Unit =
+    withDotcProducedFile("def pair[A, B](a: A, b: B): (A, B) = (a, b)\n"): file =>
+      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      val tps = fn.typeParameters
+      assertEquals("pair has two type parameters", 2, tps.length)
+      assertEquals("first type param is A", "A", tps.head.name)
+      assertEquals("second type param is B", "B", tps.tail.head.name)
+
   def testTupleReturnTypeIsNavigable(): Unit =
     withDotcProducedFile("def pair[A, B](a: A, b: B): (A, B) = (a, b)\n"): file =>
       val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])

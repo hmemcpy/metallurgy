@@ -71,22 +71,39 @@ object DotcPsiProducer:
 
   private def emitFunctionDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
-      val builder          = ctx.builder
+      val builder            = ctx.builder
       advanceTo(range.startOffset, builder)
-      val marker           = builder.mark()
+      val marker             = builder.mark()
       // The name identifier must be a direct child of FUNCTION_DEFINITION (ScFunctionImpl.nameId reads it via
       // findChildByType(tIDENTIFIER)); consume the `def` keyword and the name before opening the param-clause marker.
       node.name.foreach: name =>
         advanceToToken(name, range.endOffset, builder)
         builder.advanceLexer()
-      val children         = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      // A DefDef's direct ValDef children are its parameters (body locals nest inside a Block); emit them as real
-      // ScParameter nodes inside a param clause so ScFunction.parameters is non-empty and calls can bind.
-      val (params, others) = children.partition(_.kind == "ValDef")
+      val children           = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // A DefDef's direct TypeDef children are its type parameters and its direct ValDef children its value
+      // parameters (body locals nest in a Block). Emit the type-param clause first so the type params are in scope
+      // for the param/return types (otherwise A/B resolve to Any).
+      val (typeParams, rest) = children.partition(_.kind == "TypeDef")
+      val (params, others)   = rest.partition(_.kind == "ValDef")
+      emitTypeParamClause(typeParams, ctx)
       emitParamClauses(params, ctx)
       others.foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.FUNCTION_DEFINITION)
+
+  private def emitTypeParamClause(typeParams: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
+    if typeParams.nonEmpty then
+      val builder      = ctx.builder
+      val clauseMarker = builder.mark()
+      typeParams
+        .sortBy(_.range.map(_.startOffset).getOrElse(0))
+        .foreach: tp =>
+          tp.range.foreach: r =>
+            advanceTo(r.startOffset, builder)
+            val tpMarker = builder.mark()
+            advanceTo(r.endOffset, builder)
+            tpMarker.done(ScalaElementType.TYPE_PARAM)
+      clauseMarker.done(ScalaElementType.TYPE_PARAM_CLAUSE)
 
   private def emitParamClauses(params: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
     val builder       = ctx.builder
