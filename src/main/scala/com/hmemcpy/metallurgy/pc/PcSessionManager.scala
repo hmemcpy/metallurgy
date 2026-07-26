@@ -10,6 +10,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.hmemcpy.metallurgy.psiproducer.DotcTreeSource
 import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -22,6 +23,9 @@ import com.intellij.openapi.project.{ModuleListener, Project}
 import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener}
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.{VirtualFile, VirtualFileManager}
+import com.intellij.psi.{PsiFile, PsiManager}
+import com.intellij.psi.AbstractFileViewProvider
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
@@ -50,10 +54,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val classpathGenerations       = new AtomicLong(0L)
   private val compilerOptionsGenerations = new AtomicLong(0L)
   private val backend                    = Scala3CompilerBackend.get(project)
-  private val backendPublisher           = new CompilerBackendSnapshotPublisher(project)
-  private val modelRefreshFiles          = ConcurrentHashMap.newKeySet[String]()
-  private val modelRefreshAlarm          = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
-  private val projectionOverrides        = new ConcurrentHashMap[String, Seq[PcProjectionInsertion]]()
+  private val suppressPrepare            = new ConcurrentHashMap[String, java.lang.Boolean]()
+
+  private val backendPublisher    = new CompilerBackendSnapshotPublisher(project)
+  private val modelRefreshFiles   = ConcurrentHashMap.newKeySet[String]()
+  private val modelRefreshAlarm   = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
+  private val projectionOverrides = new ConcurrentHashMap[String, Seq[PcProjectionInsertion]]()
 
   private def cache: PcDiagnosticSetCache   = PcDiagnosticSetCache.get(project)
   private def renderer: PcHighlightRenderer = PcHighlightRenderer.get(project)
@@ -129,17 +135,19 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
     */
   private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    filePreparation(file) match
-      case Some((module, snapshot)) if isManaged(module) =>
-        val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
-        val future = backendInFlight.computeIfAbsent(
-          key,
-          _ => prepareFile(file, awaitBackendPublication = true, retries = 1)
-        )
-        future.whenComplete: (_, _) =>
-          val _ = backendInFlight.remove(key, future)
-        future
-      case _                                             => CompletableFuture.completedFuture(None)
+    if suppressPrepare.remove(file.getUrl) != null then CompletableFuture.completedFuture(None)
+    else
+      filePreparation(file) match
+        case Some((module, snapshot)) if isManaged(module) =>
+          val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
+          val future = backendInFlight.computeIfAbsent(
+            key,
+            _ => prepareFile(file, awaitBackendPublication = true, retries = 1)
+          )
+          future.whenComplete: (_, _) =>
+            val _ = backendInFlight.remove(key, future)
+          future
+        case _                                             => CompletableFuture.completedFuture(None)
 
   /** Compatibility-fixture only: declare compiler-only insertions for a document so a verbatim top-level fragment
     * compiles under dotc while the IntelliJ PSI keeps the verbatim text. Production never declares a projection.
@@ -329,6 +337,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       case RetypecheckOutcome.Applied    =>
         val publication = session.typedTreeSnapshot(snapshot) match
           case Some(typedTree) =>
+            session
+              .compilerTreeExtraction(snapshot)
+              .foreach: extraction =>
+                installAndReparse(module, snapshot, extraction, () => snapshotCurrency(module, session, generation))
             backendPublisher.publish(module, typedTree, generation, () => snapshotCurrency(module, session, generation))
           case None            =>
             backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
@@ -347,6 +359,41 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         renderer.blank(snapshot.fileUri, snapshot.documentVersion)
         CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
       case RetypecheckOutcome.Superseded => CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
+
+  private def installAndReparse(
+      module: Module,
+      snapshot: PcSnapshot,
+      extraction: CompilerTreeExtraction,
+      currency: () => PcSnapshotCurrency
+  ): Unit =
+    if currency() != PcSnapshotCurrency.Current then return
+    if extraction.diagnostics.exists(_.isError) then return
+    val project = module.getProject
+    val vfile   = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
+    if vfile == null then return
+    val target  = readAction(
+      new Computable[PsiFile]:
+        override def compute(): PsiFile =
+          val f = PsiManager.getInstance(project).findFile(vfile)
+          if f != null
+            && ModuleDetectionService.get(project).isActive(module)
+            && f.getText == snapshot.sourceText
+            && PsiTreeUtil.hasErrorElements(f)
+          then f
+          else null
+    )
+    if target == null then return
+    DotcTreeSource.install(snapshot.sourceText, extraction)
+    suppressPrepare.put(snapshot.fileUri, java.lang.Boolean.TRUE)
+    ApplicationManager.getApplication.invokeAndWait(() =>
+      ApplicationManager.getApplication.runWriteAction(
+        new Computable[Unit]:
+          override def compute(): Unit =
+            target.getViewProvider match
+              case vp: AbstractFileViewProvider => vp.onContentReload()
+              case _                            => ()
+      )
+    )
 
   private def trackFile(module: Module, fileUrl: String): Unit =
     val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)
