@@ -69,10 +69,12 @@ final class Scala3NamedTypeArgumentsInferenceCompatTest extends Scala3CompatTest
   )
 
   def testCompilerRejectedConstructIsNotSuppressed(): Unit =
-    // dotc rejects `Undefined` (not a type); the producer must not produce valid PSI for it.
+    // dotc rejects `Undefined` (not a type); the producer must not produce valid PSI for it. The first parse is the
+    // pending placeholder (no errors), and once the backend reports the compiler error the file reloads to the
+    // bundled parse, which keeps the error.
     val source = "def f[A] = ???\nval v = f[A = Undefined]\n"
-    preCompileAndInstall(source)
     myFixture.configureByText(ScalaFileType.INSTANCE, source)
+    awaitBackendPublished()
     import scala.jdk.CollectionConverters.*
     val errors =
       com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(getFile, classOf[com.intellij.psi.PsiErrorElement]).asScala

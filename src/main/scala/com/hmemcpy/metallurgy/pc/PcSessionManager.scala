@@ -10,7 +10,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.psiproducer.DotcTreeSource
+import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource, ProducerParseState}
 import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -25,7 +25,6 @@ import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.{VirtualFile, VirtualFileManager}
 import com.intellij.psi.{PsiFile, PsiManager}
 import com.intellij.psi.AbstractFileViewProvider
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
@@ -364,24 +363,30 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       currency: () => PcSnapshotCurrency
   ): Unit =
     if currency() != PcSnapshotCurrency.Current then return
-    if extraction.diagnostics.exists(_.isError) then return
-    val project                   = module.getProject
-    val vfile                     = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
+    val project           = module.getProject
+    val vfile             = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
     if vfile == null then return
-    val target                    = readAction(
+    val target            = readAction(
       new Computable[PsiFile]:
         override def compute(): PsiFile =
           val f = PsiManager.getInstance(project).findFile(vfile)
           if f != null
             && ModuleDetectionService.get(project).isActive(module)
             && f.getText == snapshot.sourceText
-            && PsiTreeUtil.hasErrorElements(f)
           then f
           else null
     )
     if target == null then return
-    val producerGenerationChanged = DotcTreeSource.install(snapshot.sourceText, extraction)
-    if !producerGenerationChanged then return
+    // Decide the terminal parse state from the compiler's verdict and the bundled parser's ability to represent the
+    // source. The file is currently the pending placeholder; this publishes a terminal state and reloads so the next
+    // parse is decisive. Idempotence: an unchanged state does not reload.
+    val hasCompilerErrors = extraction.diagnostics.exists(_.isError)
+    val stateChanged      =
+      if hasCompilerErrors then ProducerParseState.reject(snapshot.sourceText)
+      else if BundledScala3Parse.hasErrors(snapshot.sourceText, project) then
+        DotcTreeSource.install(snapshot.sourceText, extraction)
+      else ProducerParseState.useBundled(snapshot.sourceText)
+    if !stateChanged then return
     ApplicationManager.getApplication.invokeAndWait(() =>
       ApplicationManager.getApplication.runWriteAction(
         new Computable[Unit]:

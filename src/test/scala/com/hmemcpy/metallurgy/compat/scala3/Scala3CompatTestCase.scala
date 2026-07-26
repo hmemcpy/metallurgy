@@ -2,17 +2,16 @@ package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.psiproducer.{DotcTreeSource, Scala3DotcLanguage}
+import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource, ProducerParseState}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.util.Computable
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
-import com.intellij.psi.PsiFileFactory
+
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaFileType
@@ -55,6 +54,8 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
     settings.setCompilerHighlightingScala3(true)
     settings.setUseCompilerTypes(true)
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
+    DotcTreeSource.clear()
+    ProducerParseState.clear()
 
   override protected def tearDown(): Unit =
     try
@@ -62,6 +63,8 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       val settings = ScalaProjectSettings.getInstance(getProject)
       settings.setCompilerHighlightingScala3(savedSettings._1)
       settings.setUseCompilerTypes(savedSettings._2)
+      DotcTreeSource.clear()
+      ProducerParseState.clear()
     finally super.tearDown()
 
   private val StartMarker = "/*start*/"
@@ -225,14 +228,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       extraction.foreach(e => { val _ = DotcTreeSource.install(source, e); () })
 
   private def hasBundledParseError(source: String): Boolean =
-    ApplicationManager.getApplication.runReadAction(
-      new Computable[Boolean]:
-        override def compute(): Boolean =
-          val file = PsiFileFactory
-            .getInstance(getProject)
-            .createFileFromText("Probe.scala", Scala3DotcLanguage.INSTANCE, source)
-          PsiTreeUtil.hasErrorElements(file)
-    )
+    BundledScala3Parse.hasErrors(source, getProject)
 
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
