@@ -177,6 +177,13 @@ object DotcPsiProducer:
                   paramTypeMarker.done(ScalaElementType.PARAM_TYPE)
           advanceTo(r.endOffset, builder)
           paramMarker.done(ScalaElementType.PARAM)
+      // The clause's closing ')' must land inside this clause (it is its own terminator), not be swept into the next
+      // clause's opening marker. After the last param, advance over the ')' before closing the clause.
+      clauseParams.lastOption
+        .flatMap(_.range)
+        .foreach: lastRange =>
+          advanceTo(lastRange.endOffset, builder)
+          if !builder.eof() && builder.getTokenText == ")" then builder.advanceLexer()
       clauseMarker.done(ScalaElementType.PARAM_CLAUSE)
     clausesMarker.done(ScalaElementType.PARAM_CLAUSES)
 
