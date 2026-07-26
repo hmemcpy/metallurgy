@@ -169,3 +169,46 @@ PARAM > ':' > PARAM_TYPE > SIMPLE_TYPE > REFERENCE "Int"
 return: ':' > SIMPLE_TYPE > REFERENCE "Int"   (a ScTypeElement, so returnTypeElement resolves)
 ARG_EXPRS > IntegerLiteral "42"
 ```
+
+## codex systematic review (after Phase F+G grammar work)
+
+### Verdict: the typed-tree-only producer is a useful vertical prototype, but full grammar parity needs a concrete-syntax producer.
+A typed dotc tree is **lossy** relative to source grammar. What it cannot recover (tokens are available, but the typed
+hierarchy drops distinctions):
+- Multiple param clauses / clause kinds (`using`, `implicit`, erased) — already collapsed to one `PARAM_CLAUSE`.
+- Desugared surface hierarchy: `for`, placeholder lambdas, extension methods, context bounds, patterns, givens, enum
+  cases, named args, exports, some applications/type-applications.
+- Modifiers, annotations, visibility, self types, end markers, indentation regions, repeated/by-name param syntax,
+  comment/doc ownership.
+- Infix terms/types need concrete operator/parenthesization (precedence-climbing in `InfixExpr`/`InfixType`); ordered
+  typed spans alone are insufficient.
+- Error-recovery PSI cannot come from a clean typed tree at all → bundled-parser fallback for invalid intermediate
+  edits is unavoidable.
+
+`kind/range/name/role` is not a sufficiently expressive intermediate representation.
+
+### Two reported failures are consistent with crossing IntelliJ's syntax/stub lifecycle with an async-changing AST.
+1. **Diagnostics don't update on edit (but PSI does).** The inspection derives the package from
+   `file.members.map(_.topLevelQualifier)` (not `firstPackaging.packageName`). Instrument to distinguish: is the DIRECT
+   inspection fresh (daemon didn't complete a post-reload pass) or stale (cache/stub defect)? Fix if daemon-only:
+   `DaemonCodeAnalyzer.restart(target, reason)` after `onContentReload`, outside the write action.
+2. **Stub/index mismatch ("Stub count 21 vs 1").** Root cause: **nondeterministic parsing for identical content** — one
+   generation builds the produced stub tree, another (after restart, `DotcTreeSource` empty) builds the one-leaf
+   pending AST. Contract: for a given indexed content + stub version, parsing must deterministically yield the same
+   stub-bearing spine. Do **not** let placeholder, bundled, and dotc-produced shapes compete for the same indexed
+   content. Options: keep a deterministic syntax AST during pending; or disable stub building for the dialect until
+   deterministic.
+
+### Systematic direction (the proper architecture)
+- **Concrete-syntax layer:** token stream + dotc untyped/parser tree (preserves clauses, modifiers, patterns,
+  indentation, operators, punctuation ownership).
+- **Semantic overlay:** typed-tree identities, symbols, types, source roles.
+- **Declarative production schema:** each bundled PSI production declares required children, cardinality, direct-child
+  tokens, stub-bearing status.
+- **Differential tests:** parse every compiler-valid upstream fixture through both producers (where bundled parsing
+  succeeds); compare element types, ranges, direct-child structure, public PSI accessors, and the **complete stubbed
+  spine** — not just rendered PSI.
+- **Contract tests** for every stub-bearing production and the `pending → produced` edit/restart lifecycle.
+
+Continuing with typed-tree-only, per-crash grammar patches will remain structurally reactive. The stub mismatch is the
+strongest evidence that syntax production and asynchronous compiler publication need to be separated.
