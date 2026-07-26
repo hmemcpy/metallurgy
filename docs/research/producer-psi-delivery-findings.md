@@ -136,3 +136,36 @@ Validate with `ref.multiResolveScala(false)`, `function.parameters`, `patternDef
 
 Tests green: named-type-args 6/6 (production path), `PendingPlaceholderParseTest` 1/1, producer 5/5, full dialect +
 polymorphic/selectable regression. `#83` remains open on the semantics gap (Layer 4).
+
+## Layer 5 — producer grammar fidelity (Phase F, done; `59a9ebe`)
+
+The producer now emits faithful declaration/reference grammar, verified by a bundled-vs-producer
+`DebugUtil.psiToString` comparison. For `def foo(x: Int): Int = x; val v = foo(42)` produced from dotc, **same-file
+lexical resolve works**: `foo` resolves to `ScFunctionDefinitionImpl`; `parameters` and `declaredElements` are
+populated.
+
+What made it faithful:
+- **Names** surfaced from dotc (`TermName`/`TypeName`) per node.
+- **DefDef**: real `PARAMETER` in `PARAM_CLAUSE`; the function name consumed into `FUNCTION_DEFINITION` (`nameId`).
+- **ValDef binding**: name wrapped in a reference pattern inside `PATTERN_LIST` (`declaredElements`).
+- **Ident/Select**: wrapped in `REFERENCE_EXPRESSION`.
+- **`doParseContents` returns the unwrapped first child** (`getTreeBuilt.getFirstChildNode`), mirroring the platform
+  default `ILazyParseableElementType.doParseContents`, so top-level nodes are direct children of the file
+  (`ScDeclarationSequenceHolder`).
+
+codex review: directionally sound. Hardening item — `advanceToToken(node.name)` matches textually; prefer the exact
+name **span** from dotc (backticked/encoded/operator/generated names). Overloading is fine once signatures are faithful.
+
+## Layer 6 — type/literal grammar (Phase G, next; codex-steered)
+
+Producer vs bundled still differ in the type grammar: param/return `Int` is a raw token (bundled:
+`ParameterType`/`SimpleType`/`CodeReferenceElement`); literals are raw (bundled: `IntegerLiteral`); minor
+(`AnnotationsList`/`Modifiers`, `)` placement). codex: emit faithful type/literal PSI so the bundled resolver computes
+types, and retain the dotc overlay as semantic authority where bundled inference differs (named-type-args already
+yields `(Int, String)` via the overlay in the test). Minimal grammar:
+
+```
+PARAM > ':' > PARAM_TYPE > SIMPLE_TYPE > REFERENCE "Int"
+return: ':' > SIMPLE_TYPE > REFERENCE "Int"   (a ScTypeElement, so returnTypeElement resolves)
+ARG_EXPRS > IntegerLiteral "42"
+```
