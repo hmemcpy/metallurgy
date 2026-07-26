@@ -2,7 +2,6 @@ package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.codeHighlighting.{
-  Pass,
   TextEditorHighlightingPass,
   TextEditorHighlightingPassFactory,
   TextEditorHighlightingPassFactoryRegistrar,
@@ -30,7 +29,7 @@ final class CompilerBackendPassFactory
       registrar: TextEditorHighlightingPassRegistrar,
       project: Project
   ): Unit =
-    val _ = registrar.registerTextEditorHighlightingPass(this, Array(Pass.UPDATE_ALL), null, false, -1)
+    val _ = registrar.registerTextEditorHighlightingPass(this, null, null, false, -1)
 
 private[metallurgy] object CompilerBackendPassFactory:
   def isActiveScala(file: PsiFile): Boolean =

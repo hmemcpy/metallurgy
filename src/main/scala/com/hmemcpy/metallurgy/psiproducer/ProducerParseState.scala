@@ -2,19 +2,19 @@ package com.hmemcpy.metallurgy.psiproducer
 
 import java.util.concurrent.ConcurrentHashMap
 
-/** Source-keyed decision for the dialect file-root parse when no accepted extraction is installed. A clean extraction
-  * in [[DotcTreeSource]] drives the producer directly; this state covers the remaining outcomes so parse #1 never shows
-  * a bundled parse the compiler has not yet vouched for or against:
+/** Per-file decision for the dialect file-root parse when no accepted extraction is installed. A clean extraction in
+  * [[DotcTreeSource]] drives the producer directly (keyed by verbatim text); this state covers the remaining outcomes
+  * so parse #1 never shows a bundled parse the compiler has not yet vouched for or against:
   *
   *   - `Pending` — the compiler has not decided; the parse returns a placeholder leaf (no error nodes, no Scala
   *     expression structure) so the file is never painted red and never crashes on constructs the bundled parser cannot
-  *     represent. The first `Unknown` parse schedules the backend pass.
+  *     represent.
   *   - `Rejected` — the compiler reported errors; the bundled parser is appropriate (its errors are real).
   *   - `BundledFine` — the compiler accepted the source and the bundled parser already represents it; no producer
   *     needed.
   *
-  * Keyed by verbatim source text, matching [[DotcTreeSource]], so the decision follows the content (an edit that
-  * changes the text starts at `Unknown` again).
+  * Keyed by file URL (not source text) so a PSI copy or index parse of the same content cannot win the pending race for
+  * the physical file and strand it. Reset on edit so new content re-analyzes.
   */
 object ProducerParseState:
 
@@ -24,33 +24,34 @@ object ProducerParseState:
   case object Rejected    extends Decision
   case object BundledFine extends Decision
 
-  private val bySource = new ConcurrentHashMap[String, Decision]()
+  private val byFile = new ConcurrentHashMap[String, Decision]()
 
-  def decisionFor(source: String): Decision =
-    Option(bySource.get(source)).getOrElse(Unknown)
+  def decisionFor(fileUrl: String): Decision =
+    Option(byFile.get(fileUrl)).getOrElse(Unknown)
 
-  /** A terminal decision that means the bundled parser should run (compiler-rejected, or bundled already fine). */
-  def isSettled(source: String): Boolean =
-    decisionFor(source) == Rejected || decisionFor(source) == BundledFine
+  def isSettled(fileUrl: String): Boolean =
+    decisionFor(fileUrl) == Rejected || decisionFor(fileUrl) == BundledFine
 
-  /** Atomically move Unknown -> Pending and report whether this thread won the race (so only it schedules the backend
-    * work). A terminal decision is left untouched.
+  def isPending(fileUrl: String): Boolean =
+    decisionFor(fileUrl) == Pending
+
+  /** Atomically move Unknown -> Pending and report whether this thread won the race. A terminal decision is untouched.
     */
-  def becomePendingIfUnknown(source: String): Boolean =
-    bySource.replace(source, Unknown, Pending) || bySource.putIfAbsent(source, Pending) == null
+  def becomePendingIfUnknown(fileUrl: String): Boolean =
+    byFile.replace(fileUrl, Unknown, Pending) || byFile.putIfAbsent(fileUrl, Pending) == null
 
-  def reject(source: String): Boolean =
-    bySource.get(source) match
+  def reject(fileUrl: String): Boolean =
+    byFile.get(fileUrl) match
       case Rejected => false
-      case _        => bySource.put(source, Rejected); true
+      case _        => byFile.put(fileUrl, Rejected); true
 
-  def useBundled(source: String): Boolean =
-    bySource.get(source) match
+  def useBundled(fileUrl: String): Boolean =
+    byFile.get(fileUrl) match
       case BundledFine => false
-      case _           => bySource.put(source, BundledFine); true
+      case _           => byFile.put(fileUrl, BundledFine); true
 
-  def reset(source: String): Unit =
-    val _ = bySource.remove(source)
+  def reset(fileUrl: String): Unit =
+    val _ = byFile.remove(fileUrl)
 
   def clear(): Unit =
-    bySource.clear()
+    byFile.clear()

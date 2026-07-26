@@ -259,6 +259,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       file    <- Option(FileDocumentManager.getInstance.getFile(event.getDocument))
       module  <- Option(ModuleUtilCore.findModuleForFile(file, project))
       if isManaged(module) && isScalaSource(file)
+      _        = ProducerParseState.reset(file.getUrl) // edited content must re-enter the pending decision
       session <- Option(sessions.get(module)).map(_.session)
       snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
     do analyze(session, module, snapshot, awaitBackendPublication = false)
@@ -382,10 +383,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     // parse is decisive. Idempotence: an unchanged state does not reload.
     val hasCompilerErrors = extraction.diagnostics.exists(_.isError)
     val stateChanged      =
-      if hasCompilerErrors then ProducerParseState.reject(snapshot.sourceText)
+      if hasCompilerErrors then ProducerParseState.reject(snapshot.fileUri)
       else if BundledScala3Parse.hasErrors(snapshot.sourceText, project) then
         DotcTreeSource.install(snapshot.sourceText, extraction)
-      else ProducerParseState.useBundled(snapshot.sourceText)
+      else ProducerParseState.useBundled(snapshot.fileUri)
     if !stateChanged then return
     ApplicationManager.getApplication.invokeAndWait(() =>
       ApplicationManager.getApplication.runWriteAction(
