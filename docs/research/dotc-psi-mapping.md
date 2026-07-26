@@ -30,7 +30,10 @@ producer; their **Current/Gap** columns are superseded by the table here.
 | `given` (anonymous) | `ModuleDef` (keyword `given`) | `ScGivenDefinition` | ✅ |
 | type alias | `TypeDef` (keyword `type`) | `ScTypeAlias` (`TYPE_DEFINITION`) | ✅ |
 | `enum` | `TypeDef` (keyword `enum`) | `ScEnum` (`EnumDefinition`) | ✅ (dispatch; runtime-untested — driver can't synthesize enum companions) |
+| import | `Import` | `ScImportStatement` > `ImportExpression` | ✅ |
+| if/else | `If` | `ScIfStmt` (`IF_STMT`) | ✅ |
 | `using`/`implicit` clause keyword | param mods | `kUSING`/`kIMPLICIT` inside `PARAM_CLAUSE` | ❌ (keyword as `identifier`) |
+| infix expression | `InfixOp` | `InfixExpression` | ❌ (robust, emitted flat — no PsiErrorElement) |
 | modifiers/annotations | `mods` | `MODIFIERS`/`ANNOTATIONS` | ❌ (empty; bundled creates them) |
 
 The `ProducerDifferentialDumpProbeTest` dumps bundled-vs-producer PSI (`DebugUtil.psiToString`) for any snippet and
