@@ -12,6 +12,7 @@ import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunctionDefinition, ScPatternDefinition}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
@@ -114,6 +115,32 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       "the dotc-authored region contains no parser errors",
       PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
     )
+
+  def testValDeclarationBindsName(): Unit =
+    withDotcProducedFile("val v = 42\n"): file =>
+      val pat      = PsiTreeUtil.findChildOfType(file, classOf[ScPatternDefinition])
+      assertNotNull("pattern definition produced", pat)
+      val declared = pat.declaredElements
+      assertEquals("v is declared", 1, declared.length)
+      assertEquals("declared name is v", "v", declared.head.name)
+
+  def testCallReferenceResolvesToDefinition(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
+      val refs     = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).asScala
+      val fooRef   = refs.find(_.getText == "foo").orNull
+      assertNotNull("reference to foo found", fooRef)
+      val resolved = fooRef.resolve()
+      assertNotNull(s"foo resolves to its definition", resolved)
+
+  def testFunctionParameterBecomesScParameter(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\n"): file =>
+      val fn     = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      assertNotNull("function definition produced", fn)
+      val params = fn.parameters
+      assertEquals("foo has one parameter", 1, params.length)
+      val p      = params.head
+      assertEquals("parameter name is x", "x", p.name)
+      assertTrue("parameter is a ScParameter", p.isInstanceOf[ScParameter])
 
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
     * produced file in a read action.

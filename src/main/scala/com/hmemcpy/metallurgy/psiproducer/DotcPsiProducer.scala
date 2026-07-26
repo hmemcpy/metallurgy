@@ -25,34 +25,76 @@ object DotcPsiProducer:
 
   private def emit(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.kind match
-      case "Apply"     => emitApply(node, ctx)
-      case "TypeApply" => emitTypeApply(node, ctx)
-      case "ValDef"    => emitValueDefinition(node, ctx)
-      case "DefDef"    => emitFunctionDefinition(node, ctx)
-      case _           => emitRaw(node, ctx)
+      case "Apply"            => emitApply(node, ctx)
+      case "TypeApply"        => emitTypeApply(node, ctx)
+      case "ValDef"           => emitValueDefinition(node, ctx)
+      case "DefDef"           => emitFunctionDefinition(node, ctx)
+      case "Ident" | "Select" => emitReference(node, ctx)
+      case _                  => emitRaw(node, ctx)
+
+  private def emitReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark()
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.REFERENCE_EXPRESSION)
 
   private def emitFunctionDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
-      val builder = ctx.builder
+      val builder          = ctx.builder
       advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      // ScFunction requires a non-null paramClauses; emit an empty parameters holder (the parameters themselves
-      // remain raw lexer leaves until parameter mapping is added).
-      builder.mark().done(ScalaElementType.PARAM_CLAUSES)
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      val marker           = builder.mark()
+      // The name identifier must be a direct child of FUNCTION_DEFINITION (ScFunctionImpl.nameId reads it via
+      // findChildByType(tIDENTIFIER)); consume the `def` keyword and the name before opening the param-clause marker.
+      node.name.foreach: name =>
+        advanceToToken(name, range.endOffset, builder)
+        builder.advanceLexer()
+      val children         = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // A DefDef's direct ValDef children are its parameters (body locals nest inside a Block); emit them as real
+      // ScParameter nodes inside a param clause so ScFunction.parameters is non-empty and calls can bind.
+      val (params, others) = children.partition(_.kind == "ValDef")
+      emitParamClauses(params, ctx)
+      others.foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.FUNCTION_DEFINITION)
 
+  private def emitParamClauses(params: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
+    val builder       = ctx.builder
+    val clausesMarker = builder.mark()
+    if params.nonEmpty then
+      val clauseMarker = builder.mark()
+      params
+        .sortBy(_.range.map(_.startOffset).getOrElse(0))
+        .foreach: p =>
+          p.range.foreach: r =>
+            advanceTo(r.startOffset, builder)
+            val paramMarker = builder.mark()
+            advanceTo(r.endOffset, builder)
+            paramMarker.done(ScalaElementType.PARAM)
+      clauseMarker.done(ScalaElementType.PARAM_CLAUSE)
+    clausesMarker.done(ScalaElementType.PARAM_CLAUSES)
+
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
-      val builder = ctx.builder
+      val builder        = ctx.builder
       advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      // ScPatternDefinition requires a non-null pList; emit an empty pattern list (bindings stay raw for now).
-      builder.mark().done(ScalaElementType.PATTERN_LIST)
+      val marker         = builder.mark()
+      // A ScPatternDefinition declares its bindings through a binding pattern inside PATTERN_LIST; without it,
+      // declaredElements is empty and the name is unreachable. Wrap the declared name token in a reference pattern.
+      val patternsMarker = builder.mark()
+      node.name.foreach: name =>
+        advanceToToken(name, range.endOffset, builder)
+        val refMarker = builder.mark()
+        builder.advanceLexer()
+        refMarker.done(ScalaElementType.REFERENCE_PATTERN)
+      patternsMarker.done(ScalaElementType.PATTERN_LIST)
       ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.PATTERN_DEFINITION)
+
+  private def advanceToToken(text: String, bound: Int, builder: PsiBuilder): Unit =
+    while !builder.eof() && builder.getCurrentOffset < bound && builder.getTokenText != text do builder.advanceLexer()
 
   private def emitApply(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>

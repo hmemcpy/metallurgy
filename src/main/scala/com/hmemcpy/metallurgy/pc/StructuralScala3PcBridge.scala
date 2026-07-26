@@ -124,7 +124,7 @@ private final class StructuralScala3PcBridge(
             val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
             val range       =
               if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
-            CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
+            CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass, treeName(tree))
         // A physical node's immediate parent may be a synthetic (non-source-derived) wrapper that the DTO does not
         // publish; reparent each physical node to its nearest physical ancestor so the producer's walk reaches it.
         val byId                                                            = raw.map(n => n.id -> n).toMap
@@ -403,6 +403,13 @@ private final class StructuralScala3PcBridge(
 
   private def productValues(value: AnyRef): Iterator[AnyRef] =
     Try(value.getClass.getMethod("productIterator").invoke(value)).toOption.iterator.flatMap(iteratorValues)
+
+  /** The compiler's declared/reference name for a tree (a def/val/param/ident name), if it has one. dotc stores it on
+    * the `name` field of Name-bearing trees (`ValDef`, `DefDef`, `Ident`, `Select`, `TypeDef`); `Name.toString` is the
+    * source spelling. Trees without a name (e.g. `Apply`, `Literal`) return None.
+    */
+  private def treeName(tree: AnyRef): Option[String] =
+    Try(tree.getClass.getMethod("name").invoke(tree)).toOption.map(_.toString).filter(_.nonEmpty)
 
   private def isScalaIterable(value: AnyRef): Boolean =
     value.getClass.getMethods.exists(method => method.getName == "iterator" && method.getParameterCount == 0)

@@ -32,7 +32,10 @@ final class Scala3DotcFileElementType
           .getInstance()
           .createBuilder(psi.getProject, chameleon, null, Scala3DotcLanguage.INSTANCE, chameleon.getChars)
         DotcPsiProducer.parse(this, builder, extraction)
-        builder.getTreeBuilt
+        // The platform's file parse wraps content in the file element type and returns the first child (unwrapped),
+        // so the top-level nodes become direct children of the file (ScDeclarationSequenceHolder). Returning the
+        // wrapped root would nest them under an extra node and hide them from lexical resolve.
+        builder.getTreeBuilt.getFirstChildNode
       case _ if ProducerParseState.isSettled(fileUrl) =>
         super.doParseContents(chameleon, psi)
       case _                                          =>

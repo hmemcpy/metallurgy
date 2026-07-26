@@ -6,14 +6,17 @@ enum CompilerSourceClass:
   case SyntheticSemantic
 
 /** A compiler tree node classified by source provenance. Physical nodes carry an exact source range and feed PSI
-  * production; synthetic nodes carry semantic data only and never become physical, navigable, or indexed PSI.
+  * production; synthetic nodes carry semantic data only and never become physical, navigable, or indexed PSI. `name` is
+  * the compiler's declared/reference name (a def/val/param/ident name), carried so the producer can place it in the
+  * resolver's expected slot without re-deriving it from the token stream.
   */
 final case class CompilerSourceNode(
     id: Long,
     parentId: Option[Long],
     kind: String,
     range: Option[PcSourceRange],
-    sourceClass: CompilerSourceClass
+    sourceClass: CompilerSourceClass,
+    name: Option[String] = None
 )
 
 /** The compiler's typed tree as neutral DTOs, partitioned by source provenance. */
