@@ -65,6 +65,9 @@
     <lang.parserDefinition
         language="Scala 3 (dotc)"
         implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcParserDefinition"/>
+    <lang.fileViewProviderFactory
+        language="Scala 3 (dotc)"
+        implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderFactory"/>
     <lang.substitutor
         language="Scala"
         implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcLanguageSubstitutor"
