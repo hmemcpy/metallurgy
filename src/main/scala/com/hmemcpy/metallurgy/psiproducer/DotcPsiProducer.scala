@@ -35,6 +35,7 @@ object DotcPsiProducer:
         case "DefDef"           => emitFunctionDefinition(node, ctx)
         case "TypeDef"          => emitTypeDefinition(node, ctx)
         case "ForYield"         => emitForStatement(node, ctx)
+        case "Import"           => emitImport(node, ctx)
         case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
         case "Ident" | "Select" => emitReference(node, ctx)
@@ -276,6 +277,20 @@ object DotcPsiProducer:
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
       marker.done(elementType)
+
+  private def emitImport(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder  = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker   = builder.mark() // IMPORT_STMT; the `import` keyword is its first token
+      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // Each path is an IMPORT_EXPR; ScImportStmtImpl.importExpressions reads them via getStubOrPsiChildren.
+      children.foreach: path =>
+        val exprMarker = builder.mark()
+        emit(path, ctx)
+        exprMarker.done(ScalaElementType.IMPORT_EXPR)
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.ImportStatement)
 
   private def emitForStatement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>

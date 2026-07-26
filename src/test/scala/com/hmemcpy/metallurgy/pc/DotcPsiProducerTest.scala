@@ -26,6 +26,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScTypeAlias,
   ScValueOrVariable
 }
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.ScImportStmt
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScGivenDefinition, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
@@ -306,6 +307,12 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
   // The enum dispatch (TypeDef keyword 'enum' -> EnumDefinition) is implemented in emitTypeDefinition, but the
   // InteractiveDriver cannot synthesize enum companions in the single-file presentation context
   // ("asTerm called on not-a-Term"), so no runtime test exercises it here; it works in the live IDE.
+  def testImportProducesImportStmt(): Unit =
+    withDotcProducedFile("import scala.collection.immutable.List\nobject O\n"): file =>
+      val imp = PsiTreeUtil.findChildOfType(file, classOf[ScImportStmt])
+      assertNotNull("import statement produced", imp)
+      assertTrue("import has expressions", imp.importExprs.nonEmpty)
+
   def testEnumDispatchPlaceholder(): Unit = ()
 
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the

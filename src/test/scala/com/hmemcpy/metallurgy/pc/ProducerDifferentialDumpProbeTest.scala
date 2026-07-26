@@ -63,6 +63,18 @@ final class ProducerDifferentialDumpProbeTest extends ScalaLightCodeInsightFixtu
           f"  id=${node.id} parent=${node.parentId.getOrElse("-")} ${node.kind}%-20s $r name=${node.name.getOrElse("")} role=${node.role.getOrElse("-")}"
         )
 
+  def testDumpRichExpressions(): Unit =
+    dumpDifferential(
+      "rich-expr",
+      """import scala.collection.immutable.List
+        |object O:
+        |  def greet(name: String): String =
+        |    if name.isEmpty then "anon" else s"hi $name"
+        |  val n = O.greet("x")
+        |  val xs = List(1, 2).map(_ * 2)
+        |""".stripMargin
+    )
+
   def testDumpGiven(): Unit =
     dumpDifferential(
       "given",
