@@ -1,5 +1,42 @@
 # dotc → Scala PSI mapping
 
+The producer builds bundled-compatible PSI from the Scala 3 compiler's **untyped (parser) tree** (`unit.untpdTree`).
+The parser tree preserves the source grammar the typer desugars away (verified empirically: `-Xprint:parser` keeps
+for-comprehensions as `ForYield`/`GenFrom`/`GenAlias`, param-clause kinds, modifiers; `-Xprint:typer` desugars them to
+`flatMap`/`map`, `$anonfun` closures, split tuple bindings). The typed tree remains a pure semantic overlay
+(types/symbols for the `CompilerType` slot).
+
+The detailed sections below record the construct-by-construct contracts and were written against the typed-tree
+producer; their **Current/Gap** columns are superseded by the table here.
+
+## Current status (untyped-tree producer)
+
+| Construct | Source node | Target PSI | Status |
+|---|---|---|---|
+| `def` | `DefDef` | `FUNCTION_DEFINITION` (name `tIDENTIFIER`, `TYPE_PARAM_CLAUSE`, `PARAM_CLAUSE`s, `returnTypeElement`, body) | ✅ |
+| multi-clause params | `DefDef.paramss` (flattened by the walk) | one `PARAM_CLAUSE` per source clause (split on `)(` between param ranges) | ✅ |
+| `val`/`var` | `ValDef` | `PATTERN_DEFINITION` (`REFERENCE_PATTERN` in `PATTERN_LIST`) | ✅ |
+| param | `ValDef` (child of `DefDef`) | `PARAM` (`PARAM_TYPE`) | ✅ |
+| ident/select ref | `Ident`/`Select` | `REFERENCE_EXPRESSION` | ✅ |
+| call | `Apply` | `METHOD_CALL` (`ARG_EXPRS`) | ✅ |
+| generic call | `TypeApply` | `GENERIC_CALL` (`TYPE_ARGS`) | ✅ |
+| type element | role-tagged child | `SIMPLE_TYPE`>`REFERENCE`, `TUPLE_TYPE`, `PARAM_TYPE` | ✅ |
+| packaging | `PackageDef` | `PACKAGING` (nested `REFERENCE` chain) | ✅ |
+| `object` | `ModuleDef` | `ScObject` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
+| `class` | `TypeDef` (keyword `class`) | `ScClass` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
+| `trait` | `TypeDef` (keyword `trait`) | `ScTrait` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
+| for-comprehension | `ForYield` | `FOR_STMT`>`ENUMERATORS`>`GENERATOR`/`GUARD`/`FOR_BINDING` | ❌ (emitted flat) |
+| `using`/`implicit` clause keyword | param mods | `kUSING`/`kIMPLICIT` inside `PARAM_CLAUSE` | ❌ (keyword as `identifier`) |
+| `given` | — | `ScGivenDefinition` | ❌ (template pattern, not wired) |
+| `enum` | `TypeDef` (keyword `enum`) | `ScEnum` | ❌ (template pattern, not wired) |
+| type alias | `TypeDef` (keyword `type`) | `ScTypeAlias` | ❌ (emitted raw) |
+| modifiers/annotations | `mods` | `MODIFIERS`/`ANNOTATIONS` | ❌ (empty; bundled creates them) |
+
+The `ProducerDifferentialDumpProbeTest` dumps bundled-vs-producer PSI (`DebugUtil.psiToString`) for any snippet and
+asserts no `PsiErrorElements` — use it to find the next gap before mapping.
+
+---
+
 The producer builds a bundled-compatible PSI from the Scala 3 compiler's typed tree. This is the construct-by-construct
 mapping: the **target** (the bundled grammar the resolver reads), the **source** (what dotc's tree provides), the
 **current** producer status, and the **gap**. Resolve is the critical path; everything else follows from the declaration
