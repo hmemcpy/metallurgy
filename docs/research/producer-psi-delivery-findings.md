@@ -212,3 +212,29 @@ hierarchy drops distinctions):
 
 Continuing with typed-tree-only, per-crash grammar patches will remain structurally reactive. The stub mismatch is the
 strongest evidence that syntax production and asynchronous compiler publication need to be separated.
+
+## Stub/index determinism (codex verdict — 2026-07-26)
+
+**Evidence:** `~/.metallurgyPluginIC/system/log/idea.log` shows on every cold start:
+```
+com.intellij.psi.stubs.UpToDateStubIndexMismatch: PSI and index do not match.
+Caused by: java.lang.AssertionError: Stub count (21) doesn't match stubbed node length (1)
+```
+The index holds the *last run's* produced-tree stubs (21); the cold-start parse is the pending placeholder (1 stub). Transient (the platform reindexes after the backend resolves), but a SEVERE per dialect file per restart.
+
+**codex verdict:** the relevant APIs (`shouldBuildStubFor`, `getStubVersion`, `FileBasedIndex.requestReindex`, `StubTreeLoader.rebuildStubTree`) provide **no "deferred authority" flag**. Returning no stub, throwing PCE, or forcing dumb mode are all incidental scheduling, not a fix. Caching the produced stub is not the correctness mechanism — the parse must be **synchronous and deterministic** so the AST and its stubbed spine are identical every time IntelliJ asks, including at cold start.
+
+**Recommended architecture** (split untyped parsing from the async semantic backend):
+```
+source text
+  ├── synchronous deterministic untyped parse  →  produced AST + identical stubbed spine
+  └── asynchronous PC/type/backend work         →  semantic snapshots + later reloads
+```
+1. Persist enough compiler identity/artifact info that a **dotc parser-only bridge** starts synchronously on restart.
+2. Cache the neutral untyped tree by content hash (optimization, not correctness).
+3. On cache miss, parse synchronously on the requesting indexing/background thread (the parser phase is fast; type-checking is what is slow and must stay async).
+4. Once the dialect file element type is active, **never return the placeholder** from its parser or stub-builder path.
+5. After a genuinely changed authoritative parse, reparse + `FileBasedIndex.requestReindex(file)`.
+6. Fallback if synchronous dotc parsing cannot be made available: **delay activation of `Scala3DotcLanguage` itself** until the parser backend is ready — a stub-bearing dialect cannot safely be active while its grammar alternates between a placeholder and the real tree.
+
+**Implication:** the placeholder→produced transition is structurally incompatible with stub determinism. The fix is a synchronous parser-only extraction path (the untyped tree without full type-checking), replacing the cold-start placeholder. This is the next major deliverable.
