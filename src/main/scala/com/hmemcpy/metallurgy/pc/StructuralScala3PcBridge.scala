@@ -114,7 +114,7 @@ private final class StructuralScala3PcBridge(
       val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
       val root = unit.getClass.getMethod("tpdTree").invoke(unit)
       collectTreeHierarchy(root, currency).map: entries =>
-        val nodes = entries.zipWithIndex.map:
+        val raw                                                             = entries.zipWithIndex.map:
           case ((tree, parentId), index) =>
             val span        = tree.getClass.getMethod("span").invoke(tree)
             val exists      = spanExists(span)
@@ -125,6 +125,17 @@ private final class StructuralScala3PcBridge(
             val range       =
               if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
             CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass)
+        // A physical node's immediate parent may be a synthetic (non-source-derived) wrapper that the DTO does not
+        // publish; reparent each physical node to its nearest physical ancestor so the producer's walk reaches it.
+        val byId                                                            = raw.map(n => n.id -> n).toMap
+        def nearestPhysicalAncestor(node: CompilerSourceNode): Option[Long] =
+          node.parentId.flatMap(byId.get) match
+            case Some(p) if p.sourceClass == CompilerSourceClass.PhysicalSource => Some(p.id)
+            case Some(p)                                                        => nearestPhysicalAncestor(p)
+            case None                                                           => None
+        val nodes                                                           = raw.map: n =>
+          if n.sourceClass == CompilerSourceClass.PhysicalSource then n.copy(parentId = nearestPhysicalAncestor(n))
+          else n
         CompilerTreeDto(nodes)
 
   def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction] =

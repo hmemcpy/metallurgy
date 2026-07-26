@@ -5,13 +5,14 @@ import com.hmemcpy.metallurgy.psiproducer.{DotcTreeSource, Scala3DotcLanguage}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.roots.OrderEnumerator
-import com.intellij.openapi.util.{Computable, TextRange}
-import com.intellij.psi.PsiFileFactory
+import com.intellij.openapi.util.Computable
+import com.intellij.psi.{PsiErrorElement, PsiFile, PsiFileFactory}
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.psi.PsiErrorElement
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScPatternDefinition
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -19,8 +20,10 @@ import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
 import scala.jdk.CollectionConverters.*
 
-/** The dialect file-root parse produces bundled-compatible PSI from the compiler's typed tree. The first slice proves
-  * it for a construct the bundled parser cannot parse: a named type argument in expression position.
+/** The dialect file-root parse produces bundled-compatible PSI from the compiler's typed tree. Each case installs a
+  * fixed extraction, forces the dialect parse, selects the marked expression (the bundled plugin's `/*start*/…/*end*/`
+  * convention), and asserts the produced structure through the public PSI API. The named-type-argument sources are
+  * verbatim from the bundled plugin's `Scala3NamedTypeArgumentsInferenceTest`.
   */
 final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -28,115 +31,102 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   private val scalaVersion = new ScalaVersion(ScalaLanguageLevel.Scala_3_5, "2")
 
-  def testProducesNamedTypeArgumentGenericCallFromDotc(): Unit =
-    withSession: session =>
-      val source   =
-        """def f[A]: Int = 1
-          |val v = f[A = Int]
-          |""".stripMargin
-      val snapshot = PcSnapshot("file:///NamedTypeArgCase.scala", 0L, source)
-      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+  private val StartMarker = "/*start*/"
+  private val EndMarker   = "/*end*/"
 
+  def testMethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam(): Unit =
+    withDotcProducedFile(
+      s"""
+         |import scala.language.experimental.namedTypeArguments
+         |
+         |def pair[A, B](a: A, b: B): (A, B) = (a, b)
+         |
+         |val value = ${StartMarker}pair[A = Int](1, "text")$EndMarker
+         |//(Int, String)
+         |""".stripMargin
+    ): file =>
+      val call    = selectedExpression(file).asInstanceOf[ScMethodCall]
+      assertEquals("pair[A = Int](1, \"text\")", call.getText)
+      val generic = PsiTreeUtil.findChildOfType(file, classOf[ScGenericCall])
+      assertEquals("pair[A = Int]", generic.getText)
+      assertNoParserErrors(file)
+
+  def testGenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType(): Unit =
+    withDotcProducedFile(
+      s"""
+         |import scala.language.experimental.namedTypeArguments
+         |
+         |def make[A, B]: (A, B) = ???
+         |
+         |val value: (Int, String) = ${StartMarker}make[A = Int]$EndMarker
+         |//(Int, String)
+         |""".stripMargin
+    ): file =>
+      val call = selectedExpression(file).asInstanceOf[ScGenericCall]
+      assertEquals("make[A = Int]", call.getText)
+      assertTrue(call.referencedExpr.isInstanceOf[ScReferenceExpression])
+      assertEquals("make", call.referencedExpr.getText)
+      assertEquals("[A = Int]", call.typeArgs.getText)
+      assertNoParserErrors(file)
+
+  def testDocsExampleConstructWithNamedTypeArguments(): Unit =
+    withDotcProducedFile(
+      s"""
+         |import scala.language.experimental.namedTypeArguments
+         |
+         |def construct[Elem, Coll[_]](xs: Elem*): Coll[Elem] = ???
+         |
+         |val xs1 = construct[Coll = List, Elem = Int](1, 2, 3)
+         |val xs2 = ${StartMarker}construct[Coll = List](1, 2, 3)$EndMarker
+         |//List[Int]
+         |""".stripMargin
+    ): file =>
+      val call = selectedExpression(file).asInstanceOf[ScMethodCall]
+      assertEquals("construct[Coll = List](1, 2, 3)", call.getText)
+      assertNoParserErrors(file)
+
+  def testProducesValueDefinitionFromDotc(): Unit =
+    withDotcProducedFile("val v = 1\n"): file =>
+      val defn = PsiTreeUtil.findChildOfType(file, classOf[ScPatternDefinition])
+      assertNotNull("val v = 1 is a value definition", defn)
+      assertEquals("val v = 1", defn.getText)
+      assertNoParserErrors(file)
+
+  private def selectedExpression(file: PsiFile): ScExpression =
+    val text  = file.getText
+    val start = text.indexOf(StartMarker)
+    val end   = text.indexOf(EndMarker)
+    assertTrue("missing /*start*/ marker", start >= 0)
+    assertTrue("missing /*end*/ marker", end >= 0)
+    val expr  = PsiTreeUtil.findElementOfClassAtRange(file, start + StartMarker.length, end, classOf[ScExpression])
+    assertNotNull(s"no expression between markers in:\n$text", expr)
+    expr
+
+  private def assertNoParserErrors(file: PsiFile): Unit =
+    assertTrue(
+      "the dotc-authored region contains no parser errors",
+      PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
+    )
+
+  /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
+    * produced file in a read action.
+    */
+  private def withDotcProducedFile(source: String)(check: ScalaFile => Unit): Unit =
+    withSession: session =>
+      val snapshot   = PcSnapshot("file:///DotcProducerCase.scala", 0L, source)
+      val _          = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
       val extraction = session.compilerTreeExtraction(snapshot)
       assertTrue("dotc tree extraction present", extraction.isDefined)
-      val e          = extraction.get
-      assertTrue(
-        "dotc typed f[A = Int] as a named type application",
-        e.tree.physicalNodes.exists(_.kind == "TypeApply") &&
-          e.tree.physicalNodes.exists(_.kind == "NamedArg")
-      )
-
-      DotcTreeSource.install(source, e)
+      DotcTreeSource.install(source, extraction.get)
       try
         ApplicationManager.getApplication.runReadAction(
           new Computable[Unit]:
             override def compute(): Unit =
               val file = PsiFileFactory
                 .getInstance(getProject)
-                .createFileFromText("NamedTypeArgCase.scala", Scala3DotcLanguage.INSTANCE, source)
-
-              val call = PsiTreeUtil.findChildOfType(file, classOf[ScGenericCall])
-              assertNotNull("f[A = Int] is a generic-call expression", call)
-              assertEquals("f[A = Int]", call.getText)
-              assertTrue(call.referencedExpr.isInstanceOf[ScReferenceExpression])
-              assertEquals("f", call.referencedExpr.getText)
-              assertEquals("[A = Int]", call.typeArgs.getText)
-
-              val start = source.indexOf("f[A = Int]")
-              assertEquals(new TextRange(start, start + "f[A = Int]".length), call.getTextRange)
-
-              assertTrue(
-                "the dotc-authored region contains no parser errors",
-                PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
-              )
-        )
-      finally DotcTreeSource.clear()
-
-  def testProducesMethodCallWithArgumentsFromDotc(): Unit =
-    withSession: session =>
-      val source   =
-        """def f[A](x: Int): Int = x
-          |val v = f[A = Int](1)
-          |""".stripMargin
-      val snapshot = PcSnapshot("file:///MethodCallCase.scala", 0L, source)
-      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
-
-      val extraction = session.compilerTreeExtraction(snapshot)
-      assertTrue("dotc tree extraction present", extraction.isDefined)
-      val e          = extraction.get
-      assertTrue("dotc typed f[A = Int](1) as a method call", e.tree.physicalNodes.exists(_.kind == "Apply"))
-      DotcTreeSource.install(source, e)
-      try
-        ApplicationManager.getApplication.runReadAction(
-          new Computable[Unit]:
-            override def compute(): Unit =
-              val file = PsiFileFactory
-                .getInstance(getProject)
-                .createFileFromText("MethodCallCase.scala", Scala3DotcLanguage.INSTANCE, source)
-
-              val call    = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
-              assertNotNull("f[A = Int](1) is a method-call expression", call)
-              assertEquals("f[A = Int](1)", call.getText)
-              val generic = PsiTreeUtil.findChildOfType(file, classOf[ScGenericCall])
-              assertNotNull("the method call wraps a generic call", generic)
-              assertEquals("f[A = Int]", generic.getText)
-              assertTrue(
-                "the dotc-authored region contains no parser errors",
-                PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
-              )
-        )
-      finally DotcTreeSource.clear()
-
-  def testProducesNamedTypeArgMethodCallWithStringLiteralArg(): Unit =
-    withSession: session =>
-      val source   =
-        """def pair[A, B](a: A, b: B): (A, B) = (a, b)
-          |val v = pair[A = Int](1, "text")
-          |""".stripMargin
-      val snapshot = PcSnapshot("file:///PairCase.scala", 0L, source)
-      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
-
-      val extraction = session.compilerTreeExtraction(snapshot)
-      assertTrue("dotc tree extraction present", extraction.isDefined)
-      val e          = extraction.get
-      assertTrue("dotc typed the call", e.tree.physicalNodes.exists(_.kind == "Apply"))
-
-      DotcTreeSource.install(source, e)
-      try
-        ApplicationManager.getApplication.runReadAction(
-          new Computable[Unit]:
-            override def compute(): Unit =
-              val file = PsiFileFactory
-                .getInstance(getProject)
-                .createFileFromText("PairCase.scala", Scala3DotcLanguage.INSTANCE, source)
-
-              val call = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
-              assertNotNull("pair[A = Int](1, \"text\") is a method-call expression", call)
-              assertEquals("pair[A = Int](1, \"text\")", call.getText)
-              assertTrue(
-                "the dotc-authored region contains no parser errors",
-                PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty
-              )
+                .createFileFromText("DotcProducerCase.scala", Scala3DotcLanguage.INSTANCE, source)
+                .asInstanceOf[ScalaFile]
+              check(file)
         )
       finally DotcTreeSource.clear()
 
