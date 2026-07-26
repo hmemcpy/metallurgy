@@ -207,7 +207,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   /** Run the compiler on the verbatim source and install the typed-tree extraction before the file is parsed, so the
     * dialect file-root parse builds the PSI from the typed tree on its first pass (no later reparse needed).
     */
-  private def preCompileAndInstall(source: String): Unit =
+  protected def preCompileAndInstall(source: String): Unit =
     val manager    = PcSessionManager.get(getProject)
     val session    = PlatformTestUtil
       .waitForFuture(manager.sessionForAsync(getModule), TimeUnit.SECONDS.toMillis(120))
@@ -219,9 +219,9 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
         session.compilerTreeExtraction(snapshot)
       )
       .get(60, TimeUnit.SECONDS)
-    // Install only when the bundled parser cannot represent the source (it leaves parser errors); otherwise the
-    // bundled parse is correct and the producer would only regress it.
-    if extraction.isDefined && hasBundledParseError(source) then
+    // Install only when the bundled parser cannot represent the source (it leaves parser errors) AND the compiler
+    // typed it cleanly (no ERROR diagnostics) — never produce valid PSI for code the compiler rejected.
+    if extraction.isDefined && hasBundledParseError(source) && extraction.get.diagnostics.forall(!_.isError) then
       extraction.foreach(e => DotcTreeSource.install(source, e))
 
   private def hasBundledParseError(source: String): Boolean =

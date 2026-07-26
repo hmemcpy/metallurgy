@@ -1,6 +1,8 @@
 package com.hmemcpy.metallurgy.compat.scala3.typeInference
 
 import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
+import org.jetbrains.plugins.scala.ScalaFileType
+import org.junit.Assert.assertTrue
 
 /** Verbatim port of the bundled Scala plugin's `Scala3NamedTypeArgumentsInferenceTest`. Snippets are kept exactly; only
   * the asserting helper differs, validating the same PSI data (`ScExpression.type`).
@@ -65,3 +67,13 @@ final class Scala3NamedTypeArgumentsInferenceCompatTest extends Scala3CompatTest
        |//List[Int]
        |""".stripMargin
   )
+
+  def testCompilerRejectedConstructIsNotSuppressed(): Unit =
+    // dotc rejects `Undefined` (not a type); the producer must not produce valid PSI for it.
+    val source = "def f[A] = ???\nval v = f[A = Undefined]\n"
+    preCompileAndInstall(source)
+    myFixture.configureByText(ScalaFileType.INSTANCE, source)
+    import scala.jdk.CollectionConverters.*
+    val errors =
+      com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(getFile, classOf[com.intellij.psi.PsiErrorElement]).asScala
+    assertTrue("a construct the compiler rejects keeps a parser error (not suppressed)", errors.nonEmpty)
