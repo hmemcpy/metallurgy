@@ -33,6 +33,7 @@ object DotcPsiProducer:
         case "TypeApply"        => emitTypeApply(node, ctx)
         case "ValDef"           => emitValueDefinition(node, ctx)
         case "DefDef"           => emitFunctionDefinition(node, ctx)
+        case "TypeDef"          => emitTypeDefinition(node, ctx)
         case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
         case "Ident" | "Select" => emitReference(node, ctx)
@@ -204,12 +205,32 @@ object DotcPsiProducer:
         else clauses.init :+ (clauses.last :+ param)
 
   private def emitObjectDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    emitTemplateDefinition(node, ctx, ScalaElementType.ObjectDefinition)
+
+  private def emitTypeDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val source    = ctx.builder.getOriginalText
+      // A TypeDef is a class, trait, enum, or type alias; the kind is not in the node kind, so read the keyword the
+      // user wrote before the name. Type parameters ([A]) never reach here — they are partitioned out in
+      // emitFunctionDefinition and emitted as TYPE_PARAM.
+      val nameStart =
+        node.name.flatMap(n => Some(source.toString.indexOf(n, range.startOffset))).getOrElse(range.startOffset)
+      val prefix    = source.subSequence(range.startOffset, nameStart).toString
+      if prefix.contains("trait") then emitTemplateDefinition(node, ctx, ScalaElementType.TraitDefinition)
+      else if prefix.contains("class") then emitTemplateDefinition(node, ctx, ScalaElementType.ClassDefinition)
+      else emitRaw(node, ctx)
+
+  private def emitTemplateDefinition(
+      node: CompilerSourceNode,
+      ctx: EmitCtx,
+      elementType: IElementType
+  ): Unit =
     node.range.foreach: range =>
       val builder       = ctx.builder
       advanceTo(range.startOffset, builder)
       val marker        = builder.mark()
-      // The name identifier is a direct child of the object definition (ScTypeDefinitionImpl.nameId reads it via
-      // findChildByType(tIDENTIFIER)); consume the `object` keyword and the name before opening the template.
+      // The name identifier is a direct child of the template definition (ScTypeDefinitionImpl.nameId reads it via
+      // findChildByType(tIDENTIFIER)); consume the leading keyword and the name before opening the template.
       node.name.foreach: name =>
         advanceToToken(name, range.endOffset, builder)
         builder.advanceLexer()
@@ -222,7 +243,7 @@ object DotcPsiProducer:
       advanceTo(range.endOffset, builder)
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
-      marker.done(ScalaElementType.ObjectDefinition)
+      marker.done(elementType)
 
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
