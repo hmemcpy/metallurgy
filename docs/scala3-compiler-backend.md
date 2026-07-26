@@ -45,6 +45,16 @@ bundled plugin than the user has; a PSI subtree is produced only from a compiler
 the compiler rejected; node text is always the verbatim `sourceText.substring(originalRange)`; the produced generation
 is retired synchronously on edit.
 
+**Production delivery (known platform limit).** Making a produced generation the *live* file PSI after the async
+compiler session requires replacing the file's parsed AST without changing the document version the backend keys on.
+The IntelliJ platform has no supported, version-neutral facility for this: `LazyParseableElement` parsed state is
+private; `PsiFileEx.onContentReload()` clears the AST but bypasses the PSI event protocol, modification tracking, and
+smart-pointer maintenance; `FileContentUtilCore.reparseFiles` / `PsiDocumentManagerEx.reparseFileFromText` emit PSI-change
+events that re-trigger daemon analysis and supersede the per-version currency; and `ScFileViewProvider` is `final`.
+Until a platform-supported event/version-neutral tree-replacement (or a selectable non-final custom view-provider route)
+exists, the producer is served through the test fixture's reparse-free path (pre-compile the verbatim source and install
+the extraction before parse #1) and any live-IDE delivery is blocked by this upstream gap, not by Metallurgy.
+
 After the exact document version's typed snapshot is published, a type-bearing PSI read selects the Scala 3 backend's
 answer or an explicit unavailable/error result. It must not silently choose a conflicting bundled inference. The bundled
 plugin remains the platform mechanics — the parser entry point, stubs, indices, UI integration, cache framework,
