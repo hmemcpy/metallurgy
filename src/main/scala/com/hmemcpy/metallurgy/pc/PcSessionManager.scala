@@ -368,10 +368,10 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   ): Unit =
     if currency() != PcSnapshotCurrency.Current then return
     if extraction.diagnostics.exists(_.isError) then return
-    val project = module.getProject
-    val vfile   = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
+    val project                   = module.getProject
+    val vfile                     = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
     if vfile == null then return
-    val target  = readAction(
+    val target                    = readAction(
       new Computable[PsiFile]:
         override def compute(): PsiFile =
           val f = PsiManager.getInstance(project).findFile(vfile)
@@ -383,7 +383,8 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           else null
     )
     if target == null then return
-    DotcTreeSource.install(snapshot.sourceText, extraction)
+    val producerGenerationChanged = DotcTreeSource.install(snapshot.sourceText, extraction)
+    if !producerGenerationChanged then return
     suppressPrepare.put(snapshot.fileUri, java.lang.Boolean.TRUE)
     ApplicationManager.getApplication.invokeAndWait(() =>
       ApplicationManager.getApplication.runWriteAction(

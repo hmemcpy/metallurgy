@@ -222,7 +222,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
     // Install only when the bundled parser cannot represent the source (it leaves parser errors) AND the compiler
     // typed it cleanly (no ERROR diagnostics) — never produce valid PSI for code the compiler rejected.
     if extraction.isDefined && hasBundledParseError(source) && extraction.get.diagnostics.forall(!_.isError) then
-      extraction.foreach(e => DotcTreeSource.install(source, e))
+      extraction.foreach(e => { val _ = DotcTreeSource.install(source, e); () })
 
   private def hasBundledParseError(source: String): Boolean =
     ApplicationManager.getApplication.runReadAction(
