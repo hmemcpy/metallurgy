@@ -206,7 +206,12 @@ object DotcPsiProducer:
         else clauses.init :+ (clauses.last :+ param)
 
   private def emitObjectDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    emitTemplateDefinition(node, ctx, ScalaElementType.ObjectDefinition)
+    node.range.foreach: range =>
+      val source = ctx.builder.getOriginalText
+      val head   = source.subSequence(range.startOffset, math.min(range.startOffset + 8, range.endOffset)).toString
+      // The parser models an anonymous `given T with { ... }` as a ModuleDef whose leading keyword is `given`.
+      if head.startsWith("given") then emitTemplateDefinition(node, ctx, ScalaElementType.GivenDefinition)
+      else emitTemplateDefinition(node, ctx, ScalaElementType.ObjectDefinition)
 
   private def emitTypeDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
@@ -245,9 +250,14 @@ object DotcPsiProducer:
       val marker        = builder.mark()
       // The name identifier is a direct child of the template definition (ScTypeDefinitionImpl.nameId reads it via
       // findChildByType(tIDENTIFIER)); consume the leading keyword and the name before opening the template.
-      node.name.foreach: name =>
-        advanceToToken(name, range.endOffset, builder)
-        builder.advanceLexer()
+      node.name match
+        case Some(name) =>
+          advanceToToken(name, range.endOffset, builder)
+          builder.advanceLexer()
+        case None       =>
+          // An anonymous definition (e.g. `given T with { ... }`) has no name token; consume the leading keyword
+          // (`given`) so it is a direct child of the definition, not swept into the extends block.
+          if !builder.eof() then builder.advanceLexer()
       val children      = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
       // The parser models a template's type parameters inside a synthetic `DefDef <init>` (the primary constructor).
       // Extract its TypeDef children into the template's TYPE_PARAM_CLAUSE (after the name, before the extends block)

@@ -26,7 +26,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScTypeAlias,
   ScValueOrVariable
 }
-import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScObject, ScTrait}
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScGivenDefinition, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -295,6 +295,13 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val alias = PsiTreeUtil.findChildOfType(file, classOf[ScTypeAlias])
       assertNotNull("type alias produced", alias)
       assertEquals("alias name is Name", "Name", alias.name)
+
+  def testGivenProducesScGivenDefinition(): Unit =
+    withDotcProducedFile(
+      "trait Show[A]:\n  def show(a: A): String\nobject O:\n  given Show[Int] with\n    def show(a: Int): String = a.toString\n"
+    ): file =>
+      val givenDef = PsiTreeUtil.findChildOfType(file, classOf[ScGivenDefinition])
+      assertNotNull("given definition produced", givenDef)
 
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
     * produced file in a read action.
