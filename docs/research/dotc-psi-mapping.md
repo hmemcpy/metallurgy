@@ -25,11 +25,12 @@ producer; their **Current/Gap** columns are superseded by the table here.
 | `object` | `ModuleDef` | `ScObject` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
 | `class` | `TypeDef` (keyword `class`) | `ScClass` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
 | `trait` | `TypeDef` (keyword `trait`) | `ScTrait` (`EXTENDS_BLOCK`>`TEMPLATE_BODY`) | ✅ |
-| for-comprehension | `ForYield` | `FOR_STMT`>`ENUMERATORS`>`GENERATOR`/`GUARD`/`FOR_BINDING` | ❌ (emitted flat) |
+| trait/class type params | `<init>` DefDef's TypeDefs | `TYPE_PARAM_CLAUSE`>`TYPE_PARAM` (extracted from the synthetic primary constructor) | ✅ |
+| for-comprehension | `ForYield` | `FOR_STMT`>`ENUMERATORS`>`GENERATOR`/`GUARD`/`FOR_BINDING`+`yield` | ✅ |
+| `given` (anonymous) | `ModuleDef` (keyword `given`) | `ScGivenDefinition` | ✅ |
+| type alias | `TypeDef` (keyword `type`) | `ScTypeAlias` (`TYPE_DEFINITION`) | ✅ |
+| `enum` | `TypeDef` (keyword `enum`) | `ScEnum` (`EnumDefinition`) | ✅ (dispatch; runtime-untested — driver can't synthesize enum companions) |
 | `using`/`implicit` clause keyword | param mods | `kUSING`/`kIMPLICIT` inside `PARAM_CLAUSE` | ❌ (keyword as `identifier`) |
-| `given` | — | `ScGivenDefinition` | ❌ (template pattern, not wired) |
-| `enum` | `TypeDef` (keyword `enum`) | `ScEnum` | ❌ (template pattern, not wired) |
-| type alias | `TypeDef` (keyword `type`) | `ScTypeAlias` | ❌ (emitted raw) |
 | modifiers/annotations | `mods` | `MODIFIERS`/`ANNOTATIONS` | ❌ (empty; bundled creates them) |
 
 The `ProducerDifferentialDumpProbeTest` dumps bundled-vs-producer PSI (`DebugUtil.psiToString`) for any snippet and
