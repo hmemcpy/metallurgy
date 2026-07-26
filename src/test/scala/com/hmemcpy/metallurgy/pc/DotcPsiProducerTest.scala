@@ -8,6 +8,7 @@ import com.intellij.openapi.roots.OrderEnumerator
 import com.intellij.openapi.util.Computable
 import com.intellij.psi.{PsiErrorElement, PsiFile, PsiFileFactory}
 import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
@@ -123,6 +124,26 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val declared = pat.declaredElements
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
+
+  def testProducerMatchesBundledOnResolverCriticalShape(): Unit =
+    val source  = "def foo(x: Int): Int = x\nval v = foo(42)\n"
+    val bundled = ApplicationManager.getApplication.runReadAction(
+      new Computable[ScalaFile]:
+        override def compute(): ScalaFile =
+          PsiFileFactory
+            .getInstance(getProject)
+            .createFileFromText("B.scala", Scala3Language.INSTANCE, source)
+            .asInstanceOf[ScalaFile]
+    )
+    withDotcProducedFile(source): producer =>
+      def shape(f: ScalaFile): String =
+        val fn = PsiTreeUtil.findChildOfType(f, classOf[ScFunctionDefinition])
+        val pd = PsiTreeUtil.findChildOfType(f, classOf[ScPatternDefinition])
+        s"top=${f.getChildren.count(!_.isInstanceOf[com.intellij.psi.PsiWhiteSpace])}" +
+          s";params=${Option(fn).map(_.parameters.length).orNull}" +
+          s";ret=${Option(fn).exists(_.returnTypeElement.isDefined)}" +
+          s";declared=${Option(pd).map(_.declaredElements.length).orNull}"
+      assertEquals("producer matches bundled on resolver-critical shape", shape(bundled), shape(producer))
 
   def testNamedTypeArgCallResolvesAndTypes(): Unit =
     withDotcProducedFile(
