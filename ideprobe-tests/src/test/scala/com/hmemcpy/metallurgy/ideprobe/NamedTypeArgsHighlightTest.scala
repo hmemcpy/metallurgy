@@ -24,5 +24,10 @@ final class NamedTypeArgsHighlightTest extends IdeProbeFixture {
         s"expected no ERROR highlights on NamedTypeArgs.scala after the producer settles, got: $errors",
         errors.isEmpty
       )
+      val typeHints = infos.filter(_.severity.value < HighlightInfo.Severity.Warning.value)
+      assertTrue(
+        s"expected type/info highlights present (the producer typed the file), got ${infos.size} infos",
+        typeHints.nonEmpty
+      )
     }
 }
