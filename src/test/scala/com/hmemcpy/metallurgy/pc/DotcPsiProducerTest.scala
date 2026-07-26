@@ -131,10 +131,10 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
         |val value = pair[A = Int](1, "text")
         |""".stripMargin
     ): file =>
-      val call     = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
-      assertNotNull("pair[A = Int](1, \"text\") produced as a ScMethodCall", call)
-      val ref      = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
-      assertNotNull("a reference produced", ref)
+      val generic  = PsiTreeUtil.findChildOfType(file, classOf[ScGenericCall])
+      assertNotNull("pair[A = Int] produced as a ScGenericCall", generic)
+      val ref      = PsiTreeUtil.findChildOfType(generic, classOf[ScReferenceExpression])
+      assertNotNull("pair reference inside the generic call", ref)
       val resolved = ref.resolve()
       assertNotNull(s"pair resolves to its definition", resolved)
 
