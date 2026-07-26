@@ -109,11 +109,13 @@ object DotcPsiProducer:
       val builder        = ctx.builder
       advanceTo(range.startOffset, builder)
       val marker         = builder.mark()
-      // A ScPatternDefinition declares its bindings through a binding pattern inside PATTERN_LIST; without it,
-      // declaredElements is empty and the name is unreachable. Wrap the declared name token in a reference pattern.
-      val patternsMarker = builder.mark()
+      // The `val`/`var` keyword must be a direct child of PATTERN_DEFINITION (ScValueOrVariable.keywordToken reads
+      // it via findChildByType); advance to the name first so the keyword lands in PATTERN_DEFINITION, then open
+      // PATTERN_LIST and wrap the name in a reference pattern so declaredElements is non-empty.
       node.name.foreach: name =>
         advanceToToken(name, range.endOffset, builder)
+      val patternsMarker = builder.mark()
+      if node.name.isDefined then
         val refMarker = builder.mark()
         builder.advanceLexer()
         refMarker.done(ScalaElementType.REFERENCE_PATTERN)

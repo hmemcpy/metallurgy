@@ -14,7 +14,11 @@ import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
-import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunctionDefinition, ScPatternDefinition}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{
+  ScFunctionDefinition,
+  ScPatternDefinition,
+  ScValueOrVariable
+}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -124,6 +128,13 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val declared = pat.declaredElements
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
+
+  def testValKeywordTokenResolves(): Unit =
+    withDotcProducedFile("val v = 42\n"): file =>
+      val pd = PsiTreeUtil.findChildOfType(file, classOf[ScPatternDefinition])
+      assertNotNull("pattern definition produced", pd)
+      val kw = pd.asInstanceOf[ScValueOrVariable].keywordToken
+      assertNotNull("val keyword token is a direct child of PATTERN_DEFINITION", kw)
 
   def testProducerMatchesBundledOnResolverCriticalShape(): Unit =
     val source  = "def foo(x: Int): Int = x\nval v = foo(42)\n"
