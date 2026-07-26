@@ -49,6 +49,31 @@ final class ProducerDifferentialDumpProbeTest extends ScalaLightCodeInsightFixtu
         |""".stripMargin
     )
 
+  def testDumpTraitWithTypeParam(): Unit =
+    withSession: session =>
+      val source   = "trait Show[A]:\n  def show(a: A): String\n"
+      val snapshot = PcSnapshot("file:///TraitTp.scala", 0L, source)
+      val _        = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
+      val dto      = session.untypedTreeDto(snapshot)
+      assertTrue(dto.isDefined)
+      println("\n===== TRAIT TYPE PARAM NODES =====")
+      dto.get.physicalNodes.foreach: node =>
+        val r = node.range.fold("?")(rg => s"${rg.startOffset}-${rg.endOffset}")
+        println(
+          f"  id=${node.id} parent=${node.parentId.getOrElse("-")} ${node.kind}%-20s $r name=${node.name.getOrElse("")} role=${node.role.getOrElse("-")}"
+        )
+
+  def testDumpGiven(): Unit =
+    dumpDifferential(
+      "given",
+      """trait Show[A]:
+        |  def show(a: A): String
+        |object O:
+        |  given Show[Int] with
+        |    def show(a: Int): String = a.toString
+        |""".stripMargin
+    )
+
   def testDumpObjectWithMembers(): Unit =
     dumpDifferential(
       "object-members",

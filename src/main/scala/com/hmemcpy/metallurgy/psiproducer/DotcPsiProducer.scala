@@ -249,11 +249,18 @@ object DotcPsiProducer:
         advanceToToken(name, range.endOffset, builder)
         builder.advanceLexer()
       val children      = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // The parser models a template's type parameters inside a synthetic `DefDef <init>` (the primary constructor).
+      // Extract its TypeDef children into the template's TYPE_PARAM_CLAUSE (after the name, before the extends block)
+      // so they are not emitted as a stray function definition, and skip the synthetic constructor itself.
+      val init          = children.find(c => c.kind == "DefDef" && c.name.contains("<init>"))
+      val typeParams    = init.toList.flatMap(c => ctx.childrenOf(c.id).filter(_.kind == "TypeDef")).toVector
+      emitTypeParamClause(typeParams, ctx)
+      val members       = children.filterNot(c => c.kind == "DefDef" && c.name.contains("<init>"))
       // ScTypeDefinitionImpl.extendsBlock is found via stubOrPsiChild(EXTENDS_BLOCK); members are reached through
       // extendsBlock.templateBody, so the members must nest inside TEMPLATE_BODY inside EXTENDS_BLOCK.
       val extendsMarker = builder.mark()
       val bodyMarker    = builder.mark()
-      children.foreach(emit(_, ctx))
+      members.foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
