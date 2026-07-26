@@ -35,6 +35,7 @@ object DotcPsiProducer:
         case "DefDef"           => emitFunctionDefinition(node, ctx)
         case "TypeDef"          => emitTypeDefinition(node, ctx)
         case "ForYield"         => emitForStatement(node, ctx)
+        case "If"               => emitIf(node, ctx)
         case "Import"           => emitImport(node, ctx)
         case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
@@ -277,6 +278,15 @@ object DotcPsiProducer:
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
       marker.done(elementType)
+
+  private def emitIf(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark() // IF_STMT; the if/then/else keywords and branches are its children
+      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.IF_STMT)
 
   private def emitImport(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
