@@ -16,6 +16,15 @@ Compiler-backed types, symbol resolution, completion, hover, inline hints, navig
 operation are working. The implementation is tested against substantial Scala 3 codebases including Cats, Cats Effect,
 ZIO, Shapeless 3, Tapir, and FS2.
 
+## Experimental features
+
+Metallurgy replaces IntelliJ's Scala type backend with the real Scala 3 compiler — so it can do things the bundled
+plugin can't. For example, named type arguments (`[A = Int]`):
+
+| Bundled Scala plugin (before) | Metallurgy (after) |
+|:---:|:---:|
+| ![Bundled Scala plugin](docs/images/before.png) | ![Metallurgy](docs/images/after.png) |
+
 ## Implementation status
 
 | Status | Area | Current state |
@@ -34,20 +43,6 @@ ZIO, Shapeless 3, Tapir, and FS2.
 | ⚠️ | Interactive REPL console | Physical worksheet semantics are compiler-backed; synthetic console input remains an explicit bundled fallback. |
 | ⚠️ | Platform UAST discovery | Direct Scala UAST conversion inherits compiler results, but the bundled UAST language plugin is unavailable while the compiler-highlighting failsafe is active. |
 | ⏳ | Final graduation | The complete Metallurgy suite, all Scala 3-focused `intellij-scala` tests, aggregate latency/memory evidence, and the final go/no-go report remain in [#60](https://github.com/hmemcpy/metallurgy/issues/60). |
-
-## Experimental features
-
-Some things the Scala 3 compiler can do, the bundled IntelliJ backend simply cannot. Metallurgy surfaces them as
-experimental capabilities by routing them through the compiler rather than reimplementing them in the PSI. The
-side-by-side below shows one such case — the bundled Scala plugin on the left, Metallurgy on the right, on the same
-source:
-
-| Bundled Scala plugin (before) | Metallurgy with the Scala 3 compiler (after) |
-|:---:|:---:|
-| ![Bundled Scala plugin](docs/images/before.png) | ![Metallurgy](docs/images/after.png) |
-
-This is experimental and not yet part of the stable surface, but it is the kind of compiler-backed behaviour that
-running dotc directly inside the editor makes possible.
 
 The idea — running the Scala compiler directly inside IntelliJ, without LSP — comes from
 [Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SlPDmwhxeok&t=3931s) (*The best Scala IDE
