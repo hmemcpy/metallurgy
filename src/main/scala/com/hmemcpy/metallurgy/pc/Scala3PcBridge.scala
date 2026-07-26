@@ -24,6 +24,12 @@ private[pc] trait Scala3PcBridge extends AutoCloseable:
     */
   def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto]
 
+  /** The untyped (parser) tree as source-classified DTOs. The parser tree preserves the source grammar the typed tree
+    * desugars away (param-clause kinds, for-comprehensions, extension, modifiers); it is the source of truth for PSI
+    * grammar production.
+    */
+  def untypedTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto]
+
   /** The typed tree and the compiler's diagnostics for the same snapshot, extracted together. */
   def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction]
 

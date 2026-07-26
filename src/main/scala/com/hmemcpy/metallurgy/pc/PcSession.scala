@@ -137,7 +137,16 @@ final class PcSession private (
                   None
       case _                                            => None
 
+  private[metallurgy] def untypedTreeDto(snapshot: PcSnapshot): Option[CompilerTreeDto] =
+    treeDto(snapshot, (driver, currency) => driver.untypedTreeDto(snapshot, currency))
+
   private[metallurgy] def compilerTreeDto(snapshot: PcSnapshot): Option[CompilerTreeDto] =
+    treeDto(snapshot, (driver, currency) => driver.compilerTreeDto(snapshot, currency))
+
+  private def treeDto(
+      snapshot: PcSnapshot,
+      extract: (Scala3PcBridge, () => PcSnapshotCurrency) => Option[CompilerTreeDto]
+  ): Option[CompilerTreeDto] =
     snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
       case Some(active) if !applicationIsDispatchThread =>
         try
@@ -148,7 +157,7 @@ final class PcSession private (
             then PcSnapshotCurrency.Current
             else PcSnapshotCurrency.Superseded
           Option(inlineTypeDrivers.get(snapshot.fileUri))
-            .flatMap(_.use(driver => driver.compilerTreeDto(snapshot, currency)))
+            .flatMap(_.use(driver => extract(driver, currency)))
             .flatten
             .filter(_ => currency() == PcSnapshotCurrency.Current)
         catch
