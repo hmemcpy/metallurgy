@@ -5,10 +5,16 @@ enum CompilerSourceClass:
   case PhysicalSource
   case SyntheticSemantic
 
+/** The structural role a node plays in its parent, used to emit the bundled grammar faithfully: type-position children
+  * (a def's return type, a param/val's declared type) become type elements, not references.
+  */
+enum CompilerNodeRole:
+  case ReturnType, ParamType, ValueType
+
 /** A compiler tree node classified by source provenance. Physical nodes carry an exact source range and feed PSI
   * production; synthetic nodes carry semantic data only and never become physical, navigable, or indexed PSI. `name` is
   * the compiler's declared/reference name (a def/val/param/ident name), carried so the producer can place it in the
-  * resolver's expected slot without re-deriving it from the token stream.
+  * resolver's expected slot without re-deriving it from the token stream. `role` marks type-position children.
   */
 final case class CompilerSourceNode(
     id: Long,
@@ -16,7 +22,8 @@ final case class CompilerSourceNode(
     kind: String,
     range: Option[PcSourceRange],
     sourceClass: CompilerSourceClass,
-    name: Option[String] = None
+    name: Option[String] = None,
+    role: Option[CompilerNodeRole] = None
 )
 
 /** The compiler's typed tree as neutral DTOs, partitioned by source provenance. */

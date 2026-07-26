@@ -114,6 +114,22 @@ private final class StructuralScala3PcBridge(
       val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
       val root = unit.getClass.getMethod("tpdTree").invoke(unit)
       collectTreeHierarchy(root, currency).map: entries =>
+        val treeToId                                                        =
+          val m = new java.util.IdentityHashMap[AnyRef, java.lang.Long]
+          entries.iterator.zipWithIndex.foreach { case ((tree, _), index) => m.put(tree, index.toLong) }
+          m
+        // A type-position child is a DefDef/ValDef `tpt`; tag it so the producer emits a type element, not a reference.
+        val roleById                                                        =
+          val acc = scala.collection.mutable.Map.empty[Long, CompilerNodeRole]
+          entries.iterator.foreach { case (tree, _) =>
+            val kind = tree.getClass.getSimpleName
+            if kind == "DefDef" || kind == "ValDef" then
+              Try(tree.getClass.getMethod("tpt").invoke(tree)).toOption.foreach: tpt =>
+                Option(treeToId.get(tpt)).foreach: tptId =>
+                  val role = if kind == "DefDef" then CompilerNodeRole.ReturnType else CompilerNodeRole.ValueType
+                  acc(tptId) = role
+          }
+          acc
         val raw                                                             = entries.zipWithIndex.map:
           case ((tree, parentId), index) =>
             val span        = tree.getClass.getMethod("span").invoke(tree)
@@ -124,7 +140,15 @@ private final class StructuralScala3PcBridge(
             val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
             val range       =
               if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
-            CompilerSourceNode(index.toLong, parentId, tree.getClass.getSimpleName, range, sourceClass, treeName(tree))
+            CompilerSourceNode(
+              index.toLong,
+              parentId,
+              tree.getClass.getSimpleName,
+              range,
+              sourceClass,
+              treeName(tree),
+              roleById.get(index.toLong)
+            )
         // A physical node's immediate parent may be a synthetic (non-source-derived) wrapper that the DTO does not
         // publish; reparent each physical node to its nearest physical ancestor so the producer's walk reaches it.
         val byId                                                            = raw.map(n => n.id -> n).toMap

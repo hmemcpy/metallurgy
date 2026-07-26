@@ -124,6 +124,32 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
 
+  def testCallExpressionComputesType(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
+      val call = PsiTreeUtil.findChildOfType(file, classOf[ScMethodCall])
+      assertNotNull("method call produced", call)
+      val t    = call.`type`().toOption.map { tt =>
+        given org.jetbrains.plugins.scala.lang.psi.types.TypePresentationContext =
+          org.jetbrains.plugins.scala.lang.psi.types.TypePresentationContext.emptyContextIn(scalaVersion)
+        tt.presentableText
+      }
+      assertEquals("foo(42) types as Int", Some("Int"), t)
+
+  def testParameterTypeElementResolves(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\n"): file =>
+      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      val p   = fn.parameters.headOption.orNull
+      assertNotNull("parameter produced", p)
+      val tpe = p.typeElement
+      assertTrue(s"parameter x has a type element (got $tpe)", tpe.isDefined)
+
+  def testFunctionReturnTypeElementResolves(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\n"): file =>
+      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      assertNotNull("function definition produced", fn)
+      val tpe = fn.returnTypeElement
+      assertTrue(s"foo has a return type element (got $tpe)", tpe.isDefined)
+
   def testCallReferenceResolvesToDefinition(): Unit =
     withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
       val refs     = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).asScala

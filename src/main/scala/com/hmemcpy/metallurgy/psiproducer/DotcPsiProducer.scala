@@ -24,13 +24,28 @@ object DotcPsiProducer:
     root.done(fileElementType)
 
   private def emit(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.kind match
-      case "Apply"            => emitApply(node, ctx)
-      case "TypeApply"        => emitTypeApply(node, ctx)
-      case "ValDef"           => emitValueDefinition(node, ctx)
-      case "DefDef"           => emitFunctionDefinition(node, ctx)
-      case "Ident" | "Select" => emitReference(node, ctx)
-      case _                  => emitRaw(node, ctx)
+    // A type-position child (a def's return type, a param/val's declared type) is emitted as a type element, not a
+    // reference, so ScFunction.returnTypeElement / parameter types resolve.
+    if node.role.isDefined then emitTypeElement(node, ctx)
+    else
+      node.kind match
+        case "Apply"            => emitApply(node, ctx)
+        case "TypeApply"        => emitTypeApply(node, ctx)
+        case "ValDef"           => emitValueDefinition(node, ctx)
+        case "DefDef"           => emitFunctionDefinition(node, ctx)
+        case "Ident" | "Select" => emitReference(node, ctx)
+        case _                  => emitRaw(node, ctx)
+
+  private def emitTypeElement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val outer   = builder.mark()
+      val inner   = builder.mark()
+      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      inner.done(ScalaElementType.REFERENCE)
+      outer.done(ScalaElementType.SIMPLE_TYPE)
 
   private def emitReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
@@ -70,6 +85,20 @@ object DotcPsiProducer:
           p.range.foreach: r =>
             advanceTo(r.startOffset, builder)
             val paramMarker = builder.mark()
+            // The parameter name token, then the declared type wrapped in PARAM_TYPE so ScParameter.typeElement resolves.
+            p.name.foreach: name =>
+              advanceToToken(name, r.endOffset, builder)
+              builder.advanceLexer()
+            ctx
+              .childrenOf(p.id)
+              .sortBy(_.range.map(_.startOffset).getOrElse(0))
+              .foreach: c =>
+                if c.role.isDefined then
+                  c.range.foreach: cr =>
+                    advanceTo(cr.startOffset, builder)
+                    val paramTypeMarker = builder.mark()
+                    emit(c, ctx)
+                    paramTypeMarker.done(ScalaElementType.PARAM_TYPE)
             advanceTo(r.endOffset, builder)
             paramMarker.done(ScalaElementType.PARAM)
       clauseMarker.done(ScalaElementType.PARAM_CLAUSE)
