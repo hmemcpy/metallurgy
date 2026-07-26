@@ -129,6 +129,13 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
 
+  def testTupleReturnTypeIsNavigable(): Unit =
+    withDotcProducedFile("def pair[A, B](a: A, b: B): (A, B) = (a, b)\n"): file =>
+      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      val tpe = fn.returnTypeElement
+      assertTrue("tuple return type is a ScTypeElement", tpe.isDefined)
+      assertEquals("tuple return type text", "(A, B)", tpe.get.getText)
+
   def testValKeywordTokenResolves(): Unit =
     withDotcProducedFile("val v = 42\n"): file =>
       val pd = PsiTreeUtil.findChildOfType(file, classOf[ScPatternDefinition])

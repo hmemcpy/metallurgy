@@ -38,14 +38,28 @@ object DotcPsiProducer:
 
   private def emitTypeElement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
-      val builder = ctx.builder
+      val builder  = ctx.builder
+      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
       advanceTo(range.startOffset, builder)
-      val outer   = builder.mark()
-      val inner   = builder.mark()
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      inner.done(ScalaElementType.REFERENCE)
-      outer.done(ScalaElementType.SIMPLE_TYPE)
+      node.kind match
+        case "Ident" | "Select" =>
+          // a leaf named type reference: SIMPLE_TYPE > REFERENCE (the resolver's nameId is the identifier token)
+          val outer = builder.mark()
+          val inner = builder.mark()
+          advanceTo(range.endOffset, builder)
+          inner.done(ScalaElementType.REFERENCE)
+          outer.done(ScalaElementType.SIMPLE_TYPE)
+        case "Tuple"            =>
+          // a tuple type (A, B): TUPLE_TYPE whose elements are themselves types, so each is navigatable.
+          val wrapper = builder.mark()
+          children.foreach(emitTypeElement(_, ctx))
+          advanceTo(range.endOffset, builder)
+          wrapper.done(ScalaElementType.TUPLE_TYPE)
+        case _                  =>
+          // any other composite type: emit the children as types (no specific wrapper yet) so a REFERENCE never wraps a
+          // non-ref (which would leave nameId null and crash navigation).
+          children.foreach(emitTypeElement(_, ctx))
+          advanceTo(range.endOffset, builder)
 
   private def emitReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
