@@ -19,6 +19,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScPatternDefinition,
   ScValueOrVariable
 }
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScObject
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -257,6 +258,16 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val second  = clauses.apply(1).parameters
       assertEquals("first clause has x", Seq("x"), first.map(_.name))
       assertEquals("second clause has y", Seq("y"), second.map(_.name))
+
+  def testObjectDefinitionProducesScObjectWithMembers(): Unit =
+    withDotcProducedFile("object O:\n  def foo(x: Int): Int = x\n  val a = 1\n"): file =>
+      val obj  = PsiTreeUtil.findChildOfType(file, classOf[ScObject])
+      assertNotNull("object produced", obj)
+      assertEquals("object name is O", "O", obj.name)
+      val fn   = PsiTreeUtil.findChildOfType(obj, classOf[ScFunctionDefinition])
+      assertNotNull("function is a member of the object", fn)
+      val vald = PsiTreeUtil.findChildOfType(obj, classOf[ScPatternDefinition])
+      assertNotNull("val is a member of the object", vald)
 
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
     * produced file in a read action.

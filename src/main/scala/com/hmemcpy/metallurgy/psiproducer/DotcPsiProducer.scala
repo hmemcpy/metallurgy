@@ -33,6 +33,7 @@ object DotcPsiProducer:
         case "TypeApply"        => emitTypeApply(node, ctx)
         case "ValDef"           => emitValueDefinition(node, ctx)
         case "DefDef"           => emitFunctionDefinition(node, ctx)
+        case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
         case "Ident" | "Select" => emitReference(node, ctx)
         case _                  => emitRaw(node, ctx)
@@ -201,6 +202,27 @@ object DotcPsiProducer:
         val between    = if prevEnd < paramStart then source.subSequence(prevEnd, paramStart).toString else ""
         if between.contains(')') && between.contains('(') then clauses :+ Vector(param)
         else clauses.init :+ (clauses.last :+ param)
+
+  private def emitObjectDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder       = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker        = builder.mark()
+      // The name identifier is a direct child of the object definition (ScTypeDefinitionImpl.nameId reads it via
+      // findChildByType(tIDENTIFIER)); consume the `object` keyword and the name before opening the template.
+      node.name.foreach: name =>
+        advanceToToken(name, range.endOffset, builder)
+        builder.advanceLexer()
+      val children      = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // ScTypeDefinitionImpl.extendsBlock is found via stubOrPsiChild(EXTENDS_BLOCK); members are reached through
+      // extendsBlock.templateBody, so the members must nest inside TEMPLATE_BODY inside EXTENDS_BLOCK.
+      val extendsMarker = builder.mark()
+      val bodyMarker    = builder.mark()
+      children.foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
+      extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
+      marker.done(ScalaElementType.ObjectDefinition)
 
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
