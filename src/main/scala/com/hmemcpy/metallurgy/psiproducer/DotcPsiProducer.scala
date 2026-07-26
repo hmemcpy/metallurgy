@@ -223,6 +223,7 @@ object DotcPsiProducer:
         node.name.flatMap(n => Some(source.toString.indexOf(n, range.startOffset))).getOrElse(range.startOffset)
       val prefix    = source.subSequence(range.startOffset, nameStart).toString
       if prefix.contains("trait") then emitTemplateDefinition(node, ctx, ScalaElementType.TraitDefinition)
+      else if prefix.contains("enum") then emitTemplateDefinition(node, ctx, ScalaElementType.EnumDefinition)
       else if prefix.contains("class") then emitTemplateDefinition(node, ctx, ScalaElementType.ClassDefinition)
       else if prefix.contains("type") then emitTypeAlias(node, ctx)
       else emitRaw(node, ctx)
