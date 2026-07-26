@@ -129,6 +129,14 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("v is declared", 1, declared.length)
       assertEquals("declared name is v", "v", declared.head.name)
 
+  def testStubTreeBuildsForProducerFile(): Unit =
+    withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
+      val stubTree = file.asInstanceOf[com.intellij.psi.impl.source.PsiFileImpl].calcStubTree
+      assertNotNull("producer file yields a stub tree", stubTree)
+      // the stub tree must carry the declarations so resolve-by-name / find-usages work
+      val plain    = stubTree.getPlainList.asScala
+      assertTrue(s"stub tree contains the function and val declarations (got ${plain.size})", plain.size >= 3)
+
   def testExplicitPackageProducesScPackaging(): Unit =
     withDotcProducedFile("package foo.bar\ndef baz = 1\n"): file =>
       // A packaging node anchors package-level diagnostics (e.g. 'package does not correspond to directory')
