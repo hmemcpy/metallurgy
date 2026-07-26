@@ -236,7 +236,6 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
 
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
-    preCompileAndInstall(code)
     myFixture.configureByText(ScalaFileType.INSTANCE, code)
     val fileUri          = getFile.getVirtualFile.getUrl
     val file             = getFile.asInstanceOf[ScalaFile]
@@ -264,15 +263,20 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   // compiler-only projection. The expression is identified structurally from the verbatim PSI; marker text, keywords,
   // and parser-error fallbacks are never used to select it.
   private def topLevelExpressionInsertions(file: ScalaFile): Vector[PcProjectionInsertion] =
-    PsiTreeUtil
-      .findChildrenOfType(file, classOf[ScExpression])
-      .asScala
-      .toVector
-      .filter(expression => expression.getParent eq file)
-      .sortBy(_.getTextRange.getStartOffset)
-      .zipWithIndex
-      .map: (expression, index) =>
-        PcProjectionInsertion(expression.getTextRange.getStartOffset, s"private val __metallurgy_fragment_$index = ")
+    // A parse with error elements (e.g. constructs the bundled parser cannot represent) yields spurious top-level
+    // expressions from recovery; wrapping them would project a non-identity source the producer must reject. Only a
+    // clean parse exposes genuine bare top-level expressions that need wrapping to compile under dotc.
+    if PsiTreeUtil.hasErrorElements(file) then Vector.empty
+    else
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScExpression])
+        .asScala
+        .toVector
+        .filter(expression => expression.getParent eq file)
+        .sortBy(_.getTextRange.getStartOffset)
+        .zipWithIndex
+        .map: (expression, index) =>
+          PcProjectionInsertion(expression.getTextRange.getStartOffset, s"private val __metallurgy_fragment_$index = ")
 
   protected def wrapForHighlighting(code: String): String = code
 

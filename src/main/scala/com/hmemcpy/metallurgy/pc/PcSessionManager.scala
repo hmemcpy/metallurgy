@@ -54,7 +54,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   private val classpathGenerations       = new AtomicLong(0L)
   private val compilerOptionsGenerations = new AtomicLong(0L)
   private val backend                    = Scala3CompilerBackend.get(project)
-  private val suppressPrepare            = new ConcurrentHashMap[String, java.lang.Boolean]()
 
   private val backendPublisher    = new CompilerBackendSnapshotPublisher(project)
   private val modelRefreshFiles   = ConcurrentHashMap.newKeySet[String]()
@@ -135,19 +134,17 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
   /** Creates the file's session if necessary and completes after the exact-version compiler-backend snapshot commits.
     */
   private[metallurgy] def prepareCompilerBackend(file: VirtualFile): CompletableFuture[Option[PcSession]] =
-    if suppressPrepare.remove(file.getUrl) != null then CompletableFuture.completedFuture(None)
-    else
-      filePreparation(file) match
-        case Some((module, snapshot)) if isManaged(module) =>
-          val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
-          val future = backendInFlight.computeIfAbsent(
-            key,
-            _ => prepareFile(file, awaitBackendPublication = true, retries = 1)
-          )
-          future.whenComplete: (_, _) =>
-            val _ = backendInFlight.remove(key, future)
-          future
-        case _                                             => CompletableFuture.completedFuture(None)
+    filePreparation(file) match
+      case Some((module, snapshot)) if isManaged(module) =>
+        val key    = BackendPreparationKey(module, snapshot.fileUri, snapshot.documentVersion)
+        val future = backendInFlight.computeIfAbsent(
+          key,
+          _ => prepareFile(file, awaitBackendPublication = true, retries = 1)
+        )
+        future.whenComplete: (_, _) =>
+          val _ = backendInFlight.remove(key, future)
+        future
+      case _                                             => CompletableFuture.completedFuture(None)
 
   /** Compatibility-fixture only: declare compiler-only insertions for a document so a verbatim top-level fragment
     * compiles under dotc while the IntelliJ PSI keeps the verbatim text. Production never declares a projection.
@@ -340,7 +337,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             session
               .compilerTreeExtraction(snapshot)
               .foreach: extraction =>
-                installAndReparse(module, snapshot, extraction, () => snapshotCurrency(module, session, generation))
+                installAndReload(module, snapshot, extraction, () => snapshotCurrency(module, session, generation))
             backendPublisher.publish(module, typedTree, generation, () => snapshotCurrency(module, session, generation))
           case None            =>
             backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
@@ -360,7 +357,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
       case RetypecheckOutcome.Superseded => CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
 
-  private def installAndReparse(
+  private def installAndReload(
       module: Module,
       snapshot: PcSnapshot,
       extraction: CompilerTreeExtraction,
@@ -385,7 +382,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
     if target == null then return
     val producerGenerationChanged = DotcTreeSource.install(snapshot.sourceText, extraction)
     if !producerGenerationChanged then return
-    suppressPrepare.put(snapshot.fileUri, java.lang.Boolean.TRUE)
     ApplicationManager.getApplication.invokeAndWait(() =>
       ApplicationManager.getApplication.runWriteAction(
         new Computable[Unit]:
