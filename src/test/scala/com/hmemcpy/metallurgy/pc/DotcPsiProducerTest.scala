@@ -12,7 +12,13 @@ import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{
+  ScExpression,
+  ScFor,
+  ScGenericCall,
+  ScMethodCall,
+  ScReferenceExpression
+}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScFunctionDefinition,
@@ -277,6 +283,11 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val cls = PsiTreeUtil.findChildOfType(file, classOf[ScClass])
       assertNotNull("class produced", cls)
       assertEquals("class name is C", "C", cls.name)
+
+  def testForYieldProducesForStatement(): Unit =
+    withDotcProducedFile("object O:\n  for x <- List(1, 2, 3) yield x\n"): file =>
+      val forStmt = PsiTreeUtil.findChildOfType(file, classOf[ScFor])
+      assertNotNull("for statement produced", forStmt)
 
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
     * produced file in a read action.

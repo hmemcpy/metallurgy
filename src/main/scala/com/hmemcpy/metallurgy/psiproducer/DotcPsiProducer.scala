@@ -34,6 +34,7 @@ object DotcPsiProducer:
         case "ValDef"           => emitValueDefinition(node, ctx)
         case "DefDef"           => emitFunctionDefinition(node, ctx)
         case "TypeDef"          => emitTypeDefinition(node, ctx)
+        case "ForYield"         => emitForStatement(node, ctx)
         case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
         case "Ident" | "Select" => emitReference(node, ctx)
@@ -244,6 +245,52 @@ object DotcPsiProducer:
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
       marker.done(elementType)
+
+  private def emitForStatement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder     = ctx.builder
+      val children    = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      advanceTo(range.startOffset, builder)
+      val marker      = builder.mark() // FOR_STMT; the `for` keyword is its first token
+      val enumerators = children.init  // all but the last (the yield body); the parser attaches the body last
+      val body        = children.lastOption
+      // Advance to the first enumerator so the `for` keyword lands inside FOR_STMT but before ENUMERATORS.
+      enumerators.headOption.flatMap(_.range).foreach(r => advanceTo(r.startOffset, builder))
+      val enumsMarker = builder.mark()
+      enumerators.foreach(emitEnumerator(_, ctx))
+      enumsMarker.done(ScalaElementType.ENUMERATORS)
+      // `yield` follows the enumerators and precedes the body; advancing to the body consumes it inside FOR_STMT.
+      body.foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.FOR_STMT)
+
+  private def emitEnumerator(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder  = ctx.builder
+      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      advanceTo(range.startOffset, builder)
+      val marker   = builder.mark() // GENERATOR / FOR_BINDING
+      // The first child is the pattern (an Ident); wrap it in a reference pattern so the binding is declared.
+      children.headOption.foreach: pattern =>
+        emitEnumeratorPattern(pattern, ctx)
+      // The `<-` (generator) or `=` (binding) separator and the source/value expression follow; emitting the
+      // remaining children advances over the separator and the expression.
+      children.tail.foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      node.kind match
+        case "GenFrom"  => marker.done(ScalaElementType.GENERATOR)
+        case "GenAlias" => marker.done(ScalaElementType.FOR_BINDING)
+        case _          => marker.drop() // a guard or unexpected node: emit raw
+
+  private def emitEnumeratorPattern(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark()
+      node.name.foreach: name =>
+        advanceToToken(name, range.endOffset, builder)
+        builder.advanceLexer()
+      marker.done(ScalaElementType.REFERENCE_PATTERN)
 
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
