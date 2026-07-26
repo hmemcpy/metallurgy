@@ -37,6 +37,7 @@ object DotcPsiProducer:
         case "TypeDef"          => emitTypeDefinition(node, ctx)
         case "ForYield"         => emitForStatement(node, ctx)
         case "If"               => emitIf(node, ctx)
+        case "InfixOp"          => emitInfixExpression(node, ctx)
         case "Import"           => emitImport(node, ctx)
         case "ModuleDef"        => emitObjectDefinition(node, ctx)
         case "PackageDef"       => emitPackaging(node, ctx)
@@ -282,6 +283,15 @@ object DotcPsiProducer:
       bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
       extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
       marker.done(elementType)
+
+  private def emitInfixExpression(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark() // INFIX_EXPR; left operand, operator, right operand
+      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.INFIX_EXPR)
 
   private def emitIf(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
