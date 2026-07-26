@@ -268,19 +268,27 @@ object DotcPsiProducer:
     node.range.foreach: range =>
       val builder  = ctx.builder
       val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      advanceTo(range.startOffset, builder)
-      val marker   = builder.mark() // GENERATOR / FOR_BINDING
-      // The first child is the pattern (an Ident); wrap it in a reference pattern so the binding is declared.
-      children.headOption.foreach: pattern =>
-        emitEnumeratorPattern(pattern, ctx)
-      // The `<-` (generator) or `=` (binding) separator and the source/value expression follow; emitting the
-      // remaining children advances over the separator and the expression.
-      children.tail.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
       node.kind match
-        case "GenFrom"  => marker.done(ScalaElementType.GENERATOR)
-        case "GenAlias" => marker.done(ScalaElementType.FOR_BINDING)
-        case _          => marker.drop() // a guard or unexpected node: emit raw
+        case "GenFrom" | "GenAlias" =>
+          advanceTo(range.startOffset, builder)
+          val marker = builder.mark() // GENERATOR / FOR_BINDING
+          // The first child is the pattern (an Ident); wrap it in a reference pattern so the binding is declared.
+          children.headOption.foreach(emitEnumeratorPattern(_, ctx))
+          // The `<-` (generator) or `=` (binding) separator and the source/value expression follow; emitting the
+          // remaining children advances over the separator and the expression.
+          children.tail.foreach(emit(_, ctx))
+          advanceTo(range.endOffset, builder)
+          node.kind match
+            case "GenFrom"  => marker.done(ScalaElementType.GENERATOR)
+            case "GenAlias" => marker.done(ScalaElementType.FOR_BINDING)
+        case _                      =>
+          // A guard (`if cond`): the parser attaches the condition as a bare expression; the `if` keyword precedes
+          // the node's span, so the GUARD marker must open before advancing so `if` lands inside it.
+          val marker = builder.mark()
+          advanceTo(range.startOffset, builder) // consumes the `if` keyword
+          children.foreach(emit(_, ctx))
+          advanceTo(range.endOffset, builder)
+          marker.done(ScalaElementType.GUARD)
 
   private def emitEnumeratorPattern(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
