@@ -133,8 +133,10 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
     withDotcProducedFile("package foo.bar\ndef baz = 1\n"): file =>
       // A packaging node anchors package-level diagnostics (e.g. 'package does not correspond to directory')
       // instead of each member; without it the warning appears on every def/val.
-      assertTrue("explicit package yields a ScPackaging", file.firstPackaging.isDefined)
-      val fn = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      val pkg = file.firstPackaging
+      assertTrue("explicit package yields a ScPackaging", pkg.isDefined)
+      assertEquals("packaging FQN resolves", "foo.bar", pkg.get.packageName)
+      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
       assertNotNull("function still present under the packaging", fn)
 
   def testTypeParametersAreDeclared(): Unit =

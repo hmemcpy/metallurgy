@@ -39,12 +39,45 @@ object DotcPsiProducer:
 
   private def emitPackaging(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
-      val builder = ctx.builder
+      val builder  = ctx.builder
       advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      val marker   = builder.mark()
+      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
+      // The leading Select/Ident is the package qualifier; emit it as a stable code reference (ScStableCodeReference)
+      // so ScPackaging.reference / qualName resolve the package FQN. The bundled QualId is a single REFERENCE node
+      // wrapping the dotted name.
+      children.headOption match
+        case Some(pid) if pid.kind == "Select" || pid.kind == "Ident" =>
+          emitStableReference(pid, ctx)
+          children.tail.foreach(emit(_, ctx))
+        case _                                                        =>
+          children.foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.PACKAGING)
+
+  private def emitStableReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark() // REFERENCE (ScStableCodeReference); a dotted qualifier is a nested chain
+      node.kind match
+        case "Select" =>
+          // qualifier (a child Ident/Select) emitted as an inner REFERENCE, then `.` + the name token
+          ctx
+            .childrenOf(node.id)
+            .sortBy(_.range.map(_.startOffset).getOrElse(0))
+            .headOption
+            .foreach(emitStableReference(_, ctx))
+          node.name.foreach: name =>
+            advanceToToken(name, range.endOffset, builder)
+            builder.advanceLexer()
+        case "Ident"  =>
+          node.name.foreach: name =>
+            advanceToToken(name, range.endOffset, builder)
+            builder.advanceLexer()
+        case _        =>
+          advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.REFERENCE)
 
   private def emitTypeElement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
