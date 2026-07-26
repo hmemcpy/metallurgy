@@ -33,6 +33,10 @@ private[pc] trait Scala3PcBridge extends AutoCloseable:
   /** The typed tree and the compiler's diagnostics for the same snapshot, extracted together. */
   def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction]
 
+  /** The untyped (parser) tree paired with the same run's diagnostics; the producer's data source for faithful grammar.
+    */
+  def untypedTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction]
+
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence]
 
   def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion]

@@ -336,7 +336,7 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         val publication = session.typedTreeSnapshot(snapshot) match
           case Some(typedTree) =>
             session
-              .compilerTreeExtraction(snapshot)
+              .untypedTreeExtraction(snapshot)
               .foreach: extraction =>
                 installAndReload(module, snapshot, extraction, () => snapshotCurrency(module, session, generation))
             backendPublisher.publish(module, typedTree, generation, () => snapshotCurrency(module, session, generation))

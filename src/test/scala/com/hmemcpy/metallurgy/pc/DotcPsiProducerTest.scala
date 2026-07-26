@@ -254,7 +254,7 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
     withSession: session =>
       val snapshot   = PcSnapshot("file:///DotcProducerCase.scala", 0L, source)
       val _          = onPooledThread(session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS))
-      val extraction = session.compilerTreeExtraction(snapshot)
+      val extraction = session.untypedTreeExtraction(snapshot)
       assertTrue("dotc tree extraction present", extraction.isDefined)
       val _          = DotcTreeSource.install(source, extraction.get)
       try
