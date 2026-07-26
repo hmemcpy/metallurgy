@@ -151,32 +151,49 @@ object DotcPsiProducer:
   private def emitParamClauses(params: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
     val builder       = ctx.builder
     val clausesMarker = builder.mark()
-    if params.nonEmpty then
+    // Params arrive flattened under the DefDef (the reflection walk descends DefDef.paramss, a List of Lists, without
+    // recording clause membership). Two params belong to different clauses when the source between the previous
+    // param's end and this one's start contains a `)` followed by a `(` — the closing paren of one clause and the
+    // opening paren of the next.
+    val source        = builder.getOriginalText
+    splitIntoClauses(params, source).foreach: clauseParams =>
       val clauseMarker = builder.mark()
-      params
-        .sortBy(_.range.map(_.startOffset).getOrElse(0))
-        .foreach: p =>
-          p.range.foreach: r =>
-            advanceTo(r.startOffset, builder)
-            val paramMarker = builder.mark()
-            // The parameter name token, then the declared type wrapped in PARAM_TYPE so ScParameter.typeElement resolves.
-            p.name.foreach: name =>
-              advanceToToken(name, r.endOffset, builder)
-              builder.advanceLexer()
-            ctx
-              .childrenOf(p.id)
-              .sortBy(_.range.map(_.startOffset).getOrElse(0))
-              .foreach: c =>
-                if c.role.isDefined then
-                  c.range.foreach: cr =>
-                    advanceTo(cr.startOffset, builder)
-                    val paramTypeMarker = builder.mark()
-                    emit(c, ctx)
-                    paramTypeMarker.done(ScalaElementType.PARAM_TYPE)
-            advanceTo(r.endOffset, builder)
-            paramMarker.done(ScalaElementType.PARAM)
+      clauseParams.foreach: p =>
+        p.range.foreach: r =>
+          advanceTo(r.startOffset, builder)
+          val paramMarker = builder.mark()
+          p.name.foreach: name =>
+            advanceToToken(name, r.endOffset, builder)
+            builder.advanceLexer()
+          ctx
+            .childrenOf(p.id)
+            .sortBy(_.range.map(_.startOffset).getOrElse(0))
+            .foreach: c =>
+              if c.role.isDefined then
+                c.range.foreach: cr =>
+                  advanceTo(cr.startOffset, builder)
+                  val paramTypeMarker = builder.mark()
+                  emit(c, ctx)
+                  paramTypeMarker.done(ScalaElementType.PARAM_TYPE)
+          advanceTo(r.endOffset, builder)
+          paramMarker.done(ScalaElementType.PARAM)
       clauseMarker.done(ScalaElementType.PARAM_CLAUSE)
     clausesMarker.done(ScalaElementType.PARAM_CLAUSES)
+
+  private def splitIntoClauses(
+      params: Vector[CompilerSourceNode],
+      source: CharSequence
+  ): Vector[Vector[CompilerSourceNode]] =
+    val sorted = params.sortBy(_.range.map(_.startOffset).getOrElse(0))
+    sorted.foldLeft(Vector.empty[Vector[CompilerSourceNode]]): (clauses, param) =>
+      if clauses.isEmpty then Vector(Vector(param))
+      else
+        val prev       = clauses.last.last
+        val prevEnd    = prev.range.map(_.endOffset).getOrElse(0)
+        val paramStart = param.range.map(_.startOffset).getOrElse(0)
+        val between    = if prevEnd < paramStart then source.subSequence(prevEnd, paramStart).toString else ""
+        if between.contains(')') && between.contains('(') then clauses :+ Vector(param)
+        else clauses.init :+ (clauses.last :+ param)
 
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>

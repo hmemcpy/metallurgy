@@ -247,6 +247,17 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       assertEquals("parameter name is x", "x", p.name)
       assertTrue("parameter is a ScParameter", p.isInstanceOf[ScParameter])
 
+  def testMultipleParamClausesProduceSeparateClauses(): Unit =
+    withDotcProducedFile("def foo(x: Int)(y: Int): Int = x + y\n"): file =>
+      val fn      = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      assertNotNull("function definition produced", fn)
+      val clauses = fn.parameterList.clauses
+      assertEquals("foo has two parameter clauses", 2, clauses.size)
+      val first   = clauses.apply(0).parameters
+      val second  = clauses.apply(1).parameters
+      assertEquals("first clause has x", Seq("x"), first.map(_.name))
+      assertEquals("second clause has y", Seq("y"), second.map(_.name))
+
   /** Compile the source under dotc, install the extraction, force the dialect parse, and run the assertions against the
     * produced file in a read action.
     */
