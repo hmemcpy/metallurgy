@@ -1,11 +1,13 @@
 package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
-import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager}
+import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
+import com.hmemcpy.metallurgy.psiproducer.DotcTreeSource
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
@@ -200,8 +202,26 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
           s"[parity]   message mismatch @${b.getStartOffset}-${b.getEndOffset}: bundled='${b.getDescription}' | dotc='${d.getDescription}'"
         )
 
+  /** Run the compiler on the verbatim source and install the typed-tree extraction before the file is parsed, so the
+    * dialect file-root parse builds the PSI from the typed tree on its first pass (no later reparse needed).
+    */
+  private def preCompileAndInstall(source: String): Unit =
+    val manager    = PcSessionManager.get(getProject)
+    val session    = PlatformTestUtil
+      .waitForFuture(manager.sessionForAsync(getModule), TimeUnit.SECONDS.toMillis(120))
+      .getOrElse(throw BackendUnavailableException(s"no PC session for ${getModule.getName}"))
+    val snapshot   = PcSnapshot("file:///PreCompile.scala", 0L, source)
+    val extraction = ApplicationManager.getApplication
+      .executeOnPooledThread(() =>
+        session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
+        session.compilerTreeExtraction(snapshot)
+      )
+      .get(60, TimeUnit.SECONDS)
+    extraction.foreach(e => DotcTreeSource.install(source, e))
+
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
+    preCompileAndInstall(code)
     myFixture.configureByText(ScalaFileType.INSTANCE, code)
     val fileUri          = getFile.getVirtualFile.getUrl
     val file             = getFile.asInstanceOf[ScalaFile]

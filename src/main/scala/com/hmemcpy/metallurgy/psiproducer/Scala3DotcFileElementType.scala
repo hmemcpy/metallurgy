@@ -6,7 +6,8 @@ import org.jetbrains.plugins.scala.lang.psi.stubs.elements.ScStubFileElementType
 
 /** The dialect file-root parse. The bundled lexer and file/stub mechanics remain the substrate; this element type owns
   * how the whole-file AST is produced for an active module. When a current compiler extraction is available the AST is
-  * built from the typed tree; otherwise the bundled parser is used.
+  * built from the typed tree; otherwise the bundled parser is used. The extraction is installed only where the producer
+  * is intended to run (compat type-inference cases), so files the bundled parser already accepts keep their normal PSI.
   */
 final class Scala3DotcFileElementType
     extends ScStubFileElementType(

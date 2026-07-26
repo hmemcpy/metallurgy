@@ -36,6 +36,9 @@ object DotcPsiProducer:
       val builder = ctx.builder
       advanceTo(range.startOffset, builder)
       val marker  = builder.mark()
+      // ScFunction requires a non-null paramClauses; emit an empty parameters holder (the parameters themselves
+      // remain raw lexer leaves until parameter mapping is added).
+      builder.mark().done(ScalaElementType.PARAM_CLAUSES)
       ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.FUNCTION_DEFINITION)
@@ -45,6 +48,8 @@ object DotcPsiProducer:
       val builder = ctx.builder
       advanceTo(range.startOffset, builder)
       val marker  = builder.mark()
+      // ScPatternDefinition requires a non-null pList; emit an empty pattern list (bindings stay raw for now).
+      builder.mark().done(ScalaElementType.PATTERN_LIST)
       ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
       advanceTo(range.endOffset, builder)
       marker.done(ScalaElementType.PATTERN_DEFINITION)
