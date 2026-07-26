@@ -2,15 +2,17 @@ package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.psiproducer.DotcTreeSource
+import com.hmemcpy.metallurgy.psiproducer.{DotcTreeSource, Scala3DotcLanguage}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.util.Computable
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
 import org.jetbrains.plugins.scala.ScalaFileType
@@ -217,7 +219,20 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
         session.compilerTreeExtraction(snapshot)
       )
       .get(60, TimeUnit.SECONDS)
-    extraction.foreach(e => DotcTreeSource.install(source, e))
+    // Install only when the bundled parser cannot represent the source (it leaves parser errors); otherwise the
+    // bundled parse is correct and the producer would only regress it.
+    if extraction.isDefined && hasBundledParseError(source) then
+      extraction.foreach(e => DotcTreeSource.install(source, e))
+
+  private def hasBundledParseError(source: String): Boolean =
+    ApplicationManager.getApplication.runReadAction(
+      new Computable[Boolean]:
+        override def compute(): Boolean =
+          val file = PsiFileFactory
+            .getInstance(getProject)
+            .createFileFromText("Probe.scala", Scala3DotcLanguage.INSTANCE, source)
+          PsiTreeUtil.hasErrorElements(file)
+    )
 
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
