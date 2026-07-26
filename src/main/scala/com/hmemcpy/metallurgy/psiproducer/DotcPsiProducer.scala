@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.hmemcpy.metallurgy.pc.{CompilerSourceNode, CompilerTreeExtraction}
 import com.intellij.lang.PsiBuilder
 import com.intellij.psi.tree.IElementType
+import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 
 /** Produces a whole-file bundled-compatible PSI tree from the compiler's typed tree. The walk emits a marker for each
@@ -163,6 +164,9 @@ object DotcPsiProducer:
     val source        = builder.getOriginalText
     splitIntoClauses(params, source).foreach: clauseParams =>
       val clauseMarker = builder.mark()
+      // A clause may open with a soft keyword ('using') that the lexer tokenizes as an identifier; remap it to the
+      // keyword token type so the PSI matches the bundled grammar (the bundled parser does this via tryParseSoftKeyword).
+      clauseParams.headOption.flatMap(_.range).foreach(first => advanceToWithSoftKeyRemap(first.startOffset, builder))
       clauseParams.foreach: p =>
         p.range.foreach: r =>
           advanceTo(r.startOffset, builder)
@@ -438,6 +442,11 @@ object DotcPsiProducer:
 
   private def advanceTo(offset: Int, builder: PsiBuilder): Unit =
     while !builder.eof() && builder.getCurrentOffset < offset do builder.advanceLexer()
+
+  private def advanceToWithSoftKeyRemap(offset: Int, builder: PsiBuilder): Unit =
+    while !builder.eof() && builder.getCurrentOffset < offset do
+      if builder.getTokenText == "using" then builder.remapCurrentToken(ScalaTokenType.UsingKeyword)
+      builder.advanceLexer()
 
   private final case class EmitCtx(childrenBy: Map[Option[Long], Vector[CompilerSourceNode]], builder: PsiBuilder):
     def childrenOf(parentId: Long): Vector[CompilerSourceNode] =
