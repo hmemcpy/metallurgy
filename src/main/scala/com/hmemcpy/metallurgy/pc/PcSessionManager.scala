@@ -13,6 +13,7 @@ import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource, ProducerParseState}
 import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.EditorFactory
@@ -397,6 +398,9 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
               case _                            => ()
       )
     )
+    // The reload replaces the tree; restart the daemon so local inspections re-run on the fresh PSI (otherwise a
+    // post-reload pass may not complete and diagnostics stay stale even though the PSI updated).
+    DaemonCodeAnalyzer.getInstance(project).restart(target, "metallurgy producer reload")
 
   private def trackFile(module: Module, fileUrl: String): Unit =
     val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)
