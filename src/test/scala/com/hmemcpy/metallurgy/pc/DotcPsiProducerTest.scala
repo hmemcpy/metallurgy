@@ -12,7 +12,7 @@ import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScGenericCall, ScMethodCall, ScReferenceExpression}
-import org.jetbrains.plugins.scala.lang.psi.api.statements.ScPatternDefinition
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunctionDefinition, ScPatternDefinition}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
@@ -90,6 +90,13 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
       val defn = PsiTreeUtil.findChildOfType(file, classOf[ScPatternDefinition])
       assertNotNull("val v = 1 is a value definition", defn)
       assertEquals("val v = 1", defn.getText)
+      assertNoParserErrors(file)
+
+  def testProducesFunctionDefinitionFromDotc(): Unit =
+    withDotcProducedFile("def f: Int = 1\n"): file =>
+      val defn = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      assertNotNull("def f: Int = 1 is a function definition", defn)
+      assertEquals("def f: Int = 1", defn.getText)
       assertNoParserErrors(file)
 
   private def selectedExpression(file: PsiFile): ScExpression =

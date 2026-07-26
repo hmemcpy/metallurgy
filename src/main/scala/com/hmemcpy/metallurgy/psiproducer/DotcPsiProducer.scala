@@ -28,7 +28,17 @@ object DotcPsiProducer:
       case "Apply"     => emitApply(node, ctx)
       case "TypeApply" => emitTypeApply(node, ctx)
       case "ValDef"    => emitValueDefinition(node, ctx)
+      case "DefDef"    => emitFunctionDefinition(node, ctx)
       case _           => emitRaw(node, ctx)
+
+  private def emitFunctionDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
+    node.range.foreach: range =>
+      val builder = ctx.builder
+      advanceTo(range.startOffset, builder)
+      val marker  = builder.mark()
+      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
+      advanceTo(range.endOffset, builder)
+      marker.done(ScalaElementType.FUNCTION_DEFINITION)
 
   private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
     node.range.foreach: range =>
