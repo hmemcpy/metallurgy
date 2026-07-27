@@ -1,51 +1,115 @@
-# `pc` package — Scala 3 presentation-compiler bridge
+# `pc` package — exact Scala 3 compiler boundary
 
-`StructuralScala3PcBridge` reflects over the exact-version dotc driver (isolated classloader) and exports
-neutral span/type/symbol data. It renders dotc types into the strings the Scala plugin parses into the
-`CompilerType` slot. The normative architecture is `docs/scala3-compiler-backend.md`.
+This package is the only boundary allowed to access exact Scala 3 compiler implementations. It owns parser and
+semantic bridge protocols, isolated classloaders, neutral compiler DTOs, capability discovery, exact artifact
+acquisition, and per-module presentation-compiler sessions.
 
-This file holds only standing directives for working in the bridge. Investigation findings, root-cause notes, and
-per-failure status live on the epic's GitHub issue (read its comments for continuity), not here.
+The normative architecture is `docs/scala3-compiler-backend.md`. This file contains standing implementation
+constraints only.
 
-## Reconcile dotc against the bundled PSI before trusting a rendering
+## Boundary rules
 
-A rendered type string must satisfy three parties, checked in order:
+- Prefer published compiler and Scalameta interfaces.
+- Use typed structural protocols when a published interface does not expose a required operation.
+- Confine raw reflection to private bridge implementations and only where structural calls cannot express construction
+  or invocation.
+- Discover callable capabilities; never branch on compiler versions, implementation fingerprints, or class-name
+  allowlists.
+- Never let a dotc class, collection, context, tree, type, symbol, driver, or reporter escape its exact-artifact
+  classloader.
+- Export immutable neutral parser products, source positions, diagnostics, types, symbols, occurrences, navigation
+  targets, capability results, and identities.
+- Close sessions and classloaders deterministically.
 
-1. **dotc ground truth** — `scala-cli compile <file> --scala 3.5.2 --scala-opt -Xprint:typer` (the harness pins 3.5.2).
-2. **Bundled-PSI ground truth** — with Metallurgy off (`MetallurgySettings.setEnabled(module, false)` plus
-   `ScalaProjectSettings` `setCompilerHighlightingScala3(false)`/`setUseCompilerTypes(false)`), read
-   `ScExpression.type().presentableText`.
-3. **Round-trip** — `ScalaPsiElementFactory.createTypeFromText` must parse the string to the intended `ScType`
-   (it degrades a failed sub-term to `Any` via `getOrAny`, so a returned `Some` is not alone proof of success).
+Parser and semantic bridges are independent. Parser availability does not imply presentation-compiler availability,
+and best-effort TASTy producer and consumer support are separate capabilities.
 
-The `useCompilerTypes(false)`-after-publish toggle is **not** a valid control: publication already populates the
-copyable `CompilerType` user data, the side-table states, and the PC diagnostics layer, and flipping the setting does
-not retire them, so on/off error sets come out identical even for code dotc rejects. Only the full gate-off above is.
+## Parser bridge
 
-## Rendering rules
+The parser bridge:
 
-- **Module/companion `TermRef`** widens to its underlying class/trait, losing object identity. Render before widening:
-  - **Static** module (top-level or static owner): `symbol.showFullName` + `".type"` (resolvable fully-qualified).
-  - **Path-dependent** module (`o.Inner`, nested in a class): `showFullName` uses the class owner (`Outer.Inner`,
-    unresolvable), so render the raw `TermRef` via `Type.show`, which preserves the value prefix and appends `".type"`.
-  - Discriminator: `symbol.isStatic` (false ⇒ path-dependent).
-- **`Type.show` is not always valid source.** It emits `<empty>.type` for top-level modules (dotc's internal
-  empty-package name) and `(ref : underlying)` singleton-parens for many types. Use it only where it yields clean
-  source; prefer `showFullName` for statics.
-- **Polymorphic function value** = dotc `RefinedType(scala.PolyFunction, apply, PolyType(...))`. Anonymous binders
-  widen the dependent `TypeParamRef`s. Rename via `PolyType.newLikeThis(names, infos, resType)` (substitutes every
-  bound `TypeParamRef`), rebuild via `derivedRefinedType`, let `RefinedPrinter` emit the faithful source form.
-  Keep existing named binders; only rename wildcards, collision-free.
-- **Polymorphic-function sub-expressions** (the body lambdas) carry free `TypeParamRef`s that render as `?` and are
-  meaningless standalone; drop candidates whose range lies strictly inside a poly-function value's range, so only the
-  enclosing (renamed) poly-function is published.
+- constructs the parser from the exact compiler artifact;
+- parses verbatim source without running typer;
+- preserves ordered named product fields;
+- exports source ranges, point positions, zero-width and synthetic provenance, and parser diagnostics;
+- adapts older artifact layouts to the same neutral DTOs through structural capability probes.
 
-## Reflection gotchas
+Parsing is synchronous and must not wait for artifact acquisition, background compilation, an EDT callback, or a
+semantic snapshot. Artifact preparation completes before the module activates its Scala parser.
 
-- dotc materializes types as `Cached*` runtime classes (`CachedTermRef`, `CachedMethodType`, `CachedExprType`,
-  `CachedRefinedType`, ...). `getClass.getSimpleName == "TermRef"` is false; match by `getClass.getName.endsWith(...)`.
-- Accessor shapes vary: `Context.definitions`, `Definitions.PolyFunctionClass`, `PolyType.paramNames`/`paramInfos`/
-  `resType` are no-arg; `derivesFrom`/`newLikeThis`/`derivedRefinedType` take the context last; `Names.typeName` is a
-  single `String` argument with no context. When a reflective lookup fails, enumerate the methods and read the actual
-  signature rather than assuming.
-- Build child-classloader Scala collections through `scala.jdk.javaapi.CollectionConverters.asScala(...).toList`.
+No parser result may be reconstructed from a typed tree.
+
+## Semantic bridge
+
+The semantic bridge publishes one whole-file neutral snapshot for an exact source version and module generation. A
+snapshot includes types, symbols, occurrences, completion data, navigation targets, diagnostics, compiler identity,
+and every freshness generation.
+
+Only a Current snapshot supplies semantics. Pending, Unavailable, Failed, Missing, and Stale states remain explicit and
+never invoke bundled Scala inference.
+
+No synchronous PSI or editor query starts compiler work and waits.
+
+## Type rendering
+
+A rendered type must agree with dotc and round-trip through the installed Scala PSI parser when it is used to construct
+`ScType`.
+
+Check in this order:
+
+1. exact-version compiler output through a REPL `:type` probe and `-Xprint:typer`;
+2. the intended normalized compiler type rather than a raw internal singleton or reference representation;
+3. `ScalaPsiElementFactory.createTypeFromText` round-trip to the intended `ScType`.
+
+`createTypeFromText` may degrade an invalid subterm to `Any`; a returned value alone is not proof.
+
+### Module and companion references
+
+- A static module reference renders as `symbol.showFullName + ".type"` when singleton identity is required.
+- A path-dependent module uses the raw term-reference prefix because `showFullName` loses the value owner.
+- Ordinary value types widen term references before rendering.
+- Raw `Type.show` may emit internal names or singleton parentheses that are not valid source.
+
+### Polymorphic function values
+
+A polymorphic function value is represented by a refinement of `scala.PolyFunction` with a polymorphic `apply`.
+Anonymous binders require collision-free stable names. Rebuild the `PolyType` with `newLikeThis`, allowing dotc to
+substitute every bound `TypeParamRef`, then rebuild the refinement.
+
+Do not publish standalone body subexpressions whose types contain free `TypeParamRef`s from the enclosing polymorphic
+function.
+
+## Structural access
+
+Runtime compiler types frequently use cached implementation subclasses. Structural protocols must target callable
+members and assignable contracts, not `getSimpleName` equality.
+
+When a structural lookup fails:
+
+1. enumerate the exact-loader methods and signatures;
+2. confirm whether the context is explicit, implicit, or absent;
+3. express the discovered general callable shape structurally when possible;
+4. add an isolated reflective operation only when structural access cannot represent it;
+5. add a capability and classloader-isolation test.
+
+Build child-classloader Scala collections through APIs loaded by that classloader; never cast them to the host Scala
+runtime's collection classes.
+
+## Best-effort TASTy
+
+The full compiler build is the producer. The interactive presentation compiler is a consumer only.
+
+- Probe `-Ybest-effort` production independently from `-Ywith-best-effort-tasty` consumption.
+- Add `META-INF/best-effort` as a downstream classpath root only when consumption is available.
+- Key artifacts and sessions by upstream output and classpath generation plus artifact content.
+- Preserve error or unknown provenance from broken upstream declarations.
+- Never use best-effort TASTy to parse the current source file or select a PSI shape.
+
+## Tests
+
+- Give every snapshot case a unique file URI and document version.
+- Assert exact rendered types after whitespace normalization; substring checks are insufficient.
+- Reproduce every surprising type or diagnostic against the exact compiler before changing the bridge.
+- Test public-interface access first, structural access second, isolated reflection last.
+- Test classloader release and capability failure independently.
+- Exercise build-produced cross-module break, consume, repair, rename, removal, reload, and restart.
