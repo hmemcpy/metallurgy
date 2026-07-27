@@ -108,6 +108,8 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 - Aliases: `sbt fmt`, `sbt check`, `sbt runIDE`.
 - Run `scalafmtAll` before every commit.
 - `-Xfatal-warnings`, unused-value warnings, and non-Unit statement warnings are enabled. Fix every warning.
+- Explicit deterministic test lanes live in `test-lanes/` and run through `scripts/run-test-lane.sh`. Preserve their
+  per-suite evidence; do not replace them with wildcard selection.
 
 ## Target architecture
 

@@ -1,0 +1,8 @@
+com.hmemcpy.metallurgy.SmokeTest
+com.hmemcpy.metallurgy.compat.scala3.Scala3CompatHarnessSanityTest
+com.hmemcpy.metallurgy.module.EligibilityPredicateTest
+com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest
+com.hmemcpy.metallurgy.pc.PcClassLoaderTest
+com.hmemcpy.metallurgy.pc.PcSnapshotTest
+com.hmemcpy.metallurgy.pc.PresentationCompilerResolverTest
+com.hmemcpy.metallurgy.testkit.ExpectedOutputParserTest
