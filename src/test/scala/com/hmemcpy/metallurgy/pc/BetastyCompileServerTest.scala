@@ -17,6 +17,7 @@ import com.intellij.psi.{PsiManager, PsiNamedElement}
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.{PsiTestUtil, VfsTestUtil}
 import org.jetbrains.plugins.scala.ScalaVersion
+import org.jetbrains.plugins.scala.compiler.CompileServerLauncher
 import org.jetbrains.plugins.scala.compiler.highlighting.ScalaCompilerHighlightingTestBase
 import org.jetbrains.plugins.scala.extensions.{inReadAction, inWriteAction, invokeAndWait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression
@@ -73,8 +74,8 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
 
   private def exerciseBrokenUpstreamModule(): Unit =
     runWithErrorsFromCompiler(getProject):
-      val upstream = addFileToProjectSources("Person.scala", brokenUpstream("stableName"))
-      val consumer = addModuleBFile("Consumer.scala", consumerSource("stableName"))
+      val upstream = addFileToProjectSources("Person.scala", brokenUpstream("personName"))
+      val consumer = addModuleBFile("Consumer.scala", consumerSource("personName"))
 
       ensureBestEffortFlags()
       val brokenMessages = compiler.make().asScala.toSeq
@@ -86,28 +87,48 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
       assertTrue(s"IntelliJ build emitted no .betasty artifact: $brokenMessages", artifacts.nonEmpty)
       assertTrue(artifacts.exists(_.getFileName.toString == "Person.betasty"))
 
-      assertEditorContract(consumer, "stableName")
-      assertCompletion("sta", expected = "stableName", absent = "displayName")
+      assertEditorContract(consumer, "personName")
+      assertCompletion("person", expected = "personName", absent = "personLabel")
 
-      replaceText(upstream, repairedUpstream("stableName"))
+      replaceText(upstream, repairedUpstream("personName"))
       ensureBestEffortFlags()
       val repairedMessages = compiler.make().asScala.toSeq
       assertFalse(
         s"repairing module A must produce a clean build: $repairedMessages",
         repairedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
       )
-      assertEditorContract(consumer, "stableName")
+      assertEditorContract(consumer, "personName")
 
-      replaceText(upstream, repairedUpstream("displayName"))
-      replaceText(consumer, consumerSource("displayName"))
+      replaceText(upstream, repairedUpstream("personLabel"))
+      replaceText(consumer, consumerSource("personLabel"))
       ensureBestEffortFlags()
       val changedMessages = compiler.make().asScala.toSeq
       assertFalse(
         s"changing module A's public API must produce a clean build: $changedMessages",
         changedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
       )
-      assertEditorContract(consumer, "displayName")
-      assertCompletion("dis", expected = "displayName", absent = "stableName")
+      assertEditorContract(consumer, "personLabel")
+      assertCompletion("person", expected = "personLabel", absent = "personName")
+
+      VfsTestUtil.deleteFile(upstream)
+      val removedMessages = compiler.rebuild().asScala.toSeq
+      assertTrue(
+        s"removing module A's public API must invalidate module B: $removedMessages",
+        removedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+      )
+      assertCompletionExcludes("person", "personName", "personLabel")
+
+      val restored          = addFileToProjectSources("Person.scala", repairedUpstream("personLabel"))
+      assertNotNull("restored module A source is unavailable", restored)
+      assertTrue("compile server process did not stop", CompileServerLauncher.stopServerAndWait())
+      ensureBestEffortFlags()
+      val restartedMessages = compiler.rebuild().asScala.toSeq
+      assertFalse(
+        s"a clean rebuild after compile-server restart must succeed: $restartedMessages",
+        restartedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+      )
+      assertEditorContract(consumer, "personLabel")
+      assertCompletion("person", expected = "personLabel", absent = "personName")
 
   private def assertEditorContract(file: VirtualFile, memberName: String): Unit =
     waitUntilFileIsHighlighted(file)
@@ -150,10 +171,20 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
     assertTrue(s"valid module B code is red: ${errors.map(_.getDescription).mkString("; ")}", errors.isEmpty)
 
   private def assertCompletion(prefix: String, expected: String, absent: String): Unit =
+    val names = completionNames(prefix, s"Completion$expected.scala")
+    assertTrue(s"$expected was not offered: ${names.toSeq.sorted.mkString(", ")}", names.contains(expected))
+    assertFalse(s"stale member $absent was offered: ${names.toSeq.sorted.mkString(", ")}", names.contains(absent))
+
+  private def assertCompletionExcludes(prefix: String, absent: String*): Unit =
+    val names   = completionNames(prefix, "CompletionAfterRemoval.scala")
+    val present = absent.filter(names.contains)
+    assertTrue(s"removed members were offered: ${present.mkString(", ")}", present.isEmpty)
+
+  private def completionNames(prefix: String, fileName: String): Set[String] =
     val text = s"""object CompletionProbe:
                    |  val completionPerson = new Person("Ada")
                    |  completionPerson.$prefix""".stripMargin
-    val file = addModuleBFile(s"Completion$expected.scala", text)
+    val file = addModuleBFile(fileName, text)
     try
       val offset = text.length
       val _      = com.intellij.testFramework.PlatformTestUtil.waitForFuture(
@@ -165,14 +196,13 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
       invokeAndWait:
         new CodeCompletionHandlerBase(CompletionType.BASIC, false, false, true)
           .invokeCompletion(getProject, editor, 1)
-      val lookup = LookupManager.getActiveLookup(editor) match
-        case value: LookupImpl => value
-        case _                 => throw new AssertionError("completion lookup is unavailable")
-      val names  = lookup.getItems.asScala.map(_.getLookupString).toSet
-      assertTrue(s"$expected was not offered: ${names.toSeq.sorted.mkString(", ")}", names.contains(expected))
-      assertFalse(s"stale member $absent was offered: ${names.toSeq.sorted.mkString(", ")}", names.contains(absent))
-      invokeAndWait:
-        lookup.hide()
+      LookupManager.getActiveLookup(editor) match
+        case lookup: LookupImpl =>
+          val names = lookup.getItems.asScala.map(_.getLookupString).toSet
+          invokeAndWait:
+            lookup.hide()
+          names
+        case _                  => Set.empty
     finally VfsTestUtil.deleteFile(file)
 
   private def addModuleBFile(name: String, text: String): VirtualFile =
