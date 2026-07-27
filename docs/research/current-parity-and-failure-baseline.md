@@ -8,7 +8,7 @@ retained JUnit, stdout, stderr, IntelliJ log, environment, source-state, and exi
 
 | Lane | Suites | Tests | Passing | Failing | Result |
 |---|---:|---:|---:|---:|---|
-| Syntax and PSI | 4 | 38 | 38 | 0 | passed |
+| Syntax and PSI | 5 | 39 | 39 | 0 | passed |
 | Editor operations | 4 | 22 | 18 | 4 | recorded failures |
 | Semantics | 4 | 72 | 68 | 4 | recorded failures |
 | Invocation accounting | 4 | 13 | 13 | 0 | passed |
@@ -16,13 +16,14 @@ retained JUnit, stdout, stderr, IntelliJ log, environment, source-state, and exi
 
 The machine-readable record is
 [`current-parity-and-failure-baseline.json`](current-parity-and-failure-baseline.json). The retained run summaries are
-under `target/test-evidence/`; each summary records the base revision and a source patch, so a run made before the
-baseline commit still identifies the exact tested tree.
+under `target/test-evidence/`. The compatibility and original focused measurements are reconstructible at
+`40145b89b26a4cfe62f887732a95cf0ad1705616`; the strengthened syntax and lifecycle lane is reconstructible at
+`6bf2cc03d12cab3d07f0873024087a8b7d23447d`.
 
 ## Coverage boundaries
 
 `baseline-syntax-psi` exercises parser and AST shape, public Scala PSI accessors, stub creation, index lookup,
-closed-file loading, navigation, copies, reload, and smart pointers.
+closed-file stub lookup and navigation without AST loading, copies, reload, project close/reopen, and smart pointers.
 
 `baseline-editor-operations` exercises daemon highlighting, completion, find usages, hover, documentation, parameter
 info, inspections, structure view, rename, inline, change signature, introduce variable, extract method, and implement
@@ -46,7 +47,9 @@ the editor must then:
 - resolve the valid upstream member through both bundled PSI and the compiler backend;
 - offer the valid member through actual editor completion;
 - remain correct after A is repaired and rebuilt;
-- replace the old member after A changes its public API, with no stale completion item.
+- replace the old member after A changes its public API, with no stale completion item from the same prefix lookup;
+- remove deleted members after a clean rebuild;
+- recover correct downstream semantics after the compile-server process is stopped and restarted.
 
 The lower-level `BetastyCrossModuleTest` remains a direct compiler and presentation-compiler control.
 
@@ -60,8 +63,8 @@ document-generation/type-slot failures in `CompilerBackendSnapshotPublisherTest`
 
 The complete compatibility inventory records 13 unchanged-test disagreements across named tuples, extensions,
 universal apply, curried type parameters, infix type arguments, and overloaded higher-order calls. The two generated
-named-type-argument fixture crashes in the superseded measurement no longer occur. The 109-test opaque-type suite takes
-about 270 seconds and its 20-test integration companion about 90 seconds, so their completed evidence uses a
+named-type-argument fixture crashes in the superseded measurement no longer occur. The 110-test opaque-type suite takes
+about 270 seconds and its 19-test integration companion about 90 seconds, so their completed evidence uses a
 600-second per-suite bound.
 
 These are ordinary visible failures, not expected-pass annotations. The lanes return nonzero while they remain.

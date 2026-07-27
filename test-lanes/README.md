@@ -8,7 +8,7 @@ and runtime discovery never decide which suites or test methods a lane intends t
 area. The pre-migration comparison is split by ownership boundary:
 
 - `baseline-syntax-psi.txt` covers parser/AST shape, public Scala PSI accessors, stubs, indices, closed-file loading,
-  navigation, copies, reload, and smart pointers.
+  navigation, copies, reload, project close/reopen, and smart pointers.
 - `baseline-editor-operations.txt` covers daemon highlighting, completion, find usages, hover, documentation, parameter
   info, inspections, structure view, rename, inline, change-signature, introduce-variable, extract-method, and
   implement-method operations.

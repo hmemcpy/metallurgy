@@ -2,8 +2,9 @@
   "schemaVersion": 2,
   "measurementDate": "2026-07-27",
   "source": {
-    "baseRevision": "778638fbf6d78d32db17b3738c8c96938b53e60b",
-    "exactWorkingTreeRetainedAsSourcePatch": true
+    "baselineRevision": "40145b89b26a4cfe62f887732a95cf0ad1705616",
+    "lifecycleStrengtheningRevision": "6bf2cc03d12cab3d07f0873024087a8b7d23447d",
+    "reconstructibleFromCommittedRevisions": true
   },
   "environment": {
     "intellijBuild": "261.26222.65",
@@ -18,12 +19,12 @@
   "lanes": [
     {
       "name": "baseline-syntax-psi",
-      "evidence": "target/test-evidence/baseline-syntax-psi/task-102-syntax",
-      "manifestSha256": "59202283a90630170c6a3aad2b1b7b773ef1defd3993bb2e852fb37ecd4ab793",
-      "invocationManifestSha256": "5336f16bf168c76d76c06c80a15bbacba26fbcdf954dbf13146f4c4b4500d762",
-      "suites": 4,
-      "tests": 38,
-      "passing": 38,
+      "evidence": "target/test-evidence/baseline-syntax-psi/task-102-review-fixes-v2",
+      "manifestSha256": "2608e130a319bec0a6b3503effbd19074d0a4239fd93f50f2975256d855ffd1a",
+      "invocationManifestSha256": "920dd5994d2d758345a49b6ac12c1aa28a90c87ad6917c632b3bbec0a4420a6d",
+      "suites": 5,
+      "tests": 39,
+      "passing": 39,
       "failing": 0,
       "status": "passed"
     },
@@ -117,7 +118,9 @@
       "completion",
       "repair refresh",
       "public API change refresh",
-      "stale completion rejection"
+      "same-prefix stale completion rejection",
+      "public API removal refresh",
+      "compile-server process restart"
     ],
     "directCompilerControl": "com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest"
   },
