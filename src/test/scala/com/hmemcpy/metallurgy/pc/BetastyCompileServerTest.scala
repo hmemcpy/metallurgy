@@ -12,6 +12,7 @@ import com.intellij.openapi.compiler.CompilerMessageCategory
 import com.intellij.openapi.fileEditor.{FileDocumentManager, FileEditorManager, OpenFileDescriptor}
 import com.intellij.openapi.module.{JavaModuleType, Module, ModuleType}
 import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.{VfsUtil, VirtualFile}
 import com.intellij.psi.{PsiManager, PsiNamedElement}
 import com.intellij.psi.util.PsiTreeUtil
@@ -177,8 +178,17 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
 
   private def assertRemovedMemberIsHighlighted(file: VirtualFile): Unit =
     waitUntilFileIsHighlighted(file)
-    val errors = fetchHighlightInfos(file).filter(_.getSeverity == HighlightSeverity.ERROR)
-    assertTrue("removed module A API must remain visibly unresolved in module B", errors.nonEmpty)
+    doAssertion(
+      file,
+      expectedResult(
+        ExpectedHighlighting(
+          severity = HighlightSeverity.ERROR,
+          range = Some(TextRange.create(32, 38)),
+          quickFixDescriptions = Seq.empty,
+          msgPrefix = "Not found: type Person"
+        )
+      )
+    )
 
   private def assertCompletion(prefix: String, expected: String, absent: String): Unit =
     val names = completionNames(prefix, s"Completion$expected.scala")
