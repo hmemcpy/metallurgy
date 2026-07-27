@@ -23,6 +23,7 @@ import org.jetbrains.plugins.scala.lang.psi.types.result.Failure
 import org.jetbrains.plugins.scala.lang.psi.types.{Context, ScTypeExt, TypePresentationContext}
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
+import org.jetbrains.plugins.scala.util.assertions.PsiAssertions.assertNoParserErrors
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue, fail}
 
 import java.util.concurrent.TimeUnit
@@ -210,13 +211,13 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
   /** Run the compiler on the verbatim source and install the typed-tree extraction before the file is parsed, so the
     * dialect file-root parse builds the PSI from the typed tree on its first pass (no later reparse needed).
     */
-  protected def preCompileAndInstall(source: String): Unit =
-    val manager    = PcSessionManager.get(getProject)
-    val session    = PlatformTestUtil
+  private def preCompileAndInstall(source: String): Boolean =
+    val manager          = PcSessionManager.get(getProject)
+    val session          = PlatformTestUtil
       .waitForFuture(manager.sessionForAsync(getModule), TimeUnit.SECONDS.toMillis(120))
       .getOrElse(throw BackendUnavailableException(s"no PC session for ${getModule.getName}"))
-    val snapshot   = PcSnapshot("file:///PreCompile.scala", 0L, source)
-    val extraction = ApplicationManager.getApplication
+    val snapshot         = PcSnapshot("file:///PreCompile.scala", 0L, source)
+    val extraction       = ApplicationManager.getApplication
       .executeOnPooledThread(() =>
         session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
         session.compilerTreeExtraction(snapshot)
@@ -224,19 +225,35 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       .get(60, TimeUnit.SECONDS)
     // Install only when the bundled parser cannot represent the source (it leaves parser errors) AND the compiler
     // typed it cleanly (no ERROR diagnostics) — never produce valid PSI for code the compiler rejected.
-    if extraction.isDefined && hasBundledParseError(source) && extraction.get.diagnostics.forall(!_.isError) then
+    val compilerAccepted = extraction.exists(_.diagnostics.forall(!_.isError))
+    if compilerAccepted && hasBundledParseError(source) then
       extraction.foreach(e => { val _ = DotcTreeSource.install(source, e); () })
+    compilerAccepted
 
   private def hasBundledParseError(source: String): Boolean =
     BundledScala3Parse.hasErrors(source, getProject)
 
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
-    myFixture.configureByText(ScalaFileType.INSTANCE, code)
-    val fileUri          = getFile.getVirtualFile.getUrl
-    val file             = getFile.asInstanceOf[ScalaFile]
-    val insertions       = topLevelExpressionInsertions(file)
-    val manager          = PcSessionManager.get(getProject)
+    assertConfiguredExprType(code, expected, None)
+
+  protected final def assertTypeInferenceResult(source: String): Unit =
+    val code             = TypeInferenceTestInput.normalizedSource(source)
+    val expected         = TypeInferenceTestInput.expectedType(code)
+    val compilerAccepted = preCompileAndInstall(code)
+    if !compilerAccepted && hasBundledParseError(code) then
+      throw new AssertionError("type inference input contains parser errors")
+    assertConfiguredExprType(code, expected, Some("dummy.scala"))
+
+  private def assertConfiguredExprType(code: String, expected: String, fileName: Option[String]): Unit =
+    fileName match
+      case Some(value) => myFixture.configureByText(value, code)
+      case None        => myFixture.configureByText(ScalaFileType.INSTANCE, code)
+    val file       = getFile.asInstanceOf[ScalaFile]
+    assertNoParserErrors(file)
+    val fileUri    = file.getVirtualFile.getUrl
+    val insertions = topLevelExpressionInsertions(file)
+    val manager    = PcSessionManager.get(getProject)
     manager.declareProjection(fileUri, insertions)
     try
       awaitBackendPublished()
@@ -315,6 +332,9 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
     val expr     = PsiTreeUtil.findElementOfClassAtRange(file, start, end, classOf[ScExpression])
     assertNotNull(s"no expression between markers in:\n$text", expr)
     expr
+
+  protected final def configuredSelectedExpressionRange: TextRange =
+    selectedExpression(getFile.asInstanceOf[ScalaFile]).getTextRange
 
   private def renderedType(expr: ScExpression): String =
     val typeResult = expr.`type`() match

@@ -21,7 +21,6 @@ com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3DerivingCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ImplicitParametersCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTuplesCompatTest
-com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentsInferenceCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NewTuplesCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3OpaqueTypeAliasCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3OpaqueTypeAliasIntegrationCompatTest
@@ -45,3 +44,4 @@ com.hmemcpy.metallurgy.compat.shared.typeInference.ParameterBoundedImplicitConve
 com.hmemcpy.metallurgy.compat.shared.typeInference.PartialUnificationHighlightingCompatTest
 com.hmemcpy.metallurgy.compat.shared.typeInference.PatternMatchingCompatTest
 com.hmemcpy.metallurgy.compat.shared.typeInference.SCL13767CompatTest
+com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest

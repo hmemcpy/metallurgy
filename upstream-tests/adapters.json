@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "adapters": [
+    {
+      "id": "scala3-type-inference-fixture.v1",
+      "base": "com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixture",
+      "helpers": [
+        {
+          "symbol": "doTest",
+          "originPaths": [
+            "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceDoTest.scala",
+            "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceTestBase.scala",
+            "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceTestFixture.scala"
+          ],
+          "localImplementationFiles": [
+            {
+              "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/adapters/Scala3TypeInferenceFixture.scala",
+              "sha256": "68695fb9e4308c479c6942505295d90ecb86719fa8ab642b5e98bc7f23115fe5"
+            },
+            {
+              "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/Scala3CompatTestCase.scala",
+              "sha256": "8486282e2327ea50c65de7449720dbd141a8ec461906b6a0cead60493b3cc67b"
+            },
+            {
+              "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/TypeInferenceTestInput.scala",
+              "sha256": "1c5b3bcae056764e2ca86a2c3b918b5b37483534bbbdd25f666751752b9b283b"
+            }
+          ],
+          "localContractTest": "com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest",
+          "localContractTestPath": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/adapters/Scala3TypeInferenceFixtureContractTest.scala",
+          "localContractTestSha256": "084435901ecef59017a6f8a7573732bc4c02d40ce58d7b447b47017dcb703eb6"
+        }
+      ]
+    }
+  ]
+}

@@ -40,9 +40,16 @@ ThisBuild / intellijBuild      := "261.26222.65"
 Global / intellijAttachSources := true
 
 addCommandAlias("fmt", "scalafmtAll")
-addCommandAlias("check", "scalafmtCheckAll")
+addCommandAlias("check", ";verifyCopiedIntellijTests;scalafmtCheckAll")
 addCommandAlias("testHeadless", "test")
 addCommandAlias("compilerTypeAcceptance", "testOnly com.hmemcpy.metallurgy.compilertype.*Test")
+addCommandAlias(
+  "verifyCopiedIntellijTests",
+  ";verifyCopiedIntellijTestFiles;" +
+    "testOnly com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest " +
+    "com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest " +
+    "com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest"
+)
 
 Global / javacOptions := Seq("--release", "17")
 
@@ -90,6 +97,12 @@ lazy val intellijPluginDependencies = Seq(
 lazy val compileTestkit         = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
 lazy val prepareIntellijTestSdk = taskKey[Unit]("Prepare SDK resources expected by IntelliJ light fixtures")
 lazy val writeTestInventory     = taskKey[Unit]("Write discovered test names and exact environment coordinates")
+lazy val verifyCopiedIntellijTestFiles =
+  taskKey[Unit]("Verify copied IntelliJ test provenance, generation, and protected bytes")
+lazy val verifyCopiedIntellijTestsAgainstOrigin =
+  taskKey[Unit]("Compare copied IntelliJ test bytes with the pinned Git revision")
+lazy val generateCopiedIntellijTests =
+  taskKey[Unit]("Generate copied IntelliJ test adapters under target")
 
 lazy val root =
   Project("metallurgy", file("."))
@@ -129,6 +142,8 @@ lazy val root =
         )
       },
       Test / parallelExecution := false,
+      Test / unmanagedSourceDirectories +=
+        baseDirectory.value / "src" / "test" / "generated" / "intellij-scala",
       Test / unmanagedClasspath +=
         Attributed.blank(baseDirectory.value / "testkit" / "target" / "scala-2.13" / "classes"),
       prepareIntellijTestSdk    := {
@@ -156,6 +171,35 @@ lazy val root =
         if (exitCode != 0) sys.error(s"TestKit compilation failed with exit code $exitCode")
       },
       Test / compile            := ((Test / compile) dependsOn compileTestkit).value,
+      verifyCopiedIntellijTestFiles := {
+        val exitCode = Process(
+          Seq((baseDirectory.value / "scripts" / "test-copied-intellij-tests.sh").getPath),
+          baseDirectory.value,
+          "JAVA_HOME" -> sys.props("java.home")
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ test verification failed with exit code $exitCode")
+      },
+      verifyCopiedIntellijTestsAgainstOrigin := {
+        val originRepository = sys.props
+          .get("intellij.scala.repo")
+          .map(file)
+          .getOrElse(sys.error("intellij.scala.repo is required"))
+        val exitCode         = Process(
+          Seq((baseDirectory.value / "scripts" / "copied-intellij-tests.sh").getPath, "against-origin"),
+          baseDirectory.value,
+          "JAVA_HOME"                    -> sys.props("java.home"),
+          "INTELLIJ_SCALA_REPOSITORY"    -> originRepository.getCanonicalPath
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ origin verification failed with exit code $exitCode")
+      },
+      generateCopiedIntellijTests := {
+        val exitCode = Process(
+          Seq((baseDirectory.value / "scripts" / "copied-intellij-tests.sh").getPath, "generate"),
+          baseDirectory.value,
+          "JAVA_HOME" -> sys.props("java.home")
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ test generation failed with exit code $exitCode")
+      },
       writeTestInventory        := {
         val inventory = sys.props
           .get("metallurgy.test.inventory")

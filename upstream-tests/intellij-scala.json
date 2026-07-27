@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "origin": {
+    "repository": "https://github.com/JetBrains/intellij-scala.git",
+    "revision": "8dd22d153b65c847f4ced8917dd7e02b83561e5d",
+    "licensePath": "LICENSE.txt",
+    "licenseBlob": "5e013530f90216bf1e12bd9d24fd85db5ec5cf5b",
+    "licenseSha256": "b1c96de43753a3ef6ef2da1cfaedd879c51505665f1c2494fa2bcdeb24614a18",
+    "noticePath": null,
+    "thirdPartyNoticePath": "THIRD_PARTY_NOTICES.md",
+    "thirdPartyNoticeSha256": "373ccd9722d78e7c33116167193f006d144860eb2c0c8081e640675525dc5494"
+  },
+  "snapshotRoot": "third_party/intellij-scala/8dd22d153b65c847f4ced8917dd7e02b83561e5d",
+  "supportFiles": [
+    {
+      "originPath": "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceDoTest.scala",
+      "originBlob": "b1ab874d4956a5ac5e9e76592709db2f5fb5f6eb",
+      "sha256": "ce4908413b8c49bd2fed8d332c1e2b42b5f7e914a20abe066a5f14cf7dc66d04"
+    },
+    {
+      "originPath": "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceTestBase.scala",
+      "originBlob": "6b4862e4ed05c0e11fe635e217619343c268d1b3",
+      "sha256": "7e63b36a1bfd7aa9e6a01d8513eab8c42173d00181bcc69b272748dac41a6efc"
+    },
+    {
+      "originPath": "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/TypeInferenceTestFixture.scala",
+      "originBlob": "fd4fe954f73f996cdd9316181dd682101130a7c2",
+      "sha256": "3ad2f5b49864c5d21401815fe94c1d566d4af2c256369eb054f86c4f8cd68307"
+    }
+  ],
+  "suites": [
+    {
+      "id": "named-type-arguments-inference",
+      "origin": {
+        "path": "scala/scala-impl/test/org/jetbrains/plugins/scala/lang/typeInference/Scala3NamedTypeArgumentsInferenceTest.scala",
+        "owner": "org.jetbrains.plugins.scala.lang.typeInference.Scala3NamedTypeArgumentsInferenceTest",
+        "sourceBlob": "aa8bcccccca7cc82b10df7cd06c132adbe223236",
+        "sha256": "61398d020d0083aa3fb56c9bcd1026d39d87a5bb822468eba29eb6bbb52e1017"
+      },
+      "generated": {
+        "path": "src/test/generated/intellij-scala/com/hmemcpy/metallurgy/generated/intellijscala/typeInference/NamedTypeArgumentsInferenceTest.scala",
+        "owner": "com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest",
+        "sha256": "4451c93d5dff4c3e587e23a473305bfd4fd9f282c8b49c85be233aa2d958c5a3"
+      },
+      "adapter": "scala3-type-inference-fixture.v1",
+      "rewrite": "upstream-tests/rewrites/named-type-arguments-inference.json",
+      "classification": "accepted-parity",
+      "capabilities": [
+        "compiler-backend.expression-exact",
+        "scala3.experimental.named-type-arguments"
+      ],
+      "protectedClassBody": {
+        "originStartByte": 180,
+        "originEndByte": 2048,
+        "generatedStartByte": 415,
+        "generatedEndByte": 2283,
+        "sha256": "bf954ab98c87b4cfd82b1b182e43a3879edce4c441e35c7dfd53e5db019b1eeb"
+      },
+      "methods": [
+        {
+          "originName": "testDocsExampleConstructWithNamedTypeArguments",
+          "localName": "testDocsExampleConstructWithNamedTypeArguments",
+          "upstreamRuntimeName": "DocsExampleConstructWithNamedTypeArguments"
+        },
+        {
+          "originName": "testGenericCallWithPartiallyNamedTypeArguments_InferFirstParamFromExpectedType",
+          "localName": "testGenericCallWithPartiallyNamedTypeArguments_InferFirstParamFromExpectedType",
+          "upstreamRuntimeName": "GenericCallWithPartiallyNamedTypeArguments_InferFirstParamFromExpectedType"
+        },
+        {
+          "originName": "testGenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType",
+          "localName": "testGenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType",
+          "upstreamRuntimeName": "GenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType"
+        },
+        {
+          "originName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferFirstParam",
+          "localName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferFirstParam",
+          "upstreamRuntimeName": "MethodInvocationWithPartiallyNamedTypeArguments_InferFirstParam"
+        },
+        {
+          "originName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam",
+          "localName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam",
+          "upstreamRuntimeName": "MethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam"
+        }
+      ]
+    }
+  ]
+}

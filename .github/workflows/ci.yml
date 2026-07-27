@@ -25,6 +25,19 @@ jobs:
       - name: Check formatting and compile
         run: timeout --kill-after=5s 120s sbt -batch -no-colors scalafmtCheckAll compile
 
+      - name: Fetch pinned IntelliJ Scala revision
+        run: |
+          git init target/intellij-scala-origin
+          git -C target/intellij-scala-origin remote add origin https://github.com/JetBrains/intellij-scala.git
+          timeout --kill-after=5s 120s git -C target/intellij-scala-origin fetch --depth=1 origin 8dd22d153b65c847f4ced8917dd7e02b83561e5d
+
+      - name: Verify copied IntelliJ tests
+        run: |
+          timeout --kill-after=5s 120s sbt -batch -no-colors \
+            -Dintellij.scala.repo=target/intellij-scala-origin \
+            verifyCopiedIntellijTestsAgainstOrigin
+          timeout --kill-after=5s 120s sbt -batch -no-colors verifyCopiedIntellijTests
+
       - name: Verify deterministic test planning
         run: scripts/test-test-lane-runner.sh
 

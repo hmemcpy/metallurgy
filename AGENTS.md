@@ -110,6 +110,9 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
 - `-Xfatal-warnings`, unused-value warnings, and non-Unit statement warnings are enabled. Fix every warning.
 - Explicit deterministic test lanes live in `test-lanes/` and run through `scripts/run-test-lane.sh`. Preserve their
   per-suite evidence; do not replace them with wildcard selection.
+- Copied IntelliJ Scala tests are pinned by `upstream-tests/intellij-scala.json`. Snapshot and generated sources are
+  byte-controlled inputs: never format or edit them directly. Regenerate under `target/` and run
+  `verifyCopiedIntellijTests` plus `verifyCopiedIntellijTestsAgainstOrigin`.
 
 ## Target architecture
 
