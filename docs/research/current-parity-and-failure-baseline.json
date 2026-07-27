@@ -3,7 +3,7 @@
   "measurementDate": "2026-07-27",
   "source": {
     "baselineRevision": "40145b89b26a4cfe62f887732a95cf0ad1705616",
-    "lifecycleStrengtheningRevision": "6bf2cc03d12cab3d07f0873024087a8b7d23447d",
+    "lifecycleStrengtheningRevision": "89abf5a52a2fb587a93987777d48123566cdfaf4",
     "reconstructibleFromCommittedRevisions": true
   },
   "environment": {
@@ -19,7 +19,7 @@
   "lanes": [
     {
       "name": "baseline-syntax-psi",
-      "evidence": "target/test-evidence/baseline-syntax-psi/task-102-review-fixes-v2",
+      "evidence": "target/test-evidence/baseline-syntax-psi/task-102-final-committed",
       "manifestSha256": "2608e130a319bec0a6b3503effbd19074d0a4239fd93f50f2975256d855ffd1a",
       "invocationManifestSha256": "920dd5994d2d758345a49b6ac12c1aa28a90c87ad6917c632b3bbec0a4420a6d",
       "suites": 5,
@@ -47,7 +47,7 @@
     },
     {
       "name": "baseline-semantics",
-      "evidence": "target/test-evidence/baseline-semantics/task-102-semantics",
+      "evidence": "target/test-evidence/baseline-semantics/task-102-final-committed",
       "manifestSha256": "9319d6234ddeb53e299263389376cf8149872e1b8a07419716b1aadf19760280",
       "invocationManifestSha256": "214cdc54d9a939e39f8d2a31ee6c1f993393c26855bc85144982b412582c2278",
       "suites": 4,
@@ -120,6 +120,7 @@
       "public API change refresh",
       "same-prefix stale completion rejection",
       "public API removal refresh",
+      "visible downstream removal diagnostic",
       "compile-server process restart"
     ],
     "directCompilerControl": "com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest"

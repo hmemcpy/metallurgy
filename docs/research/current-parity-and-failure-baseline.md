@@ -18,7 +18,7 @@ The machine-readable record is
 [`current-parity-and-failure-baseline.json`](current-parity-and-failure-baseline.json). The retained run summaries are
 under `target/test-evidence/`. The compatibility and original focused measurements are reconstructible at
 `40145b89b26a4cfe62f887732a95cf0ad1705616`; the strengthened syntax and lifecycle lane is reconstructible at
-`6bf2cc03d12cab3d07f0873024087a8b7d23447d`.
+`89abf5a52a2fb587a93987777d48123566cdfaf4`.
 
 ## Coverage boundaries
 
