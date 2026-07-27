@@ -3,7 +3,7 @@ package com.hmemcpy.metallurgy.pc
 import java.io.File
 import java.lang.reflect.{Constructor, Method}
 import java.net.URLClassLoader
-import java.util.IdentityHashMap
+import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import scala.reflect.Selectable.reflectiveSelectable
 import scala.util.control.NonFatal
@@ -48,6 +48,7 @@ private[pc] object StructuralScala3ParserBridge:
       val optionClass       = loader.loadClass("scala.Option")
       val iterableClass     = loader.loadClass("scala.collection.Iterable")
       val nameClass         = loader.loadClass("dotty.tools.dotc.core.Names$Name")
+      val uniqueNameKind    = loader.loadClass("dotty.tools.dotc.core.NameKinds$UniqueNameKind")
       val spansModule       = module(loader, "dotty.tools.dotc.util.Spans$Span$")
 
       val sourceFactory = discoverSourceFactory(sourceModule, sourceFileClass)
@@ -69,6 +70,7 @@ private[pc] object StructuralScala3ParserBridge:
         optionClass,
         iterableClass,
         nameClass,
+        uniqueNameKind,
         spansModule
       )
       Right(runtime)
@@ -166,6 +168,7 @@ private[pc] object StructuralScala3ParserBridge:
       optionClass: Class[?],
       iterableClass: Class[?],
       nameClass: Class[?],
+      uniqueNameKindClass: Class[?],
       spansModule: AnyRef
   ):
     def close(): Unit = loader.close()
@@ -253,6 +256,19 @@ private final class StructuralScala3ParserBridge private (
     def `end$extension`(span: Long): Int
     def `point$extension`(span: Long): Int
     def `isSourceDerived$extension`(span: Long): Boolean
+  }
+
+  private type NameValue = {
+    def info(): AnyRef
+    def underlying(): AnyRef
+  }
+
+  private type NameInfoValue = {
+    def kind(): AnyRef
+  }
+
+  private type UniqueNameKindValue = {
+    def separator(): String
   }
 
   private type DiagnosticValue = {
@@ -346,6 +362,7 @@ private final class StructuralScala3ParserBridge private (
     else
       val ids       = new IdentityHashMap[AnyRef, java.lang.Long]()
       val products  = new IdentityHashMap[AnyRef, java.lang.Boolean]()
+      val generated = new HashMap[String, java.lang.Integer]()
       var nextId    = 0L
       var collected = Vector.empty[ParserSyntaxNode]
 
@@ -358,7 +375,7 @@ private final class StructuralScala3ParserBridge private (
             nextId += 1
             ids.put(tree, id)
             val product  = tree.asInstanceOf[ProductValue]
-            val fields   = productFields(active, product, cancellation, visitTree, products)
+            val fields   = productFields(active, product, cancellation, visitTree, products, generated)
             val position = treePosition(active, tree.asInstanceOf[TreeValue])
             collected = collected :+ ParserSyntaxNode(id, product.productPrefix(), fields, position)
             id
@@ -371,13 +388,14 @@ private final class StructuralScala3ParserBridge private (
       product: ProductValue,
       cancellation: Scala3ParserCancellation,
       visitTree: AnyRef => Long,
-      products: IdentityHashMap[AnyRef, java.lang.Boolean]
+      products: IdentityHashMap[AnyRef, java.lang.Boolean],
+      generated: HashMap[String, java.lang.Integer]
   ): Vector[ParserSyntaxField] =
     Vector.tabulate(product.productArity()): index =>
       cancellation.checkCanceled()
       ParserSyntaxField(
         product.productElementName(index),
-        fieldValue(active, product.productElement(index), cancellation, visitTree, products)
+        fieldValue(active, product.productElement(index), cancellation, visitTree, products, generated)
       )
 
   private def fieldValue(
@@ -385,7 +403,8 @@ private final class StructuralScala3ParserBridge private (
       value: AnyRef,
       cancellation: Scala3ParserCancellation,
       visitTree: AnyRef => Long,
-      products: IdentityHashMap[AnyRef, java.lang.Boolean]
+      products: IdentityHashMap[AnyRef, java.lang.Boolean],
+      generated: HashMap[String, java.lang.Integer]
   ): ParserFieldValue =
     if value == null then ParserFieldValue.Optional(None)
     else if active.treeClass.isInstance(value) then ParserFieldValue.Node(visitTree(value))
@@ -399,7 +418,7 @@ private final class StructuralScala3ParserBridge private (
         case character: java.lang.Character              =>
           ParserFieldValue.Scalar(ParserScalar.Character(character.charValue()))
         case _ if active.nameClass.isInstance(value)     =>
-          ParserFieldValue.Name(value.toString)
+          parserName(active, value, generated)
         case _ if active.optionClass.isInstance(value)   =>
           val option = value.asInstanceOf[OptionValue]
           ParserFieldValue.Optional(
@@ -409,14 +428,15 @@ private final class StructuralScala3ParserBridge private (
                 option.get(),
                 cancellation,
                 visitTree,
-                products
+                products,
+                generated
               )
             )
           )
         case _ if active.iterableClass.isInstance(value) =>
           ParserFieldValue.Repeated(
             iteratorValues(value.asInstanceOf[IterableValue]).map: element =>
-              fieldValue(active, element, cancellation, visitTree, products)
+              fieldValue(active, element, cancellation, visitTree, products, generated)
           )
         case _ if active.productClass.isInstance(value)  =>
           if products.put(value, java.lang.Boolean.TRUE) != null then
@@ -425,12 +445,36 @@ private final class StructuralScala3ParserBridge private (
             val product = value.asInstanceOf[ProductValue]
             val result  = ParserFieldValue.Product(
               product.productPrefix(),
-              productFields(active, product, cancellation, visitTree, products)
+              productFields(active, product, cancellation, visitTree, products, generated)
             )
             products.remove(value)
             result
         case _                                           =>
           ParserFieldValue.Unsupported(value.getClass.getName)
+
+  private def parserName(
+      active: ParserRuntime,
+      value: AnyRef,
+      generated: HashMap[String, java.lang.Integer]
+  ): ParserFieldValue =
+    val methods = value.getClass.getMethods.iterator.map(_.getName).toSet
+    if !methods("info") || !methods("underlying") then ParserFieldValue.Name(value.toString)
+    else
+      val name = value.asInstanceOf[NameValue]
+      val kind = name.info().asInstanceOf[NameInfoValue].kind()
+      if !active.uniqueNameKindClass.isInstance(kind) then ParserFieldValue.Name(value.toString)
+      else
+        val runtimeName                = value.toString
+        val observed                   = Option(generated.get(runtimeName))
+        val ordinal: java.lang.Integer = observed.getOrElse:
+          val assigned = java.lang.Integer.valueOf(generated.size())
+          generated.put(runtimeName, assigned)
+          assigned
+        ParserFieldValue.GeneratedName(
+          name.underlying().toString,
+          kind.asInstanceOf[UniqueNameKindValue].separator(),
+          ordinal.intValue()
+        )
 
   private def iteratorValues(iterable: IterableValue): Vector[AnyRef] =
     val iterator = iterable.iterator().asInstanceOf[IteratorValue]

@@ -151,6 +151,7 @@ private[metallurgy] enum ParserFieldValue:
   case Repeated(values: Vector[ParserFieldValue])
   case Product(production: String, fields: Vector[ParserSyntaxField])
   case Name(value: String)
+  case GeneratedName(base: String, separator: String, generationIndex: Int)
   case Scalar(value: ParserScalar)
   case Unsupported(runtimeType: String)
 
