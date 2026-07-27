@@ -133,7 +133,7 @@ final class Scala3ParserVerticalSliceTest:
       .fold(error => throw new AssertionError(error.toString), identity)
 
   private def compilerDistribution(): Seq[Path] =
-    PresentationCompilerResolver.publicCoursier
+    Scala3CompilerResolver.publicCoursier
       .resolve(ScalaVersion)
       .fold(error => throw error.toException, identity)
 

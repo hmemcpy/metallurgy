@@ -104,7 +104,7 @@ final class Scala3ParserBridgeTest:
     Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", ScalaVersion)
 
   private def compilerDistribution(): Seq[Path] =
-    PresentationCompilerResolver.publicCoursier
+    Scala3CompilerResolver.publicCoursier
       .resolve(ScalaVersion)
       .fold(error => throw error.toException, identity)
 

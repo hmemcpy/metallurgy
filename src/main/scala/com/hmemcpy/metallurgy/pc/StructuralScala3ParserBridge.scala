@@ -51,20 +51,21 @@ private[pc] object StructuralScala3ParserBridge:
       val uniqueNameKind    = loader.loadClass("dotty.tools.dotc.core.NameKinds$UniqueNameKind")
       val spansModule       = module(loader, "dotty.tools.dotc.util.Spans$Span$")
 
-      val sourceFactory = discoverSourceFactory(sourceModule, sourceFileClass)
-      val parserFactory = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
-      val _             = parserClass.getMethod("parse")
-      val _             = storeReporter.getMethod("allErrors")
-      val _             = storeReporter.getMethod("allWarnings")
-      val runtime       = ParserRuntime(
+      val sourceFactory    = discoverSourceFactory(sourceModule, sourceFileClass)
+      val parserFactory    = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
+      val reporterFactory  = discoverReporterFactory(storeReporter, reporterClass)
+      val diagnosticReader = discoverDiagnosticReader(storeReporter, contextClass)
+      val _                = parserClass.getMethod("parse")
+      val runtime          = ParserRuntime(
         loader,
         contextBaseClass.getConstructor(),
         freshContextClass.getMethod("setReporter", reporterClass),
-        storeReporter.getConstructor(reporterClass, java.lang.Boolean.TYPE),
+        reporterFactory,
         driverClass.getConstructor(),
         driverClass.getMethod("setup", classOf[Array[String]], contextClass),
         sourceFactory,
         parserFactory,
+        diagnosticReader,
         treeClass,
         productClass,
         optionClass,
@@ -121,6 +122,38 @@ private[pc] object StructuralScala3ParserBridge:
             )
       .getOrElse(throw new NoSuchMethodException("Parsers.Parser whole-source or range-source constructor"))
 
+  private def discoverDiagnosticReader(
+      reporterClass: Class[?],
+      contextClass: Class[?]
+  ): DiagnosticReader =
+    val methods     = reporterClass.getMethods
+    val partitioned =
+      methods.exists(method => method.getName == "allErrors" && method.getParameterCount == 0) &&
+        methods.exists(method => method.getName == "allWarnings" && method.getParameterCount == 0)
+    if partitioned then DiagnosticReader.Partitioned
+    else
+      methods
+        .find(method =>
+          method.getName == "pendingMessages" &&
+            method.getParameterTypes.sameElements(Array(contextClass))
+        )
+        .map(DiagnosticReader.Buffered.apply)
+        .getOrElse(throw new NoSuchMethodException("StoreReporter diagnostic access"))
+
+  private def discoverReporterFactory(
+      storeReporterClass: Class[?],
+      reporterClass: Class[?]
+  ): ReporterFactory =
+    storeReporterClass.getConstructors
+      .find(_.getParameterTypes.sameElements(Array(reporterClass, java.lang.Boolean.TYPE)))
+      .map(ReporterFactory.WithTyperState.apply)
+      .orElse(
+        storeReporterClass.getConstructors
+          .find(_.getParameterTypes.sameElements(Array(reporterClass)))
+          .map(ReporterFactory.SingleArgument.apply)
+      )
+      .getOrElse(throw new NoSuchMethodException("StoreReporter supported constructor"))
+
   private def availableCapabilities: Scala3ParserCapabilities =
     Scala3ParserCapabilities(
       publishedParser = ParserCapabilityStatus.Unavailable(
@@ -158,11 +191,12 @@ private[pc] object StructuralScala3ParserBridge:
       loader: Scala3ParserClassLoader,
       contextBaseConstructor: Constructor[?],
       setReporter: Method,
-      reporterConstructor: Constructor[?],
+      reporterFactory: ReporterFactory,
       driverConstructor: Constructor[?],
       driverSetup: Method,
       sourceFactory: SourceFactory,
       parserFactory: ParserFactory,
+      diagnosticReader: DiagnosticReader,
       treeClass: Class[?],
       productClass: Class[?],
       optionClass: Class[?],
@@ -199,6 +233,19 @@ private[pc] object StructuralScala3ParserBridge:
             limitDefault.invoke(defaults),
             context
           )
+
+  private enum DiagnosticReader:
+    case Partitioned
+    case Buffered(method: Method)
+
+  private enum ReporterFactory:
+    case SingleArgument(constructor: Constructor[?])
+    case WithTyperState(constructor: Constructor[?])
+
+    def create(): AnyRef =
+      this match
+        case SingleArgument(constructor) => constructor.newInstance(null)
+        case WithTyperState(constructor) => constructor.newInstance(null, java.lang.Boolean.FALSE)
 
   val capabilities: Scala3ParserCapabilities = availableCapabilities
 
@@ -316,7 +363,7 @@ private final class StructuralScala3ParserBridge private (
     val base            = active.contextBaseConstructor.newInstance().asInstanceOf[ContextBaseValue]
     val initial         = base.initialCtx().asInstanceOf[ContextValue]
     val context         = initial.fresh()
-    val reporter        = active.reporterConstructor.newInstance(null, java.lang.Boolean.FALSE)
+    val reporter        = active.reporterFactory.create()
     val reporting       = active.setReporter.invoke(context, reporter)
     val driver          = active.driverConstructor.newInstance()
     val setupArguments  = (request.compilerOptions :+ "ParserInput.scala").toArray
@@ -347,7 +394,7 @@ private final class StructuralScala3ParserBridge private (
         ParserSyntaxSnapshot.digest(request.sourceText),
         collected.rootNodeId,
         collected.nodes,
-        diagnostics(context.reporter),
+        diagnostics(active, context),
         capabilities,
         identity
       )
@@ -496,11 +543,16 @@ private final class StructuralScala3ParserBridge private (
         provenance
       )
 
-  private def diagnostics(reporter: AnyRef): Vector[ParserDiagnostic] =
-    val value    = reporter.asInstanceOf[ReporterValue]
-    val errors   = iteratorValues(value.allErrors().asInstanceOf[IterableValue])
-    val warnings = iteratorValues(value.allWarnings().asInstanceOf[IterableValue])
-    (errors ++ warnings).map: value =>
+  private def diagnostics(active: ParserRuntime, context: ParserContext): Vector[ParserDiagnostic] =
+    val values =
+      active.diagnosticReader match
+        case DiagnosticReader.Partitioned      =>
+          val reporter = context.reporter.asInstanceOf[ReporterValue]
+          iteratorValues(reporter.allErrors().asInstanceOf[IterableValue]) ++
+            iteratorValues(reporter.allWarnings().asInstanceOf[IterableValue])
+        case DiagnosticReader.Buffered(method) =>
+          iteratorValues(method.invoke(context.reporter, context.value).asInstanceOf[IterableValue])
+    values.map: value =>
       val diagnostic = value.asInstanceOf[DiagnosticValue]
       ParserDiagnostic(
         diagnosticSeverity(diagnostic.level()),
