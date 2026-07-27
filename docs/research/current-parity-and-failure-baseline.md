@@ -17,8 +17,9 @@ retained JUnit, stdout, stderr, IntelliJ log, environment, source-state, and exi
 The machine-readable record is
 [`current-parity-and-failure-baseline.json`](current-parity-and-failure-baseline.json). The retained run summaries are
 under `target/test-evidence/`. The compatibility and original focused measurements are reconstructible at
-`40145b89b26a4cfe62f887732a95cf0ad1705616`; the strengthened syntax and lifecycle lane is reconstructible at
-`89abf5a52a2fb587a93987777d48123566cdfaf4`.
+`40145b89b26a4cfe62f887732a95cf0ad1705616`; the strengthened syntax lane is reconstructible at
+`89abf5a52a2fb587a93987777d48123566cdfaf4`, and the semantic lifecycle lane is reconstructible at
+`e997fad8bc69baa26c819eb8e9f3dda19a03a2f8`.
 
 ## Coverage boundaries
 
