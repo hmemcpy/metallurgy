@@ -17,9 +17,9 @@ import org.junit.Assert.assertTrue
 
 import scala.jdk.CollectionConverters.*
 
-final class EcosystemSemanticCorpusTest extends ScalaLightCodeInsightFixtureTestCase:
+final class EcosystemSemanticProjectsTest extends ScalaLightCodeInsightFixtureTestCase:
 
-  private final case class CorpusCase(name: String, source: String, expectedType: String)
+  private final case class ProjectCase(name: String, source: String, expectedType: String)
 
   override protected def supportedIn(version: ScalaVersion): Boolean =
     version == ScalaVersion.fromString("3.5.2").get
@@ -53,35 +53,35 @@ final class EcosystemSemanticCorpusTest extends ScalaLightCodeInsightFixtureTest
 
   def testPinnedLibrarySemanticFactsUseCurrentCompilerResults(): Unit =
     val cases = Seq(
-      CorpusCase(
+      ProjectCase(
         "Cats",
         """import cats.syntax.all.*
           |val result = List(1, 2).traverse(value => Option(value.toString))
           |""".stripMargin,
         "Option[List[String]]"
       ),
-      CorpusCase(
+      ProjectCase(
         "CatsEffect",
         """import cats.effect.IO
           |val result = IO.pure(42).map(_.toString)
           |""".stripMargin,
         "cats.effect.IO[String]"
       ),
-      CorpusCase(
+      ProjectCase(
         "Fs2",
         """import fs2.Stream
           |val result = Stream.emits(List(1, 2)).map(_.toString)
           |""".stripMargin,
         "fs2.Stream[[x] =>> fs2.Pure[x], String]"
       ),
-      CorpusCase(
+      ProjectCase(
         "Zio",
         """import zio.ZIO
           |val result = ZIO.succeed(42).map(_.toString)
           |""".stripMargin,
         "zio.ZIO[Any, Nothing, String]"
       ),
-      CorpusCase(
+      ProjectCase(
         "Shapeless",
         """import shapeless3.deriving.Labelling
           |case class Person(name: String, age: Int)
@@ -89,7 +89,7 @@ final class EcosystemSemanticCorpusTest extends ScalaLightCodeInsightFixtureTest
           |""".stripMargin,
         "IndexedSeq[String]"
       ),
-      CorpusCase(
+      ProjectCase(
         "Tapir",
         """import sttp.tapir.*
           |val result = endpoint.get.in("hello").out(stringBody)
@@ -98,13 +98,13 @@ final class EcosystemSemanticCorpusTest extends ScalaLightCodeInsightFixtureTest
       )
     )
 
-    val measured = cases.zipWithIndex.map: (corpus, index) =>
-      val file     = myFixture.configureByText(s"Ecosystem$index.scala", corpus.source)
+    val measured = cases.zipWithIndex.map: (example, index) =>
+      val file     = myFixture.configureByText(s"Ecosystem$index.scala", example.source)
       val prepared = PlatformTestUtil.waitForFuture(
         PcSessionManager.get(getProject).prepareCompilerBackend(file.getVirtualFile),
         60000L
       )
-      assertTrue(s"${corpus.name} backend preparation failed", prepared.nonEmpty)
+      assertTrue(s"${example.name} backend preparation failed", prepared.nonEmpty)
 
       val binding = PsiTreeUtil
         .findChildrenOfType(file, classOf[ScBindingPattern])
@@ -117,12 +117,12 @@ final class EcosystemSemanticCorpusTest extends ScalaLightCodeInsightFixtureTest
 
       val actual = state match
         case CompilerBackendState.Current(renderedType, _) => renderedType
-        case other                                         => throw new AssertionError(s"${corpus.name} state was $other")
+        case other                                         => throw new AssertionError(s"${example.name} state was $other")
 
       val quickInfo = ScalaDocQuickInfoGenerator.getQuickNavigateInfo(binding, binding).getOrElse("")
-      assertTrue(s"${corpus.name} hover omitted ${corpus.expectedType}: $quickInfo", quickInfo.contains("result"))
-      println(s"[ecosystem] ${corpus.name}: $actual")
-      (corpus.name, normalize(corpus.expectedType), normalize(actual))
+      assertTrue(s"${example.name} hover omitted ${example.expectedType}: $quickInfo", quickInfo.contains("result"))
+      println(s"[ecosystem] ${example.name}: $actual")
+      (example.name, normalize(example.expectedType), normalize(actual))
 
     val failures = measured.filter { case (_, expected, actual) => expected != actual }
     assertTrue(

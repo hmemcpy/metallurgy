@@ -1,0 +1,4 @@
+com.hmemcpy.metallurgy.compilerbackend.BundledCompilerBackendShimTest
+com.hmemcpy.metallurgy.compilerbackend.CompilerBackendSnapshotPublisherTest
+com.hmemcpy.metallurgy.pc.BetastyCompileServerTest
+com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest

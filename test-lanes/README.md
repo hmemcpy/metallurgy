@@ -5,7 +5,22 @@ Each `<lane>.txt` file is a bytewise-sorted, duplicate-free list of fully qualif
 and runtime discovery never decide which suites or test methods a lane intends to execute.
 
 `ci.txt` is the representative ordinary check. `compatibility.txt` is the current locally owned Scala 3 compatibility
-area.
+area. The pre-migration comparison is split by ownership boundary:
+
+- `baseline-syntax-psi.txt` covers parser/AST shape, public Scala PSI accessors, stubs, indices, closed-file loading,
+  navigation, copies, reload, and smart pointers.
+- `baseline-editor-operations.txt` covers daemon highlighting, completion, find usages, hover, documentation, parameter
+  info, inspections, structure view, rename, inline, change-signature, introduce-variable, extract-method, and
+  implement-method operations.
+- `baseline-semantics.txt` covers semantic publication and invalidation, current failure states, compiler-only symbols,
+  capability discovery, direct best-effort controls, and the ordinary-build two-module editor scenario.
+- `baseline-invocation-accounting.txt` verifies generated-test accounting, adapter contracts, exact compiler-conflict
+  proofs, and the representative unchanged generated suite.
+- `compatibility.txt` executes the complete currently selected compatibility inventory.
+
+The baseline lanes record current failures as ordinary JUnit failures; they never turn them into expected passes. The
+runner therefore returns nonzero while a recorded defect remains, while still retaining complete invocation evidence
+for every later comparison.
 
 ## Run a lane
 

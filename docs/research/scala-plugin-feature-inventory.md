@@ -149,7 +149,7 @@ gates must be reported, not silently mapped to a compatibility branch.
 The matrix is tested by semantic boundary, not by creating 1,042 bespoke tests.
 
 1. **Catalog drift:** run the generator against every graduation target. Any registration delta requires classification.
-2. **Central inheritance contract:** reuse one exact-type/symbol corpus through expression, declaration, resolve, hover,
+2. **Central inheritance contract:** reuse one exact-type/symbol example set through expression, declaration, resolve, hover,
    completion, parameter info, representative inspections, hints, hierarchy, usage and refactoring entry points.
 3. **Alternate-model contracts:** separately test Java PSI, UAST, debugger fragments, TASTy/compiled PSI and compiler-only
    synthetic targets because they can bypass ordinary Scala PSI.
@@ -157,7 +157,7 @@ The matrix is tested by semantic boundary, not by creating 1,042 bespoke tests.
    generations, classpaths, options, source sets and artifacts.
 5. **Execution invariance:** for applications and every test framework, separate discovery/navigation assertions from
    actual launch/rerun assertions. The backend must not replace the execution infrastructure.
-6. **Ecosystem and graduation:** run the pinned compiler-clean corpus (#66), Metallurgy parity suite, and finally all
+6. **Ecosystem and graduation:** run the pinned compiler-clean projects (#66), Metallurgy parity suite, and finally all
    Scala 3-focused intellij-scala tests (#60) under hard timeouts. The final step is the only one that builds that checkout.
 
 Every affected boundary gets current, pending/unavailable, stale-generation, inactive Scala 3, Scala 2 and mixed-project

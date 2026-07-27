@@ -1,0 +1,4 @@
+com.hmemcpy.metallurgy.pc.DotcPsiProducerTest
+com.hmemcpy.metallurgy.psiproducer.DialectFileLoadingTest
+com.hmemcpy.metallurgy.psiproducer.ProducerReloadIndexTest
+com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderTest

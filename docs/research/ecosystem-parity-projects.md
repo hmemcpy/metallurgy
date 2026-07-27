@@ -1,22 +1,22 @@
-# Scala 3 ecosystem parity corpus
+# Scala 3 ecosystem parity projects
 
-The ecosystem gate has two complementary layers. `corpus/ecosystem.json` pins immutable source revisions of Cats,
+The ecosystem gate has two complementary layers. `projects/ecosystem.json` pins immutable source revisions of Cats,
 Cats Effect, ZIO, Shapeless 3, Tapir, and FS2 together with each build's own Scala 3 line and compiler-clean command.
-`tools/run_ecosystem_corpus.py` downloads those revisions into an isolated temporary workspace and runs every sbt build
+`tools/run_ecosystem_projects.py` downloads those revisions into an isolated temporary workspace and runs every sbt build
 behind GNU `gtimeout`, recording revision, compiler version(s), source-file/line counts, duration, exit status, and logs in
-`target/ecosystem-corpus-report.json`. It never mutates a developer checkout.
+`target/ecosystem-projects-report.json`. It never mutates a developer checkout.
 
 Run the complete compiler-clean baseline with:
 
 ```sh
-CORPUS_JAVA_HOME="$JAVA_HOME" \
-  python3 tools/run_ecosystem_corpus.py
+ECOSYSTEM_JAVA_HOME="$JAVA_HOME" \
+  python3 tools/run_ecosystem_projects.py
 ```
 
 Use one or more `--project NAME` arguments for a focused retry. A nonzero download, timeout, or compile exit makes the
 whole command fail; there is no diagnostic allowlist.
 
-The IDE-facing layer is `EcosystemSemanticCorpusTest`. It resolves pinned published artifacts for the same six library
+The IDE-facing layer is `EcosystemSemanticProjectsTest`. It resolves pinned published artifacts for the same six library
 families and asks the exact module presentation compiler for exact inferred types over representative higher-kinded,
 effect, stream, macro/derivation, and endpoint-builder expressions. It then verifies that Scala PSI and hover observe
 the committed compiler result. This protects the compiler-to-PSI seam on every ordinary test run without cloning six
@@ -42,6 +42,6 @@ the manifest command, no diagnostic allowlist, and a per-project `gtimeout --kil
 | FS2 | 3.3.8 | 455 | 65,929 | 34.690 s | passed |
 | **Total** |  | **3,950** | **529,632** | **501.392 s** | **passed** |
 
-`EcosystemSemanticCorpusTest` separately passed six exact compiler-to-PSI type and hover facts in 32.055 seconds on
+`EcosystemSemanticProjectsTest` separately passed six exact compiler-to-PSI type and hover facts in 32.055 seconds on
 the IntelliJ 261 test platform. The durable machine-readable reports and complete build logs are emitted below
 `target/`; they are CI artifacts rather than version-controlled source.

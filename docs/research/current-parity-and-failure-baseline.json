@@ -1,237 +1,129 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "measurementDate": "2026-07-27",
   "source": {
-    "revision": "242246af07c16927fe6bbe3438df66557e51d355",
-    "dirty": false
+    "baseRevision": "778638fbf6d78d32db17b3738c8c96938b53e60b",
+    "exactWorkingTreeRetainedAsSourcePatch": true
   },
   "environment": {
     "intellijBuild": "261.26222.65",
     "scalaPluginVersion": "2026.1.20",
     "pluginScalaVersion": "3.7.4",
-    "fixtureScalaVersion": "3.5.2",
+    "fixtureCompiler": "org.scala-lang:scala3-compiler_3:3.5.2",
     "fixtureJdk": "JDK_17",
     "buildRuntime": "JBR 25.0.3+9-b329.124",
-    "testkitScalaVersion": "2.13.16"
+    "testkitScalaVersion": "2.13.16",
+    "architecture": "arm64"
   },
-  "discovery": {
-    "root": "src/test/scala/com/hmemcpy/metallurgy/compat",
-    "selection": [
-      "*CompatTest.scala",
-      "Scala3CompatHarnessSanityTest.scala",
-      "DotcOracleConflictProofTest.scala"
-    ],
-    "suiteCount": 47,
-    "sortedClassNameSha256": "9034b154c5a60f1e4731b5a20d8f4236dfa906d537e013de8a4a886363833c85",
-    "reportedSuiteCount": 47,
-    "missingReports": [],
-    "unexpectedReports": []
-  },
-  "runs": [
+  "lanes": [
     {
-      "id": "wildcard",
-      "selection": "com.hmemcpy.metallurgy.compat.*",
-      "timeoutSeconds": 600,
-      "exitCode": 124,
-      "outcome": "orchestration-timeout",
-      "reportedSuites": 36,
-      "reportedTests": 224,
-      "reportedFailures": 10,
-      "reportedErrors": 0,
-      "reportedSkipped": 0,
-      "reportedTimeSeconds": 592.924,
-      "ideaLog": "target/idea-test-86321/system/log/idea.log"
+      "name": "baseline-syntax-psi",
+      "evidence": "target/test-evidence/baseline-syntax-psi/task-102-syntax",
+      "manifestSha256": "59202283a90630170c6a3aad2b1b7b773ef1defd3993bb2e852fb37ecd4ab793",
+      "invocationManifestSha256": "5336f16bf168c76d76c06c80a15bbacba26fbcdf954dbf13146f4c4b4500d762",
+      "suites": 4,
+      "tests": 38,
+      "passing": 38,
+      "failing": 0,
+      "status": "passed"
     },
     {
-      "id": "remaining-suites",
-      "selection": "the 11 discovered suites without reports after the wildcard run",
-      "timeoutSeconds": 600,
-      "exitCode": 1,
-      "outcome": "completed-with-test-failures",
-      "reportedSuites": 11,
-      "reportedTests": 182,
-      "reportedFailures": 5,
-      "reportedErrors": 0,
-      "reportedSkipped": 0,
-      "reportedTimeSeconds": 505.119,
-      "ideaLog": "target/idea-test-93373/system/log/idea.log"
+      "name": "baseline-editor-operations",
+      "evidence": "target/test-evidence/baseline-editor-operations/task-102-editor",
+      "manifestSha256": "f4531e17b51af4d6160057c1d4079f5faeae14b558f4101e032908d243ea9e3a",
+      "invocationManifestSha256": "717705000c68c7eeed626a14eefbb94ffcd966370a9457a052a84ac547c8187c",
+      "suites": 4,
+      "tests": 22,
+      "passing": 18,
+      "failing": 4,
+      "status": "recorded-failures",
+      "failures": [
+        "BundledCompilerBackendConsumerTest.testExtractMethodUsesCurrentCompilerResultType",
+        "BundledCompilerBackendConsumerTest.testImplementMethodUsesCurrentCompilerReturnType",
+        "BundledCompilerBackendConsumerTest.testReceiverCompletionUsesCurrentInitializerType",
+        "BundledCompilerBackendConsumerTest.testTypeAwareInspectionReadsCurrentExpressionType"
+      ]
+    },
+    {
+      "name": "baseline-semantics",
+      "evidence": "target/test-evidence/baseline-semantics/task-102-semantics",
+      "manifestSha256": "9319d6234ddeb53e299263389376cf8149872e1b8a07419716b1aadf19760280",
+      "invocationManifestSha256": "214cdc54d9a939e39f8d2a31ee6c1f993393c26855bc85144982b412582c2278",
+      "suites": 4,
+      "tests": 72,
+      "passing": 68,
+      "failing": 4,
+      "status": "recorded-failures",
+      "failures": [
+        "BundledCompilerBackendShimTest.testCompilerHighlightingOffFallsThroughToBundledType",
+        "BundledCompilerBackendShimTest.testCompilerOnlyStableReferenceUsesTheSameGenerationIdentity",
+        "CompilerBackendSnapshotPublisherTest.testCurrentExpressionOverridesConflictingBundledInference",
+        "CompilerBackendSnapshotPublisherTest.testExpressionFallsBackImmediatelyAfterDocumentEdit"
+      ]
+    },
+    {
+      "name": "baseline-invocation-accounting",
+      "evidence": "target/test-evidence/baseline-invocation-accounting/task-102-accounting",
+      "manifestSha256": "18b7ae37fcbc897ae6fc6803a5909cd9424bc5109237c147d87e9a5170ae08cf",
+      "invocationManifestSha256": "87744ab58e5ca29a416a4c823a4d48a7ebdb5d4e0ecae92a896865f71e2e8002",
+      "suites": 4,
+      "tests": 13,
+      "passing": 13,
+      "failing": 0,
+      "status": "passed"
     }
   ],
-  "totals": {
+  "compatibility": {
+    "manifestSha256": "16cd3d73504c44c92bebee9d4dad39652d9945c27923a5312edb2cbd17d4c431",
+    "invocationManifestSha256": "2e40580e930481c4f166b9d063f4471939f07ab03d774e82a85ab94002a0b656",
+    "primaryEvidence": "target/test-evidence/compatibility/task-102-compatibility",
+    "largeSuiteCompletionEvidence": "target/test-evidence/compatibility-opaque/task-102-opaque-retry",
     "suites": 47,
-    "passingSuites": 39,
-    "failingSuites": 8,
-    "tests": 406,
-    "passingTests": 391,
-    "failingTests": 15,
+    "passingSuites": 40,
+    "failingSuites": 7,
+    "tests": 405,
+    "passingTests": 392,
+    "failingTests": 13,
     "errors": 0,
     "skipped": 0,
-    "reportedTimeSeconds": 1098.043
-  },
-  "failingSuites": [
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.annotator.Scala3NamedTupleAnnotatorCompatTest",
-      "tests": 2,
-      "failures": 1
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "tests": 52,
-      "failures": 5
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTuplesCompatTest",
-      "tests": 32,
-      "failures": 1
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentsInferenceCompatTest",
-      "tests": 6,
-      "failures": 2
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3UniversalApplyMethodCompatTest",
-      "tests": 20,
-      "failures": 3
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.CurriedTypeParamsApplyCallCompatTest",
-      "tests": 3,
-      "failures": 1
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.InfixGenericCallCompatTest",
-      "tests": 1,
-      "failures": 1
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.OverloadedHigherOrderFunCompatTest",
-      "tests": 5,
-      "failures": 1
-    }
-  ],
-  "failures": [
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.annotator.Scala3NamedTupleAnnotatorCompatTest",
-      "testName": "testNamedTupleReverseNoSoe",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected upper-bound error is highlighted on NT1"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "testName": "testAmbiguousExtensionWithExpectedTypeAndTypeArgs",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected ambiguous-extension error is highlighted on 123"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "testName": "testExtensionResolvedViaTypeclassGiven",
-      "category": "highlight-disagreement",
-      "observation": "six unexpected declaration and parser errors are highlighted on two given definitions"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "testName": "testAmbiguousExtensionWithExpectedTypeAndArgs",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected ambiguous-extension error is highlighted on 123"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "testName": "testExtensionFromImplicitScope",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected duplicate-parameter error is highlighted"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest",
-      "testName": "testExtensionFromGivenInImplicitScope",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected duplicate-parameter error is highlighted"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTuplesCompatTest",
-      "testName": "testExprTypeLiteral",
-      "category": "type-rendering-disagreement",
-      "observation": "the inferred type is rendered as (x: 1) instead of (x: 1, y: 2)"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentsInferenceCompatTest",
-      "testName": "testGenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType",
-      "category": "fixture-crash",
-      "observation": "the test fails with java.util.NoSuchElementException: None.get"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentsInferenceCompatTest",
-      "testName": "testGenericCallWithPartiallyNamedTypeArguments_InferFirstParamFromExpectedType",
-      "category": "fixture-crash",
-      "observation": "the test fails with java.util.NoSuchElementException: None.get"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3UniversalApplyMethodCompatTest",
-      "testName": "testWithCompanionObjectTypeMismatch",
-      "category": "highlight-disagreement",
-      "observation": "the compiler diagnostic is nested around the bundled type-mismatch diagnostic"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3UniversalApplyMethodCompatTest",
-      "testName": "testApplyOnValueOfCompanionlessClass",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected does-not-take-parameters error is highlighted"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3UniversalApplyMethodCompatTest",
-      "testName": "testReferencingApply",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected missing-arguments error is highlighted on Test.apply"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.CurriedTypeParamsApplyCallCompatTest",
-      "testName": "testOverloadedApplyWithImplicitGenSpawn",
-      "category": "highlight-disagreement",
-      "observation": "two unexpected conformance errors are highlighted on F"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.InfixGenericCallCompatTest",
-      "testName": "testSCL17874",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected parser error is highlighted on the type-argument bracket"
-    },
-    {
-      "className": "com.hmemcpy.metallurgy.compat.shared.typeInference.OverloadedHigherOrderFunCompatTest",
-      "testName": "testSCL24823",
-      "category": "highlight-disagreement",
-      "observation": "an unexpected unresolved-overload error is highlighted on keyBy"
-    }
-  ],
-  "logObservations": {
-    "severitySevereLines": 0,
-    "stubTreeBuildFailures": {
-      "count": 36,
-      "logger": "com.intellij.psi.stubs.StubTreeBuilder",
-      "exception": "com.intellij.diagnostic.PluginException",
-      "rootCause": "java.util.NoSuchElementException: None.get",
-      "affectedSuite": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentsInferenceCompatTest"
-    },
-    "consoleOnlyEvents": [
-      {
-        "observation": "PSI/document/model changes are not allowed during highlighting",
-        "affectedTest": "com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3UniversalApplyMethodCompatTest.testWithCompanionObjectTypeMismatch",
-        "counted": false,
-        "reason": "the event appeared in test-process output but was absent from the retained JUnit XML and idea.log"
-      }
+    "missingInvocations": 0,
+    "unexpectedInvocations": 0,
+    "status": "recorded-failures",
+    "failingInvocations": [
+      "Scala3NamedTupleAnnotatorCompatTest.testNamedTupleReverseNoSoe",
+      "Scala3ExtensionsCompatTest.testAmbiguousExtensionWithExpectedTypeAndTypeArgs",
+      "Scala3ExtensionsCompatTest.testExtensionResolvedViaTypeclassGiven",
+      "Scala3ExtensionsCompatTest.testAmbiguousExtensionWithExpectedTypeAndArgs",
+      "Scala3ExtensionsCompatTest.testExtensionFromImplicitScope",
+      "Scala3ExtensionsCompatTest.testExtensionFromGivenInImplicitScope",
+      "Scala3NamedTuplesCompatTest.testExprTypeLiteral",
+      "Scala3UniversalApplyMethodCompatTest.testWithCompanionObjectTypeMismatch",
+      "Scala3UniversalApplyMethodCompatTest.testApplyOnValueOfCompanionlessClass",
+      "Scala3UniversalApplyMethodCompatTest.testReferencingApply",
+      "CurriedTypeParamsApplyCallCompatTest.testOverloadedApplyWithImplicitGenSpawn",
+      "InfixGenericCallCompatTest.testSCL17874",
+      "OverloadedHigherOrderFunCompatTest.testSCL24823"
     ]
   },
-  "coverageGaps": [
-    "The current suites are hand-written compatibility adapters rather than a generated, integrity-checked copy of the selected IntelliJ Scala tests.",
-    "Some local helper contracts differ from the upstream helpers, including source trimming and weaker completion assertions.",
-    "The fixed Scala 3.5.2 fixture does not exercise runtime-selected exact compiler environments.",
-    "Green tests do not prove complete PSI node shape, stubs, indexing, navigation, find usages, refactoring, light PSI, UAST, or every incomplete-edit checkpoint.",
-    "The measurement does not exercise generation-matched BETASTY recovery for downstream highlighting across module boundaries.",
-    "The measurement has no real-project graduation run.",
-    "The wildcard test invocation cannot finish within ten minutes and does not preserve its process output as an artifact."
-  ],
+  "crossModuleEditorContract": {
+    "suite": "com.hmemcpy.metallurgy.pc.BetastyCompileServerTest",
+    "intellijBuildProducer": true,
+    "realModuleDependency": true,
+    "brokenUpstreamArtifactRequired": "Person.betasty",
+    "downstreamChecks": [
+      "highlighting",
+      "bundled PSI resolution",
+      "compiler-backed resolution",
+      "completion",
+      "repair refresh",
+      "public API change refresh",
+      "stale completion rejection"
+    ],
+    "directCompilerControl": "com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest"
+  },
   "interpretation": {
-    "greenMeans": "The current local adapter assertion completed without a reported failure in this environment.",
-    "greenDoesNotMean": "The selected upstream test is unchanged, its helper contract is equivalent, or structural PSI parity has been reached.",
-    "failureDisposition": "Every disagreement remains a Metallurgy defect until an exact-environment dotc proof classifies an upstream-oracle conflict."
+    "greenMeans": "Every declared invocation completed without a reported failure in the exact retained environment.",
+    "failureDisposition": "Every disagreement remains a Metallurgy defect until exact-version dotc proof classifies an upstream-oracle conflict.",
+    "suppression": "No failure is hidden, converted to an expected pass, or removed from its lane."
   }
 }

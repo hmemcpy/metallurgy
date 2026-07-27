@@ -427,8 +427,8 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
         assertEquals(4, checks.get())
       finally driver.close()
 
-  def testTypedTreeSnapshotRecordsCorpusMetrics(): Unit =
-    withRealPcSession("metallurgy-typed-tree-corpora"): session =>
+  def testTypedTreeSnapshotRecordsProjectMetrics(): Unit =
+    withRealPcSession("metallurgy-typed-tree-projects"): session =>
       val ordinary  = "object Ordinary:\n  val answer = List(42).head\n"
       val large     =
         (1 to 500).map(index => s"  val value$index = List($index).head").mkString("object Large:\n", "\n", "\n")
@@ -439,10 +439,10 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
           |  transparent inline def answer: Int = 42
           |  val result: Answer = answer
           |""".stripMargin
-      val corpora   = Seq("Ordinary" -> ordinary, "Large" -> large, "TypeLevel" -> typeLevel)
+      val examples  = Seq("Ordinary" -> ordinary, "Large" -> large, "TypeLevel" -> typeLevel)
 
-      val measured = corpora.zipWithIndex.map: (corpus, index) =>
-        val (name, source) = corpus
+      val measured = examples.zipWithIndex.map: (example, index) =>
+        val (name, source) = example
         val snapshot       = PcSnapshot(s"file:///$name.scala", index.toLong + 1L, source)
         val outcome        = session.scheduleRetypecheck(snapshot).get(10, TimeUnit.SECONDS)
         assertEquals(s"$name retypecheck", RetypecheckOutcome.Applied, outcome)

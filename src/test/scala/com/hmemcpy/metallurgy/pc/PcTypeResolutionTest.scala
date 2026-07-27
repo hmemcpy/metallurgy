@@ -304,7 +304,7 @@ final class PcTypeResolutionTest extends ScalaLightCodeInsightFixtureTestCase:
       failures.isEmpty
     )
 
-  def testCompilerBackendBulkPublicationCorpus(): Unit =
+  def testCompilerBackendBulkPublicationExamples(): Unit =
     setCompilerBasedHighlighting(enabled = true)
     try
       withPsiSession: session =>
