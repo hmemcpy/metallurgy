@@ -76,59 +76,64 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
     runWithErrorsFromCompiler(getProject):
       val upstream = addFileToProjectSources("Person.scala", brokenUpstream("personName"))
       val consumer = addModuleBFile("Consumer.scala", consumerSource("personName"))
+      try
+        exerciseLifecycle(upstream, consumer)
+      finally closeEditor(consumer)
 
-      ensureBestEffortFlags()
-      val brokenMessages = compiler.make().asScala.toSeq
-      assertTrue(
-        "the deliberately broken producer must report a compiler error",
-        brokenMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
-      )
-      val artifacts      = betastyArtifacts(getBaseDir.toNioPath.resolve("out"))
-      assertTrue(s"IntelliJ build emitted no .betasty artifact: $brokenMessages", artifacts.nonEmpty)
-      assertTrue(artifacts.exists(_.getFileName.toString == "Person.betasty"))
+  private def exerciseLifecycle(upstream: VirtualFile, consumer: VirtualFile): Unit =
+    ensureBestEffortFlags()
+    val brokenMessages = compiler.make().asScala.toSeq
+    assertTrue(
+      "the deliberately broken producer must report a compiler error",
+      brokenMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+    )
+    val artifacts      = betastyArtifacts(getBaseDir.toNioPath.resolve("out"))
+    assertTrue(s"IntelliJ build emitted no .betasty artifact: $brokenMessages", artifacts.nonEmpty)
+    assertTrue(artifacts.exists(_.getFileName.toString == "Person.betasty"))
 
-      assertEditorContract(consumer, "personName")
-      assertCompletion("person", expected = "personName", absent = "personLabel")
+    assertEditorContract(consumer, "personName")
+    assertCompletion("person", expected = "personName", absent = "personLabel")
 
-      replaceText(upstream, repairedUpstream("personName"))
-      ensureBestEffortFlags()
-      val repairedMessages = compiler.make().asScala.toSeq
-      assertFalse(
-        s"repairing module A must produce a clean build: $repairedMessages",
-        repairedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
-      )
-      assertEditorContract(consumer, "personName")
+    replaceText(upstream, repairedUpstream("personName"))
+    ensureBestEffortFlags()
+    val repairedMessages = compiler.make().asScala.toSeq
+    assertFalse(
+      s"repairing module A must produce a clean build: $repairedMessages",
+      repairedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+    )
+    assertEditorContract(consumer, "personName")
 
-      replaceText(upstream, repairedUpstream("personLabel"))
-      replaceText(consumer, consumerSource("personLabel"))
-      ensureBestEffortFlags()
-      val changedMessages = compiler.make().asScala.toSeq
-      assertFalse(
-        s"changing module A's public API must produce a clean build: $changedMessages",
-        changedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
-      )
-      assertEditorContract(consumer, "personLabel")
-      assertCompletion("person", expected = "personLabel", absent = "personName")
+    replaceText(upstream, repairedUpstream("personLabel"))
+    replaceText(consumer, consumerSource("personLabel"))
+    ensureBestEffortFlags()
+    val changedMessages = compiler.make().asScala.toSeq
+    assertFalse(
+      s"changing module A's public API must produce a clean build: $changedMessages",
+      changedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+    )
+    assertEditorContract(consumer, "personLabel")
+    assertCompletion("person", expected = "personLabel", absent = "personName")
 
-      VfsTestUtil.deleteFile(upstream)
-      val removedMessages = compiler.rebuild().asScala.toSeq
-      assertTrue(
-        s"removing module A's public API must invalidate module B: $removedMessages",
-        removedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
-      )
-      assertCompletionExcludes("person", "personName", "personLabel")
+    VfsTestUtil.deleteFile(upstream)
+    val removedMessages = compiler.rebuild().asScala.toSeq
+    assertTrue(
+      s"removing module A's public API must invalidate module B: $removedMessages",
+      removedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+    )
+    assertRemovedMemberIsHighlighted(consumer)
+    assertCompletionExcludes("person", "personName", "personLabel")
 
-      val restored          = addFileToProjectSources("Person.scala", repairedUpstream("personLabel"))
-      assertNotNull("restored module A source is unavailable", restored)
-      assertTrue("compile server process did not stop", CompileServerLauncher.stopServerAndWait())
-      ensureBestEffortFlags()
-      val restartedMessages = compiler.rebuild().asScala.toSeq
-      assertFalse(
-        s"a clean rebuild after compile-server restart must succeed: $restartedMessages",
-        restartedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
-      )
-      assertEditorContract(consumer, "personLabel")
-      assertCompletion("person", expected = "personLabel", absent = "personName")
+    val restored          = addFileToProjectSources("Person.scala", repairedUpstream("personLabel"))
+    assertNotNull("restored module A source is unavailable", restored)
+    assertTrue("compile server process did not stop", CompileServerLauncher.stopServerAndWait())
+    ensureBestEffortFlags()
+    val restartedMessages = compiler.rebuild().asScala.toSeq
+    assertFalse(
+      s"a clean rebuild after compile-server restart must succeed: $restartedMessages",
+      restartedMessages.exists(_.getCategory == CompilerMessageCategory.ERROR)
+    )
+    assertEditorContract(consumer, "personLabel")
+    assertCompletion("person", expected = "personLabel", absent = "personName")
 
   private def assertEditorContract(file: VirtualFile, memberName: String): Unit =
     waitUntilFileIsHighlighted(file)
@@ -170,6 +175,11 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
     val errors = fetchHighlightInfos(file).filter(_.getSeverity == HighlightSeverity.ERROR)
     assertTrue(s"valid module B code is red: ${errors.map(_.getDescription).mkString("; ")}", errors.isEmpty)
 
+  private def assertRemovedMemberIsHighlighted(file: VirtualFile): Unit =
+    waitUntilFileIsHighlighted(file)
+    val errors = fetchHighlightInfos(file).filter(_.getSeverity == HighlightSeverity.ERROR)
+    assertTrue("removed module A API must remain visibly unresolved in module B", errors.nonEmpty)
+
   private def assertCompletion(prefix: String, expected: String, absent: String): Unit =
     val names = completionNames(prefix, s"Completion$expected.scala")
     assertTrue(s"$expected was not offered: ${names.toSeq.sorted.mkString(", ")}", names.contains(expected))
@@ -203,7 +213,13 @@ final class BetastyCompileServerTest extends ScalaCompilerHighlightingTestBase:
             lookup.hide()
           names
         case _                  => Set.empty
-    finally VfsTestUtil.deleteFile(file)
+    finally
+      closeEditor(file)
+      VfsTestUtil.deleteFile(file)
+
+  private def closeEditor(file: VirtualFile): Unit =
+    invokeAndWait:
+      FileEditorManager.getInstance(getProject).closeFile(file)
 
   private def addModuleBFile(name: String, text: String): VirtualFile =
     VfsTestUtil.createFile(moduleBSource, name, text)
