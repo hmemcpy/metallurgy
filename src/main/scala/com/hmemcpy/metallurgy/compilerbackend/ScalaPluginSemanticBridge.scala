@@ -9,9 +9,42 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.{PsiElement, PsiNamedElement}
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
+import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
+import java.nio.file.{Files, Path}
+import java.security.MessageDigest
+import java.util.jar.JarFile
+import scala.jdk.CollectionConverters.*
+import scala.util.{Try, Using}
 import scala.util.control.NonFatal
+
+private[metallurgy] final case class InstalledScalaPluginArtifact(fileName: String, byteSize: Long, sha256: String)
+private[metallurgy] final case class InstalledScalaPluginMethod(
+    name: String,
+    descriptor: String,
+    access: Int,
+    genericSignature: Option[String] = None
+)
+private[metallurgy] final case class InstalledScalaPluginClass(
+    internalName: String,
+    superName: Option[String],
+    interfaces: Vector[String],
+    access: Int,
+    methods: Vector[InstalledScalaPluginMethod],
+    genericSignature: Option[String] = None
+)
+private[metallurgy] final case class InstalledScalaPluginDescriptorFact(
+    kind: String,
+    implementation: Option[String],
+    ordinal: Int = 0
+)
+private[metallurgy] final case class InstalledScalaPluginSurface(
+    artifact: InstalledScalaPluginArtifact,
+    classes: Vector[InstalledScalaPluginClass],
+    descriptorFacts: Vector[InstalledScalaPluginDescriptorFact],
+    unresolved: Vector[String]
+)
 
 /** IntelliJ-side compatibility seam for bundled Scala-plugin semantics.
   *
@@ -19,6 +52,9 @@ import scala.util.control.NonFatal
   * plugin exposes no sufficient extension point or cross-classloader-safe interface.
   */
 object ScalaPluginSemanticBridge:
+
+  def installedPsiSurface(): Either[String, InstalledScalaPluginSurface] =
+    InstalledScalaPluginSurfaceScanner.scan(classOf[org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement])
 
   private val resolveGuard: ThreadLocal[java.util.Set[PsiElement]] =
     ThreadLocal.withInitial(() =>
@@ -260,3 +296,161 @@ object ScalaPluginSemanticBridge:
     val modTrackerClass = Class.forName("org.jetbrains.plugins.scala.caches.ModTracker$", true, bundledClassLoader)
     val modTracker      = modTrackerClass.getField("MODULE$").get(null)
     modTrackerClass.getMethod("anyScalaPsiChange").invoke(modTracker)
+
+private[metallurgy] object InstalledScalaPluginSurfaceScanner:
+  private val IncludedPrefixes = Vector(
+    "org/jetbrains/plugins/scala/lang/psi/api/",
+    "org/jetbrains/plugins/scala/lang/psi/impl/",
+    "org/jetbrains/plugins/scala/lang/psi/stubs/"
+  )
+  private val IncludedClasses  = Set(
+    "org/jetbrains/plugins/scala/lang/parser/ScalaElementType$",
+    "org/jetbrains/plugins/scala/lang/parser/ScalaParserDefinition$",
+    "org/jetbrains/plugins/scala/lang/parser/Scala3ParserDefinition$"
+  )
+
+  def scan(anchor: Class[?]): Either[String, InstalledScalaPluginSurface] =
+    root(anchor)
+      .toRight(s"no code source for ${anchor.getName}")
+      .flatMap: path =>
+        Try:
+          val (classBytes, descriptors, artifactBytes, artifactSize) =
+            if Files.isDirectory(path) then directoryEntries(path)
+            else
+              val bytes          = Files.readAllBytes(path)
+              val (classes, xml) = jarEntries(path)
+              (classes, xml, bytes, bytes.length.toLong)
+          val artifact                                               = InstalledScalaPluginArtifact(
+            path.getFileName.toString,
+            artifactSize,
+            MessageDigest.getInstance("SHA-256").digest(artifactBytes).map(b => f"${b & 0xff}%02x").mkString
+          )
+          val parsed                                                 = classBytes.map((name, bytes) => name -> readClass(bytes))
+          val classes                                                = parsed.collect { case (_, Right(clazz)) => clazz }.sortBy(_.internalName)
+          val unresolved                                             = Vector.newBuilder[String]
+          parsed.collect { case (name, Left(reason)) => s"class:$name:$reason" }.foreach(unresolved += _)
+          val descriptorResults                                      = descriptors.zipWithIndex.map((xml, index) => readDescriptor(xml, index))
+          val facts                                                  = descriptorResults.collect { case Right(value) => value }.flatten.sortBy(_.ordinal)
+          descriptorResults.collect { case Left(reason) => reason }.foreach(unresolved += _)
+          facts
+            .filter(_.implementation.forall(name => !classes.exists(_.internalName == name)))
+            .foreach: fact =>
+              unresolved += s"descriptor:${fact.ordinal}:${fact.kind}:target is absent or unscanned:${fact.implementation.getOrElse("<missing>")}"
+          if classes.isEmpty then unresolved += "no matching Scala PSI classes"
+          if descriptors.isEmpty then unresolved += "META-INF/scala-plugin-common.xml is absent"
+          else if facts.isEmpty then unresolved += "plugin descriptor contains no stub declarations"
+          InstalledScalaPluginSurface(artifact, classes, facts, unresolved.result().sorted)
+        .toEither.left.map(error => s"cannot inspect installed Scala plugin: ${error.getMessage}")
+
+  private def root(anchor: Class[?]): Option[Path] =
+    Option(anchor.getProtectionDomain)
+      .flatMap(d => Option(d.getCodeSource))
+      .flatMap(s => Try(Path.of(s.getLocation.toURI)).toOption)
+      .orElse:
+        val className = anchor.getName.replace('.', '/') + ".class"
+        Option(anchor.getResource("/" + className)).flatMap: url =>
+          Try:
+            if url.getProtocol == "jar" then
+              val value = url.getFile
+              Path.of(java.net.URI.create(value.substring(0, value.indexOf('!'))))
+            else if url.getProtocol == "file" then
+              var value = Path.of(url.toURI)
+              for _ <- 0 until className.count(_ == '/') + 1 do value = value.getParent
+              value
+            else null
+          .toOption.filter(_ != null)
+
+  private def included(name: String): Boolean =
+    name.endsWith(".class") && (IncludedPrefixes.exists(name.startsWith) || IncludedClasses(name.stripSuffix(".class")))
+
+  private def jarEntries(path: Path): (Vector[(String, Array[Byte])], Vector[String]) =
+    Using.resource(new JarFile(path.toFile)): jar =>
+      val entries     = jar.entries.asScala.toVector
+      val classes     = entries
+        .filter(e => !e.isDirectory && included(e.getName))
+        .map(e => e.getName -> Using.resource(jar.getInputStream(e))(_.readAllBytes()))
+      val descriptors = entries
+        .filter(_.getName == "META-INF/scala-plugin-common.xml")
+        .map(e =>
+          new String(Using.resource(jar.getInputStream(e))(_.readAllBytes()), java.nio.charset.StandardCharsets.UTF_8)
+        )
+      classes -> descriptors
+
+  private def directoryEntries(path: Path): (Vector[(String, Array[Byte])], Vector[String], Array[Byte], Long) =
+    val stream = Files.walk(path)
+    try
+      val files   = stream.iterator.asScala.filter(Files.isRegularFile(_)).toVector
+      val entries = files.map(p => path.relativize(p).toString.replace('\\', '/') -> Files.readAllBytes(p)).sortBy(_._1)
+      val digest  = MessageDigest.getInstance("SHA-256")
+      entries.foreach: (name, bytes) =>
+        val encoded = name.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        digest.update(java.nio.ByteBuffer.allocate(4).putInt(encoded.length).array()); digest.update(encoded)
+        digest.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length.toLong).array()); digest.update(bytes)
+      (
+        entries.filter((name, _) => included(name)),
+        files
+          .filter(p => path.relativize(p).toString.replace('\\', '/') == "META-INF/scala-plugin-common.xml")
+          .map(Files.readString),
+        digest.digest(),
+        entries.map(_._2.length.toLong).sum
+      )
+    finally stream.close()
+
+  private[metallurgy] def readClass(bytes: Array[Byte]): Either[String, InstalledScalaPluginClass] = Try:
+    var result: InstalledScalaPluginClass = null
+    val methods                           = Vector.newBuilder[InstalledScalaPluginMethod]
+    new ClassReader(bytes).accept(
+      new ClassVisitor(Opcodes.ASM9):
+        override def visit(
+            version: Int,
+            access: Int,
+            name: String,
+            signature: String,
+            superName: String,
+            interfaces: Array[String]
+        ): Unit =
+          result = InstalledScalaPluginClass(
+            name,
+            Option(superName),
+            Option(interfaces).fold(Vector.empty)(_.toVector.sorted),
+            access,
+            Vector.empty,
+            Option(signature)
+          )
+        override def visitMethod(
+            access: Int,
+            name: String,
+            descriptor: String,
+            signature: String,
+            exceptions: Array[String]
+        ): MethodVisitor =
+          methods += InstalledScalaPluginMethod(name, descriptor, access, Option(signature)); null
+      ,
+      ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES
+    )
+    result.copy(methods = methods.result().sortBy(m => (m.name, m.descriptor, m.access)))
+  .toEither.left.map(error => Option(error.getMessage).getOrElse(error.getClass.getName))
+
+  private[metallurgy] def readDescriptor(
+      xml: String,
+      documentOrdinal: Int = 0
+  ): Either[String, Vector[InstalledScalaPluginDescriptorFact]] = Try:
+    val factory  = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+    factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+    factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+    factory.setXIncludeAware(false); factory.setExpandEntityReferences(false)
+    val builder  = factory.newDocumentBuilder()
+    builder.setErrorHandler(new org.xml.sax.helpers.DefaultHandler:
+      override def error(exception: org.xml.sax.SAXParseException): Unit      = throw exception
+      override def fatalError(exception: org.xml.sax.SAXParseException): Unit = throw exception
+    )
+    val document = builder.parse(new org.xml.sax.InputSource(new java.io.StringReader(xml)))
+    Vector("stubElementTypeHolder" -> "class", "stubIndex" -> "implementation").flatMap: (tag, attribute) =>
+      val nodes = document.getElementsByTagName(tag)
+      (0 until nodes.getLength).map: index =>
+        val raw = Option(nodes.item(index).getAttributes.getNamedItem(attribute)).map(_.getNodeValue).filter(_.nonEmpty)
+        InstalledScalaPluginDescriptorFact(tag, raw.map(_.replace('.', '/')), documentOrdinal * 1000000 + index)
+  .toEither.left.map(error =>
+    s"descriptor:$documentOrdinal:malformed XML:${Option(error.getMessage).getOrElse(error.getClass.getName)}"
+  )
