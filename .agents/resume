@@ -14,4 +14,9 @@ if [[ ! -x "$HOME/.local/bin/sbt" ]]; then
   exit 1
 fi
 
+if ! command -v Xvfb >/dev/null; then
+  echo "Xvfb is missing; rerun .agents/setup" >&2
+  exit 1
+fi
+
 echo "Metallurgy orb environment is ready at $repo_root"

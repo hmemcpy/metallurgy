@@ -11,10 +11,10 @@ profile_env="$HOME/.config/metallurgy/orb-env.sh"
 
 mkdir -p "$tools_root" "$bin_dir" "$(dirname "$profile_env")"
 
-if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
-  echo "Installing archive tools"
+if ! command -v curl >/dev/null || ! command -v tar >/dev/null || ! command -v Xvfb >/dev/null; then
+  echo "Installing orb system dependencies"
   sudo apt-get update
-  sudo apt-get install -y ca-certificates curl tar
+  sudo apt-get install -y ca-certificates curl tar xvfb
 fi
 
 if [[ ! -x "$bootstrap_jdk/bin/java" ]]; then
@@ -69,6 +69,8 @@ fi
 
 export JAVA_HOME="$intellij_sdk/jbr"
 export PATH="$JAVA_HOME/bin:$PATH"
+export METALLURGY_REPO_ROOT="$repo_root"
+export METALLURGY_INTELLIJ_HOME="$intellij_sdk"
 
 (
   cd "$repo_root"
@@ -80,9 +82,16 @@ export PATH="$JAVA_HOME/bin:$PATH"
   gtimeout --kill-after=5s 10m sbt -batch -no-colors update
 )
 
+(
+  cd "$repo_root/ideprobe-tests"
+  gtimeout --kill-after=5s 10m sbt -batch -no-colors update
+)
+
 cat > "$profile_env" <<EOF
 export JAVA_HOME="$intellij_sdk/jbr"
 export PATH="$bin_dir:\$JAVA_HOME/bin:\$PATH"
+export METALLURGY_REPO_ROOT="$repo_root"
+export METALLURGY_INTELLIJ_HOME="$intellij_sdk"
 EOF
 
 profile_marker="# Metallurgy orb environment"
