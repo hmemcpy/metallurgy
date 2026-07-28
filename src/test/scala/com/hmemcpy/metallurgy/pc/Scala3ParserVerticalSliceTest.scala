@@ -2,9 +2,10 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
-  CatalogPathSegment,
+  CatalogValuePattern,
   CompilerRuntimeInventory,
-  InventoryAggregationFailure
+  InventoryFieldObservation,
+  InventoryValueObservation
 }
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
 import org.junit.Test
@@ -31,7 +32,7 @@ final class Scala3ParserVerticalSliceTest:
       assertEquals(ParserSyntaxSnapshot.digest(Source), first.sourceDigest)
       assertTrue(first.diagnostics.isEmpty)
 
-      val productions      = first.nodes.map(_.production).toSet
+      val productions                                                                              = first.nodes.map(_.production).toSet
       RequiredProductions.foreach(production => assertTrue(production, productions(production)))
       assertExactPosition(
         first,
@@ -55,10 +56,10 @@ final class Scala3ParserVerticalSliceTest:
         Source.indexOf("\n\nobject Program")
       )
       assertContextParameterClauseGrouping(first)
-      val greetingId       = first.nodes
+      val greetingId                                                                               = first.nodes
         .find(node =>
           node.production == "DefDef" &&
-            node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("greeting")))
+            node.fields.exists(field => field.name == "name" && field.value == ParserFieldValue.Name("greeting"))
         )
         .map(_.id)
         .getOrElse(throw new AssertionError("greeting definition is absent"))
@@ -77,10 +78,10 @@ final class Scala3ParserVerticalSliceTest:
             )
         )
       )
-      val personId         = first.nodes
+      val personId                                                                                 = first.nodes
         .find(node =>
           node.production == "TypeDef" &&
-            node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("Person")))
+            node.fields.exists(field => field.name == "name" && field.value == ParserFieldValue.Name("Person"))
         )
         .map(_.id)
         .getOrElse(throw new AssertionError("Person definition is absent"))
@@ -100,26 +101,28 @@ final class Scala3ParserVerticalSliceTest:
             )
         )
       )
-      val firstInventory   = CompilerRuntimeInventory
+      val firstInventory                                                                           = CompilerRuntimeInventory
         .from(first)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
-      val secondInventory  = CompilerRuntimeInventory
+      val secondInventory                                                                          = CompilerRuntimeInventory
         .from(second)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
-      val firstAggregation = AggregatedCompilerProductionInventory.aggregate(Vector(firstInventory, secondInventory))
-      assertEquals(
-        Left(
-          InventoryAggregationFailure.UnresolvedShape(
-            Vector(
-              CatalogPathSegment.NamedField("mods"),
-              CatalogPathSegment.NestedProduct("Modifiers"),
-              CatalogPathSegment.NamedField("annotations"),
-              CatalogPathSegment.RepeatedElement
-            )
-          )
-        ),
-        firstAggregation
-      )
+      val firstAggregation                                                                         = AggregatedCompilerProductionInventory.aggregate(Vector(firstInventory, secondInventory))
+      assertTrue(firstAggregation.toString, firstAggregation.isRight)
+      def modifierAnnotations(value: InventoryValueObservation): Vector[InventoryFieldObservation] = value match
+        case InventoryValueObservation.Product("Modifiers", fields) => fields.filter(_.name == "annotations")
+        case InventoryValueObservation.Product(_, fields)           => fields.flatMap(f => modifierAnnotations(f.value))
+        case InventoryValueObservation.Optional(value)              => value.toVector.flatMap(modifierAnnotations)
+        case InventoryValueObservation.Repeated(values)             => values.flatMap(modifierAnnotations)
+        case _                                                      => Vector.empty
+      val annotations                                                                              = firstInventory.shapes
+        .flatMap(_.observations)
+        .flatten
+        .flatMap(field => modifierAnnotations(field.value))
+        .headOption
+        .getOrElse(throw new AssertionError("Modifiers.annotations is absent"))
+      assertEquals(InventoryValueObservation.Repeated(Vector.empty), annotations.value)
+      assertEquals(Some(CatalogValuePattern.Repeated(CatalogValuePattern.Node)), annotations.declaredPattern)
       assertEquals(
         firstAggregation,
         AggregatedCompilerProductionInventory.aggregate(Vector(secondInventory, firstInventory))
@@ -150,11 +153,11 @@ final class Scala3ParserVerticalSliceTest:
   private def assertContextParameterClauseGrouping(snapshot: ParserSyntaxSnapshot): Unit =
     val greeting = snapshot.nodes.find: node =>
       node.production == "DefDef" &&
-        node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("greeting")))
+        node.fields.exists(field => field.name == "name" && field.value == ParserFieldValue.Name("greeting"))
     val clauses  = greeting.toVector
       .flatMap(_.fields)
       .collectFirst:
-        case ParserSyntaxField("paramss", ParserFieldValue.Repeated(values)) => values
+        case ParserSyntaxField("paramss", ParserFieldValue.Repeated(values), _) => values
       .getOrElse(throw new AssertionError("greeting parameter clauses are absent"))
     assertEquals(
       Vector(1, 1),
@@ -233,6 +236,7 @@ final class Scala3ParserVerticalSliceTest:
       |trait Named:
       |  def name: String
       |
+      |@deprecated("sample", "1")
       |final case class Person(name: String, age: Int) extends Named:
       |  def greeting(prefix: String)(using suffix: String): String =
       |    val rendered = List(prefix, name).mkString(" ")

@@ -260,6 +260,9 @@ private[metallurgy] object CanonicalByteEncoder:
 
   private def writeField(field: ParserSyntaxField, e: CanonicalByteEncoder): Unit =
     e.string(field.name)
+    field.declaredShape match
+      case None        => e.tag(0)
+      case Some(shape) => e.tag(1); writeDeclaredShape(shape, e)
     field.value match
       case ParserFieldValue.Node(id)                => e.tag(1); e.long(id)
       case ParserFieldValue.Positioned(id)          => e.tag(2); e.long(id)
@@ -272,6 +275,14 @@ private[metallurgy] object CanonicalByteEncoder:
       case ParserFieldValue.GeneratedName(a, b, c)  => e.tag(7); e.string(a); e.string(b); e.int(c)
       case ParserFieldValue.Scalar(value)           => e.tag(8); writeScalar(value, e)
       case ParserFieldValue.Unsupported(value)      => e.tag(9); e.string(value)
+
+  private def writeDeclaredShape(shape: ParserDeclaredShape, e: CanonicalByteEncoder): Unit = shape match
+    case ParserDeclaredShape.Node            => e.tag(1)
+    case ParserDeclaredShape.Positioned      => e.tag(2)
+    case ParserDeclaredShape.Optional(inner) => e.tag(3); writeDeclaredShape(inner, e)
+    case ParserDeclaredShape.Repeated(inner) => e.tag(4); writeDeclaredShape(inner, e)
+    case ParserDeclaredShape.Name            => e.tag(5)
+    case ParserDeclaredShape.Scalar(kind)    => e.tag(6); e.string(kind)
 
   private def writeScalar(value: ParserScalar, e: CanonicalByteEncoder): Unit = value match
     case ParserScalar.Text(v)        => e.tag(1); e.string(v)
@@ -310,7 +321,18 @@ private[metallurgy] final case class ParserSyntaxNode(
     occurrences: Vector[ParserNodeOccurrence]
 )
 
-private[metallurgy] final case class ParserSyntaxField(name: String, value: ParserFieldValue)
+private[metallurgy] final case class ParserSyntaxField(
+    name: String,
+    value: ParserFieldValue,
+    declaredShape: Option[ParserDeclaredShape] = None
+)
+
+private[metallurgy] enum ParserDeclaredShape:
+  case Node, Positioned
+  case Optional(inner: ParserDeclaredShape)
+  case Repeated(inner: ParserDeclaredShape)
+  case Name
+  case Scalar(kind: String)
 
 private[metallurgy] enum ParserFieldValue:
   case Node(nodeId: Long)

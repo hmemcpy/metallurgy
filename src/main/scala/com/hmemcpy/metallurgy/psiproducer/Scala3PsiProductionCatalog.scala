@@ -53,7 +53,11 @@ private[metallurgy] enum InventoryValueObservation:
   case GeneratedName(base: String, separator: String, generationIndex: Int)
   case Scalar(value: ParserScalar)
   case Unsupported(runtimeType: String)
-private[metallurgy] final case class InventoryFieldObservation(name: String, value: InventoryValueObservation)
+private[metallurgy] final case class InventoryFieldObservation(
+    name: String,
+    value: InventoryValueObservation,
+    declaredPattern: Option[CatalogValuePattern] = None
+)
 private[metallurgy] final case class CompilerFieldPattern(name: String, value: CatalogValuePattern)
 private[metallurgy] final case class CompilerProductionPattern(
     kind: InventoryKind,
@@ -150,7 +154,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
           val fields     = Vector.newBuilder[CompilerFieldPattern]
           signature.zipWithIndex.foreach: (name, index) =>
             infer(
-              fieldRows.map(_(index).value),
+              fieldRows.map(_(index)),
               Vector(CatalogPathSegment.NamedField(name))
             ) match
               case Left(failure) => break(Left(failure))
@@ -173,22 +177,73 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       )
 
   private def infer(
-      observations: Vector[InventoryValueObservation],
+      fields: Vector[InventoryFieldObservation],
       path: Vector[CatalogPathSegment]
   ): Either[InventoryAggregationFailure, CatalogValuePattern] =
+    val observations                                                                                    = fields.map(_.value)
+    val declarations                                                                                    = fields.flatMap(_.declaredPattern).distinct
+    def validate(result: CatalogValuePattern): Either[InventoryAggregationFailure, CatalogValuePattern] =
+      if declarations.forall(declaration =>
+          declaration == result ||
+            (declaration == CatalogValuePattern.Name && result == CatalogValuePattern.GeneratedName)
+        )
+      then Right(result)
+      else incompatible(path)
     observations.headOption match
-      case None                                                     => Left(InventoryAggregationFailure.UnresolvedShape(path))
-      case Some(_: InventoryValueObservation.Optional)              =>
+      case None                                                                                 => Left(InventoryAggregationFailure.UnresolvedShape(path))
+      case Some(_: InventoryValueObservation.Optional)                                          =>
         if !observations.forall(_.isInstanceOf[InventoryValueObservation.Optional]) then incompatible(path)
         else
-          val concrete = observations.collect { case InventoryValueObservation.Optional(value) => value }.flatten
-          infer(concrete, path :+ CatalogPathSegment.Optional).map(CatalogValuePattern.Optional.apply)
-      case Some(_: InventoryValueObservation.Repeated)              =>
+          val concrete = fields.flatMap: field =>
+            field.value match
+              case InventoryValueObservation.Optional(Some(value)) =>
+                Vector(
+                  InventoryFieldObservation(
+                    field.name,
+                    value,
+                    field.declaredPattern.collect { case CatalogValuePattern.Optional(inner) =>
+                      inner
+                    }
+                  )
+                )
+              case _                                               => Vector.empty
+          if concrete.nonEmpty then
+            infer(concrete, path :+ CatalogPathSegment.Optional)
+              .map(CatalogValuePattern.Optional.apply)
+              .flatMap(validate)
+          else if fields.exists(_.declaredPattern.isEmpty) then Left(InventoryAggregationFailure.UnresolvedShape(path))
+          else
+            declarations match
+              case Vector(value: CatalogValuePattern.Optional) => Right(value)
+              case Vector()                                    => Left(InventoryAggregationFailure.UnresolvedShape(path))
+              case _                                           => incompatible(path)
+      case Some(_: InventoryValueObservation.Repeated)                                          =>
         if !observations.forall(_.isInstanceOf[InventoryValueObservation.Repeated]) then incompatible(path)
         else
-          val concrete = observations.collect { case InventoryValueObservation.Repeated(values) => values }.flatten
-          infer(concrete, path :+ CatalogPathSegment.RepeatedElement).map(CatalogValuePattern.Repeated.apply)
-      case Some(InventoryValueObservation.Product(prefix, _))       =>
+          val concrete = fields.flatMap: field =>
+            field.value match
+              case InventoryValueObservation.Repeated(values) =>
+                values.map(value =>
+                  InventoryFieldObservation(
+                    field.name,
+                    value,
+                    field.declaredPattern.collect { case CatalogValuePattern.Repeated(inner) =>
+                      inner
+                    }
+                  )
+                )
+              case _                                          => Vector.empty
+          if concrete.nonEmpty then
+            infer(concrete, path :+ CatalogPathSegment.RepeatedElement)
+              .map(CatalogValuePattern.Repeated.apply)
+              .flatMap(validate)
+          else if fields.exists(_.declaredPattern.isEmpty) then Left(InventoryAggregationFailure.UnresolvedShape(path))
+          else
+            declarations match
+              case Vector(value: CatalogValuePattern.Repeated) => Right(value)
+              case Vector()                                    => Left(InventoryAggregationFailure.UnresolvedShape(path))
+              case _                                           => incompatible(path)
+      case Some(InventoryValueObservation.Product(prefix, _))                                   =>
         boundary:
           val products = observations.collect { case value: InventoryValueObservation.Product => value }
           if products.size != observations.size || products.exists(_.prefix != prefix) then incompatible(path)
@@ -199,38 +254,44 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
               val nestedPath = path :+ CatalogPathSegment.NestedProduct(prefix)
               val fields     = Vector.newBuilder[CompilerFieldPattern]
               signatures.head.zipWithIndex.foreach: (name, index) =>
-                infer(products.map(_.fields(index).value), nestedPath :+ CatalogPathSegment.NamedField(name)) match
+                infer(products.map(_.fields(index)), nestedPath :+ CatalogPathSegment.NamedField(name)) match
                   case Left(failure) => break(Left(failure))
                   case Right(value)  => fields += CompilerFieldPattern(name, value)
-              Right(CatalogValuePattern.Product(prefix, fields.result()))
-      case Some(_: InventoryValueObservation.Node)                  =>
+              validate(CatalogValuePattern.Product(prefix, fields.result()))
+      case Some(_: InventoryValueObservation.Node)                                              =>
         sameCategory(observations, path)(_.isInstanceOf[InventoryValueObservation.Node], CatalogValuePattern.Node)
-      case Some(_: InventoryValueObservation.Positioned)            =>
+          .flatMap(validate)
+      case Some(_: InventoryValueObservation.Positioned)                                        =>
         sameCategory(observations, path)(
           _.isInstanceOf[InventoryValueObservation.Positioned],
           CatalogValuePattern.Positioned
-        )
-      case Some(_: InventoryValueObservation.Name)                  =>
-        sameCategory(observations, path)(_.isInstanceOf[InventoryValueObservation.Name], CatalogValuePattern.Name)
-      case Some(_: InventoryValueObservation.GeneratedName)         =>
-        sameCategory(observations, path)(
-          _.isInstanceOf[InventoryValueObservation.GeneratedName],
-          CatalogValuePattern.GeneratedName
-        )
-      case Some(InventoryValueObservation.Scalar(value))            =>
+        ).flatMap(validate)
+      case Some(_: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName) =>
+        if observations.forall(value =>
+            value.isInstanceOf[InventoryValueObservation.Name] ||
+              value.isInstanceOf[InventoryValueObservation.GeneratedName]
+          )
+        then
+          val result =
+            if observations.forall(_.isInstanceOf[InventoryValueObservation.GeneratedName]) then
+              CatalogValuePattern.GeneratedName
+            else CatalogValuePattern.Name
+          validate(result)
+        else incompatible(path)
+      case Some(InventoryValueObservation.Scalar(value))                                        =>
         val kind = value.productPrefix
         if observations.forall {
             case InventoryValueObservation.Scalar(candidate) => candidate.productPrefix == kind
             case _                                           => false
           }
-        then Right(CatalogValuePattern.Scalar(kind))
+        then validate(CatalogValuePattern.Scalar(kind))
         else incompatible(path)
-      case Some(InventoryValueObservation.Unsupported(runtimeType)) =>
+      case Some(InventoryValueObservation.Unsupported(runtimeType))                             =>
         if observations.forall {
             case InventoryValueObservation.Unsupported(candidate) => candidate == runtimeType
             case _                                                => false
           }
-        then Right(CatalogValuePattern.Unsupported(runtimeType))
+        then validate(CatalogValuePattern.Unsupported(runtimeType))
         else incompatible(path)
 
   private def sameCategory(
@@ -447,7 +508,8 @@ private[metallurgy] object CompilerRuntimeInventory:
                 path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+ ParserFieldPathSegment.NamedField(
                   f.name
                 )
-              )
+              ),
+              f.declaredShape.map(declaredPattern)
             )
           )
         )
@@ -455,6 +517,13 @@ private[metallurgy] object CompilerRuntimeInventory:
       case ParserFieldValue.GeneratedName(a, b, c)  => InventoryValueObservation.GeneratedName(a, b, c)
       case ParserFieldValue.Scalar(value)           => InventoryValueObservation.Scalar(value)
       case ParserFieldValue.Unsupported(value)      => InventoryValueObservation.Unsupported(value)
+    def declaredPattern(shape: ParserDeclaredShape): CatalogValuePattern             = shape match
+      case ParserDeclaredShape.Node            => CatalogValuePattern.Node
+      case ParserDeclaredShape.Positioned      => CatalogValuePattern.Positioned
+      case ParserDeclaredShape.Optional(inner) => CatalogValuePattern.Optional(declaredPattern(inner))
+      case ParserDeclaredShape.Repeated(inner) => CatalogValuePattern.Repeated(declaredPattern(inner))
+      case ParserDeclaredShape.Name            => CatalogValuePattern.Name
+      case ParserDeclaredShape.Scalar(kind)    => CatalogValuePattern.Scalar(kind)
     def pattern(value: InventoryValueObservation): CatalogValuePattern               = value match
       case InventoryValueObservation.Node(_, _)              => CatalogValuePattern.Node
       case InventoryValueObservation.Positioned(_, _)        => CatalogValuePattern.Positioned
@@ -492,7 +561,11 @@ private[metallurgy] object CompilerRuntimeInventory:
         )
       )).map: (kind, id, prefix, fields, position, occurrences) =>
       val observed       = fields.map(f =>
-        InventoryFieldObservation(f.name, observe(f.value, kind, id, Vector(ParserFieldPathSegment.NamedField(f.name))))
+        InventoryFieldObservation(
+          f.name,
+          observe(f.value, kind, id, Vector(ParserFieldPathSegment.NamedField(f.name))),
+          f.declaredShape.map(declaredPattern)
+        )
       )
       val classification = position match
         case ParserNodePosition.Absent                                                   => SourceClassification.Absent
@@ -502,7 +575,7 @@ private[metallurgy] object CompilerRuntimeInventory:
       CompilerShapeInventoryRow(
         kind,
         prefix,
-        observed.map(f => CompilerFieldPattern(f.name, pattern(f.value))),
+        observed.map(f => CompilerFieldPattern(f.name, f.declaredPattern.getOrElse(pattern(f.value)))),
         Vector(observed),
         occurrences.flatMap(context(kind, id, _)),
         Vector(classification)

@@ -57,7 +57,7 @@ final class Scala3ParserLegacyArtifactsTest:
 
       val function = first.nodes.find: node =>
         node.production == "DefDef" &&
-          node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("value")))
+          node.fields.exists(field => field.name == "name" && field.value == ParserFieldValue.Name("value"))
       assertEquals(
         Vector("name", "paramss", "tpt", "preRhs", "mods"),
         function.toVector.flatMap(_.fields).map(_.name)

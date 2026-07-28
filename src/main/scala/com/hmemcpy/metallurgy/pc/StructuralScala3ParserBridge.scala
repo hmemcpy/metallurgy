@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import java.io.File
-import java.lang.reflect.{Constructor, Method}
+import java.lang.reflect.{Constructor, Method, ParameterizedType, Type, TypeVariable, WildcardType}
 import java.net.URLClassLoader
 import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
@@ -606,8 +606,59 @@ private final class StructuralScala3ParserBridge private (
           visitPositioned,
           products,
           generated
-        )
+        ),
+        declaredFieldShape(active, product, product.productElementName(index))
       )
+
+  private def declaredFieldShape(
+      active: ParserRuntime,
+      product: ProductValue,
+      fieldName: String
+  ): Option[ParserDeclaredShape] =
+    val accessors = product.getClass.getMethods.filter(method =>
+      method.getName == fieldName && method.getParameterCount == 0 && !method.isBridge && !method.isSynthetic
+    )
+    accessors.toVector match
+      case Vector(accessor) => declaredShape(active, accessor.getGenericReturnType)
+      case _                => None
+
+  private def declaredShape(active: ParserRuntime, fieldType: Type): Option[ParserDeclaredShape] = fieldType match
+    case cls: Class[?]                    =>
+      if active.treeClass.isAssignableFrom(cls) then Some(ParserDeclaredShape.Node)
+      else if active.positionedClass.isAssignableFrom(cls) then Some(ParserDeclaredShape.Positioned)
+      else if active.nameClass.isAssignableFrom(cls) then Some(ParserDeclaredShape.Name)
+      else scalarShape(cls)
+    case parameterized: ParameterizedType =>
+      parameterized.getRawType match
+        case raw: Class[?] if active.treeClass.isAssignableFrom(raw)           => Some(ParserDeclaredShape.Node)
+        case raw: Class[?] if active.positionedClass.isAssignableFrom(raw)     => Some(ParserDeclaredShape.Positioned)
+        case raw: Class[?] if active.nameClass.isAssignableFrom(raw)           => Some(ParserDeclaredShape.Name)
+        case raw: Class[?] if parameterized.getActualTypeArguments.length == 1 =>
+          declaredShape(active, parameterized.getActualTypeArguments.head).flatMap: inner =>
+            if active.optionClass.isAssignableFrom(raw) then Some(ParserDeclaredShape.Optional(inner))
+            else if active.iterableClass.isAssignableFrom(raw) then Some(ParserDeclaredShape.Repeated(inner))
+            else None
+        case _                                                                 => None
+    case variable: TypeVariable[?]        => unambiguousBoundShape(active, variable.getBounds)
+    case wildcard: WildcardType           => unambiguousBoundShape(active, wildcard.getUpperBounds)
+    case _                                => None
+
+  private def unambiguousBoundShape(active: ParserRuntime, bounds: Array[Type]): Option[ParserDeclaredShape] =
+    bounds.flatMap(declaredShape(active, _)).distinct.toVector match
+      case Vector(shape) => Some(shape)
+      case _             => None
+
+  private def scalarShape(cls: Class[?]): Option[ParserDeclaredShape] =
+    val kind =
+      if cls == classOf[String] then Some("Text")
+      else if cls == java.lang.Integer.TYPE || cls == classOf[java.lang.Integer] then Some("Integer")
+      else if cls == java.lang.Long.TYPE || cls == classOf[java.lang.Long] then Some("LongInteger")
+      else if cls == java.lang.Double.TYPE || cls == classOf[java.lang.Double] then Some("Decimal")
+      else if cls == java.lang.Boolean.TYPE || cls == classOf[java.lang.Boolean] then Some("Logical")
+      else if cls == java.lang.Character.TYPE || cls == classOf[java.lang.Character] then Some("Character")
+      else if cls == java.lang.Void.TYPE || cls == classOf[scala.runtime.BoxedUnit] then Some("UnitValue")
+      else None
+    kind.map(ParserDeclaredShape.Scalar.apply)
 
   private def fieldValue(
       active: ParserRuntime,

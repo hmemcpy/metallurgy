@@ -155,6 +155,32 @@ final class Scala3PsiProductionCatalogTest:
       ParserSyntaxSnapshot.evidenceFingerprint(second)
     )
 
+  @Test def evidenceFingerprintIncludesCanonicalDeclaredShapes(): Unit =
+    val base     = snapshot("/one", 1, Vector.empty)
+    val repeated = base.copy(nodes =
+      base.nodes.updated(
+        0,
+        base.nodes.head.copy(fields =
+          base.nodes.head.fields
+            .map(_.copy(declaredShape = Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node))))
+        )
+      )
+    )
+    val optional = repeated.copy(nodes =
+      repeated.nodes.updated(
+        0,
+        repeated.nodes.head.copy(fields =
+          repeated.nodes.head.fields
+            .map(_.copy(declaredShape = Some(ParserDeclaredShape.Optional(ParserDeclaredShape.Node))))
+        )
+      )
+    )
+    assertNotEquals(ParserSyntaxSnapshot.evidenceFingerprint(base), ParserSyntaxSnapshot.evidenceFingerprint(repeated))
+    assertNotEquals(
+      ParserSyntaxSnapshot.evidenceFingerprint(repeated),
+      ParserSyntaxSnapshot.evidenceFingerprint(optional)
+    )
+
   @Test def runtimeIdentityIgnoresPathAndLoaderButRetainsOptionsAndArtifactOrder(): Unit =
     val first    = inventory(snapshot("/one", 1, Vector("a", "b")))
     val second   = inventory(snapshot("/two", 2, Vector("a", "b")))
@@ -255,6 +281,59 @@ final class Scala3PsiProductionCatalogTest:
         .get
         .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
     )
+
+  @Test def aggregateUsesOnlyAgreedDeclarationsForEmptyContainers(): Unit =
+    val base                                                                                  = inventory(snapshot("/one", 1, Vector.empty))
+    def withValue(value: InventoryValueObservation)                                           =
+      base.copy(parserEvidenceFingerprint = value.hashCode.toString, shapes = Vector(row(value)))
+    def withField(value: InventoryValueObservation, declaration: Option[CatalogValuePattern]) =
+      base.copy(shapes = Vector(row(value, declaration)))
+    val repeated                                                                              = CatalogValuePattern.Repeated(CatalogValuePattern.Node)
+    val optional                                                                              = CatalogValuePattern.Optional(CatalogValuePattern.Name)
+    assertEquals(
+      repeated,
+      aggregate(
+        Vector(withField(InventoryValueObservation.Repeated(Vector.empty), Some(repeated)))
+      ).productions.head.fields.head.value
+    )
+    assertEquals(
+      optional,
+      aggregate(
+        Vector(withField(InventoryValueObservation.Optional(None), Some(optional)))
+      ).productions.head.fields.head.value
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(withField(InventoryValueObservation.Repeated(Vector.empty), None)))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
+    )
+    Vector(
+      Vector(
+        withField(InventoryValueObservation.Repeated(Vector.empty), Some(repeated)),
+        withField(
+          InventoryValueObservation.Repeated(Vector.empty),
+          Some(CatalogValuePattern.Repeated(CatalogValuePattern.Name))
+        )
+      ),
+      Vector(
+        withField(
+          InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Name("x"))),
+          Some(repeated)
+        )
+      )
+    ).foreach(values =>
+      assertTrue(
+        AggregatedCompilerProductionInventory
+          .aggregate(values)
+          .left
+          .toOption
+          .get
+          .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
+      )
+    )
     assertTrue(
       AggregatedCompilerProductionInventory
         .aggregate(Vector(withValue(InventoryValueObservation.Repeated(Vector.empty))))
@@ -276,7 +355,7 @@ final class Scala3PsiProductionCatalogTest:
         .get
         .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
     )
-    val different                                   = inventory(snapshot("/one", 1, Vector("different")))
+    val different                                                                             = inventory(snapshot("/one", 1, Vector("different")))
     assertTrue(
       AggregatedCompilerProductionInventory
         .aggregate(Vector(base, different))
@@ -577,12 +656,15 @@ final class Scala3PsiProductionCatalogTest:
   private def aggregate(values: Vector[CompilerRuntimeInventory]): AggregatedCompilerProductionInventory =
     AggregatedCompilerProductionInventory.aggregate(values).fold(f => throw new AssertionError(f.toString), identity)
 
-  private def row(value: InventoryValueObservation): CompilerShapeInventoryRow =
+  private def row(
+      value: InventoryValueObservation,
+      declaration: Option[CatalogValuePattern] = None
+  ): CompilerShapeInventoryRow =
     CompilerShapeInventoryRow(
       InventoryKind.Node,
       "Observed",
       Vector.empty,
-      Vector(Vector(InventoryFieldObservation("value", value))),
+      Vector(Vector(InventoryFieldObservation("value", value, declaration))),
       Vector(InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))),
       Vector(SourceClassification.SourceReachable)
     )
