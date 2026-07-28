@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tools_root="$HOME/.local/share/metallurgy-orb"
+bin_dir="$HOME/.local/bin"
+bootstrap_jdk="$tools_root/temurin-21"
+sbt_home="$tools_root/sbt"
+intellij_sdk="$HOME/.metallurgyPluginIC/sdk/261.26222.65"
+profile_env="$HOME/.config/metallurgy/orb-env.sh"
+
+mkdir -p "$tools_root" "$bin_dir" "$(dirname "$profile_env")"
+
+if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
+  echo "Installing archive tools"
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl tar
+fi
+
+if [[ ! -x "$bootstrap_jdk/bin/java" ]]; then
+  echo "Installing bootstrap JDK 21"
+  archive="$(mktemp)"
+  trap 'rm -f "$archive"' EXIT
+  curl --fail --location --retry 3 \
+    --output "$archive" \
+    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+  mkdir -p "$bootstrap_jdk"
+  tar -xzf "$archive" --strip-components=1 -C "$bootstrap_jdk"
+  rm -f "$archive"
+  trap - EXIT
+fi
+
+if [[ ! -x "$sbt_home/bin/sbt" ]]; then
+  echo "Installing sbt 1.11.7"
+  archive="$(mktemp)"
+  trap 'rm -f "$archive"' EXIT
+  curl --fail --location --retry 3 \
+    --output "$archive" \
+    "https://github.com/sbt/sbt/releases/download/v1.11.7/sbt-1.11.7.tgz"
+  tar -xzf "$archive" -C "$tools_root"
+  rm -f "$archive"
+  trap - EXIT
+fi
+
+ln -sfn "$sbt_home/bin/sbt" "$bin_dir/sbt"
+ln -sfn "$(command -v timeout)" "$bin_dir/gtimeout"
+
+export JAVA_HOME="$bootstrap_jdk"
+export PATH="$bin_dir:$JAVA_HOME/bin:$PATH"
+
+echo "Resolving the pinned IntelliJ SDK and build dependencies"
+(
+  cd "$repo_root"
+  gtimeout --kill-after=5s 20m \
+    sbt -batch -no-colors updateIntellij
+)
+
+if [[ ! -x "$intellij_sdk/jbr/bin/java" ]]; then
+  echo "The pinned IntelliJ SDK does not contain its JBR at $intellij_sdk/jbr" >&2
+  exit 1
+fi
+
+export JAVA_HOME="$intellij_sdk/jbr"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+(
+  cd "$repo_root"
+  gtimeout --kill-after=5s 10m sbt -batch -no-colors update
+)
+
+(
+  cd "$repo_root/testkit"
+  gtimeout --kill-after=5s 10m sbt -batch -no-colors update
+)
+
+cat > "$profile_env" <<EOF
+export JAVA_HOME="$intellij_sdk/jbr"
+export PATH="$bin_dir:\$JAVA_HOME/bin:\$PATH"
+EOF
+
+profile_marker="# Metallurgy orb environment"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [[ "\${PWD}" == "$repo_root" ]]; then
+  source "$profile_env"
+fi
+EOF
+fi
+
+echo "Orb setup complete"
