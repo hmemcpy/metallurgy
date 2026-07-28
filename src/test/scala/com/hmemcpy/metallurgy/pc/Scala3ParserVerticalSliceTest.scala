@@ -96,6 +96,7 @@ final class Scala3ParserVerticalSliceTest:
         case ParserFieldValue.Repeated(values)       => values.exists(containsUnsupported)
         case ParserFieldValue.Product(_, fields)     => fields.exists(field => containsUnsupported(field.value))
         case ParserFieldValue.Node(_)                => false
+        case ParserFieldValue.Positioned(_)          => false
         case ParserFieldValue.Name(_)                => false
         case ParserFieldValue.GeneratedName(_, _, _) => false
         case ParserFieldValue.Scalar(_)              => false

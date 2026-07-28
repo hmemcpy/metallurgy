@@ -208,6 +208,8 @@ private[psiproducer] final class TestParserBridge extends Scala3ParserBridge:
       ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available,
+      ParserCapabilityStatus.Available,
+      ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available
     )
 

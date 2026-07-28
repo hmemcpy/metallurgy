@@ -38,6 +38,7 @@ final class Scala3ParserLegacyArtifactsTest:
       assertEquals(ParserSyntaxSnapshot.digest(Source), first.sourceDigest)
       assertTrue(first.diagnostics.isEmpty)
       assertTrue(first.capabilities.requiredUnavailable.isEmpty)
+      assertEquals(Vector(ParserComment(PcSourceRange(0, 11), "// retained", ParserCommentKind.Line)), first.comments)
 
       val root = first.nodes
         .find(_.id == first.rootNodeId)
@@ -47,8 +48,8 @@ final class Scala3ParserLegacyArtifactsTest:
       assertEquals(Vector("pid", "stats"), root.fields.map(_.name))
       assertEquals(
         ParserNodePosition.Positioned(
-          PcSourceRange(0, Source.stripSuffix("\n").length),
-          0,
+          PcSourceRange(Source.indexOf("object A"), Source.stripSuffix("\n").length),
+          Source.indexOf("object A"),
           ParserPositionProvenance.Synthetic
         ),
         root.position
@@ -58,7 +59,7 @@ final class Scala3ParserLegacyArtifactsTest:
         node.production == "DefDef" &&
           node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("value")))
       assertEquals(
-        Vector("name", "paramss", "tpt", "preRhs"),
+        Vector("name", "paramss", "tpt", "preRhs", "mods"),
         function.toVector.flatMap(_.fields).map(_.name)
       )
 
@@ -99,7 +100,8 @@ final class Scala3ParserLegacyArtifactsTest:
       .fold(error => throw error.toException, identity)
 
   private val Source =
-    """object A:
+    """// retained
+      |object A:
       |  def value[T](using current: T): T = current
       |""".stripMargin
 

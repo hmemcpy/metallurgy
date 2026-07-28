@@ -55,6 +55,13 @@ echo "Resolving the pinned IntelliJ SDK and build dependencies"
     sbt -batch -no-colors updateIntellij
 )
 
+scala_plugin="$intellij_sdk/custom-plugins/Scala"
+bundled_scala_plugin="$intellij_sdk/plugins/Scala"
+if [[ ! -e "$bundled_scala_plugin" && -d "$scala_plugin" ]]; then
+  mkdir -p "$(dirname "$bundled_scala_plugin")"
+  ln -s "$scala_plugin" "$bundled_scala_plugin"
+fi
+
 if [[ ! -x "$intellij_sdk/jbr/bin/java" ]]; then
   echo "The pinned IntelliJ SDK does not contain its JBR at $intellij_sdk/jbr" >&2
   exit 1

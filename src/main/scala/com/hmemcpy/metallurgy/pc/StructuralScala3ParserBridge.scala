@@ -43,7 +43,10 @@ private[pc] object StructuralScala3ParserBridge:
       val sourceFileClass   = loader.loadClass("dotty.tools.dotc.util.SourceFile")
       val sourceModule      = module(loader, "dotty.tools.dotc.util.SourceFile$")
       val parserClass       = loader.loadClass("dotty.tools.dotc.parsing.Parsers$Parser")
+      val scannerClass      = loader.loadClass("dotty.tools.dotc.parsing.Scanners$Scanner")
       val treeClass         = loader.loadClass("dotty.tools.dotc.ast.Trees$Tree")
+      val defTreeClass      = loader.loadClass("dotty.tools.dotc.ast.Trees$DefTree")
+      val positionedClass   = loader.loadClass("dotty.tools.dotc.ast.Positioned")
       val productClass      = loader.loadClass("scala.Product")
       val optionClass       = loader.loadClass("scala.Option")
       val iterableClass     = loader.loadClass("scala.collection.Iterable")
@@ -56,6 +59,19 @@ private[pc] object StructuralScala3ParserBridge:
       val reporterFactory  = discoverReporterFactory(storeReporter, reporterClass)
       val diagnosticReader = discoverDiagnosticReader(storeReporter, contextClass)
       val _                = parserClass.getMethod("parse")
+      val parserInput      = parserClass.getMethods.find(method => method.getName == "in" && method.getParameterCount == 0)
+      val commentReader    = parserInput.flatMap: input =>
+        scannerClass.getMethods
+          .find(method => method.getName == "comments" && method.getParameterCount == 0)
+          .map(CommentReader.Modern(input, _))
+          .orElse(
+            scannerClass.getMethods
+              .find(method => method.getName == "commentSpans" && method.getParameterCount == 0)
+              .map(CommentReader.Legacy(input, _))
+          )
+      if commentReader.isEmpty then throw new NoSuchMethodException("parser input comments() or commentSpans()")
+      val positionedSpan   = positionedClass.getMethod("span")
+      val defTreeRawMods   = defTreeClass.getMethod("rawMods")
       val runtime          = ParserRuntime(
         loader,
         contextBaseClass.getConstructor(),
@@ -67,6 +83,11 @@ private[pc] object StructuralScala3ParserBridge:
         parserFactory,
         diagnosticReader,
         treeClass,
+        defTreeClass,
+        defTreeRawMods,
+        positionedClass,
+        positionedSpan,
+        commentReader,
         productClass,
         optionClass,
         iterableClass,
@@ -164,7 +185,9 @@ private[pc] object StructuralScala3ParserBridge:
       parserConstruction = ParserCapabilityStatus.Available,
       productTraversal = ParserCapabilityStatus.Available,
       sourcePositions = ParserCapabilityStatus.Available,
-      diagnostics = ParserCapabilityStatus.Available
+      diagnostics = ParserCapabilityStatus.Available,
+      positionedSyntax = ParserCapabilityStatus.Available,
+      comments = ParserCapabilityStatus.Available
     )
 
   private def unavailableCapabilities(reason: String): Scala3ParserCapabilities =
@@ -178,7 +201,9 @@ private[pc] object StructuralScala3ParserBridge:
       parserConstruction = unavailable,
       productTraversal = unavailable,
       sourcePositions = unavailable,
-      diagnostics = unavailable
+      diagnostics = unavailable,
+      positionedSyntax = unavailable,
+      comments = unavailable
     )
 
   private def errorMessage(error: Throwable): String =
@@ -198,6 +223,11 @@ private[pc] object StructuralScala3ParserBridge:
       parserFactory: ParserFactory,
       diagnosticReader: DiagnosticReader,
       treeClass: Class[?],
+      defTreeClass: Class[?],
+      defTreeRawMods: Method,
+      positionedClass: Class[?],
+      positionedSpan: Method,
+      commentReader: Option[CommentReader],
       productClass: Class[?],
       optionClass: Class[?],
       iterableClass: Class[?],
@@ -237,6 +267,10 @@ private[pc] object StructuralScala3ParserBridge:
   private enum DiagnosticReader:
     case Partitioned
     case Buffered(method: Method)
+
+  private enum CommentReader(val parserInput: Method, val comments: Method):
+    case Modern(input: Method, method: Method) extends CommentReader(input, method)
+    case Legacy(input: Method, method: Method) extends CommentReader(input, method)
 
   private enum ReporterFactory:
     case SingleArgument(constructor: Constructor[?])
@@ -392,9 +426,12 @@ private final class StructuralScala3ParserBridge private (
         request.sourceUri,
         request.sourceText,
         ParserSyntaxSnapshot.digest(request.sourceText),
+        request.sourceText.length,
         collected.rootNodeId,
         collected.nodes,
-        diagnostics(active, context),
+        collected.positioned,
+        comments(active, parser, request.sourceText, request.cancellation),
+        diagnostics(active, context, request.cancellation),
         capabilities,
         identity
       )
@@ -407,11 +444,57 @@ private final class StructuralScala3ParserBridge private (
     if !active.treeClass.isInstance(root) then
       Left(Scala3ParserError.ParseFailed("the exact parser did not return a compiler tree"))
     else
-      val ids       = new IdentityHashMap[AnyRef, java.lang.Long]()
-      val products  = new IdentityHashMap[AnyRef, java.lang.Boolean]()
-      val generated = new HashMap[String, java.lang.Integer]()
-      var nextId    = 0L
-      var collected = Vector.empty[ParserSyntaxNode]
+      val ids              = new IdentityHashMap[AnyRef, java.lang.Long]()
+      val products         = new IdentityHashMap[AnyRef, java.lang.Boolean]()
+      val generated        = new HashMap[String, java.lang.Integer]()
+      var nextId           = 0L
+      var collected        = Vector.empty[ParserSyntaxNode]
+      var positioned       = Vector.empty[ParserPositionedSyntax]
+      val positionedIds    = new IdentityHashMap[AnyRef, java.lang.Long]()
+      var nextPositionedId = 0L
+
+      def visitPositioned(value: AnyRef, ownerNodeId: Long, path: Vector[String]): Long =
+        val existing = Option(positionedIds.get(value))
+        val id       = existing
+          .map(_.longValue())
+          .getOrElse:
+            val assigned = nextPositionedId
+            nextPositionedId += 1
+            positionedIds.put(value, assigned)
+            val product  = value.asInstanceOf[ProductValue]
+            positioned :+= ParserPositionedSyntax(
+              assigned,
+              product.productPrefix(),
+              Vector.empty,
+              positionedPosition(active, value),
+              Vector.empty
+            )
+            assigned
+
+        val occurrence = ParserPositionedOccurrence(ownerNodeId, path)
+        val index      = positioned.indexWhere(_.id == id)
+        val current    = positioned(index)
+        if !current.occurrences.contains(occurrence) then
+          positioned = positioned.updated(index, current.copy(occurrences = current.occurrences :+ occurrence))
+        if existing.isEmpty then
+          val product   = value.asInstanceOf[ProductValue]
+          val fields    = productFields(
+            active,
+            product,
+            ownerNodeId,
+            path,
+            cancellation,
+            visitTree,
+            visitPositioned,
+            products,
+            generated
+          )
+          val refreshed = positioned(positioned.indexWhere(_.id == id))
+          positioned = positioned.updated(
+            positioned.indexWhere(_.id == id),
+            refreshed.copy(fields = fields)
+          )
+        id
 
       def visitTree(tree: AnyRef): Long =
         Option(ids.get(tree))
@@ -422,19 +505,70 @@ private final class StructuralScala3ParserBridge private (
             nextId += 1
             ids.put(tree, id)
             val product  = tree.asInstanceOf[ProductValue]
-            val fields   = productFields(active, product, cancellation, visitTree, products, generated)
+            val fields   = productFields(
+              active,
+              product,
+              id,
+              Vector.empty,
+              cancellation,
+              visitTree,
+              visitPositioned,
+              products,
+              generated
+            ) ++ definitionModifiers(
+              active,
+              tree,
+              id,
+              cancellation,
+              visitTree,
+              visitPositioned,
+              products,
+              generated
+            )
             val position = treePosition(active, tree.asInstanceOf[TreeValue])
             collected = collected :+ ParserSyntaxNode(id, product.productPrefix(), fields, position)
             id
 
       val rootId = visitTree(root)
-      Right(CollectedNodes(rootId, collected.sortBy(_.id)))
+      Right(CollectedNodes(rootId, collected.sortBy(_.id), positioned.sortBy(_.id)))
+
+  private def definitionModifiers(
+      active: ParserRuntime,
+      tree: AnyRef,
+      ownerNodeId: Long,
+      cancellation: Scala3ParserCancellation,
+      visitTree: AnyRef => Long,
+      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
+      products: IdentityHashMap[AnyRef, java.lang.Boolean],
+      generated: HashMap[String, java.lang.Integer]
+  ): Vector[ParserSyntaxField] =
+    if !active.defTreeClass.isInstance(tree) then Vector.empty
+    else
+      Vector(
+        ParserSyntaxField(
+          "mods",
+          fieldValue(
+            active,
+            active.defTreeRawMods.invoke(tree),
+            ownerNodeId,
+            Vector("mods"),
+            cancellation,
+            visitTree,
+            visitPositioned,
+            products,
+            generated
+          )
+        )
+      )
 
   private def productFields(
       active: ParserRuntime,
       product: ProductValue,
+      ownerNodeId: Long,
+      path: Vector[String],
       cancellation: Scala3ParserCancellation,
       visitTree: AnyRef => Long,
+      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
       products: IdentityHashMap[AnyRef, java.lang.Boolean],
       generated: HashMap[String, java.lang.Integer]
   ): Vector[ParserSyntaxField] =
@@ -442,14 +576,27 @@ private final class StructuralScala3ParserBridge private (
       cancellation.checkCanceled()
       ParserSyntaxField(
         product.productElementName(index),
-        fieldValue(active, product.productElement(index), cancellation, visitTree, products, generated)
+        fieldValue(
+          active,
+          product.productElement(index),
+          ownerNodeId,
+          path :+ product.productElementName(index),
+          cancellation,
+          visitTree,
+          visitPositioned,
+          products,
+          generated
+        )
       )
 
   private def fieldValue(
       active: ParserRuntime,
       value: AnyRef,
+      ownerNodeId: Long,
+      path: Vector[String],
       cancellation: Scala3ParserCancellation,
       visitTree: AnyRef => Long,
+      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
       products: IdentityHashMap[AnyRef, java.lang.Boolean],
       generated: HashMap[String, java.lang.Integer]
   ): ParserFieldValue =
@@ -473,8 +620,11 @@ private final class StructuralScala3ParserBridge private (
               fieldValue(
                 active,
                 option.get(),
+                ownerNodeId,
+                path,
                 cancellation,
                 visitTree,
+                visitPositioned,
                 products,
                 generated
               )
@@ -482,17 +632,41 @@ private final class StructuralScala3ParserBridge private (
           )
         case _ if active.iterableClass.isInstance(value) =>
           ParserFieldValue.Repeated(
-            iteratorValues(value.asInstanceOf[IterableValue]).map: element =>
-              fieldValue(active, element, cancellation, visitTree, products, generated)
+            iteratorValues(value.asInstanceOf[IterableValue], cancellation).zipWithIndex.map: (element, index) =>
+              fieldValue(
+                active,
+                element,
+                ownerNodeId,
+                path :+ index.toString,
+                cancellation,
+                visitTree,
+                visitPositioned,
+                products,
+                generated
+              )
           )
         case _ if active.productClass.isInstance(value)  =>
-          if products.put(value, java.lang.Boolean.TRUE) != null then
+          if active.positionedClass.isInstance(value) then
+            ParserFieldValue.Positioned(visitPositioned(value, ownerNodeId, path))
+          else if products.put(value, java.lang.Boolean.TRUE) != null then
             ParserFieldValue.Unsupported(value.getClass.getName)
           else
-            val product = value.asInstanceOf[ProductValue]
-            val result  = ParserFieldValue.Product(
+            val product     = value.asInstanceOf[ProductValue]
+            lazy val fields =
+              productFields(
+                active,
+                product,
+                ownerNodeId,
+                path,
+                cancellation,
+                visitTree,
+                visitPositioned,
+                products,
+                generated
+              )
+            val result      = ParserFieldValue.Product(
               product.productPrefix(),
-              productFields(active, product, cancellation, visitTree, products, generated)
+              fields
             )
             products.remove(value)
             result
@@ -523,10 +697,21 @@ private final class StructuralScala3ParserBridge private (
           ordinal.intValue()
         )
 
-  private def iteratorValues(iterable: IterableValue): Vector[AnyRef] =
-    val iterator = iterable.iterator().asInstanceOf[IteratorValue]
-    val result   = Vector.newBuilder[AnyRef]
-    while iterator.hasNext() do result += iterator.next()
+  private def iteratorValues(
+      iterable: IterableValue,
+      cancellation: Scala3ParserCancellation
+  ): Vector[AnyRef] =
+    val runtimeType = iterable.getClass.getName
+    if !runtimeType.startsWith("scala.collection.immutable.") then
+      throw new IllegalStateException(s"unsupported compiler iterable: $runtimeType")
+    val iterator    = iterable.iterator().asInstanceOf[IteratorValue]
+    val result      = Vector.newBuilder[AnyRef]
+    var count       = 0
+    while iterator.hasNext() do
+      cancellation.checkCanceled()
+      if count == 1000000 then throw new IllegalStateException("compiler iterable exceeds traversal limit")
+      result += iterator.next()
+      count += 1
     result.result()
 
   private def treePosition(active: ParserRuntime, tree: TreeValue): ParserNodePosition =
@@ -543,16 +728,102 @@ private final class StructuralScala3ParserBridge private (
         provenance
       )
 
-  private def diagnostics(active: ParserRuntime, context: ParserContext): Vector[ParserDiagnostic] =
+  private def positionedPosition(active: ParserRuntime, value: AnyRef): ParserNodePosition =
+    val span = active.positionedSpan.invoke(value).asInstanceOf[java.lang.Long].longValue()
+    spanPosition(active, span)
+
+  private def spanPosition(active: ParserRuntime, span: Long): ParserNodePosition =
+    val ops = active.spansModule.asInstanceOf[SpanValue]
+    if !ops.`exists$extension`(span) then ParserNodePosition.Absent
+    else
+      val provenance =
+        if ops.`isSourceDerived$extension`(span) then ParserPositionProvenance.SourceDerived
+        else ParserPositionProvenance.Synthetic
+      ParserNodePosition.Positioned(
+        PcSourceRange(ops.`start$extension`(span), ops.`end$extension`(span)),
+        ops.`point$extension`(span),
+        provenance
+      )
+
+  private def comments(
+      active: ParserRuntime,
+      parser: AnyRef,
+      source: String,
+      cancellation: Scala3ParserCancellation
+  ): Vector[ParserComment] =
+    active.commentReader.toVector.flatMap: reader =>
+      val input  = reader.parserInput.invoke(parser)
+      val values = iteratorValues(reader.comments.invoke(input).asInstanceOf[IterableValue], cancellation)
+      values.map: value =>
+        cancellation.checkCanceled()
+        val span = commentSpan(active, value)
+        spanPosition(active, span) match
+          case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
+              if range.startOffset >= 0 && range.endOffset <= source.length && range.startOffset <= range.endOffset =>
+            if range.startOffset >= range.endOffset then throw new IllegalStateException("comment has an empty span")
+            val slice = source.substring(range.startOffset, range.endOffset)
+            val raw   = reader match
+              case CommentReader.Modern(_, _) => commentRaw(active, value)
+              case CommentReader.Legacy(_, _) => slice
+            if raw != slice then throw new IllegalStateException("compiler comment raw does not match its source span")
+            val kind  = classifyComment(raw)
+            ParserComment(range, raw, kind)
+          case position => throw new IllegalStateException(s"comment has no valid source-derived span: $position")
+
+  private def commentSpan(active: ParserRuntime, value: AnyRef): Long =
+    if value.isInstanceOf[java.lang.Long] then value.asInstanceOf[java.lang.Long].longValue()
+    else
+      value.getClass.getMethods
+        .find(method => (method.getName == "span" || method.getName == "coords") && method.getParameterCount == 0)
+        .map(_.invoke(value).asInstanceOf[java.lang.Long].longValue())
+        .orElse:
+          Option
+            .when(active.productClass.isInstance(value)):
+              val product = value.asInstanceOf[ProductValue]
+              Vector
+                .tabulate(product.productArity())(product.productElement)
+                .collectFirst:
+                  case span: java.lang.Long => span.longValue()
+            .flatten
+        .getOrElse(throw new IllegalStateException("comment has no span accessor"))
+
+  private def commentRaw(active: ParserRuntime, value: AnyRef): String =
+    value.getClass.getMethods
+      .find(method => method.getName == "raw" && method.getParameterCount == 0)
+      .map(_.invoke(value).asInstanceOf[String])
+      .orElse:
+        Option
+          .when(active.productClass.isInstance(value)):
+            val product = value.asInstanceOf[ProductValue]
+            Vector
+              .tabulate(product.productArity())(index =>
+                product.productElementName(index) -> product.productElement(index)
+              )
+              .collectFirst { case ("raw", raw: String) => raw }
+          .flatten
+      .getOrElse(throw new IllegalStateException("comment has no raw accessor"))
+
+  private def classifyComment(raw: String): ParserCommentKind =
+    if raw.startsWith("//") then ParserCommentKind.Line
+    else if raw.startsWith("/**") then ParserCommentKind.Doc
+    else if raw.startsWith("/*") then ParserCommentKind.Block
+    else throw new IllegalStateException("comment span does not select comment source text")
+
+  private def diagnostics(
+      active: ParserRuntime,
+      context: ParserContext,
+      cancellation: Scala3ParserCancellation
+  ): Vector[ParserDiagnostic] =
     val values =
       active.diagnosticReader match
         case DiagnosticReader.Partitioned      =>
           val reporter = context.reporter.asInstanceOf[ReporterValue]
-          iteratorValues(reporter.allErrors().asInstanceOf[IterableValue]) ++
-            iteratorValues(reporter.allWarnings().asInstanceOf[IterableValue])
+          iteratorValues(reporter.allErrors().asInstanceOf[IterableValue], cancellation) ++
+            iteratorValues(reporter.allWarnings().asInstanceOf[IterableValue], cancellation)
         case DiagnosticReader.Buffered(method) =>
-          iteratorValues(method.invoke(context.reporter, context.value).asInstanceOf[IterableValue])
+          iteratorValues(method.invoke(context.reporter, context.value).asInstanceOf[IterableValue], cancellation)
     values.map: value =>
+      cancellation.checkCanceled()
       val diagnostic = value.asInstanceOf[DiagnosticValue]
       ParserDiagnostic(
         diagnosticSeverity(diagnostic.level()),
@@ -568,15 +839,14 @@ private final class StructuralScala3ParserBridge private (
 
   private def diagnosticPosition(
       position: java.util.Optional[?]
-  ): Option[ParserNodePosition.Positioned] =
+  ): Option[ParserDiagnosticPosition] =
     if position.isEmpty then None
     else
       val value = position.get().asInstanceOf[DiagnosticPositionValue]
       Some(
-        ParserNodePosition.Positioned(
+        ParserDiagnosticPosition(
           PcSourceRange(value.start(), value.end()),
-          value.point(),
-          ParserPositionProvenance.SourceDerived
+          value.point()
         )
       )
 
@@ -618,4 +888,8 @@ private final class StructuralScala3ParserBridge private (
       if released.compareAndSet(false, true) then active.close()
 
   private final case class ParserContext(value: AnyRef, reporter: AnyRef)
-  private final case class CollectedNodes(rootNodeId: Long, nodes: Vector[ParserSyntaxNode])
+  private final case class CollectedNodes(
+      rootNodeId: Long,
+      nodes: Vector[ParserSyntaxNode],
+      positioned: Vector[ParserPositionedSyntax]
+  )

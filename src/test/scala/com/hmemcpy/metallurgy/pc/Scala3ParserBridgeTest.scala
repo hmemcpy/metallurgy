@@ -47,6 +47,42 @@ final class Scala3ParserBridgeTest:
     finally bridge.close()
 
   @Test
+  def positionedSyntaxAndCompilerCommentsAreExactAndDeterministic(): Unit =
+    val bridge = openBridge()
+    val source =
+      """/** api */
+        |object Syntax:
+        |  // line
+        |  inline def value(using count: Int): Int =
+        |    /* block */ count
+        |""".stripMargin
+    try
+      val first  = parse(bridge, source)
+      val second = parse(bridge, source)
+
+      assertEquals(first, second)
+      assertEquals(
+        Vector(
+          ParserComment(PcSourceRange(0, 10), "/** api */", ParserCommentKind.Doc),
+          ParserComment(PcSourceRange(28, 35), "// line", ParserCommentKind.Line),
+          ParserComment(PcSourceRange(84, 95), "/* block */", ParserCommentKind.Block)
+        ),
+        first.comments
+      )
+      assertTrue(first.positioned.nonEmpty)
+      val positionedIds = first.positioned.map(_.id).toSet
+      assertTrue(first.positioned.forall(_.production.nonEmpty))
+      assertTrue(first.positioned.forall(_.occurrences.nonEmpty))
+      assertTrue(
+        first.positioned
+          .flatMap(_.occurrences)
+          .forall(occurrence => first.nodes.exists(_.id == occurrence.ownerNodeId) && occurrence.fieldPath.nonEmpty)
+      )
+      assertTrue(fieldValues(first).collect { case ParserFieldValue.Positioned(id) => id }.forall(positionedIds))
+      assertNeutral(first)
+    finally bridge.close()
+
+  @Test
   def closingTheBridgeDetachesItsRuntimeAndRejectsFurtherParsing(): Unit =
     val bridge   = openBridge()
     val identity = bridge.identity
@@ -130,5 +166,22 @@ final class Scala3ParserBridgeTest:
         case _                                                                           => ()
 
     visit(value)
+
+  private def fieldValues(snapshot: ParserSyntaxSnapshot): Vector[ParserFieldValue] =
+    def descendants(value: ParserFieldValue): Vector[ParserFieldValue] =
+      value +: (value match
+        case ParserFieldValue.Optional(nested)       => nested.toVector.flatMap(descendants)
+        case ParserFieldValue.Repeated(nested)       => nested.flatMap(descendants)
+        case ParserFieldValue.Product(_, fields)     => fields.flatMap(field => descendants(field.value))
+        case ParserFieldValue.Node(_)                => Vector.empty
+        case ParserFieldValue.Positioned(_)          => Vector.empty
+        case ParserFieldValue.Name(_)                => Vector.empty
+        case ParserFieldValue.GeneratedName(_, _, _) => Vector.empty
+        case ParserFieldValue.Scalar(_)              => Vector.empty
+        case ParserFieldValue.Unsupported(_)         => Vector.empty
+      )
+    (snapshot.nodes.flatMap(_.fields) ++ snapshot.positioned.flatMap(_.fields)).flatMap(field =>
+      descendants(field.value)
+    )
 
   private val ScalaVersion = "3.7.4"

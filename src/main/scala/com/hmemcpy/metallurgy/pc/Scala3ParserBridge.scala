@@ -120,13 +120,35 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     sourceUri: ParserSourceUri,
     sourceText: String,
     sourceDigest: String,
+    sourceLength: Int,
     rootNodeId: Long,
     nodes: Vector[ParserSyntaxNode],
+    positioned: Vector[ParserPositionedSyntax],
+    comments: Vector[ParserComment],
     diagnostics: Vector[ParserDiagnostic],
     capabilities: Scala3ParserCapabilities,
     compilerIdentity: Scala3ParserCompilerIdentity
 ):
   require(nodes.exists(_.id == rootNodeId), s"root node $rootNodeId is absent")
+
+private[metallurgy] final case class ParserPositionedSyntax(
+    id: Long,
+    production: String,
+    fields: Vector[ParserSyntaxField],
+    position: ParserNodePosition,
+    occurrences: Vector[ParserPositionedOccurrence]
+)
+
+private[metallurgy] final case class ParserPositionedOccurrence(ownerNodeId: Long, fieldPath: Vector[String])
+
+private[metallurgy] final case class ParserComment(
+    range: PcSourceRange,
+    raw: String,
+    kind: ParserCommentKind
+)
+
+private[metallurgy] enum ParserCommentKind:
+  case Line, Block, Doc
 
 private[metallurgy] object ParserSyntaxSnapshot:
   def digest(sourceText: String): String =
@@ -147,6 +169,7 @@ private[metallurgy] final case class ParserSyntaxField(name: String, value: Pars
 
 private[metallurgy] enum ParserFieldValue:
   case Node(nodeId: Long)
+  case Positioned(id: Long)
   case Optional(value: Option[ParserFieldValue])
   case Repeated(values: Vector[ParserFieldValue])
   case Product(production: String, fields: Vector[ParserSyntaxField])
@@ -174,8 +197,10 @@ private[metallurgy] enum ParserPositionProvenance:
 private[metallurgy] final case class ParserDiagnostic(
     severity: ParserDiagnosticSeverity,
     message: String,
-    position: Option[ParserNodePosition.Positioned]
+    position: Option[ParserDiagnosticPosition]
 )
+
+private[metallurgy] final case class ParserDiagnosticPosition(range: PcSourceRange, point: Int)
 
 private[metallurgy] enum ParserDiagnosticSeverity:
   case Error, Warning, Information
@@ -187,7 +212,9 @@ private[metallurgy] final case class Scala3ParserCapabilities(
     parserConstruction: ParserCapabilityStatus,
     productTraversal: ParserCapabilityStatus,
     sourcePositions: ParserCapabilityStatus,
-    diagnostics: ParserCapabilityStatus
+    diagnostics: ParserCapabilityStatus,
+    positionedSyntax: ParserCapabilityStatus,
+    comments: ParserCapabilityStatus
 ):
   def requiredUnavailable: Vector[ParserCapabilityFailure] =
     Vector(
@@ -196,7 +223,9 @@ private[metallurgy] final case class Scala3ParserCapabilities(
       "parser construction" -> parserConstruction,
       "product traversal"   -> productTraversal,
       "source positions"    -> sourcePositions,
-      "diagnostics"         -> diagnostics
+      "diagnostics"         -> diagnostics,
+      "positioned syntax"   -> positionedSyntax,
+      "comments"            -> comments
     ).collect { case (name, ParserCapabilityStatus.Unavailable(reason)) =>
       ParserCapabilityFailure(name, reason)
     }
