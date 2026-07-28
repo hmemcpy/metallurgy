@@ -1,6 +1,8 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.*
+import scala.util.boundary
+import scala.util.boundary.break
 
 private[metallurgy] final case class CompilerArtifactIdentity(
     ordinal: Int,
@@ -73,6 +75,220 @@ private[metallurgy] final case class CompilerRuntimeInventory(
     parserEvidenceFingerprint: String,
     shapes: Vector[CompilerShapeInventoryRow]
 )
+private[metallurgy] final case class AggregatedCompilerProductionRow(
+    kind: InventoryKind,
+    prefix: String,
+    fields: Vector[CompilerFieldPattern],
+    contexts: Vector[Option[InventoryContext]],
+    sourceClassifications: Vector[SourceClassification]
+)
+private[metallurgy] final case class AggregatedCompilerProductionInventory(
+    identity: CompilerRuntimeIdentity,
+    sourceEvidenceFingerprints: Vector[String],
+    productions: Vector[AggregatedCompilerProductionRow]
+):
+  private lazy val encoded: Array[Byte] = AggregatedCompilerProductionInventory.serialize(this)
+  lazy val fingerprint: String          = CanonicalByteEncoder.sha256Hex(encoded)
+  def canonicalBytes: Array[Byte]       = encoded.clone()
+
+private[metallurgy] enum InventoryAggregationFailure:
+  case EmptyInput
+  case RuntimeIdentityMismatch(expected: CompilerRuntimeIdentity, actual: CompilerRuntimeIdentity)
+  case MissingObservations(kind: InventoryKind, prefix: String)
+  case FieldSignatureConflict(
+      kind: InventoryKind,
+      prefix: String,
+      expected: Vector[String],
+      actual: Vector[String]
+  )
+  case UnresolvedShape(path: Vector[CatalogPathSegment])
+  case IncompatibleShape(path: Vector[CatalogPathSegment])
+
+private[metallurgy] object AggregatedCompilerProductionInventory:
+  def aggregate(
+      inventories: Vector[CompilerRuntimeInventory]
+  ): Either[InventoryAggregationFailure, AggregatedCompilerProductionInventory] =
+    inventories.headOption match
+      case None        => Left(InventoryAggregationFailure.EmptyInput)
+      case Some(first) =>
+        inventories.find(_.identity != first.identity) match
+          case Some(other) => Left(InventoryAggregationFailure.RuntimeIdentityMismatch(first.identity, other.identity))
+          case None        => aggregateMatching(first.identity, inventories)
+
+  def serialize(inventory: AggregatedCompilerProductionInventory): Array[Byte] =
+    val e = CanonicalByteEncoder()
+    e.tag(1)
+    writeIdentity(inventory.identity, e)
+    e.sequence(inventory.sourceEvidenceFingerprints)(e.string)
+    e.sequence(inventory.productions)(writeRow(_, e))
+    e.result()
+
+  private def aggregateMatching(
+      identity: CompilerRuntimeIdentity,
+      inventories: Vector[CompilerRuntimeInventory]
+  ): Either[InventoryAggregationFailure, AggregatedCompilerProductionInventory] =
+    boundary:
+      val grouped = inventories.flatMap(_.shapes).groupBy(row => row.kind -> row.prefix)
+      val rows    = Vector.newBuilder[AggregatedCompilerProductionRow]
+      val ordered = grouped.toVector.sortBy((key, _) => (key._1.ordinal, key._2))
+      ordered.foreach:
+        case ((kind, prefix), observations) =>
+          if observations.exists(_.observations.isEmpty) then
+            break(Left(InventoryAggregationFailure.MissingObservations(kind, prefix)))
+          val signatures = observations.flatMap(_.observations).map(_.map(_.name)).distinct
+          if signatures.size != 1 then
+            break(
+              Left(
+                InventoryAggregationFailure.FieldSignatureConflict(kind, prefix, signatures.head, signatures.tail.head)
+              )
+            )
+          val signature  = signatures.head
+          val fieldRows  = observations.flatMap(_.observations)
+          val fields     = Vector.newBuilder[CompilerFieldPattern]
+          signature.zipWithIndex.foreach: (name, index) =>
+            infer(
+              fieldRows.map(_(index).value),
+              Vector(CatalogPathSegment.NamedField(name))
+            ) match
+              case Left(failure) => break(Left(failure))
+              case Right(value)  => fields += CompilerFieldPattern(name, value)
+          rows += AggregatedCompilerProductionRow(
+            kind,
+            prefix,
+            fields.result(),
+            canonicalDistinct(
+              observations.flatMap(row => if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_)))
+            )(writeOptionalContext),
+            observations.flatMap(_.sourceClassifications).distinct.sortBy(_.ordinal)
+          )
+      Right(
+        AggregatedCompilerProductionInventory(
+          identity,
+          inventories.map(_.parserEvidenceFingerprint).distinct.sorted,
+          rows.result()
+        )
+      )
+
+  private def infer(
+      observations: Vector[InventoryValueObservation],
+      path: Vector[CatalogPathSegment]
+  ): Either[InventoryAggregationFailure, CatalogValuePattern] =
+    observations.headOption match
+      case None                                                     => Left(InventoryAggregationFailure.UnresolvedShape(path))
+      case Some(_: InventoryValueObservation.Optional)              =>
+        if !observations.forall(_.isInstanceOf[InventoryValueObservation.Optional]) then incompatible(path)
+        else
+          val concrete = observations.collect { case InventoryValueObservation.Optional(value) => value }.flatten
+          infer(concrete, path :+ CatalogPathSegment.Optional).map(CatalogValuePattern.Optional.apply)
+      case Some(_: InventoryValueObservation.Repeated)              =>
+        if !observations.forall(_.isInstanceOf[InventoryValueObservation.Repeated]) then incompatible(path)
+        else
+          val concrete = observations.collect { case InventoryValueObservation.Repeated(values) => values }.flatten
+          infer(concrete, path :+ CatalogPathSegment.RepeatedElement).map(CatalogValuePattern.Repeated.apply)
+      case Some(InventoryValueObservation.Product(prefix, _))       =>
+        boundary:
+          val products = observations.collect { case value: InventoryValueObservation.Product => value }
+          if products.size != observations.size || products.exists(_.prefix != prefix) then incompatible(path)
+          else
+            val signatures = products.map(_.fields.map(_.name)).distinct
+            if signatures.size != 1 then incompatible(path :+ CatalogPathSegment.NestedProduct(prefix))
+            else
+              val nestedPath = path :+ CatalogPathSegment.NestedProduct(prefix)
+              val fields     = Vector.newBuilder[CompilerFieldPattern]
+              signatures.head.zipWithIndex.foreach: (name, index) =>
+                infer(products.map(_.fields(index).value), nestedPath :+ CatalogPathSegment.NamedField(name)) match
+                  case Left(failure) => break(Left(failure))
+                  case Right(value)  => fields += CompilerFieldPattern(name, value)
+              Right(CatalogValuePattern.Product(prefix, fields.result()))
+      case Some(_: InventoryValueObservation.Node)                  =>
+        sameCategory(observations, path)(_.isInstanceOf[InventoryValueObservation.Node], CatalogValuePattern.Node)
+      case Some(_: InventoryValueObservation.Positioned)            =>
+        sameCategory(observations, path)(
+          _.isInstanceOf[InventoryValueObservation.Positioned],
+          CatalogValuePattern.Positioned
+        )
+      case Some(_: InventoryValueObservation.Name)                  =>
+        sameCategory(observations, path)(_.isInstanceOf[InventoryValueObservation.Name], CatalogValuePattern.Name)
+      case Some(_: InventoryValueObservation.GeneratedName)         =>
+        sameCategory(observations, path)(
+          _.isInstanceOf[InventoryValueObservation.GeneratedName],
+          CatalogValuePattern.GeneratedName
+        )
+      case Some(InventoryValueObservation.Scalar(value))            =>
+        val kind = value.productPrefix
+        if observations.forall {
+            case InventoryValueObservation.Scalar(candidate) => candidate.productPrefix == kind
+            case _                                           => false
+          }
+        then Right(CatalogValuePattern.Scalar(kind))
+        else incompatible(path)
+      case Some(InventoryValueObservation.Unsupported(runtimeType)) =>
+        if observations.forall {
+            case InventoryValueObservation.Unsupported(candidate) => candidate == runtimeType
+            case _                                                => false
+          }
+        then Right(CatalogValuePattern.Unsupported(runtimeType))
+        else incompatible(path)
+
+  private def sameCategory(
+      observations: Vector[InventoryValueObservation],
+      path: Vector[CatalogPathSegment]
+  )(matches: InventoryValueObservation => Boolean, result: CatalogValuePattern) =
+    if observations.forall(matches) then Right(result) else incompatible(path)
+
+  private def incompatible(path: Vector[CatalogPathSegment]) =
+    Left(InventoryAggregationFailure.IncompatibleShape(path))
+
+  private def canonicalDistinct[A](values: Vector[A])(write: (A, CanonicalByteEncoder) => Unit): Vector[A] =
+    values
+      .groupBy(value => canonicalKey(value)(write))
+      .toVector
+      .sortBy(_._1)
+      .map(_._2.head)
+
+  private def canonicalKey[A](value: A)(write: (A, CanonicalByteEncoder) => Unit): String =
+    val e = CanonicalByteEncoder()
+    write(value, e)
+    java.util.Base64.getEncoder.encodeToString(e.result())
+
+  private def writeIdentity(identity: CompilerRuntimeIdentity, e: CanonicalByteEncoder): Unit =
+    e.string(identity.coordinate.organization)
+    e.string(identity.coordinate.artifact)
+    e.string(identity.coordinate.version)
+    e.sequence(identity.artifacts): artifact =>
+      e.int(artifact.ordinal); e.string(artifact.fileName); e.long(artifact.byteSize); e.string(artifact.sha256)
+    e.sequence(identity.compilerOptions)(e.string)
+
+  private def writeRow(row: AggregatedCompilerProductionRow, e: CanonicalByteEncoder): Unit =
+    e.tag(row.kind.ordinal); e.string(row.prefix); e.sequence(row.fields)(writeField(_, e))
+    e.sequence(row.contexts)(writeOptionalContext(_, e)); e.sequence(row.sourceClassifications)(v => e.tag(v.ordinal))
+
+  private def writeField(field: CompilerFieldPattern, e: CanonicalByteEncoder): Unit =
+    e.string(field.name); writePattern(field.value, e)
+
+  private def writePattern(value: CatalogValuePattern, e: CanonicalByteEncoder): Unit = value match
+    case CatalogValuePattern.Node                    => e.tag(1)
+    case CatalogValuePattern.Positioned              => e.tag(2)
+    case CatalogValuePattern.Optional(inner)         => e.tag(3); writePattern(inner, e)
+    case CatalogValuePattern.Repeated(inner)         => e.tag(4); writePattern(inner, e)
+    case CatalogValuePattern.Product(prefix, fields) => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
+    case CatalogValuePattern.Name                    => e.tag(6)
+    case CatalogValuePattern.GeneratedName           => e.tag(7)
+    case CatalogValuePattern.Scalar(kind)            => e.tag(8); e.string(kind)
+    case CatalogValuePattern.Unsupported(runtime)    => e.tag(9); e.string(runtime)
+
+  private def writeContext(context: InventoryContext, e: CanonicalByteEncoder): Unit =
+    e.tag(context.ownerKind.ordinal); e.string(context.ownerPrefix); e.sequence(context.path)(writePath(_, e))
+
+  private def writeOptionalContext(context: Option[InventoryContext], e: CanonicalByteEncoder): Unit = context match
+    case None        => e.tag(0)
+    case Some(value) => e.tag(1); writeContext(value, e)
+
+  private def writePath(segment: CatalogPathSegment, e: CanonicalByteEncoder): Unit = segment match
+    case CatalogPathSegment.NamedField(name)       => e.tag(1); e.string(name)
+    case CatalogPathSegment.Optional               => e.tag(2)
+    case CatalogPathSegment.RepeatedElement        => e.tag(3)
+    case CatalogPathSegment.NestedProduct(product) => e.tag(4); e.string(product)
 private[metallurgy] enum InventoryFailure:
   case DuplicateIdentity(kind: InventoryKind, id: Long)
   case MissingReference(

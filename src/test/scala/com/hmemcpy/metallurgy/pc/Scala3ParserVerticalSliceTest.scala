@@ -1,5 +1,11 @@
 package com.hmemcpy.metallurgy.pc
 
+import com.hmemcpy.metallurgy.psiproducer.{
+  AggregatedCompilerProductionInventory,
+  CatalogPathSegment,
+  CompilerRuntimeInventory,
+  InventoryAggregationFailure
+}
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
 import org.junit.Test
 
@@ -25,7 +31,7 @@ final class Scala3ParserVerticalSliceTest:
       assertEquals(ParserSyntaxSnapshot.digest(Source), first.sourceDigest)
       assertTrue(first.diagnostics.isEmpty)
 
-      val productions = first.nodes.map(_.production).toSet
+      val productions      = first.nodes.map(_.production).toSet
       RequiredProductions.foreach(production => assertTrue(production, productions(production)))
       assertExactPosition(
         first,
@@ -49,7 +55,7 @@ final class Scala3ParserVerticalSliceTest:
         Source.indexOf("\n\nobject Program")
       )
       assertContextParameterClauseGrouping(first)
-      val greetingId  = first.nodes
+      val greetingId       = first.nodes
         .find(node =>
           node.production == "DefDef" &&
             node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("greeting")))
@@ -71,7 +77,7 @@ final class Scala3ParserVerticalSliceTest:
             )
         )
       )
-      val personId    = first.nodes
+      val personId         = first.nodes
         .find(node =>
           node.production == "TypeDef" &&
             node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("Person")))
@@ -93,6 +99,30 @@ final class Scala3ParserVerticalSliceTest:
               )
             )
         )
+      )
+      val firstInventory   = CompilerRuntimeInventory
+        .from(first)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val secondInventory  = CompilerRuntimeInventory
+        .from(second)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val firstAggregation = AggregatedCompilerProductionInventory.aggregate(Vector(firstInventory, secondInventory))
+      assertEquals(
+        Left(
+          InventoryAggregationFailure.UnresolvedShape(
+            Vector(
+              CatalogPathSegment.NamedField("mods"),
+              CatalogPathSegment.NestedProduct("Modifiers"),
+              CatalogPathSegment.NamedField("annotations"),
+              CatalogPathSegment.RepeatedElement
+            )
+          )
+        ),
+        firstAggregation
+      )
+      assertEquals(
+        firstAggregation,
+        AggregatedCompilerProductionInventory.aggregate(Vector(secondInventory, firstInventory))
       )
       assertNoUnsupportedValues(first)
       assertAllPositionsBelongToSource(first)

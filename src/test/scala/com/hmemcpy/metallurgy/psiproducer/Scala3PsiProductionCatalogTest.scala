@@ -5,6 +5,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 final class Scala3PsiProductionCatalogTest:
+  @Test def evidenceFingerprintUsesUnambiguousSequenceEncoding(): Unit =
+    assertNotEquals(
+      ParserSyntaxSnapshot.evidenceFingerprint(snapshot("/one", 1, Vector("a, b"))),
+      ParserSyntaxSnapshot.evidenceFingerprint(snapshot("/one", 1, Vector("a", "b")))
+    )
+
+  @Test def evidenceFingerprintPreservesUnpairedUtf16CodeUnits(): Unit =
+    val first  = snapshot("/one", 1, Vector.empty).copy(sourceText = "\uD800", sourceLength = 1)
+    val second = first.copy(sourceText = "\uD801")
+    assertNotEquals(
+      ParserSyntaxSnapshot.evidenceFingerprint(first),
+      ParserSyntaxSnapshot.evidenceFingerprint(second)
+    )
+
   @Test def runtimeIdentityIgnoresPathAndLoaderButRetainsOptionsAndArtifactOrder(): Unit =
     val first    = inventory(snapshot("/one", 1, Vector("a", "b")))
     val second   = inventory(snapshot("/two", 2, Vector("a", "b")))
@@ -33,6 +47,152 @@ final class Scala3PsiProductionCatalogTest:
     val root   = result.shapes.find(_.prefix == "Root").get
     assertTrue(root.patternFields.head.value.isInstanceOf[CatalogValuePattern.Repeated])
     assertTrue(root.observations.head.head.value.isInstanceOf[InventoryValueObservation.Repeated])
+
+  @Test def aggregateIsCanonicalAndDeduplicatesEvidence(): Unit =
+    val first    = inventory(snapshot("/one", 1, Vector.empty))
+    val second   = first.copy(parserEvidenceFingerprint = "second")
+    val forward  = aggregate(Vector(first, second, first))
+    val backward = aggregate(Vector(second, first, first))
+    assertArrayEquals(forward.canonicalBytes, backward.canonicalBytes)
+    assertEquals(forward.fingerprint, backward.fingerprint)
+    assertEquals(Vector(first.parserEvidenceFingerprint, "second").sorted, forward.sourceEvidenceFingerprints)
+    assertTrue(forward.productions.forall(row => row.contexts.distinct == row.contexts))
+    assertTrue(forward.productions.forall(row => row.sourceClassifications.distinct == row.sourceClassifications))
+
+  @Test def aggregateRetainsRootAndParentContexts(): Unit =
+    val base   = inventory(snapshot("/one", 1, Vector.empty))
+    val root   = row(InventoryValueObservation.Name("x")).copy(contexts = Vector.empty)
+    val nested = root.copy(contexts =
+      Vector(
+        InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))
+      )
+    )
+    val result = aggregate(Vector(base.copy(shapes = Vector(root)), base.copy(shapes = Vector(nested))))
+    assertTrue(result.productions.head.contexts.contains(None))
+    assertTrue(result.productions.head.contexts.exists(_.nonEmpty))
+
+  @Test def aggregateRejectsMissingObservationsWithoutDiscardingTheRow(): Unit =
+    val base    = inventory(snapshot("/one", 1, Vector.empty))
+    val present = row(InventoryValueObservation.Name("x"))
+    val missing = present.copy(observations = Vector.empty)
+    Vector(Vector(missing), Vector(present, missing)).foreach: shapes =>
+      assertEquals(
+        Left(InventoryAggregationFailure.MissingObservations(InventoryKind.Node, "Observed")),
+        AggregatedCompilerProductionInventory.aggregate(Vector(base.copy(shapes = shapes)))
+      )
+
+  @Test def aggregateInfersOptionalAndRepeatedFromAllEvidence(): Unit =
+    val identity                                      = inventory(snapshot("/one", 1, Vector.empty)).identity
+    def value(observation: InventoryValueObservation) = CompilerRuntimeInventory(
+      identity,
+      s"evidence-${observation.hashCode}",
+      Vector(row(observation))
+    )
+    val optional                                      = Vector(
+      value(InventoryValueObservation.Optional(None)),
+      value(InventoryValueObservation.Optional(Some(InventoryValueObservation.Name("x"))))
+    )
+    val repeated                                      = Vector(
+      value(InventoryValueObservation.Repeated(Vector.empty)),
+      value(InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Scalar(ParserScalar.Integer(1)))))
+    )
+    assertEquals(
+      CatalogValuePattern.Optional(CatalogValuePattern.Name),
+      aggregate(optional).productions.head.fields.head.value
+    )
+    assertArrayEquals(aggregate(optional).canonicalBytes, aggregate(optional.reverse).canonicalBytes)
+    assertEquals(
+      CatalogValuePattern.Repeated(CatalogValuePattern.Scalar("Integer")),
+      aggregate(repeated).productions.head.fields.head.value
+    )
+    assertArrayEquals(aggregate(repeated).canonicalBytes, aggregate(repeated.reverse).canonicalBytes)
+
+  @Test def aggregateReportsUnresolvedConflictAndIdentityMismatch(): Unit =
+    val base                                        = inventory(snapshot("/one", 1, Vector.empty))
+    def withValue(value: InventoryValueObservation) =
+      base.copy(parserEvidenceFingerprint = value.hashCode.toString, shapes = Vector(row(value)))
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(withValue(InventoryValueObservation.Optional(None))))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(withValue(InventoryValueObservation.Repeated(Vector.empty))))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(
+          Vector(
+            withValue(InventoryValueObservation.Name("x")),
+            withValue(InventoryValueObservation.Scalar(ParserScalar.Text("x")))
+          )
+        )
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
+    )
+    val different                                   = inventory(snapshot("/one", 1, Vector("different")))
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(base, different))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.RuntimeIdentityMismatch]
+    )
+
+  @Test def aggregateRejectsFieldAndNestedProductShapeConflicts(): Unit =
+    val base      = inventory(snapshot("/one", 1, Vector.empty))
+    val first     = base.copy(shapes = Vector(row(InventoryValueObservation.Name("x"))))
+    val renamed   = first.copy(shapes =
+      Vector(
+        first.shapes.head.copy(observations =
+          Vector(
+            Vector(InventoryFieldObservation("renamed", InventoryValueObservation.Name("x")))
+          )
+        )
+      )
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(first, renamed))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.FieldSignatureConflict]
+    )
+    val product   = InventoryValueObservation.Product(
+      "Pair",
+      Vector(InventoryFieldObservation("left", InventoryValueObservation.Name("x")))
+    )
+    val different = InventoryValueObservation.Product(
+      "Pair",
+      Vector(InventoryFieldObservation("right", InventoryValueObservation.Name("x")))
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(Vector(first.copy(shapes = Vector(row(product))), first.copy(shapes = Vector(row(different)))))
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
+    )
+
+  @Test def aggregateCanonicalBytesCannotBeMutatedThroughTheResult(): Unit =
+    val result = aggregate(Vector(inventory(snapshot("/one", 1, Vector.empty))))
+    val bytes  = result.canonicalBytes
+    bytes(0) = (bytes(0) + 1).toByte
+    assertFalse(java.util.Arrays.equals(bytes, result.canonicalBytes))
+    assertEquals(CanonicalByteEncoder.sha256Hex(result.canonicalBytes), result.fingerprint)
 
   @Test def emptyCatalogFailsValidationForNonemptyInventory(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)
@@ -159,6 +319,19 @@ final class Scala3PsiProductionCatalogTest:
 
   private def inventory(value: ParserSyntaxSnapshot): CompilerRuntimeInventory =
     CompilerRuntimeInventory.from(value).fold(f => throw new AssertionError(f.toString), identity)
+
+  private def aggregate(values: Vector[CompilerRuntimeInventory]): AggregatedCompilerProductionInventory =
+    AggregatedCompilerProductionInventory.aggregate(values).fold(f => throw new AssertionError(f.toString), identity)
+
+  private def row(value: InventoryValueObservation): CompilerShapeInventoryRow =
+    CompilerShapeInventoryRow(
+      InventoryKind.Node,
+      "Observed",
+      Vector.empty,
+      Vector(Vector(InventoryFieldObservation("value", value))),
+      Vector(InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))),
+      Vector(SourceClassification.SourceReachable)
+    )
 
   private def failures(value: ParserSyntaxSnapshot): Vector[InventoryFailure] =
     CompilerRuntimeInventory.from(value).left.toOption.get

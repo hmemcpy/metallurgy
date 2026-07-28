@@ -1,6 +1,8 @@
 package com.hmemcpy.metallurgy.pc
 
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -175,24 +177,130 @@ private[metallurgy] object ParserSyntaxSnapshot:
       .mkString
 
   def evidenceFingerprint(snapshot: ParserSyntaxSnapshot): String =
-    val artifacts = snapshot.compilerIdentity.artifacts.map: artifact =>
-      (artifact.ordinal, artifact.fileName, artifact.byteSize, artifact.sha256)
-    digest(
-      Vector(
-        snapshot.sourceUri.value,
-        snapshot.sourceDigest,
-        snapshot.sourceLength,
-        snapshot.compilerOptions,
-        snapshot.rootNodeId,
-        artifacts,
-        snapshot.nodes,
-        snapshot.positioned,
-        snapshot.comments,
-        snapshot.diagnostics,
-        snapshot.capabilities,
-        snapshot.compilerIdentity.coordinate
-      ).mkString("\u001e")
+    CanonicalByteEncoder.sha256Hex(CanonicalByteEncoder.encodeSnapshot(snapshot))
+
+private[metallurgy] final class CanonicalByteEncoder private ():
+  private val bytes = new ByteArrayOutputStream()
+  private val out   = new DataOutputStream(bytes)
+
+  def tag(value: Int): Unit                                        = out.writeByte(value)
+  def int(value: Int): Unit                                        = out.writeInt(value)
+  def long(value: Long): Unit                                      = out.writeLong(value)
+  def double(value: Double): Unit                                  = out.writeLong(java.lang.Double.doubleToRawLongBits(value))
+  def boolean(value: Boolean): Unit                                = out.writeBoolean(value)
+  def char(value: Char): Unit                                      = out.writeChar(value.toInt)
+  def string(value: String): Unit                                  =
+    int(value.length)
+    value.foreach(char)
+  def sequence[A](values: IterableOnce[A])(write: A => Unit): Unit =
+    val strict = values.iterator.toVector
+    int(strict.length)
+    strict.foreach(write)
+  def result(): Array[Byte]                                        =
+    out.flush()
+    bytes.toByteArray
+
+private[metallurgy] object CanonicalByteEncoder:
+  def apply(): CanonicalByteEncoder = new CanonicalByteEncoder()
+
+  def sha256Hex(bytes: Array[Byte]): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).map(byte => f"${byte & 0xff}%02x").mkString
+
+  def encodeSnapshot(snapshot: ParserSyntaxSnapshot): Array[Byte] =
+    val e            = apply()
+    e.tag(1)
+    e.string(snapshot.sourceUri.value)
+    e.string(snapshot.sourceText)
+    e.string(snapshot.sourceDigest)
+    e.int(snapshot.sourceLength)
+    e.sequence(snapshot.compilerOptions)(e.string)
+    e.long(snapshot.rootNodeId)
+    e.sequence(snapshot.compilerIdentity.artifacts): artifact =>
+      e.int(artifact.ordinal); e.string(artifact.fileName); e.long(artifact.byteSize); e.string(artifact.sha256)
+    val coordinate   = snapshot.compilerIdentity.coordinate
+    e.string(coordinate.organization); e.string(coordinate.artifact); e.string(coordinate.version)
+    e.sequence(snapshot.nodes)(node =>
+      writeSyntax(node.id, node.production, node.fields, node.position, node.occurrences, e)
     )
+    e.sequence(snapshot.positioned): value =>
+      e.long(value.id); e.string(value.production); e.sequence(value.fields)(writeField(_, e));
+      writePosition(value.position, e)
+      e.sequence(value.occurrences)(o => { e.long(o.ownerNodeId); writePath(o.fieldPath, e) })
+    e.sequence(snapshot.comments): comment =>
+      writeRange(comment.range, e); e.string(comment.raw); e.tag(comment.kind.ordinal)
+    e.sequence(snapshot.diagnostics): diagnostic =>
+      e.tag(diagnostic.severity.ordinal); e.string(diagnostic.message)
+      diagnostic.position match
+        case None           => e.tag(0)
+        case Some(position) => e.tag(1); writeRange(position.range, e); e.int(position.point)
+    val capabilities = snapshot.capabilities
+    Vector(
+      capabilities.publishedParser,
+      capabilities.contextSetup,
+      capabilities.sourceConstruction,
+      capabilities.parserConstruction,
+      capabilities.productTraversal,
+      capabilities.sourcePositions,
+      capabilities.diagnostics,
+      capabilities.positionedSyntax,
+      capabilities.comments
+    ).foreach(writeCapability(_, e))
+    e.result()
+
+  private def writeSyntax(
+      id: Long,
+      production: String,
+      fields: Vector[ParserSyntaxField],
+      position: ParserNodePosition,
+      occurrences: Vector[ParserNodeOccurrence],
+      e: CanonicalByteEncoder
+  ): Unit =
+    e.long(id); e.string(production); e.sequence(fields)(writeField(_, e)); writePosition(position, e)
+    e.sequence(occurrences)(o => { e.long(o.ownerNodeId); writePath(o.fieldPath, e) })
+
+  private def writeField(field: ParserSyntaxField, e: CanonicalByteEncoder): Unit =
+    e.string(field.name)
+    field.value match
+      case ParserFieldValue.Node(id)                => e.tag(1); e.long(id)
+      case ParserFieldValue.Positioned(id)          => e.tag(2); e.long(id)
+      case ParserFieldValue.Optional(value)         =>
+        e.tag(3); value.fold(e.tag(0))(v => { e.tag(1); writeField(ParserSyntaxField("", v), e) })
+      case ParserFieldValue.Repeated(values)        =>
+        e.tag(4); e.sequence(values)(v => writeField(ParserSyntaxField("", v), e))
+      case ParserFieldValue.Product(prefix, fields) => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
+      case ParserFieldValue.Name(value)             => e.tag(6); e.string(value)
+      case ParserFieldValue.GeneratedName(a, b, c)  => e.tag(7); e.string(a); e.string(b); e.int(c)
+      case ParserFieldValue.Scalar(value)           => e.tag(8); writeScalar(value, e)
+      case ParserFieldValue.Unsupported(value)      => e.tag(9); e.string(value)
+
+  private def writeScalar(value: ParserScalar, e: CanonicalByteEncoder): Unit = value match
+    case ParserScalar.Text(v)        => e.tag(1); e.string(v)
+    case ParserScalar.Integer(v)     => e.tag(2); e.int(v)
+    case ParserScalar.LongInteger(v) => e.tag(3); e.long(v)
+    case ParserScalar.Decimal(v)     => e.tag(4); e.double(v)
+    case ParserScalar.Logical(v)     => e.tag(5); e.boolean(v)
+    case ParserScalar.Character(v)   => e.tag(6); e.char(v)
+    case ParserScalar.UnitValue      => e.tag(7)
+
+  private def writePosition(value: ParserNodePosition, e: CanonicalByteEncoder): Unit = value match
+    case ParserNodePosition.Absent                           => e.tag(0)
+    case ParserNodePosition.Positioned(range, point, origin) =>
+      e.tag(1); writeRange(range, e); e.int(point); e.tag(origin.ordinal)
+
+  private def writeRange(range: PcSourceRange, e: CanonicalByteEncoder): Unit =
+    e.int(range.startOffset); e.int(range.endOffset)
+
+  private def writePath(path: Vector[ParserFieldPathSegment], e: CanonicalByteEncoder): Unit =
+    e.sequence(path): segment =>
+      segment match
+        case ParserFieldPathSegment.NamedField(name)               => e.tag(1); e.string(name)
+        case ParserFieldPathSegment.OptionalNesting                => e.tag(2)
+        case ParserFieldPathSegment.RepeatedIndex(index)           => e.tag(3); e.int(index)
+        case ParserFieldPathSegment.NestedProductBoundary(product) => e.tag(4); e.string(product)
+
+  private def writeCapability(value: ParserCapabilityStatus, e: CanonicalByteEncoder): Unit = value match
+    case ParserCapabilityStatus.Available           => e.tag(1)
+    case ParserCapabilityStatus.Unavailable(reason) => e.tag(2); e.string(reason)
 
 private[metallurgy] final case class ParserSyntaxNode(
     id: Long,
