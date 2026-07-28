@@ -2,6 +2,8 @@ package com.hmemcpy.metallurgy.settings
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.compilerbackend.Scala3CompilerBackend
+import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.hmemcpy.metallurgy.psiproducer.Scala3ParserPreparationLifecycle
 import com.intellij.openapi.components.{PersistentStateComponent, State, Storage}
 import com.intellij.openapi.module.{Module, ModuleManager}
 import com.intellij.openapi.project.Project
@@ -25,7 +27,10 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
       .getInstance(project)
       .getModules
       .foreach: module =>
-        if enabled then ScalacFlagsService.get(project).enableFor(module)
+        if enabled then
+          ScalacFlagsService.get(project).enableFor(module)
+          if ModuleDetectionService.get(project).isActive(module) then
+            val _ = Scala3ParserPreparationLifecycle.get(project).prepare(module)
         else if !myState.enabledModules.contains(module.getName) then
           clearCompilerBackend(module)
           ScalacFlagsService.get(project).disableFor(module)
@@ -36,8 +41,13 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
   def setEnabled(module: Module, enabled: Boolean): Unit =
     setEnabled(module.getName, enabled)
     if !isEnabled(module) then clearCompilerBackend(module)
-    if isEnabled(module) then ScalacFlagsService.get(project).enableFor(module)
-    else ScalacFlagsService.get(project).disableFor(module)
+    if isEnabled(module) then
+      ScalacFlagsService.get(project).enableFor(module)
+      if ModuleDetectionService.get(project).isActive(module) then
+        val _ = Scala3ParserPreparationLifecycle.get(project).prepare(module)
+    else
+      ScalacFlagsService.get(project).disableFor(module)
+      Scala3ParserPreparationLifecycle.get(project).deactivate(module)
 
   def setEnabled(moduleName: String, enabled: Boolean): Unit =
     val set = myState.enabledModules

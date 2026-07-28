@@ -3,6 +3,8 @@ package com.hmemcpy.metallurgy
 import com.hmemcpy.metallurgy.feature.compilertype.CompilerTypeRequestResolver
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.{FirstDetectionNotifier, ModuleDetectionService}
+import com.hmemcpy.metallurgy.psiproducer.Scala3ParserPreparationLifecycle
+import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.{DumbService, Project}
@@ -26,6 +28,12 @@ final class MetallurgyProjectActivity extends ScalaProjectActivity:
         .getModules
         .filter(detection.isEligible)
         .toSeq
+      val settings        = MetallurgySettings(project)
+      val lifecycle       = Scala3ParserPreparationLifecycle.get(project)
+      eligibleModules
+        .filter(settings.isEnabled)
+        .foreach: module =>
+          val _ = lifecycle.ensurePreparing(module)
       FirstDetectionNotifier.notify(eligibleModules)
     catch case e: Exception => MetallurgyPlugin.Log.warn(s"Module scan failed: $e")
 

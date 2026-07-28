@@ -2,7 +2,12 @@ package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource, ProducerParseState}
+import com.hmemcpy.metallurgy.psiproducer.{
+  BundledScala3Parse,
+  DotcTreeSource,
+  ParserPreparationState,
+  Scala3ParserPreparationLifecycle
+}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
@@ -50,13 +55,28 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
 
   override protected def setUp(): Unit =
     super.setUp()
-    val settings = ScalaProjectSettings.getInstance(getProject)
+    val settings  = ScalaProjectSettings.getInstance(getProject)
     savedSettings = (settings.isCompilerHighlightingScala3, settings.isUseCompilerTypes)
     settings.setCompilerHighlightingScala3(true)
     settings.setUseCompilerTypes(true)
     MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
+    val lifecycle = Scala3ParserPreparationLifecycle.get(getProject)
+    PlatformTestUtil.waitWithEventsDispatching(
+      "exact Scala 3 parser preparation",
+      () =>
+        lifecycle.stateFor(getModule) match
+          case ParserPreparationState.Ready(_)          => true
+          case ParserPreparationState.Unavailable(_, _) => true
+          case _                                        => false,
+      TimeUnit.SECONDS.toMillis(120).toInt
+    )
+    lifecycle.stateFor(getModule) match
+      case ParserPreparationState.Ready(_)               => ()
+      case ParserPreparationState.Unavailable(_, detail) =>
+        throw BackendUnavailableException(s"Exact Scala 3 parser is unavailable: $detail")
+      case state                                         =>
+        throw BackendUnavailableException(s"Exact Scala 3 parser did not become ready: $state")
     DotcTreeSource.clear()
-    ProducerParseState.clear()
 
   override protected def tearDown(): Unit =
     try
@@ -65,7 +85,6 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       settings.setCompilerHighlightingScala3(savedSettings._1)
       settings.setUseCompilerTypes(savedSettings._2)
       DotcTreeSource.clear()
-      ProducerParseState.clear()
     finally super.tearDown()
 
   private val StartMarker = "/*start*/"

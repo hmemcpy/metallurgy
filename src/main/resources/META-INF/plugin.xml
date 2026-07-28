@@ -30,6 +30,8 @@
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.module.ModuleDetectionService"/>
     <projectService
+        serviceImplementation="com.hmemcpy.metallurgy.psiproducer.Scala3ParserPreparationLifecycle"/>
+    <projectService
         serviceImplementation="com.hmemcpy.metallurgy.pc.PcSessionManager"/>
     <projectService
         serviceImplementation="com.hmemcpy.metallurgy.pc.MtagsFetcher"/>
@@ -65,6 +67,13 @@
     <lang.parserDefinition
         language="Scala 3 (dotc)"
         implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcParserDefinition"/>
+    <lang.parserDefinition
+        language="Scala 3 parser pending"
+        implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3ParserPendingParserDefinition"/>
+    <lang.syntaxHighlighterFactory
+        language="Scala"
+        implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3ParserSyntaxHighlighterFactory"
+        order="first"/>
     <lang.fileViewProviderFactory
         language="Scala 3 (dotc)"
         implementationClass="com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderFactory"/>
