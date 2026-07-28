@@ -2,9 +2,10 @@ package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.*
 
-private[metallurgy] final case class SourceEvidencePlan(
+private[metallurgy] final case class ProvisionalSourceEvidencePlan(
     sourceUri: ParserSourceUri,
     sourceDigest: String,
+    parserEvidenceFingerprint: String,
     atoms: Vector[SourceAtom],
     structural: Vector[StructuralSourceEvidence]
 ):
@@ -20,7 +21,7 @@ private[metallurgy] final case class SourceAtom(
 )
 
 private[metallurgy] enum SourceClaim:
-  case Node(ownerId: Long)
+  case Node(id: Long, occurrences: Vector[ParserNodeOccurrence])
   case Positioned(id: Long, occurrences: Vector[ParserPositionedOccurrence])
   case Diagnostic(index: Int)
 
@@ -37,8 +38,8 @@ private[metallurgy] enum SourceEvidenceFailure:
   case CoverageMismatch(expectedOffset: Int, actualOffset: Int)
   case ReconstructionMismatch
 
-private[metallurgy] object SourceEvidencePlanner:
-  def plan(snapshot: ParserSyntaxSnapshot): Either[Vector[SourceEvidenceFailure], SourceEvidencePlan] =
+private[metallurgy] object ProvisionalSourceEvidencePlanner:
+  def plan(snapshot: ParserSyntaxSnapshot): Either[Vector[SourceEvidenceFailure], ProvisionalSourceEvidencePlan] =
     val failures = Vector.newBuilder[SourceEvidenceFailure]
     val source   = snapshot.sourceText
     if snapshot.sourceLength != source.length then
@@ -83,7 +84,9 @@ private[metallurgy] object SourceEvidencePlanner:
           else structural += StructuralSourceEvidence(claim, positioned)
         case absent                                                      => structural += StructuralSourceEvidence(claim, absent)
 
-    snapshot.nodes.foreach(node => add("node", node.id.toString, SourceClaim.Node(node.id), node.position))
+    snapshot.nodes.foreach(node =>
+      add("node", node.id.toString, SourceClaim.Node(node.id, node.occurrences), node.position)
+    )
     snapshot.positioned.foreach(value =>
       add("positioned", value.id.toString, SourceClaim.Positioned(value.id, value.occurrences), value.position)
     )
@@ -176,7 +179,13 @@ private[metallurgy] object SourceEvidencePlanner:
     val found = failures.result()
     if found.nonEmpty then Left(found)
     else
-      val result = SourceEvidencePlan(snapshot.sourceUri, snapshot.sourceDigest, atoms, structural.result())
+      val result = ProvisionalSourceEvidencePlan(
+        snapshot.sourceUri,
+        snapshot.sourceDigest,
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        atoms,
+        structural.result()
+      )
       if result.reconstruct(source) != source then Left(Vector(SourceEvidenceFailure.ReconstructionMismatch))
       else Right(result)
 

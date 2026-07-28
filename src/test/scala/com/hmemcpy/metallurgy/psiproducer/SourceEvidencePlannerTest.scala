@@ -8,19 +8,40 @@ final class SourceEvidencePlannerTest:
 
   @Test
   def exactEvidenceIsContiguousDeterministicAndCarriesEveryPhysicalClaim(): Unit =
-    val source       = "a\r\n\t😀// c\rb\n"
-    val commentStart = source.indexOf("// c")
-    val commentEnd   = commentStart + 4
-    val snapshot     = fixture(
+    val source         = "a\r\n\t😀// c\rb\n"
+    val commentStart   = source.indexOf("// c")
+    val commentEnd     = commentStart + 4
+    val nodeOccurrence = ParserNodeOccurrence(
+      1,
+      Vector(
+        ParserFieldPathSegment.NamedField("members"),
+        ParserFieldPathSegment.OptionalNesting,
+        ParserFieldPathSegment.RepeatedIndex(2),
+        ParserFieldPathSegment.NestedProductBoundary("Pair"),
+        ParserFieldPathSegment.NamedField("value")
+      )
+    )
+    val snapshot       = fixture(
       source,
-      nodes = Vector(node(1, 0, source.length, 0)),
+      nodes = Vector(
+        node(1, 0, source.length, 0),
+        node(3, 0, source.length, 0).copy(occurrences = Vector(nodeOccurrence))
+      ),
       positioned = Vector(
         ParserPositionedSyntax(
           2,
           "Positioned",
           Vector(ParserSyntaxField("text", ParserFieldValue.Scalar(ParserScalar.Text("neutral")))),
           ParserNodePosition.Positioned(PcSourceRange(0, commentEnd), 0, ParserPositionProvenance.SourceDerived),
-          Vector(ParserPositionedOccurrence(1, Vector("field", "0")))
+          Vector(
+            ParserPositionedOccurrence(
+              1,
+              Vector(
+                ParserFieldPathSegment.NamedField("field"),
+                ParserFieldPathSegment.RepeatedIndex(0)
+              )
+            )
+          )
         )
       ),
       comments = Vector(ParserComment(PcSourceRange(commentStart, commentEnd), "// c", ParserCommentKind.Line)),
@@ -35,16 +56,21 @@ final class SourceEvidencePlannerTest:
     )
 
     val first  =
-      SourceEvidencePlanner.plan(snapshot).fold(failures => throw new AssertionError(failures.toString), identity)
+      ProvisionalSourceEvidencePlanner
+        .plan(snapshot)
+        .fold(failures => throw new AssertionError(failures.toString), identity)
     val second =
-      SourceEvidencePlanner.plan(snapshot).fold(failures => throw new AssertionError(failures.toString), identity)
+      ProvisionalSourceEvidencePlanner
+        .plan(snapshot)
+        .fold(failures => throw new AssertionError(failures.toString), identity)
     assertEquals(first, second)
     assertEquals(source, first.reconstruct(source))
     assertEquals(first.atoms.indices.map(_.toLong).toVector, first.atoms.map(_.id))
     assertEquals(0, first.atoms.head.start)
     assertEquals(source.length, first.atoms.last.end)
     assertTrue(first.atoms.sliding(2).forall { case Vector(left, right) => left.end == right.start; case _ => true })
-    assertTrue(first.atoms.exists(_.claims.contains(SourceClaim.Node(1))))
+    assertTrue(first.atoms.exists(_.claims.contains(SourceClaim.Node(1, Vector.empty))))
+    assertTrue(first.atoms.exists(_.claims.contains(SourceClaim.Node(3, Vector(nodeOccurrence)))))
     assertTrue(first.atoms.exists(_.claims.exists { case SourceClaim.Positioned(2, _) => true; case _ => false }))
     assertTrue(first.atoms.exists(_.claims.contains(SourceClaim.Diagnostic(0))))
     assertTrue(first.atoms.exists(_.comments.nonEmpty))
@@ -63,13 +89,16 @@ final class SourceEvidencePlannerTest:
           2,
           "Synthetic",
           Vector.empty,
-          ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.Synthetic)
+          ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.Synthetic),
+          Vector.empty
         ),
-        ParserSyntaxNode(3, "Absent", Vector.empty, ParserNodePosition.Absent)
+        ParserSyntaxNode(3, "Absent", Vector.empty, ParserNodePosition.Absent, Vector.empty)
       )
     )
     val plan     =
-      SourceEvidencePlanner.plan(snapshot).fold(failures => throw new AssertionError(failures.toString), identity)
+      ProvisionalSourceEvidencePlanner
+        .plan(snapshot)
+        .fold(failures => throw new AssertionError(failures.toString), identity)
     assertEquals(3, plan.structural.size)
     assertTrue(plan.atoms.forall(_.claims.isEmpty))
 
@@ -87,7 +116,7 @@ final class SourceEvidencePlannerTest:
         ParserDiagnostic(ParserDiagnosticSeverity.Error, "bad", Some(ParserDiagnosticPosition(PcSourceRange(0, 1), 2)))
       )
     ).copy(sourceLength = 1, sourceDigest = "bad")
-    val failures  = SourceEvidencePlanner.plan(malformed).swap.getOrElse(Vector.empty)
+    val failures  = ProvisionalSourceEvidencePlanner.plan(malformed).swap.getOrElse(Vector.empty)
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.SourceLengthMismatch]))
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.DigestMismatch]))
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.DuplicateIdentity]))
@@ -101,7 +130,8 @@ final class SourceEvidencePlannerTest:
       id,
       "Node",
       Vector.empty,
-      ParserNodePosition.Positioned(PcSourceRange(start, end), point, ParserPositionProvenance.SourceDerived)
+      ParserNodePosition.Positioned(PcSourceRange(start, end), point, ParserPositionProvenance.SourceDerived),
+      Vector.empty
     )
 
   private def fixture(
@@ -116,6 +146,7 @@ final class SourceEvidencePlannerTest:
       source,
       ParserSyntaxSnapshot.digest(source),
       source.length,
+      Vector("-source", "future"),
       nodes.head.id,
       nodes,
       positioned,

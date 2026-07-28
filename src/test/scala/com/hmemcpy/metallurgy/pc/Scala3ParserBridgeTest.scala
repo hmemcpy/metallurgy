@@ -79,6 +79,8 @@ final class Scala3ParserBridgeTest:
           .forall(occurrence => first.nodes.exists(_.id == occurrence.ownerNodeId) && occurrence.fieldPath.nonEmpty)
       )
       assertTrue(fieldValues(first).collect { case ParserFieldValue.Positioned(id) => id }.forall(positionedIds))
+      assertTrue(first.nodes.find(_.id == first.rootNodeId).exists(_.occurrences.isEmpty))
+      assertTrue(first.nodes.filterNot(_.id == first.rootNodeId).forall(_.occurrences.nonEmpty))
       assertNeutral(first)
     finally bridge.close()
 

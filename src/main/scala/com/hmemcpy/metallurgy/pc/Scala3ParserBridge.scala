@@ -28,7 +28,7 @@ private[metallurgy] object Scala3ParserBridge:
       try
         val identity = Scala3ParserCompilerIdentity(
           coordinate,
-          artifacts.toVector.map(artifactIdentity),
+          artifacts.toVector.zipWithIndex.map((artifact, ordinal) => artifactIdentity(artifact, ordinal)),
           Scala3ParserLoaderIdentity(nextLoaderId.incrementAndGet())
         )
         StructuralScala3ParserBridge.open(identity, artifacts)
@@ -40,12 +40,13 @@ private[metallurgy] object Scala3ParserBridge:
             )
           )
 
-  private def artifactIdentity(file: File): Scala3ParserArtifactIdentity =
+  private def artifactIdentity(file: File, ordinal: Int): Scala3ParserArtifactIdentity =
     Scala3ParserArtifactIdentity(
       file.getName,
       file.getCanonicalPath,
       file.length(),
-      digest(file)
+      digest(file),
+      ordinal
     )
 
   private def digest(file: File): String =
@@ -73,7 +74,8 @@ private[metallurgy] final case class Scala3ParserArtifactIdentity(
     fileName: String,
     canonicalPath: String,
     byteSize: Long,
-    sha256: String
+    sha256: String,
+    ordinal: Int = 0
 )
 
 private[metallurgy] opaque type Scala3ParserLoaderIdentity = Long
@@ -121,6 +123,7 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     sourceText: String,
     sourceDigest: String,
     sourceLength: Int,
+    compilerOptions: Vector[String],
     rootNodeId: Long,
     nodes: Vector[ParserSyntaxNode],
     positioned: Vector[ParserPositionedSyntax],
@@ -128,8 +131,7 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     diagnostics: Vector[ParserDiagnostic],
     capabilities: Scala3ParserCapabilities,
     compilerIdentity: Scala3ParserCompilerIdentity
-):
-  require(nodes.exists(_.id == rootNodeId), s"root node $rootNodeId is absent")
+)
 
 private[metallurgy] final case class ParserPositionedSyntax(
     id: Long,
@@ -139,7 +141,21 @@ private[metallurgy] final case class ParserPositionedSyntax(
     occurrences: Vector[ParserPositionedOccurrence]
 )
 
-private[metallurgy] final case class ParserPositionedOccurrence(ownerNodeId: Long, fieldPath: Vector[String])
+private[metallurgy] enum ParserFieldPathSegment:
+  case NamedField(name: String)
+  case OptionalNesting
+  case RepeatedIndex(index: Int)
+  case NestedProductBoundary(production: String)
+
+private[metallurgy] final case class ParserNodeOccurrence(
+    ownerNodeId: Long,
+    fieldPath: Vector[ParserFieldPathSegment]
+)
+
+private[metallurgy] final case class ParserPositionedOccurrence(
+    ownerNodeId: Long,
+    fieldPath: Vector[ParserFieldPathSegment]
+)
 
 private[metallurgy] final case class ParserComment(
     range: PcSourceRange,
@@ -158,11 +174,32 @@ private[metallurgy] object ParserSyntaxSnapshot:
       .map(byte => f"${byte & 0xff}%02x")
       .mkString
 
+  def evidenceFingerprint(snapshot: ParserSyntaxSnapshot): String =
+    val artifacts = snapshot.compilerIdentity.artifacts.map: artifact =>
+      (artifact.ordinal, artifact.fileName, artifact.byteSize, artifact.sha256)
+    digest(
+      Vector(
+        snapshot.sourceUri.value,
+        snapshot.sourceDigest,
+        snapshot.sourceLength,
+        snapshot.compilerOptions,
+        snapshot.rootNodeId,
+        artifacts,
+        snapshot.nodes,
+        snapshot.positioned,
+        snapshot.comments,
+        snapshot.diagnostics,
+        snapshot.capabilities,
+        snapshot.compilerIdentity.coordinate
+      ).mkString("\u001e")
+    )
+
 private[metallurgy] final case class ParserSyntaxNode(
     id: Long,
     production: String,
     fields: Vector[ParserSyntaxField],
-    position: ParserNodePosition
+    position: ParserNodePosition,
+    occurrences: Vector[ParserNodeOccurrence]
 )
 
 private[metallurgy] final case class ParserSyntaxField(name: String, value: ParserFieldValue)

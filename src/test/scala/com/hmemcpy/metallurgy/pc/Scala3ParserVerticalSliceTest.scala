@@ -49,6 +49,51 @@ final class Scala3ParserVerticalSliceTest:
         Source.indexOf("\n\nobject Program")
       )
       assertContextParameterClauseGrouping(first)
+      val greetingId  = first.nodes
+        .find(node =>
+          node.production == "DefDef" &&
+            node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("greeting")))
+        )
+        .map(_.id)
+        .getOrElse(throw new AssertionError("greeting definition is absent"))
+      assertTrue(
+        first.nodes.exists(node =>
+          node.production == "ValDef" &&
+            node.occurrences.contains(
+              ParserNodeOccurrence(
+                greetingId,
+                Vector(
+                  ParserFieldPathSegment.NamedField("paramss"),
+                  ParserFieldPathSegment.RepeatedIndex(1),
+                  ParserFieldPathSegment.RepeatedIndex(0)
+                )
+              )
+            )
+        )
+      )
+      val personId    = first.nodes
+        .find(node =>
+          node.production == "TypeDef" &&
+            node.fields.contains(ParserSyntaxField("name", ParserFieldValue.Name("Person")))
+        )
+        .map(_.id)
+        .getOrElse(throw new AssertionError("Person definition is absent"))
+      assertTrue(
+        first.positioned.exists(value =>
+          value.production == "Final" &&
+            value.occurrences.contains(
+              ParserPositionedOccurrence(
+                personId,
+                Vector(
+                  ParserFieldPathSegment.NamedField("mods"),
+                  ParserFieldPathSegment.NestedProductBoundary("Modifiers"),
+                  ParserFieldPathSegment.NamedField("mods"),
+                  ParserFieldPathSegment.RepeatedIndex(0)
+                )
+              )
+            )
+        )
+      )
       assertNoUnsupportedValues(first)
       assertAllPositionsBelongToSource(first)
     finally bridge.close()
@@ -61,7 +106,7 @@ final class Scala3ParserVerticalSliceTest:
       expectedEnd: Int
   ): Unit =
     val positions = snapshot.nodes.collect:
-      case ParserSyntaxNode(_, `production`, _, position: ParserNodePosition.Positioned) => position
+      case ParserSyntaxNode(_, `production`, _, position: ParserNodePosition.Positioned, _) => position
     assertTrue(s"$production has no exact source position", positions.nonEmpty)
     assertTrue(
       s"$production does not contain [$expectedStart,$expectedEnd): $positions",
@@ -105,8 +150,8 @@ final class Scala3ParserVerticalSliceTest:
 
   private def assertAllPositionsBelongToSource(snapshot: ParserSyntaxSnapshot): Unit =
     snapshot.nodes.foreach:
-      case ParserSyntaxNode(_, _, _, ParserNodePosition.Absent)                      => ()
-      case ParserSyntaxNode(_, _, _, ParserNodePosition.Positioned(range, point, _)) =>
+      case ParserSyntaxNode(_, _, _, ParserNodePosition.Absent, _)                      => ()
+      case ParserSyntaxNode(_, _, _, ParserNodePosition.Positioned(range, point, _), _) =>
         assertTrue(range.startOffset >= 0)
         assertTrue(range.endOffset <= Source.length)
         assertTrue(point >= range.startOffset)

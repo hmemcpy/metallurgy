@@ -427,6 +427,7 @@ private final class StructuralScala3ParserBridge private (
         request.sourceText,
         ParserSyntaxSnapshot.digest(request.sourceText),
         request.sourceText.length,
+        request.compilerOptions,
         collected.rootNodeId,
         collected.nodes,
         collected.positioned,
@@ -453,7 +454,11 @@ private final class StructuralScala3ParserBridge private (
       val positionedIds    = new IdentityHashMap[AnyRef, java.lang.Long]()
       var nextPositionedId = 0L
 
-      def visitPositioned(value: AnyRef, ownerNodeId: Long, path: Vector[String]): Long =
+      def visitPositioned(
+          value: AnyRef,
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment]
+      ): Long =
         val existing = Option(positionedIds.get(value))
         val id       = existing
           .map(_.longValue())
@@ -496,16 +501,24 @@ private final class StructuralScala3ParserBridge private (
           )
         id
 
-      def visitTree(tree: AnyRef): Long =
-        Option(ids.get(tree))
+      def visitTree(tree: AnyRef, occurrence: Option[ParserNodeOccurrence]): Long =
+        val existing = Option(ids.get(tree))
+        val id       = existing
           .map(_.longValue())
           .getOrElse:
             cancellation.checkCanceled()
-            val id       = nextId
+            val id      = nextId
             nextId += 1
             ids.put(tree, id)
-            val product  = tree.asInstanceOf[ProductValue]
-            val fields   = productFields(
+            val product = tree.asInstanceOf[ProductValue]
+            collected :+= ParserSyntaxNode(
+              id,
+              product.productPrefix(),
+              Vector.empty,
+              treePosition(active, tree.asInstanceOf[TreeValue]),
+              Vector.empty
+            )
+            val fields  = productFields(
               active,
               product,
               id,
@@ -525,11 +538,18 @@ private final class StructuralScala3ParserBridge private (
               products,
               generated
             )
-            val position = treePosition(active, tree.asInstanceOf[TreeValue])
-            collected = collected :+ ParserSyntaxNode(id, product.productPrefix(), fields, position)
+            val index   = collected.indexWhere(_.id == id)
+            collected = collected.updated(index, collected(index).copy(fields = fields))
             id
 
-      val rootId = visitTree(root)
+        occurrence.foreach: value =>
+          val index   = collected.indexWhere(_.id == id)
+          val current = collected(index)
+          if !current.occurrences.contains(value) then
+            collected = collected.updated(index, current.copy(occurrences = current.occurrences :+ value))
+        id
+
+      val rootId = visitTree(root, None)
       Right(CollectedNodes(rootId, collected.sortBy(_.id), positioned.sortBy(_.id)))
 
   private def definitionModifiers(
@@ -537,8 +557,8 @@ private final class StructuralScala3ParserBridge private (
       tree: AnyRef,
       ownerNodeId: Long,
       cancellation: Scala3ParserCancellation,
-      visitTree: AnyRef => Long,
-      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
+      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
+      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
       products: IdentityHashMap[AnyRef, java.lang.Boolean],
       generated: HashMap[String, java.lang.Integer]
   ): Vector[ParserSyntaxField] =
@@ -551,7 +571,7 @@ private final class StructuralScala3ParserBridge private (
             active,
             active.defTreeRawMods.invoke(tree),
             ownerNodeId,
-            Vector("mods"),
+            Vector(ParserFieldPathSegment.NamedField("mods")),
             cancellation,
             visitTree,
             visitPositioned,
@@ -565,10 +585,10 @@ private final class StructuralScala3ParserBridge private (
       active: ParserRuntime,
       product: ProductValue,
       ownerNodeId: Long,
-      path: Vector[String],
+      path: Vector[ParserFieldPathSegment],
       cancellation: Scala3ParserCancellation,
-      visitTree: AnyRef => Long,
-      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
+      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
+      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
       products: IdentityHashMap[AnyRef, java.lang.Boolean],
       generated: HashMap[String, java.lang.Integer]
   ): Vector[ParserSyntaxField] =
@@ -580,7 +600,7 @@ private final class StructuralScala3ParserBridge private (
           active,
           product.productElement(index),
           ownerNodeId,
-          path :+ product.productElementName(index),
+          path :+ ParserFieldPathSegment.NamedField(product.productElementName(index)),
           cancellation,
           visitTree,
           visitPositioned,
@@ -593,15 +613,16 @@ private final class StructuralScala3ParserBridge private (
       active: ParserRuntime,
       value: AnyRef,
       ownerNodeId: Long,
-      path: Vector[String],
+      path: Vector[ParserFieldPathSegment],
       cancellation: Scala3ParserCancellation,
-      visitTree: AnyRef => Long,
-      visitPositioned: (AnyRef, Long, Vector[String]) => Long,
+      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
+      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
       products: IdentityHashMap[AnyRef, java.lang.Boolean],
       generated: HashMap[String, java.lang.Integer]
   ): ParserFieldValue =
     if value == null then ParserFieldValue.Optional(None)
-    else if active.treeClass.isInstance(value) then ParserFieldValue.Node(visitTree(value))
+    else if active.treeClass.isInstance(value) then
+      ParserFieldValue.Node(visitTree(value, Some(ParserNodeOccurrence(ownerNodeId, path))))
     else
       value match
         case text: String                                => ParserFieldValue.Scalar(ParserScalar.Text(text))
@@ -621,7 +642,7 @@ private final class StructuralScala3ParserBridge private (
                 active,
                 option.get(),
                 ownerNodeId,
-                path,
+                path :+ ParserFieldPathSegment.OptionalNesting,
                 cancellation,
                 visitTree,
                 visitPositioned,
@@ -637,7 +658,7 @@ private final class StructuralScala3ParserBridge private (
                 active,
                 element,
                 ownerNodeId,
-                path :+ index.toString,
+                path :+ ParserFieldPathSegment.RepeatedIndex(index),
                 cancellation,
                 visitTree,
                 visitPositioned,
@@ -657,7 +678,7 @@ private final class StructuralScala3ParserBridge private (
                 active,
                 product,
                 ownerNodeId,
-                path,
+                path :+ ParserFieldPathSegment.NestedProductBoundary(product.productPrefix()),
                 cancellation,
                 visitTree,
                 visitPositioned,
