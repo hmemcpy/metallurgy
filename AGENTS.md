@@ -220,4 +220,13 @@ Best-effort TASTy is a cross-module semantic input. It never parses the current 
 - **Continuity:** read the relevant implementation task and epic comments. Do not use AGENTS files as progress logs.
 - **Triage labels:** see `docs/agents/triage-labels.md`.
 - **Domain architecture:** this file points to the canonical design; see `docs/agents/domain.md`.
-- **IntelliJ automation:** use `~/git/ide-probe`.
+- **IntelliJ automation:** use the IntelliJ 261 compatibility lane in `ideprobe-tests/`; its README documents the
+  memory-safe two-phase invocation. It packages the pinned Scala plugin, Metallurgy, and a locally adapted ide-probe
+  0.53 plugin, then opens the real `dogfood` sbt project under Xvfb. Preserve the stage timeline and exported `idea.log`,
+  wait for import/indexing and Metallurgy module readiness, run highlighting, inspect `MessagePool`, and validate the
+  final log only after IDE shutdown so teardown exceptions cannot escape observation. First-run, trust, update, tips,
+  and onboarding UI remain suppressed through `ideprobe.conf` and generated IDE settings.
+- **Platform sources:** the pinned IntelliJ source archive is under the resolved SDK's `sources/` directory, the pinned
+  Scala plugin is under `custom-plugins/Scala`, and ide-probe sources may be checked out under `target/` for comparison.
+  Use the upstream IntelliJ Community, intellij-scala, Scala 3, Metals, and ide-probe repositories when local artifacts
+  do not expose the contract being adapted.
