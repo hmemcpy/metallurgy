@@ -12,6 +12,7 @@ import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTupleTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{
   ScExpression,
   ScFor,
@@ -166,10 +167,13 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   def testTupleReturnTypeIsNavigable(): Unit =
     withDotcProducedFile("def pair[A, B](a: A, b: B): (A, B) = (a, b)\n"): file =>
-      val fn  = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
-      val tpe = fn.returnTypeElement
+      val fn    = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
+      val tpe   = fn.returnTypeElement
       assertTrue("tuple return type is a ScTypeElement", tpe.isDefined)
       assertEquals("tuple return type text", "(A, B)", tpe.get.getText)
+      val tuple = tpe.get.asInstanceOf[ScTupleTypeElement]
+      assertEquals("tuple type list text", "A, B", tuple.typeList.getText)
+      assertEquals("tuple components", Seq("A", "B"), tuple.components.map(_.getText))
 
   def testValKeywordTokenResolves(): Unit =
     withDotcProducedFile("val v = 42\n"): file =>

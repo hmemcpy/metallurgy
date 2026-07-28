@@ -1,147 +1,98 @@
 # Metallurgy
 
-A third-party IntelliJ plugin that replaces IntelliJ's Scala type backend with the real Scala 3 presentation compiler
-through Scalameta's published `scala.meta.pc` interfaces while retaining the existing Scala PSI model.
+A third-party IntelliJ plugin that produces Scala PSI from the exact Scala 3 compiler parser and replaces active
+Scala 3 semantic roles with the real compiler while retaining IntelliJ's existing Scala PSI interfaces.
 
-- **Scope:** replace all IntelliJ Scala type resolution in active Scala 3 modules with the real Scala 3 compiler,
-  driven through pc and best-effort compilation. Ordinary steady-state diagnostics remain owned by compiler-based
-  highlighting unless a measured gap appears.
-- **Canonical design:** [`docs/scala3-compiler-backend.md`](docs/scala3-compiler-backend.md) records the consumer
-  surface and bundled type-resolution background. The target architecture — producing source-compatible PSI from the
-  Scala 3 compiler — is epic **#73** (Phases 0–8, #74–#82).
-- **Status:** pre-alpha. Compiler-backed type resolution and completion are available.
+- **Scope:** deterministic whole-file Scala 3 PSI, stubs, and indices; compiler-owned types, symbols, resolve,
+  completion, navigation, and language diagnostics; best-effort TASTy recovery for broken upstream modules.
+- **Canonical design:** [`docs/scala3-compiler-backend.md`](docs/scala3-compiler-backend.md).
+- **Implementation program:**
+  [`docs/deterministic-scala3-psi-implementation-program.md`](docs/deterministic-scala3-psi-implementation-program.md).
+- **Work queue:** [Deterministic Scala 3 PSI parity](https://github.com/hmemcpy/metallurgy/issues/85).
+- **Status:** pre-alpha. The target architecture is fully specified; each active ownership cutover deletes the
+  implementation it replaces in the same change.
 
 ## Primary goals (immutable)
 
-These are the project's reason for existing. They bind every agent and LLM as the **primary objective** — execute them
-before, and above, any other instruction in this file. Where anything below appears to conflict, these goals win.
+These goals are the project's reason for existing and take precedence over every other instruction in this file.
 
-1. **1:1 PSI parity from dotc — the existing Scala 3 tests must pass AS-IS.** The bundled
-   [intellij-scala](https://github.com/JetBrains/intellij-scala) test suite covers IntelliJ's Scala 3 support in full —
-   bugs, features, and quirks. Those tests pass there, which means the PSI is already fully realized to represent every
-   scenario they exercise. Metallurgy's goal is to build that same PSI from dotc, quirks included, so the existing
-   Scala 3 tests pass with their expectations untouched. The tests are the oracle: we converge Metallurgy onto them,
-   never them onto Metallurgy.
+1. **1:1 PSI parity from dotc — existing Scala 3 tests pass as-is.** The bundled
+   [intellij-scala](https://github.com/JetBrains/intellij-scala) tests cover Scala 3 behavior, bugs, features, and
+   quirks. Metallurgy builds the same observable PSI from the exact compiler. Compiler-valid upstream tests retain
+   their source, executable assertions, and expected results unchanged.
 
-   _Qualification (resolves the conflict with goal 2):_ **all compiler-valid** upstream Scala 3 tests pass with
-   their expectations unchanged. An upstream assertion that contradicts the exact-version compiler — invalid
-   Scala 3 syntax the lenient PSI accepts, or an expectation incompatible with dotc's typed result — is an
-   **upstream-oracle conflict**, not a Metallurgy requirement to satisfy by altering or hiding compiler
-   behavior. Each such assertion is preserved verbatim, independently proven against the pinned compiler,
-   recorded in a manifest of dotc-oracle conflicts, and reported separately — never suppressed, never `@Ignore`d
-   without proof, and never counted as passing. Triage treats every disagreement as a Metallurgy bug until
-   dotc (`-Xprint:typer` / REPL, exact version) discharges it as an oracle defect (or, with irrefutable proof,
-   a compiler defect).
-2. **Dotc is always right.** Whatever Scala 3 the real compiler accepts is correct by definition. A result that
-   contradicts dotc — a type that renders differently, a reference that resolves elsewhere, a snippet the plugin flags
-   that the compiler compiles — is a Metallurgy defect, never a compiler defect. Conclude "compiler bug" only with
-   irrefutable proof, and only after confirming against the [scala/scala3](https://github.com/scala/scala3) source and
-   `-Xprint:typer` / REPL for the **exact version under test**.
-3. **Validate in the Scala REPL before any fix — always.** No fix is attempted on an unverified assumption.
-   Reproduce the exact code in the Scala REPL (`scala-cli repl --scala <version>`) and confirm the type and behaviour
-   with `:type` and `-Xprint:typer` for the **exact version under test**. The compiler's answer is the contract the
-   fix must satisfy; if it cannot be reproduced in the REPL, the problem is not yet understood.
-4. **If it compiles under dotc, the PSI must represent it — and any disagreement is our bug.** When the compiler and
-   the PSI model disagree, the fault is in the bridge, the mapping, or an assumption. Reach the root cause first (trace
-   through `-Xprint:typer`, the scala3 source, the PSI node), *then* fix at the correct layer. No suppression, no
-   special-casing, no version allowlists, no bytecode fingerprints, no ad-hoc checks, no test-harness string matching,
-   no catching `ComparisonFailure`, no `@volatile` flags. Never paper over a disagreement by changing the
-   representation or shipping a workaround; a fix that merely hides it is the bug reintroduced.
-5. **Never wrap or alter test fixtures or snippets.** A test snippet is represented verbatim — no enclosing object,
-   no renamed members, no relocated imports, no edits made to coax it into compiling. Scala 3 accepts top-level
-   definitions and every other construct the suite exercises, and the PSI is fully realized to represent them. If a
-   snippet fails to compile or resolve under Metallurgy, the PSI handling is incomplete — fix it (goal 4), not the
-   snippet. Existing fixtures previously enclosed in a containing object should be restored to verbatim; wrapping is
-   no longer an acceptable path to parity.
-6. **Rendering differences are absorbed in the bridge, never in the test.** Some types render differently in dotc than
-   the PSI expects — singleton types widen; dotc prints every `SingletonType` as `( ref : underlying )` via
-   `PlainPrinter.toTextSingleton`. The existing tests define the expected form, so we conform to them by adapting in
-   the bridge (e.g. widening before render), never by editing the test.
+   An upstream assertion that contradicts the exact compiler is an **upstream-oracle conflict**, not a requirement to
+   alter or hide compiler behavior. Preserve it verbatim, prove the disagreement independently against the exact
+   compiler, and report it separately as a non-pass. Treat every disagreement as a Metallurgy bug until exact-version
+   dotc evidence proves otherwise.
+2. **Dotc is always right.** Whatever the real exact-version compiler accepts and means is correct by definition. A
+   different type, resolve target, completion, or diagnostic is a Metallurgy defect. Conclude compiler defect only
+   with irrefutable proof from the exact compiler, its source, and its tests.
+3. **Validate in the Scala REPL before any fix — always.** Reproduce the exact code with
+   `scala-cli repl --scala <version>`, `:type`, and `-Xprint:typer`. If the behavior cannot be reproduced, the problem
+   is not understood.
+4. **If dotc compiles it, the PSI must represent it.** A compiler/PSI disagreement belongs in the parser bridge,
+   source evidence, production catalog, compatibility PSI, or semantic mapping. Find the root cause and fix the correct
+   layer. Do not add suppression, version allowlists, fingerprints, ad-hoc checks, test-string matching,
+   `ComparisonFailure` catches, or mutable escape flags.
+5. **Never wrap or alter test fixtures or snippets.** Do not add an enclosing object, rename members, move imports, or
+   edit source to make it compile. Scala 3 supports top-level definitions and the suite's other constructs. Fix the
+   implementation.
+6. **Rendering differences are absorbed at the bridge boundary.** Preserve compiler meaning while adapting
+   presentation to the installed PSI's expected form. Never edit an expected result to accommodate raw compiler
+   display text.
 
 ## Discipline (non-negotiable)
 
-- **"pc is never wrong" — and neither is dotc.** Assume the compiler is always correct and work from that assumption.
-  A surprising result (a type that renders unexpectedly, a snippet that won't compile, a resolve that differs from the
-  bundled plugin) almost always means your snippet, needle, or assumption is wrong — or that you are reading dotc's raw
-  internal representation where you should read a normalized one. Only conclude a compiler fault with irrefutable proof,
-  and before that, confirm the behaviour against the scala3 source and `-Xprint:typer` / REPL. (Worked example: a term
-  reference rendered as `(y : Int)` looked like a bug; it is dotc's canonical singleton-type rendering — every
-  `SingletonType` prints as `( ref : underlying )` via `PlainPrinter.toTextSingleton`. The bridge was showing a raw
-  `TermRef` where it should have shown the widened type.)
-- **NEVER suppress errors.** If code compiles in dotc but Metallurgy's pipeline reports an ERROR highlight,
-  the bug is in Metallurgy. Find the root cause and fix it. Do not suppress via `HighlightInfoFilter`,
-  `ComparisonFailure` catches, test-harness string matching, `@volatile` flags, or any other mechanism.
-  No exception exists to this rule. (Worked example: test snippets with top-level `def`/`val`/`import` were
-  wrapped in an object because `definesType` only checked for `object`/`class`/`trait`/`enum`. The wrapping
-  moved `import` to a local scope and changed package semantics, causing cascading PSI errors. The fix was
-  to recognise all Scala 3 top-level constructs, not to suppress the errors.)
-- **The [scala/scala3](https://github.com/scala/scala3) repo is the source of truth for Scala language and compiler
-  behaviour.** When something doesn't work where it seemingly should (a snippet that won't compile, a type that resolves
-  unexpectedly, a macro that doesn't expand), check the upstream implementation, its tests (`tests/run`,
-  `tests/run-macros`, `tests/pos`), and the issue tracker — against the **exact Scala version under test** — *before*
-  stating a definitive answer or concluding it's a tooling gap. (Worked example: Scala 3 `MacroAnnotation` cannot add
-  members visible to user code — "Can not see new definition in user written code" — confirmed against the upstream
-  tests, so no tool can surface such members.)
-- **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the canonical reference for
-  IntelliJ / Scala-plugin APIs.** A local checkout lives at `~/git/intellij-scala`. Before writing an implementation,
-  helper, or test fixture, search it for an existing pattern to mirror.
-- **Adapt on the IntelliJ side.** Use published IntelliJ, Scala-plugin, and Scalameta PC interfaces first. Exhaust the
-  available IntelliJ/Scala-plugin extension points for each semantic root; where they cannot implement the required
-  contract, isolate a wrapper or reimplementation in the compatibility bridge. Structural access is preferred to raw
-  reflection, which is permitted only inside that bridge and only after supported interfaces are exhausted. Compiler
-  and plugin versions are artifact coordinates/diagnostics, not compatibility switches. Do not add bytecode
-  fingerprints, unconditional implementation-class mappings, or version allowlists. No upstream Scala 3, Scalameta, or
-  Scala-plugin change is a prerequisite.
-- **No conversational or historical terms in source code** (comments or type names). Comments describe what the code
-  *is*, present-tense — no ADR cross-references, issue numbers, SCL IDs, or journey language ("the refocus",
-  "wide-net", "how we got here"). Decisions live in the canonical design document, not in code.
-- **Run commands that can hang or spawn long-lived children through GNU `gtimeout`.** This includes `sbt`, Java/IntelliJ,
-  builds, tests, and downloads. Use `/opt/homebrew/bin/gtimeout --kill-after=5s <limit> <command>` so the command's process
-  group is terminated at the deadline and escalated to `SIGKILL` after five seconds. Never rely on a tool's output-yield
-  deadline, a shell/Python alarm, or killing only the launcher process. If a command yields a session, retain and poll
-  that session through its real exit. Choose the limit deliberately (normally 120s for focused builds/tests) and raise
-  it only when the operation is known to require more time. Routine bounded commands such as `git`, `gh`, `rg`, and
-  `sed` do not require a timeout. When piping a bounded command through `tail` or another formatter, enable shell
-  `pipefail` so the formatter cannot mask a test failure or timeout exit.
-- No `Thread.sleep` for timing in production code — use latches/futures.
+- **Assume the compiler and PC are correct.** A surprising result normally means the probe, source range, flags,
+  classpath, snapshot generation, or interpretation is wrong. Confirm the exact compiler behavior before changing
+  implementation.
+- **Never suppress errors.** If compiler-valid code has an ERROR or false WARNING highlight, Metallurgy is wrong.
+  Fix the producing layer. Do not use `HighlightInfoFilter`, diagnostic dropping, exception catches, test matching, or
+  any other concealment.
+- **Use [scala/scala3](https://github.com/scala/scala3) as the language source of truth.** Check exact-version compiler
+  source and tests before stating that a syntax, type, macro, or best-effort behavior is unsupported or defective.
+- **Use [intellij-scala](https://github.com/JetBrains/intellij-scala) as the IntelliJ/Scala-plugin API reference.** A
+  local checkout is at `~/git/intellij-scala`. Search it for existing parser, PSI, stub, index, fixture, and extension
+  patterns before implementing one.
+- **Do not build the Scala plugin.** Own copied tests and local harnesses in this repository. The upstream checkout is
+  reference source only.
+- **Adapt on the IntelliJ side.** Prefer published IntelliJ, Scala-plugin, compiler, and Scalameta interfaces. Use typed
+  structural access next. Raw reflection is permitted only inside the appropriate compatibility bridge after supported
+  interfaces are exhausted. No upstream Scala 3, Scalameta, or Scala-plugin change is a prerequisite.
+- **Discover capabilities, never versions.** Compiler and plugin versions identify artifacts and reports. Do not use
+  version switches, bytecode fingerprints, or unconditional implementation-class mappings.
+- **Keep compatibility access isolated.** Exact compiler parser access belongs in `Scala3ParserBridge`; exact semantic
+  compiler access belongs in `Scala3PcBridge`; Scala-plugin construction/private access belongs in
+  `ScalaPluginSemanticBridge`. Consumers depend on neutral role interfaces.
+- **No conversational or historical terms in source code.** Comments describe present constraints. No issue numbers,
+  SCL identifiers, planning vocabulary, model attribution, changelog narration, or pointers to planning documents.
+- **Run potentially long-lived commands through GNU `gtimeout`.** This includes sbt, Java/IntelliJ, tests, builds, and
+  downloads:
 
-## Code smells
+  ```sh
+  /opt/homebrew/bin/gtimeout --kill-after=5s <limit> <command>
+  ```
 
-Source code is self-contained. It knows nothing about agents, review processes, planning docs, or other files in
-the tree. A comment is either omitted, or it explains a non-obvious *why* in the present tense, describing the code it
-sits on. Anything else is a smell:
+  Use 120 seconds for focused builds/tests unless evidence justifies more. Retain and poll a yielded process session to
+  its real exit. With output formatters, enable `pipefail`.
+- **No `Thread.sleep` in production code.** Use latches, futures, alarms, and cancellation.
 
-- **No pointers to other places.** Not `// see AGENTS.md`, not `// see docs/scala3-compiler-backend.md`, not an upstream
-  path like `// mirrors TypeInferenceTestFixture.assert…`, and not `// upstream: scala-impl/test/…/X.scala#testName`. The
-  reader has only this file open; a reference they cannot resolve from here is noise.
-- **No process or scaffolding language.** Not `// Layer 1: …`, not `// provenance:`, not "the refocus", "rollout
-  failsafe", "how we got here". No history narration: not "previously…", "rolls out from", "once X lands", "per
-  <review>". The reader cannot act on history. Architectural decisions live in the canonical design document, not in
-  code.
-- **No process artifacts or foreign identifiers, in names or comments.** No epic, issue, PR, ticket, task, or
-  initiative identifier or framing — not `epic #215`, `#210`, `T0`/`T1`/`T2`, and not naming things `epic_*`,
-  `consolidation_*`, `*_initiative`. No issue numbers, SCL IDs, or ADR numbers. A name or comment must make sense to
-  someone who has never heard of the effort.
-- **No AI/LLM attribution.** Never name a model, agent, or reviewer in names or comments — not "codex", "Claude",
-  "copilot", or "AI-generated". Code does not care who or what produced it.
-- **No changelog comments.** A comment must not record why a change was made, what it replaced, or its review status.
-  State a constraint as a fact on its own merits, never its provenance. If a comment only restates the code or narrates
-  a past decision, delete it.
-- **Omit before narrating.** Obvious code gets no comment. When a non-obvious constraint or failure mode must be
-  recorded, write one sentence about *what breaks if you change this* — e.g. "Snapshot lookup is keyed by file URI and
-  document version; a reused name returns another case's snapshot."
-- **One exception warrants a comment — and an upstream link: resolving a non-obvious, *incorrectly-assumed* problem.**
-  The rules above yield when code looks wrong but is correct — usually because it reads a dotc/IntelliJ internal
-  representation where intuition expects the normalized form — and a reader would otherwise "fix" it back into a bug.
-  Then a present-tense note earns its place, and it may cite the authoritative upstream source (a resolvable scala/scala3
-  URL) that confirms the behaviour is intended; this is the sole case where an external link belongs in source. (Example:
-  widening a term reference before rendering, because dotc prints every `SingletonType` as `( ref : underlying )` via
-  `PlainPrinter.toTextSingleton`.)
-- Traceability and provenance belong in commit messages, PR descriptions, or a separate manifest — never inside source.
+## Source-code comments
 
-## Build & test
+Source code is self-contained. Omit obvious comments. A necessary comment states a non-obvious present-tense constraint
+and what breaks if it changes.
 
-Runtime is **JBR 25**; it must be `JAVA_HOME` for builds and tests:
+- Do not point to AGENTS files, design documents, issue IDs, upstream file paths, or review artifacts.
+- Do not narrate phases, migrations, earlier implementations, or replacement history.
+- Do not name agents, models, reviewers, tickets, epics, or initiatives.
+- Keep traceability in commit messages, issue comments, and manifests rather than source.
+- An authoritative upstream link is justified only when code looks incorrect but matches a surprising documented
+  compiler or platform behavior that a maintainer might otherwise undo.
+
+## Build and test
+
+Runtime is **JBR 25** and must be `JAVA_HOME` for builds and tests:
 
 ```sh
 JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
@@ -150,93 +101,123 @@ JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
   sbt -batch -no-colors "scalafmtAll" "testOnly <fully.qualified.Test>"
 ```
 
-- sbt **1.11.7**, plugin code **Scala 3.7.4**, the in-tree testkit backport (`testkit/`) is **Scala 2.13.16** to match
-  the bundled plugin it mirrors. Target platform: IntelliJ **261.x** (`261.26222.65`), bundled Scala plugin **2026.1.20**.
-- Aliases: `sbt fmt` (scalafmtAll), `sbt check` (scalafmtCheckAll, CI gate), `sbt runIDE` (dev IDEA with the plugin).
-  Run `scalafmtAll` before every commit.
-- **`-Xfatal-warnings` is on** — fix every warning. Common ones: unused imports; `var x = _` → `= uninitialized`
-  (Scala 3.7); `ReadAction.compute(...)` deprecated → `runReadAction` with a typed `Computable`/`Runnable` (mind
-  overload ambiguity); discarded non-`Unit` values → `val _ = …`.
+- sbt **1.11.7**.
+- Plugin code: Scala **3.7.4**.
+- In-tree testkit: Scala **2.13.16**, matching the installed plugin it mirrors.
+- Baseline host: IntelliJ **261.26222.65**, Scala plugin **2026.1.20**.
+- Aliases: `sbt fmt`, `sbt check`, `sbt runIDE`.
+- Run `scalafmtAll` before every commit.
+- `-Xfatal-warnings`, unused-value warnings, and non-Unit statement warnings are enabled. Fix every warning.
+- Explicit deterministic test lanes live in `test-lanes/` and run through `scripts/run-test-lane.sh`. Preserve their
+  per-suite evidence; do not replace them with wildcard selection.
+- Copied IntelliJ Scala tests are pinned by `upstream-tests/intellij-scala.json`. Snapshot and generated sources are
+  byte-controlled inputs: never format or edit them directly. Regenerate under `target/` and run
+  `verifyCopiedIntellijTests` plus `verifyCopiedIntellijTestsAgainstOrigin`.
 
-## Architecture (data flow)
+## Target architecture
 
-- **Gate:** `ModuleDetectionService.isActive(module)` = Scala 3 **and** user opt-in. Metallurgy is opt-in on its own
-  setting, independent of the bundled plugin's compiler-highlighting backend (CBH) — it does not require CBH to be on.
-  Everything else is a hard no-op without it. Compiler versions never select behavior; optional facilities such as
-  BETASTY are enabled only when discovered as capabilities. Exact PC artifact availability and optional facilities such
-  as BETASTY are discovered independently.
-- **Target engine:** `PcSessionManager` (per-module sessions) → exact compiler artifact in an isolated classloader →
-  published Scalameta `PresentationCompiler` interface → bulk semantic snapshot. When no public PC operation exposes the
-  required snapshot, a capability-probed compiler bridge may structurally read the retained driver and export only
-  neutral DTOs. Queries are cached per `(fileUri, documentVersion)` and never run on the EDT.
-- **Compatibility bridges:** compiler implementation access belongs only in `Scala3PcBridge`; Scala-plugin wrapping,
-  replacement, and any private access belong only in `ScalaPluginSemanticBridge`. Consumers see one role-based,
-  cache-only lookup interface and do not know which adapter supplied it. `StructuralScala3PcBridge` and
-  `BundledCompilerBackendShim` are private implementations behind those interfaces, not consumer-visible surfaces.
-  Type-rendering rules for the bridge (module singletons, poly-function binders, the dotc-vs-PSI reconciliation
-  method, and reflection gotchas) live in [`src/main/scala/com/hmemcpy/metallurgy/pc/AGENTS.md`](src/main/scala/com/hmemcpy/metallurgy/pc/AGENTS.md).
-- **Presentation (Feature 0):** `CompilerTypeRequestResolver` subscribes to the bundled `CompilerType` topic and fills
-  the compiler-type slot. Note: the bundled *requests* the type only for transparent-inline calls during completion,
-  then *reads* the slot for any expression — so this path is completion-triggered.
-- **Semantic population:** `CompilerBackendPass` schedules one coalesced population per document generation and returns
-  without waiting in the daemon read action. Cold compiler-artifact resolution uses a cancelable `Task.Backgroundable`
-  queued on the EDT; compilation, mapping, and publication stay off the EDT. Publication restarts the affected file.
-- **Inlay pass:** `PcTypeHintsPass` consumes only the current immutable compiler-backend snapshot. It renders inline type
-  hints and writes the compiler-type slot on each value definition's initializer; it never initiates or waits for pc work.
-- **Diagnostics (demoted to transient plumbing):** `PcDiagnosticSetCache` + `PcHighlightRenderer` + `PcHighlightInfoFilter`.
-- **Completion:** `Scala3PcCompletionContributor` + `PcCompletionMerger` (merges pc items over the bundled's).
+### Gate and exact artifacts
 
-## Gotchas (load-bearing — these cost hours each)
+`ModuleDetectionService.isActive(module)` is Scala 3 plus explicit user opt-in. It is independent of bundled
+compiler-highlighting settings. Inactive modules execute the installed plugin unchanged and allocate no Metallurgy
+work.
 
-- **`PcSession` snapshots are keyed by `(fileUri, documentVersion)`.** Give each test case a **unique URI**
-  (`s"file:///Case$idx.scala"`) or they collide and silently reuse case 1's snapshot.
-- **`configureByText` filename must have no spaces or dots** (URISyntaxException) — use `s"Case$idx.scala"`.
-- **Single-character needles land on the wrong sub-tree.** Needle the *result val name*, not a one-char identifier.
-- **`ScalaLightCodeInsightFixtureTestCase` requires a `getTestDataPath` override** (point it at `src/test/testdata`).
-- **Scala-3-JUnit closure:** routing `runWithErrorsFromCompiler { … }` through a `test*` method makes JUnit reflect the
-  by-name body as a test method — move it into a non-`test*` helper.
-- **Engine/presentation tests assert the EXACT rendered type** (whitespace-normalized), not a substring — a substring
-  check let `IntBox` satisfy the `"Int"` requirement. Add new cases the same way.
-- **Feature flags per construct:** named tuples need `-language:experimental.namedTuples`; opaque types must be
-  object-scoped *and* used outside for pc to show the alias. When a case fails, suspect the snippet/flags first (see
-  "pc is never wrong") and confirm usage against `scala/scala3`.
-- **Diagnosing dotc-vs-PSI type disagreements:** run the snippet through the compiler with `-Xprint:typer` (e.g.
-  `scala-cli compile --scala <version> --scala-opt -Xprint:typer`) to see exactly how dotc typed it. If dotc's rendering
-  differs from what the PSI/backend shows, the divergence is in the Metallurgy pipeline, not the compiler. Pair this
-  with a REPL probe (`scala-cli repl --scala <version>`) for `:type` checks.
-- **MacroAnnotation cannot add user-visible members** (Scala 3 design restriction) — don't try to test or support it.
-- **`doParseContents` must return the unwrapped first child.** The producer builds the file content under a root
-  marker `done(fileElementType)`, then `doParseContents` returns `builder.getTreeBuilt.getFirstChildNode` (mirroring
-  the platform default `ILazyParseableElementType.doParseContents`). Returning the wrapped root nests an extra
-  `ASTWrapperPsiElement(FILE)` that hides top-level declarations from `ScDeclarationSequenceHolder.processDeclarations`
-  — lexical resolve silently breaks with no error. See `psiproducer/AGENTS.md` for the full grammar contracts.
-- **Producer PSI must match the bundled grammar the resolver reads, not just look right in the viewer.** `leaf()`/
-  `collapse()` render like composites in "View PSI Structure" but are leaves — use balanced `marker.done(TYPE)`. A
-  `def`'s name must be a direct `tIDENTIFIER` child of `FUNCTION_DEFINITION`; params are `PARAMETER` in `PARAM_CLAUSE`
-  (dotc models a param as a `ValDef` under a `DefDef`); a `val`'s name needs a `REFERENCE_PATTERN` inside `PATTERN_LIST`;
-  free-standing `Ident`/`Select` need `REFERENCE_EXPRESSION`; types go in `SIMPLE_TYPE`/`PARAM_TYPE`.
-- **`LanguageSubstitutor` does not run for `createFileFromText(name, explicitLanguage, text)`** — an explicit language
-  wins, so a bundled-parse probe keyed on `Scala3Language.INSTANCE` is correct (the substitutor is a red herring).
-- **Key pending-parse state by file URI, not source text.** A PSI copy or index parse of the same content can win the
-  `Unknown→Pending` race, schedule on a file with no physical `VirtualFile`, and strand the real file in `Pending`.
-- **IntelliJ `Logger.info` writes to `idea.log`** (~/.metallurgyPluginIC/system/log/idea.log), not stdout; only SEVERE
-  reaches the `runIDE` stdout redirect. Grepping the stdout log for INFO finds nothing.
+An active module resolves its exact compiler artifacts and independently probes parser, semantic, completion, and
+best-effort TASTy capabilities. Artifact versions never select behavior.
 
-## Tests
+### Syntax
 
-- Engine/presentation: `PcTypeResolutionTest` (exact-match type resolution across ~32 constructs), `PcPresentationTest`
-  (slot), `PcCompletionTest` (real completion), `PcTypeInlayHintsTest` (inlay + proactive slot fill). The
-  `withSession` helper (fetch pc jars, build a one-off `PcSession`, run on a pooled thread) is the pattern for any new
-  pc-engine test.
-- Golden fixtures live under `src/test/testdata/feature/<feature>/<name>/` with `source.scala` +
-  `expected.metallurgy-{on,off}.txt`, driven by `MetallurgyFixtureTestCase` / `OracleExecutor`.
+Preparing modules use a neutral non-Scala, non-stub-bearing language. Once exact parser capabilities are ready, one
+platform VFS batch activates the module.
 
-## Agent skills
+Ready files synchronously follow:
 
-- **Issue tracker:** GitHub issues via `gh`. See `docs/agents/issue-tracker.md`. **Continuity lives here:** read the
-  relevant issue's comments (epic **#71** for the Scala 3 test-parity suite, epic **#50** for the backend epic) for
-  prior context, root-cause findings, and progress. Do **not** use `AGENTS.md` files (root or per-module) as a log of
-  investigation notes, status, or per-failure findings — those go in GitHub issue comments. `AGENTS.md` files hold
-  standing core directives and working instructions only.
-- **Triage labels:** `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-- **Domain docs:** use the canonical design document. See `docs/agents/domain.md`. The live work queue is epic **#73**.
+```text
+verbatim source
+  -> exact compiler parser
+  -> neutral parser products and positions
+  -> lossless source-evidence plan
+  -> typed production catalog
+  -> complete whole-file PsiBuilder plan
+  -> Scala AST, PSI, stubs, and indices
+```
+
+Typed trees never produce syntax. Parsing never waits for semantic work. No background operation replaces syntax.
+Unknown required compiler-valid productions fail closed to deterministic neutral PSI and a capability report rather
+than a bundled parse.
+
+### Semantics
+
+`PcSessionManager` owns per-module exact-version sessions. Published Scalameta PC operations are preferred. A
+capability-probed compiler bridge may structurally read the retained driver when no public operation exposes the
+required whole-file snapshot.
+
+One immutable snapshot carries structured types, symbols, occurrences, completion, navigation, diagnostics, source
+version, compiler identity, and every freshness generation. Consumers query one `CompilerSemanticFacade`.
+
+Only a Current snapshot supplies active Scala 3 semantics. Pending, Unavailable, Failed, Missing, and Stale are
+explicit unknown states and never use bundled type inference or resolution.
+
+### Compatibility bridges
+
+`Scala3ParserBridge` and `Scala3PcBridge` export only neutral immutable DTOs. No compiler implementation object crosses
+its isolated classloader.
+
+`ScalaPluginSemanticBridge` owns capability-probed native PSI construction, compatibility PSI/stubs, and any necessary
+private Scala-plugin access. Consumer code sees public IntelliJ/Scala PSI and role-based facade interfaces.
+
+### Diagnostics
+
+Dotc owns Scala language errors and compiler warnings. Explicitly classified IDE-only inspections remain. Semantic
+inspections consume the compiler facade. Every visible finding has one owner; no highlight filter suppresses a result.
+
+### Best-effort TASTy
+
+IntelliJ's ordinary build/compile-server pipeline produces best-effort TASTy for broken upstream modules. Downstream
+sessions consume it only when the exact compiler exposes the consumer capability. Artifact and session freshness
+includes upstream output/classpath generation and artifact content.
+
+Best-effort TASTy is a cross-module semantic input. It never parses the current file or selects PSI shape.
+
+## Operational constraints
+
+- `PcSession` snapshots are keyed by `(fileUri, documentVersion)`. Every test case needs a unique URI.
+- `configureByText` filenames must contain no spaces or embedded dots; use `Case1.scala`.
+- Single-character needles may select the wrong subtree. Needle the result definition name.
+- `ScalaLightCodeInsightFixtureTestCase` requires `getTestDataPath`.
+- A helper called from JUnit must not have a public `test*` name when it accepts a by-name body.
+- Type tests assert exact whitespace-normalized rendering, never substrings.
+- Experimental constructs require their exact compiler flags. Discover support as a capability; do not infer it from
+  the version.
+- Diagnose type disagreements with exact-version REPL and `-Xprint:typer` before editing the bridge.
+- Scala 3 macro annotations cannot add members visible to user-written code; do not design a PSI feature around such
+  members without contrary exact-compiler proof.
+- `doParseContents` returns `builder.getTreeBuilt.getFirstChildNode`. Returning the wrapper root hides top-level
+  declarations from lexical resolution.
+- Composite PSI requires balanced `PsiBuilder` markers. A visually similar leaf is not an `Sc*` implementation.
+- Parser evidence must account for all source ranges, trivia, delimiters, and zero-width layout events before emission.
+- AST completion precedes stub derivation. Identical input and schema must produce identical stub and index signatures.
+- IntelliJ `Logger.info` writes to `idea.log`, not the runIDE stdout redirect.
+
+## Test contract
+
+- Copied Scala 3 sources, executable assertions, and expected results remain exact.
+- Local adapters use descriptive names; external tracker identifiers live only in provenance manifests.
+- Every discovered copied test must execute or appear as a visible independently proven compiler conflict.
+- Broad nested examples complement minimized upstream tests.
+- PSI tests cover exact text, ranges, element types, parents, direct children, every declared accessor, recovery,
+  copies, edits, reparse, restart, pointers, stubs, indices, navigation, rename, and usages.
+- Semantic tests cover exact types, symbols, resolution, completion, navigation, one-owner diagnostics, stale states,
+  and absence of fallback.
+- Best-effort TASTy tests use a real two-module build/compile-server producer and verify downstream highlighting through
+  break, consume, repair, rename, removal, reload, and restart.
+- Final checks include published Scala versions, moving IntelliJ/Scala-plugin hosts, pinned real projects, and resource
+  budgets.
+
+## Agent resources
+
+- **Issue tracker:** GitHub via `gh`; see `docs/agents/issue-tracker.md`.
+- **Continuity:** read the relevant implementation task and epic comments. Do not use AGENTS files as progress logs.
+- **Triage labels:** see `docs/agents/triage-labels.md`.
+- **Domain architecture:** this file points to the canonical design; see `docs/agents/domain.md`.
+- **IntelliJ automation:** use `~/git/ide-probe`.

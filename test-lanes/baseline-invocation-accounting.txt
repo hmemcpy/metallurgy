@@ -1,0 +1,4 @@
+com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest
+com.hmemcpy.metallurgy.compat.scala3.DotcOracleConflictProofTest
+com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest
+com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest

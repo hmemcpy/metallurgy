@@ -11,25 +11,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup JDK 21
-        uses: actions/setup-java@v4
+      - name: Setup JetBrains Runtime 25
+        uses: actions/setup-java@v5
         with:
-          distribution: temurin
-          java-version: '21'
+          distribution: jetbrains
+          java-version: '25'
+          java-package: jdk
+          cache: sbt
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
 
-      - name: Cache sbt
-        uses: actions/cache@v4
+      - name: Check formatting and compile
+        run: timeout --kill-after=5s 120s sbt -batch -no-colors scalafmtCheckAll compile
+
+      - name: Fetch pinned IntelliJ Scala revision
+        run: |
+          git init target/intellij-scala-origin
+          git -C target/intellij-scala-origin remote add origin https://github.com/JetBrains/intellij-scala.git
+          timeout --kill-after=5s 120s git -C target/intellij-scala-origin fetch --depth=1 origin 8dd22d153b65c847f4ced8917dd7e02b83561e5d
+
+      - name: Verify copied IntelliJ tests
+        run: |
+          timeout --kill-after=5s 120s sbt -batch -no-colors \
+            -Dintellij.scala.repo=target/intellij-scala-origin \
+            verifyCopiedIntellijTestsAgainstOrigin
+          timeout --kill-after=5s 120s sbt -batch -no-colors verifyCopiedIntellijTests
+
+      - name: Verify deterministic test planning
+        run: scripts/test-test-lane-runner.sh
+
+      - name: Run representative deterministic lane
+        env:
+          METALLURGY_TEST_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/run-test-lane.sh test-lanes/ci.txt
+
+      - name: Upload retained test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.sbt
-            ~/.cache/coursier
-          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', '**/project/build.properties', '**/project/plugins.sbt') }}
-          restore-keys: ${{ runner.os }}-sbt-
-
-      - name: Compile
-        run: sbt compile
-
-      # TestKit tests are temporarily local-only while the Phase 1 corpus is being built out.
+          name: metallurgy-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/test-evidence
+          if-no-files-found: error

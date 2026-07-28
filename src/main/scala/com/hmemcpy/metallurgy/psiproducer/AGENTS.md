@@ -1,63 +1,131 @@
-# `psiproducer` package — dotc → Scala PSI producer
+# `psiproducer` package — deterministic Scala 3 PSI production
 
-`Scala3DotcFileElementType.doParseContents` is the dialect file-root parse seam: it builds a bundled-compatible PSI
-from the compiler's typed tree (`DotcPsiProducer`) when an extraction is installed (`DotcTreeSource`), returns a
-pending placeholder leaf while the compiler has not decided, or falls back to the bundled parser. The decision state
-is `ProducerParseState` (file-URI keyed). The normative architecture and the layered findings live in
-`docs/scala3-compiler-backend.md` and `docs/research/producer-psi-delivery-findings.md`; this file holds only
-standing contracts for producing faithful PSI.
+This package synchronously turns exact-compiler parser evidence and verbatim source into one complete
+Scala-plugin-compatible PSI tree. It owns the neutral preparation language, source-evidence planning, typed production
+catalog, whole-file `PsiBuilder` plan, file element, and stub root.
 
-## `doParseContents` must return the unwrapped first child
+The normative architecture is `docs/scala3-compiler-backend.md`. This file contains standing grammar and lifecycle
+constraints only.
 
-`ILazyParseableElementType.doParseContents` (platform default) wraps the parse in the file element type and returns
-`node.getFirstChildNode()`. `LazyParseableElement.setChildren` makes the returned node the chameleon's **first child**.
-Returning the wrapped root (`getTreeBuilt()`) nests an extra `ASTWrapperPsiElement(FILE)` whose only effect is to hide
-top-level declarations from `ScalaFileImpl` (`ScDeclarationSequenceHolder.processDeclarations`) — **lexical resolve
-silently breaks** with no error. Always return `builder.getTreeBuilt.getFirstChildNode` from the producer branch.
+## One syntax path
 
-## PSI grammar contracts the resolver reads (emit these exactly)
+A Ready active module has exactly one parser path:
 
-| Element | Accessor | Required shape |
-|---|---|---|
-| `ScFunctionDefinition` | `nameId` | a direct `tIDENTIFIER` child of `FUNCTION_DEFINITION` (consume `def` + name before opening the param-clause marker) |
-| | `keywordToken` (ScValueOrVariable) | the `val`/`var` keyword is a **direct child of the definition node** — consume it before opening `PATTERN_LIST` (else `keywordToken.get` throws `None.get`, surfaced via `getTextOffset`/breadcrumbs) |
-| | `parameters` | `PARAM_CLAUSES`>`PARAM_CLAUSE`>`PARAM` (`ScParameter`); `paramClauses` must be non-null (emit an empty `PARAM_CLAUSES` when there are none) |
-| | `returnTypeElement` | a `ScTypeElement` child — emit the `tpt` as `SIMPLE_TYPE`>`REFERENCE` |
-| `ScParameter` | `typeElement` | the declared type wrapped in `PARAM_TYPE` |
-| `ScPatternDefinition` | `declaredElements` | a binding pattern (`REFERENCE_PATTERN`) **inside `PATTERN_LIST`**; `pList` must be non-null |
-| `ScReferenceExpression` | `nameId`/`resolve` | wrap free-standing `Ident`/`Select` in `REFERENCE_EXPRESSION` |
-| file scope | `processDeclarations` | top-level defs are **direct children of the file** (a consequence of the unwrap rule above); same-file resolve is lexical |
+```text
+source
+  -> exact parser bridge
+  -> neutral parser snapshot
+  -> source evidence
+  -> production catalog
+  -> closed whole-file builder plan
+  -> Scala AST and PSI
+```
 
-**Type grammar is recursive.** A type-position child (`tpt`) is emitted by a recursive `emitTypeElement`, not the
-generic value emit: a leaf named ref (`Ident`/`Select`) is `SIMPLE_TYPE > REFERENCE`; a `Tuple` is `TUPLE_TYPE`
-whose elements recurse as types; other composites recurse children as types. Never wrap a non-ref (e.g. a tuple
-`(A, B)`) in a single `REFERENCE` — it has no identifier, so `nameId` is null and navigation crashes
-(`nameId is null for reference with text (A, B)`).
+The producer never:
 
-**Composites must use balanced `PsiBuilder` markers** (`marker.done(TYPE)`). `leaf()`/`collapse()` render identically
-in the PSI viewer ("View PSI Structure") but are leaves, not the `Sc…Impl` the resolver casts to.
+- consumes typed trees as syntax;
+- consults the bundled Scala parser;
+- chooses repair regions;
+- schedules compiler work from parsing;
+- waits for background or EDT work;
+- publishes a replacement syntax tree later;
+- selects behavior from compiler or plugin versions.
 
-## dotc tree → PSI mapping
+## Neutral preparation
 
-- `DefDef(name, paramss: List[ParamClause], tpt, rhs)`, `ValDef(name, tpt, rhs)`, `Ident(name)`, `Select(qualifier, name)`.
-- **A parameter is a `ValDef` whose parent is a `DefDef`** (dotc models params as `ValDef`) — emit `PARAMETER`, not
-  `ScPatternDefinition`. Body locals nest inside a `Block`, so a `ValDef` whose direct parent is a `DefDef` is a param.
-- Surface `Name.toString` per node (`tree.getClass.getMethod("name")`) and tag type-position children by identity:
-  access `tree.tpt`, match the returned tree against the walked entries via `IdentityHashMap`.
-- Hardening (open): `advanceToToken(name)` matches textually; prefer the exact name **span** from dotc for
-  backticked/encoded/operator/generated names.
+Preparing and Activating modules use an unrelated neutral language and file type. They have no Scala base language,
+lexer, parser, references, stubs, indices, annotators, inspections, completion, or refactoring extensions.
 
-## Delivery (the reload)
+Activation publishes a new module epoch and queues one `FileContentUtilCore.reparseFiles` batch. A stale preparation
+cannot activate a newer epoch. Do not simulate dumb mode, call a view-provider reload directly, or request reindexing
+manually.
 
-`AbstractFileViewProvider.onContentReload()` is `final` and is the full paired sequence
-(`beforeChildrenChange`×2 → `PsiFileEx.onContentReload` → `contentsSynchronized` → `childrenChanged`×2) — the minimum
-safe protocol; do not attempt an event-bypass. `ResolveCache` clears on `beforeChildrenChange` (not stale across the
-reload). Do not call `requestReindex` for a physical, event-enabled provider (the reload triggers transient indexing).
+Preserve virtual-file, document, and range identity through activation. Do not retain PSI pointers across the language
+change.
 
-## Don't block the parse
+## Parser evidence
 
-`doParseContents` has no thread guarantee (may run on the EDT) and holds the parse lock + read action; the reload's
-write action cannot start while it is held → freeze/deadlock. Never block on the async extraction. A source the
-bundled parser fragments returns a pending placeholder leaf (`Scala3DotcPendingLeaf.PendingFileContent`) — one leaf,
-no `PsiErrorElement`, no `ScMethodCall` — so the file is never painted red and never trips the bundled `None.get`
-crash (`ScMethodCallImpl.getInvokedExpr = findChild[ScExpression].get` on its own fragmented `[A = Int]` parse).
+Only neutral DTOs from the exact parser bridge enter this package. The evidence must include ordered named fields,
+source ranges, point positions, zero-width and synthetic provenance, diagnostics, source identity, and exact compiler
+identity.
+
+Every source interval is assigned exactly once to a significant token, trivia leaf, delimiter, separator, or parent
+production. Indentation and outdent events are zero-width structural evidence. Reassembling ordered leaves must equal
+the original source byte for byte.
+
+Scanner replay may validate evidence but cannot choose the production hierarchy.
+
+## Production catalog
+
+All grammar-to-PSI behavior is declared in the typed production catalog. An entry accounts for:
+
+- every compiler field;
+- child cardinality and order;
+- source, token, trivia, delimiter, and layout ownership;
+- recovery behavior;
+- target PSI element type and implementation capability;
+- every public `Sc*` accessor;
+- stub fields, serializer, indices, and navigation identity.
+
+Compile the entire plan before opening `PsiBuilder` markers. Unknown fields, unowned ranges, overlapping ownership,
+missing accessors, incomplete stub contracts, or unbalanced plans fail closed.
+
+New syntax support requires an inventory update and complete catalog entry. Do not add a parser-error check or an
+isolated construct branch.
+
+## PSI shape
+
+The installed Scala PSI public interfaces are the consumer contract. Native implementations are reused only after an
+executable probe proves the catalog entry. Compatibility PSI and stubs remain inside the Scala-plugin bridge.
+
+Composites use balanced `PsiBuilder` markers and `marker.done(elementType)`. A leaf or collapsed node that looks the
+same in a PSI viewer is not equivalent.
+
+Public accessor tests define required direct-child and nesting relationships. Important examples include:
+
+| Element | Required shape |
+| --- | --- |
+| `ScFunction` | name token directly under the function; complete parameter clauses; return type as `ScTypeElement` |
+| `ScParameter` | declared type inside the parameter-type production |
+| `ScPatternDefinition` | binding pattern inside a non-null pattern list |
+| `ScReferenceExpression` | identifier/select represented by a reference-expression production |
+| `ScStableCodeReference` | qualifier/name chain represented by stable-reference productions |
+| file declarations | top-level definitions are direct children of the file content root |
+
+Type grammar is recursive. Never wrap a composite type in a single reference node merely to obtain a visible tree.
+
+## File root, stubs, and indices
+
+`doParseContents` returns `builder.getTreeBuilt.getFirstChildNode`, matching the platform default. Returning the
+wrapper root creates an extra file node and hides top-level declarations from lexical resolution.
+
+The file element owns a stable `ScStubFileElementType` identity and schema version. Emit the complete AST before
+`DefaultStubBuilder` derives stubs. Register compatibility serializers and indices statically.
+
+Identical content, parser capability, catalog version, PSI target capabilities, and stub schema must produce identical:
+
+- AST element types, ranges, and ordering;
+- public accessor observations;
+- stub types, fields, ordering, and serialized bytes;
+- index keys and targets;
+- pointers and navigation.
+
+Verify cold and warm parsing, copies, edits, reparse, closed files, restart, index rebuild, and neutral/ready
+transitions.
+
+## Recovery and unknown syntax
+
+Invalid edits preserve exact text and parser diagnostics while producing only catalog-declared structurally safe
+recovery nodes.
+
+An unknown required compiler-valid production produces deterministic neutral file-scoped PSI and a project capability
+report. It does not publish partial Scala PSI, build stubs, consult the bundled parser, or hide the incompatibility.
+
+## Tests
+
+- Use broad nested sources alongside minimized upstream fixtures.
+- Assert exact text, element type, range, parent, direct children, and every catalogued accessor.
+- Assert complete stub and index signatures, not selected node counts.
+- Exercise invalid intermediate edits and recovery at every production boundary.
+- Compare native and compatibility targets through the same observable contract.
+- Preserve copied Scala snippets, assertions, and expected values exactly.

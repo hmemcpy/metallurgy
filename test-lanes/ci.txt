@@ -1,0 +1,13 @@
+com.hmemcpy.metallurgy.SmokeTest
+com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest
+com.hmemcpy.metallurgy.compat.scala3.Scala3CompatHarnessSanityTest
+com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest
+com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest
+com.hmemcpy.metallurgy.module.EligibilityPredicateTest
+com.hmemcpy.metallurgy.pc.BetastyCompileServerTest
+com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest
+com.hmemcpy.metallurgy.pc.DotcPsiProducerTest
+com.hmemcpy.metallurgy.pc.PcClassLoaderTest
+com.hmemcpy.metallurgy.pc.PcSnapshotTest
+com.hmemcpy.metallurgy.pc.PresentationCompilerResolverTest
+com.hmemcpy.metallurgy.testkit.ExpectedOutputParserTest

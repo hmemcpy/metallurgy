@@ -10,7 +10,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource, ProducerParseState}
+import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource}
 import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
@@ -260,7 +260,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       file    <- Option(FileDocumentManager.getInstance.getFile(event.getDocument))
       module  <- Option(ModuleUtilCore.findModuleForFile(file, project))
       if isManaged(module) && isScalaSource(file)
-      _        = ProducerParseState.reset(file.getUrl) // edited content must re-enter the pending decision
       session <- Option(sessions.get(module)).map(_.session)
       snapshot = PcSnapshot(file.getUrl, event.getDocument.getModificationStamp, event.getDocument.getText)
     do analyze(session, module, snapshot, awaitBackendPublication = false)
@@ -379,27 +378,20 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
           else null
     )
     if target == null then return
-    // Decide the terminal parse state from the compiler's verdict and the bundled parser's ability to represent the
-    // source. The file is currently the pending placeholder; this publishes a terminal state and reloads so the next
-    // parse is decisive. Idempotence: an unchanged state does not reload.
     val hasCompilerErrors = extraction.diagnostics.exists(_.isError)
-    val stateChanged      =
-      if hasCompilerErrors then ProducerParseState.reject(snapshot.fileUri)
-      else if BundledScala3Parse.hasErrors(snapshot.sourceText, project) then
-        DotcTreeSource.install(snapshot.sourceText, extraction)
-      else ProducerParseState.useBundled(snapshot.fileUri)
+    val stateChanged      = !hasCompilerErrors &&
+      BundledScala3Parse.hasErrors(snapshot.sourceText, project) &&
+      DotcTreeSource.install(snapshot.sourceText, extraction)
     if !stateChanged then return
     ApplicationManager.getApplication.invokeAndWait(() =>
       ApplicationManager.getApplication.runWriteAction(
         new Computable[Unit]:
           override def compute(): Unit =
             target.getViewProvider match
-              case vp: AbstractFileViewProvider => vp.onContentReload()
-              case _                            => ()
+              case provider: AbstractFileViewProvider => provider.onContentReload()
+              case _                                  => ()
       )
     )
-    // The reload replaces the tree; restart the daemon so local inspections re-run on the fresh PSI (otherwise a
-    // post-reload pass may not complete and diagnostics stay stale even though the PSI updated).
     DaemonCodeAnalyzer.getInstance(project).restart(target, "metallurgy producer reload")
 
   private def trackFile(module: Module, fileUrl: String): Unit =

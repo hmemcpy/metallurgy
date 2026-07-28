@@ -1,6 +1,36 @@
 import org.jetbrains.sbtidea.{AutoJbr, JbrPlatform}
 import org.jetbrains.sbtidea.packaging.artifact.DistBuilder
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.security.MessageDigest
 import scala.sys.process.Process
+
+def updateTestInputDigest(digest: MessageDigest, file: File): Unit = {
+  val input  = Files.newInputStream(file.toPath)
+  val buffer = new Array[Byte](64 * 1024)
+  try {
+    var count = input.read(buffer)
+    while (count >= 0) {
+      if (count > 0) digest.update(buffer, 0, count)
+      count = input.read(buffer)
+    }
+  } finally input.close()
+}
+
+def testInputSha256(root: File): String = {
+  val digest = MessageDigest.getInstance("SHA-256")
+  val files =
+    if (root.isDirectory) (root ** "*").get.filter(_.isFile).sortBy(file => IO.relativize(root, file).getOrElse(""))
+    else Seq(root)
+  files.foreach { file =>
+    val relative = if (root.isDirectory) IO.relativize(root, file).getOrElse(file.getName) else file.getName
+    digest.update(relative.getBytes(StandardCharsets.UTF_8))
+    digest.update(0.toByte)
+    updateTestInputDigest(digest, file)
+    digest.update(0.toByte)
+  }
+  digest.digest().map(byte => f"${byte & 0xff}%02x").mkString
+}
 
 ThisBuild / scalaVersion       := "3.7.4"
 ThisBuild / version            := "0.1.0-SNAPSHOT"
@@ -10,9 +40,16 @@ ThisBuild / intellijBuild      := "261.26222.65"
 Global / intellijAttachSources := true
 
 addCommandAlias("fmt", "scalafmtAll")
-addCommandAlias("check", "scalafmtCheckAll")
+addCommandAlias("check", ";verifyCopiedIntellijTests;scalafmtCheckAll")
 addCommandAlias("testHeadless", "test")
 addCommandAlias("compilerTypeAcceptance", "testOnly com.hmemcpy.metallurgy.compilertype.*Test")
+addCommandAlias(
+  "verifyCopiedIntellijTests",
+  ";verifyCopiedIntellijTestFiles;" +
+    "testOnly com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest " +
+    "com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest " +
+    "com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest"
+)
 
 Global / javacOptions := Seq("--release", "17")
 
@@ -59,6 +96,13 @@ lazy val intellijPluginDependencies = Seq(
 
 lazy val compileTestkit         = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
 lazy val prepareIntellijTestSdk = taskKey[Unit]("Prepare SDK resources expected by IntelliJ light fixtures")
+lazy val writeTestInventory     = taskKey[Unit]("Write discovered test names and exact environment coordinates")
+lazy val verifyCopiedIntellijTestFiles =
+  taskKey[Unit]("Verify copied IntelliJ test provenance, generation, and protected bytes")
+lazy val verifyCopiedIntellijTestsAgainstOrigin =
+  taskKey[Unit]("Compare copied IntelliJ test bytes with the pinned Git revision")
+lazy val generateCopiedIntellijTests =
+  taskKey[Unit]("Generate copied IntelliJ test adapters under target")
 
 lazy val root =
   Project("metallurgy", file("."))
@@ -81,8 +125,13 @@ lazy val root =
         "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
         "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test
       ) ++ intellijTestFrameworkDependencies.map(_ % Test),
+      Test / testReportsDirectory :=
+        sys.props.get("metallurgy.test.reports").map(file).getOrElse((Test / target).value / "test-reports"),
       Test / javaOptions ++= {
-        val testRoot = target.value / s"idea-test-${ProcessHandle.current().pid()}"
+        val testRoot = sys.props
+          .get("metallurgy.test.root")
+          .map(file)
+          .getOrElse(target.value / s"idea-test-${ProcessHandle.current().pid()}")
         Seq(
           s"-Didea.system.path=${testRoot / "system"}",
           s"-Didea.config.path=${testRoot / "config"}",
@@ -92,6 +141,9 @@ lazy val root =
           "-Didea.is.headless=true"
         )
       },
+      Test / parallelExecution := false,
+      Test / unmanagedSourceDirectories +=
+        baseDirectory.value / "src" / "test" / "generated" / "intellij-scala",
       Test / unmanagedClasspath +=
         Attributed.blank(baseDirectory.value / "testkit" / "target" / "scala-2.13" / "classes"),
       prepareIntellijTestSdk    := {
@@ -119,6 +171,80 @@ lazy val root =
         if (exitCode != 0) sys.error(s"TestKit compilation failed with exit code $exitCode")
       },
       Test / compile            := ((Test / compile) dependsOn compileTestkit).value,
+      verifyCopiedIntellijTestFiles := {
+        val exitCode = Process(
+          Seq((baseDirectory.value / "scripts" / "test-copied-intellij-tests.sh").getPath),
+          baseDirectory.value,
+          "JAVA_HOME" -> sys.props("java.home")
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ test verification failed with exit code $exitCode")
+      },
+      verifyCopiedIntellijTestsAgainstOrigin := {
+        val originRepository = sys.props
+          .get("intellij.scala.repo")
+          .map(file)
+          .getOrElse(sys.error("intellij.scala.repo is required"))
+        val exitCode         = Process(
+          Seq((baseDirectory.value / "scripts" / "copied-intellij-tests.sh").getPath, "against-origin"),
+          baseDirectory.value,
+          "JAVA_HOME"                    -> sys.props("java.home"),
+          "INTELLIJ_SCALA_REPOSITORY"    -> originRepository.getCanonicalPath
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ origin verification failed with exit code $exitCode")
+      },
+      generateCopiedIntellijTests := {
+        val exitCode = Process(
+          Seq((baseDirectory.value / "scripts" / "copied-intellij-tests.sh").getPath, "generate"),
+          baseDirectory.value,
+          "JAVA_HOME" -> sys.props("java.home")
+        ).!
+        if (exitCode != 0) sys.error(s"Copied IntelliJ test generation failed with exit code $exitCode")
+      },
+      writeTestInventory        := {
+        val inventory = sys.props
+          .get("metallurgy.test.inventory")
+          .map(file)
+          .getOrElse(sys.error("metallurgy.test.inventory is required"))
+        val environment = sys.props
+          .get("metallurgy.test.environment")
+          .map(file)
+          .getOrElse(sys.error("metallurgy.test.environment is required"))
+        val classpath = sys.props
+          .get("metallurgy.test.classpath")
+          .map(file)
+          .getOrElse(sys.error("metallurgy.test.classpath is required"))
+        val names = (Test / definedTests).value.map(_.name).distinct.sorted
+        val classpathEntries = (Test / fullClasspath).value.map(_.data.getCanonicalFile).distinct.sortBy(_.getPath)
+        IO.createDirectory(inventory.getParentFile)
+        IO.createDirectory(environment.getParentFile)
+        IO.createDirectory(classpath.getParentFile)
+        IO.writeLines(inventory, names)
+        IO.writeLines(
+          environment,
+          Seq(
+            s"intellij.build=${intellijBuild.value}",
+            s"java.home=${sys.props("java.home")}",
+            s"java.runtime.version=${sys.props("java.runtime.version")}",
+            s"java.vendor=${sys.props("java.vendor")}",
+            s"plugin.scala.version=${scalaVersion.value}",
+            s"sbt.version=${sbtVersion.value}",
+            s"test.fixture.compiler=org.scala-lang:scala3-compiler_3:3.5.2",
+            s"scala.plugin.version=$scalaPluginVersion",
+            s"test.fixture.scala.version=3.5.2",
+            s"testkit.scala.version=$scala2LibraryVersion"
+          )
+        )
+        IO.writeLines(
+          classpath,
+          classpathEntries.map { entry =>
+            val hash = if (entry.exists()) testInputSha256(entry) else "missing"
+            s"$hash\t${entry.getPath}"
+          }
+        )
+        streams.value.log.info(s"Wrote ${names.size} discovered tests to $inventory")
+        streams.value.log.info(s"Wrote exact test environment to $environment")
+        streams.value.log.info(s"Wrote ${classpathEntries.size} hashed classpath entries to $classpath")
+      },
       testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-s", "-a", "+c", "+q"),
       buildIntellijOptionsIndex := {},
       intellijPlugins           := intellijPluginDependencies,

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "suite": "named-type-arguments-inference",
+  "invocations": [
+    {
+      "originName": "testDocsExampleConstructWithNamedTypeArguments",
+      "classification": "accepted-parity"
+    },
+    {
+      "originName": "testGenericCallWithPartiallyNamedTypeArguments_InferFirstParamFromExpectedType",
+      "classification": "accepted-parity"
+    },
+    {
+      "originName": "testGenericCallWithPartiallyNamedTypeArguments_InferSecondParamFromExpectedType",
+      "classification": "accepted-parity"
+    },
+    {
+      "originName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferFirstParam",
+      "classification": "accepted-parity"
+    },
+    {
+      "originName": "testMethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam",
+      "classification": "accepted-parity"
+    }
+  ]
+}

@@ -7,16 +7,16 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).with_name("run_ecosystem_corpus.py")
-SPEC = importlib.util.spec_from_file_location("run_ecosystem_corpus", MODULE_PATH)
+MODULE_PATH = Path(__file__).with_name("run_ecosystem_projects.py")
+SPEC = importlib.util.spec_from_file_location("run_ecosystem_projects", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
-CORPUS = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(CORPUS)
+PROJECTS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(PROJECTS)
 
 
-class EcosystemCorpusManifestTest(unittest.TestCase):
+class EcosystemProjectsManifestTest(unittest.TestCase):
     def test_repository_manifest_is_valid(self) -> None:
-        projects = CORPUS.load_manifest(Path("corpus/ecosystem.json"))
+        projects = PROJECTS.load_manifest(Path("projects/ecosystem.json"))
         self.assertEqual(
             ["cats", "cats-effect", "zio", "shapeless-3", "tapir", "fs2"],
             [project["name"] for project in projects],
@@ -41,7 +41,7 @@ class EcosystemCorpusManifestTest(unittest.TestCase):
             path = Path(directory) / "manifest.json"
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "full-length Git commit SHA"):
-                CORPUS.load_manifest(path)
+                PROJECTS.load_manifest(path)
 
 
 if __name__ == "__main__":

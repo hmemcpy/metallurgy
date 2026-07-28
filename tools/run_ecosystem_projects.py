@@ -26,9 +26,9 @@ REQUIRED_PROJECT_FIELDS = {
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", type=Path, default=Path("corpus/ecosystem.json"))
+    parser.add_argument("--manifest", type=Path, default=Path("projects/ecosystem.json"))
     parser.add_argument("--project", action="append", default=[])
-    parser.add_argument("--report", type=Path, default=Path("target/ecosystem-corpus-report.json"))
+    parser.add_argument("--report", type=Path, default=Path("target/ecosystem-projects-report.json"))
     parser.add_argument("--keep-workspace", action="store_true")
     return parser.parse_args()
 
@@ -94,15 +94,15 @@ def main() -> int:
         known = {project["name"] for project in projects}
         unknown = requested - known
         if unknown:
-            raise SystemExit(f"unknown corpus project(s): {', '.join(sorted(unknown))}")
+            raise SystemExit(f"unknown project(s): {', '.join(sorted(unknown))}")
         projects = [project for project in projects if project["name"] in requested]
 
     timeout = required_executable("gtimeout")
     git = required_executable("git")
     sbt = os.environ.get("SBT", required_executable("sbt"))
-    java_home = os.environ.get("CORPUS_JAVA_HOME") or os.environ.get("JAVA_HOME")
+    java_home = os.environ.get("ECOSYSTEM_JAVA_HOME") or os.environ.get("JAVA_HOME")
     if not java_home:
-        raise SystemExit("set CORPUS_JAVA_HOME or JAVA_HOME")
+        raise SystemExit("set ECOSYSTEM_JAVA_HOME or JAVA_HOME")
 
     workspace = Path(tempfile.mkdtemp(prefix="metallurgy-ecosystem-"))
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -102,7 +102,10 @@ object DotcPsiProducer:
         case "Tuple"            =>
           // a tuple type (A, B): TUPLE_TYPE whose elements are themselves types, so each is navigatable.
           val wrapper = builder.mark()
+          children.headOption.flatMap(_.range).foreach(child => advanceTo(child.startOffset, builder))
+          val types   = builder.mark()
           children.foreach(emitTypeElement(_, ctx))
+          types.done(ScalaElementType.TYPES)
           advanceTo(range.endOffset, builder)
           wrapper.done(ScalaElementType.TUPLE_TYPE)
         case _                  =>

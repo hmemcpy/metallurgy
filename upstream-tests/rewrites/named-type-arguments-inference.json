@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "parser": "copied-intellij-host-parser.v1",
+  "package": {
+    "from": "org.jetbrains.plugins.scala.lang.typeInference",
+    "to": "com.hmemcpy.metallurgy.generated.intellijscala.typeInference"
+  },
+  "importAnchor": "import org.jetbrains.plugins.scala.ScalaVersion",
+  "adapterImport": "import com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixture",
+  "owner": {
+    "from": "Scala3NamedTypeArgumentsInferenceTest",
+    "to": "NamedTypeArgumentsInferenceTest",
+    "baseFrom": "TypeInferenceTestBase",
+    "baseTo": "Scala3TypeInferenceFixture"
+  }
+}

@@ -1,0 +1,4 @@
+com.hmemcpy.metallurgy.compilerbackend.BundledCompilerBackendConsumerTest
+com.hmemcpy.metallurgy.psiproducer.DialectCompletionTest
+com.hmemcpy.metallurgy.psiproducer.DialectDaemonTest
+com.hmemcpy.metallurgy.psiproducer.DialectFindUsagesTest

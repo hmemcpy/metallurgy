@@ -38,7 +38,7 @@ plugin can't. For example, named type arguments (`[A = Int]`):
 | ✅ | Project loading | IntelliJ's native sbt and BSP loaders remain intact and feed the same loader-neutral compiler-backend pipeline. |
 | ✅ | Worksheets | Physical Scala worksheets use the normal versioned compiler backend while the bundled plugin retains execution and result transport. |
 | ✅ | Applications and tests | Scala 3 `main`, `@main`, ScalaTest, MUnit, Specs2, and uTest discovery/configuration continue through bundled run infrastructure. |
-| ✅ | Ecosystem corpus | Pinned Cats, Cats Effect, ZIO, Shapeless 3, Tapir, and FS2 revisions compile cleanly; representative compiler-to-PSI semantic facts pass. |
+| ✅ | Ecosystem projects | Pinned Cats, Cats Effect, ZIO, Shapeless 3, Tapir, and FS2 revisions compile cleanly; representative compiler-to-PSI semantic facts pass. |
 | ⚠️ | Debugger fragments | Synthetic debugger expressions deliberately use the bundled evaluator because they do not have a safe source-document generation key. |
 | ⚠️ | Interactive REPL console | Physical worksheet semantics are compiler-backed; synthetic console input remains an explicit bundled fallback. |
 | ⚠️ | Platform UAST discovery | Direct Scala UAST conversion inherits compiler results, but the bundled UAST language plugin is unavailable while the compiler-highlighting failsafe is active. |
