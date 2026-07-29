@@ -839,7 +839,7 @@ private[metallurgy] final case class ChildDeclaration(
 )
 private[metallurgy] enum TerminalIntervalSelector:
   case FieldBounds(startField: String, endField: String)
-  case WholeProduction
+  case WholeProduction, WholeSource
 private[metallurgy] enum TerminalLeafTarget:
   case Token(surfaceId: String)
   case Trivia, Delimiter, Separator, Parent
@@ -1371,8 +1371,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         else if children > 0 then errors += CatalogValidationError.ChildDeclarationForNonChildField(p.id, name)
         if disposition.size == 1 && disposition.head.kind == FieldDispositionKind.TerminalOrLayout then
           val declared = p.terminals.exists(_.selector match
-            case TerminalIntervalSelector.WholeProduction   => true
-            case TerminalIntervalSelector.FieldBounds(a, b) => a == name || b == name
+            case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource => true
+            case TerminalIntervalSelector.FieldBounds(a, b)                                      => a == name || b == name
           )
           if !declared then errors += CatalogValidationError.MissingTerminalDeclaration(p.id, name)
       p.terminals.foreach(_.selector match
@@ -1888,18 +1888,30 @@ private[metallurgy] object WholeFileProductionPlanner:
           )
       if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
 
-      val candidates        = collection.mutable.Map.empty[Long, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
-      val resolvedTerminals = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
+      val candidates                                                                            = collection.mutable.Map.empty[Long, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
+      val resolvedTerminals                                                                     = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
       active.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
           terminal.selector match
-            case TerminalIntervalSelector.WholeProduction =>
+            case TerminalIntervalSelector.WholeSource if instance != root                        =>
+              break(
+                Left(
+                  WholeFilePlanningFailure.UnsupportedTerminalSelector(
+                    production.id,
+                    terminal.id,
+                    terminal.selector
+                  )
+                )
+              )
+            case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource =>
               val intervals = position(instance) match
+                case _ if terminal.selector == TerminalIntervalSelector.WholeSource =>
+                  Vector(PcSourceRange(0, snapshot.sourceLength))
                 case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                     if range.startOffset < range.endOffset =>
                   Vector(range)
-                case _ => Vector.empty
+                case _                                                              => Vector.empty
               if !accepts(terminal.cardinality, intervals.size) then
                 break(
                   Left(
@@ -1915,7 +1927,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                 resolvedTerminals += instance -> terminal.id
                 evidence.atoms
                   .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
-                  .filter(atom => atom.claims.exists(claims(instance, _)))
+                  .filter(atom =>
+                    terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _))
+                  )
                   .foreach: atom =>
                     val leaf = PlannedPhysicalLeaf(
                       atom.id,
@@ -1926,22 +1940,28 @@ private[metallurgy] object WholeFileProductionPlanner:
                       terminal.target
                     )
                     candidates.update(atom.id, candidates(atom.id) :+ leaf)
-            case other                                    =>
+            case other                                                                           =>
               break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
-      val leaves            = evidence.atoms.map: atom =>
-        candidates(atom.id) match
+      def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
+        Iterator
+          .iterate(Vector(descendant))(_.flatMap(incoming.getOrElse(_, Vector.empty)))
+          .takeWhile(_.nonEmpty)
+          .flatten
+          .contains(ancestor)
+      val leaves                                                                                = evidence.atoms.map: atom =>
+        val eligible = candidates(atom.id).filterNot(candidate =>
+          candidate.target == TerminalLeafTarget.Parent && active.exists(descendant =>
+            descendant != candidate.owner && isAncestor(candidate.owner, descendant) &&
+              atom.claims.exists(claims(descendant, _))
+          )
+        )
+        eligible match
           case Vector(leaf) => leaf
           case Vector()     =>
             break(Left(WholeFilePlanningFailure.UnownedSourceAtom(atom.id, atom.start, atom.end)))
           case conflicts    =>
-            def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
-              Iterator
-                .iterate(Vector(descendant))(_.flatMap(incoming.getOrElse(_, Vector.empty)))
-                .takeWhile(_.nonEmpty)
-                .flatten
-                .contains(ancestor)
-            val byOwner                                                                               = conflicts.groupBy(_.owner)
-            val winner                                                                                =
+            val byOwner = conflicts.groupBy(_.owner)
+            val winner  =
               if byOwner.values.exists(_.size != 1) then None
               else
                 conflicts.filter(candidate =>
@@ -1964,7 +1984,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             )
-      val targets           = active.toVector.flatMap: instance =>
+      val targets                                                                               = active.toVector.flatMap: instance =>
         val production  = selected(instance)
         val requirement = production.targetRequirement match
           case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
@@ -1981,17 +2001,17 @@ private[metallurgy] object WholeFileProductionPlanner:
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
         composite +: terminals
-      val accessors         = active.toVector.flatMap(instance =>
+      val accessors                                                                             = active.toVector.flatMap(instance =>
         selected(instance).accessors.map(obligation =>
           PlannedAccessorAssertion(instance, obligation.surfaceId, obligation.required)
         )
       )
-      val stubs             = active.toVector.flatMap: instance =>
+      val stubs                                                                                 = active.toVector.flatMap: instance =>
         selected(instance).persistence match
           case PersistenceObligations.NotApplicable                                   => Vector.empty
           case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
             Vector(PlannedStubAssertion(instance, stub, serializer, indices, navigation))
-      val navigation        = active.toVector.flatMap: instance =>
+      val navigation                                                                            = active.toVector.flatMap: instance =>
         selected(instance).navigation.map(PlannedNavigationAssertion(instance, _))
       Right(
         WholeFileProductionPlan(

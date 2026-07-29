@@ -1001,6 +1001,84 @@ final class Scala3PsiProductionCatalogTest:
         .productionId
     )
 
+    val trailingSource   = "x\n"
+    val trailingValue    = value.copy(
+      sourceText = trailingSource,
+      sourceDigest = ParserSyntaxSnapshot.digest(trailingSource),
+      sourceLength = trailingSource.length
+    )
+    val trailingCompiler = inventory(trailingValue)
+    val wholeSource      = parentFallback.copy(productions =
+      parentFallback.productions.map(production =>
+        if production.id == root.id then
+          production.copy(terminals = production.terminals.map(_.copy(selector = TerminalIntervalSelector.WholeSource)))
+        else production
+      )
+    )
+    val trailingPlan     = planned(
+      trailingValue,
+      ProvisionalSourceEvidencePlanner.plan(trailingValue).toOption.get,
+      wholeSource,
+      this.aggregate(Vector(trailingCompiler)),
+      surfaces(wholeSource)
+    ).fold(error => throw new AssertionError(error.toString), identity)
+    val trailingLeaf     = trailingPlan.physicalLeafOwnership.last
+    assertEquals("\n", trailingSource.substring(trailingLeaf.start, trailingLeaf.end))
+    assertEquals(root.id, trailingPlan.composites.find(_.instance == trailingLeaf.owner).get.productionId)
+
+    val missingChildTerminal = wholeSource.copy(productions =
+      wholeSource.productions.map(production =>
+        if production.id == child.id then production.copy(terminals = Vector.empty) else production
+      )
+    )
+    assertEquals(
+      WholeFilePlanningFailure.UnownedSourceAtom(0, 0, 1),
+      planned(
+        trailingValue,
+        ProvisionalSourceEvidencePlanner.plan(trailingValue).toOption.get,
+        missingChildTerminal,
+        this.aggregate(Vector(trailingCompiler)),
+        surfaces(missingChildTerminal)
+      ).left.toOption.get
+    )
+
+    val emptySource   = ""
+    val emptyPosition = ParserNodePosition.Positioned(
+      PcSourceRange(0, 0),
+      0,
+      ParserPositionProvenance.SourceDerived
+    )
+    val emptyValue    = value.copy(
+      sourceText = emptySource,
+      sourceDigest = ParserSyntaxSnapshot.digest(emptySource),
+      sourceLength = 0,
+      nodes = Vector(value.nodes.head.copy(fields = Vector.empty, position = emptyPosition))
+    )
+    val emptyCompiler = inventory(emptyValue)
+    val emptyBase     = completeCatalog(emptyCompiler)
+    val emptyCatalog  = emptyBase.copy(productions =
+      emptyBase.productions.map(production =>
+        production.copy(terminals =
+          Vector(
+            TerminalDeclaration(
+              "whole-source",
+              TerminalIntervalSelector.WholeSource,
+              TerminalLeafTarget.Parent,
+              OccurrenceCardinality.ExactlyOne
+            )
+          )
+        )
+      )
+    )
+    val emptyPlan     = planned(
+      emptyValue,
+      ProvisionalSourceEvidencePlanner.plan(emptyValue).toOption.get,
+      emptyCatalog,
+      this.aggregate(Vector(emptyCompiler)),
+      surfaces(emptyCatalog)
+    ).fold(error => throw new AssertionError(error.toString), identity)
+    assertTrue(emptyPlan.physicalLeafOwnership.isEmpty)
+
     val conflict = base.copy(productions =
       base.productions.map(p =>
         if p.id == child.id then p.copy(terminals = p.terminals :+ p.terminals.head.copy(id = "duplicate")) else p
