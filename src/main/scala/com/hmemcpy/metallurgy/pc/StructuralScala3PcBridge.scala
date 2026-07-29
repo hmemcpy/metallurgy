@@ -4,6 +4,7 @@ import com.intellij.openapi.progress.{ProcessCanceledException, ProgressManager}
 import com.intellij.openapi.util.TextRange
 
 import java.io.File
+import java.lang.reflect.InvocationTargetException
 import java.net.URI
 import java.util
 import java.util.concurrent.atomic.AtomicReference
@@ -293,10 +294,16 @@ private final class StructuralScala3PcBridge(
   private def run(snapshot: PcSnapshot): Unit =
     ProgressManager.checkCanceled()
     typedDocument.get().filterNot(_.fileUri == snapshot.fileUri).foreach(closeDocument)
-    withCompilerClassloader:
-      driverClass
-        .getMethod("run", classOf[URI], classOf[String])
-        .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.compilerText)
+    try
+      withCompilerClassloader:
+        driverClass
+          .getMethod("run", classOf[URI], classOf[String])
+          .invoke(driver, PcSourceUri.normalize(snapshot.fileUri), snapshot.compilerText)
+    catch
+      case error: InvocationTargetException =>
+        error.getCause match
+          case canceled: ProcessCanceledException => throw canceled
+          case _                                  => throw error
     ProgressManager.checkCanceled()
     typedDocument.set(Some(TypedDocument(snapshot.fileUri, snapshot.documentVersion)))
 

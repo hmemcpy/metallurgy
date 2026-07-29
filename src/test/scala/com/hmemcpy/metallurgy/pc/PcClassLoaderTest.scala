@@ -1,10 +1,14 @@
 package com.hmemcpy.metallurgy.pc
 
+import com.intellij.openapi.progress.ProcessCanceledException
 import org.junit.Assert.{assertEquals, assertFalse, assertNotSame, assertSame, assertThrows, assertTrue}
 import org.junit.Test
 import scala.meta.pc.PresentationCompiler
 
+import java.net.URI
 import java.nio.file.Path
+import java.util.concurrent.{CancellationException, CompletableFuture}
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.jdk.CollectionConverters.*
 
 final class PcClassLoaderTest:
@@ -70,8 +74,38 @@ final class PcClassLoaderTest:
     val prototype = discoverCompiler(loader, "3.7.4")
     try assertSame(loader, prototype.getClass.getClassLoader)
     finally
-      prototype.shutdown()
+      assertTrue(Scala3PcBridge.shutdown(prototype).isRight)
       loader.close()
+
+  @Test
+  def presentationCompilerJobsQuiesceBeforeTheExactLoaderCloses(): Unit =
+    val loader   = compilerLoader("3.7.4")
+    val compiler = newCompiler(loader, "3.7.4")
+    val request  = compiler.semanticdbTextDocument(URI.create("file:///Shutdown.scala"), "object Shutdown")
+    try
+      val executor = Scala3PcBridge.captureExecutor(compiler).toOption.get
+      assertTrue(Scala3PcBridge.shutdown(compiler).isRight)
+      assertTrue(Scala3PcBridge.awaitTermination(executor, java.util.concurrent.TimeUnit.SECONDS.toNanos(30)).isRight)
+      assertTrue(request.isDone)
+    finally loader.close()
+
+  @Test
+  def canceledRetypecheckSettlesItsFutureAndCleansPendingState(): Unit =
+    val result   = new CompletableFuture[RetypecheckOutcome]()
+    val cleaned  = new AtomicBoolean(false)
+    val canceled = new ProcessCanceledException()
+
+    PcSession.settleRetypecheck(result, cleaned.set(true)):
+      throw canceled
+
+    assertTrue(result.isCompletedExceptionally)
+    assertTrue(cleaned.get())
+    val completion = assertThrows(
+      classOf[CancellationException],
+      () =>
+        val _ = result.join()
+    )
+    assertSame(canceled, completion.getCause)
 
   @Test
   def exactCompilerVersionsCanCoexistBehindTheSharedApi(): Unit =
@@ -90,8 +124,8 @@ final class PcClassLoaderTest:
           second.loadClass("dotty.tools.dotc.interactive.InteractiveDriver")
         )
       finally
-        firstCompiler.shutdown()
-        secondCompiler.shutdown()
+        assertTrue(Scala3PcBridge.shutdown(firstCompiler).isRight)
+        assertTrue(Scala3PcBridge.shutdown(secondCompiler).isRight)
     finally
       first.close()
       second.close()
@@ -103,6 +137,7 @@ final class PcClassLoaderTest:
     try
       val capabilities = Scala3PcBridge.discoverCapabilities(loader, artifacts.map(_.toFile))
       assertTrue(capabilities.basePresentationCompiler.isAvailable)
+      assertTrue(capabilities.shutdownBarrier.isAvailable)
       assertTrue(capabilities.completion.isAvailable)
       assertTrue(capabilities.hover.isAvailable)
       assertTrue(capabilities.inlineTypes.isAvailable)
@@ -120,6 +155,7 @@ final class PcClassLoaderTest:
     try
       val capabilities = Scala3PcBridge.discoverCapabilities(loader, Seq.empty)
       assertFalse(capabilities.basePresentationCompiler.isAvailable)
+      assertFalse(capabilities.shutdownBarrier.isAvailable)
       assertFalse(capabilities.completion.isAvailable)
       assertFalse(capabilities.hover.isAvailable)
       assertFalse(capabilities.inlineTypes.isAvailable)
@@ -152,7 +188,7 @@ final class PcClassLoaderTest:
   private def newCompiler(loader: PcClassLoader, scalaVersion: String): PresentationCompiler =
     val prototype = discoverCompiler(loader, scalaVersion)
     try prototype.newInstance(s"test-$scalaVersion", Seq.empty[Path].asJava, Seq.empty[String].asJava)
-    finally prototype.shutdown()
+    finally assertTrue(Scala3PcBridge.shutdown(prototype).isRight)
 
   private def discoverCompiler(loader: PcClassLoader, scalaVersion: String): PresentationCompiler =
     val artifacts = PresentationCompilerResolver.publicCoursier

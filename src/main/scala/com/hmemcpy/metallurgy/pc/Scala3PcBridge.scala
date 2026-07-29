@@ -4,6 +4,8 @@ import com.intellij.openapi.util.TextRange
 import scala.meta.pc.PresentationCompiler
 
 import java.io.File
+import java.util.concurrent.{ThreadPoolExecutor, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
 import scala.util.control.NonFatal
 
 /** Compiler-facing seam for operations that the published Scalameta presentation-compiler interface does not expose
@@ -53,7 +55,7 @@ private[pc] object Scala3PcBridge:
   ): Scala3PcBridgeCapabilities =
     val provider = PresentationCompilerDiscovery.load(classloader, compilerArtifacts)
     try discoverCapabilities(classloader, provider)
-    finally provider.foreach(shutdown)
+    finally provider.foreach(shutdownQuietly)
 
   def discoverCapabilities(
       classloader: ClassLoader,
@@ -76,6 +78,12 @@ private[pc] object Scala3PcBridge:
 
     Scala3PcBridgeCapabilities(
       basePresentationCompiler = basePresentationCompiler,
+      shutdownBarrier = provider.fold(
+        _ => PcCapabilityStatus.Unavailable("the presentation compiler is unavailable"),
+        compiler =>
+          if PresentationCompilerLifecycle.supports(compiler) then PcCapabilityStatus.Available
+          else PcCapabilityStatus.Unavailable("the presentation compiler job queue cannot be awaited")
+      ),
       completion = publicOperation(basePresentationCompiler, publicOperations, "complete"),
       hover = publicOperation(basePresentationCompiler, publicOperations, "hover"),
       semanticdb = publicOperation(basePresentationCompiler, publicOperations, "semanticdbTextDocument") match
@@ -101,6 +109,15 @@ private[pc] object Scala3PcBridge:
       compilerOptions: Seq[String]
   ): Scala3PcBridge =
     new StructuralScala3PcBridge(classloader, compilerClasspath, compilerOptions)
+
+  def captureExecutor(provider: PresentationCompiler): Either[String, ThreadPoolExecutor] =
+    PresentationCompilerLifecycle.captureExecutor(provider)
+
+  def shutdown(provider: PresentationCompiler): Either[String, Unit] =
+    PresentationCompilerLifecycle.shutdown(provider)
+
+  def awaitTermination(executor: ThreadPoolExecutor, timeoutNanos: Long): Either[String, Unit] =
+    PresentationCompilerLifecycle.awaitTermination(executor, timeoutNanos)
 
   private def classShape(
       classloader: ClassLoader,
@@ -137,9 +154,8 @@ private[pc] object Scala3PcBridge:
         if operations(operation) then PcCapabilityStatus.Available
         else PcCapabilityStatus.Unavailable(s"the published presentation compiler does not expose $operation")
 
-  private def shutdown(provider: PresentationCompiler): Unit =
-    try provider.shutdown()
-    catch case NonFatal(_) => ()
+  private def shutdownQuietly(provider: PresentationCompiler): Unit =
+    val _ = Scala3PcBridge.shutdown(provider)
 
   extension (shape: Option[Class[?]])
     private def toStatus(reason: String): PcCapabilityStatus =
@@ -153,6 +169,7 @@ private[metallurgy] enum PcCapabilityStatus:
 
 private[metallurgy] final case class Scala3PcBridgeCapabilities(
     basePresentationCompiler: PcCapabilityStatus,
+    shutdownBarrier: PcCapabilityStatus,
     completion: PcCapabilityStatus,
     hover: PcCapabilityStatus,
     semanticdb: PcCapabilityStatus,
@@ -183,6 +200,7 @@ private[metallurgy] object Scala3PcBridgeCapabilities:
 
   val unavailable: Scala3PcBridgeCapabilities = Scala3PcBridgeCapabilities(
     basePresentationCompiler = PcCapabilityStatus.Unavailable("not discovered"),
+    shutdownBarrier = PcCapabilityStatus.Unavailable("not discovered"),
     completion = PcCapabilityStatus.Unavailable("not discovered"),
     hover = PcCapabilityStatus.Unavailable("not discovered"),
     semanticdb = PcCapabilityStatus.Unavailable("not discovered"),
@@ -198,3 +216,74 @@ private[metallurgy] object Scala3PcBridgeCapabilities:
     bestEffortProduction = PcCapabilityStatus.Available,
     bestEffortConsumption = PcCapabilityStatus.Available
   )
+
+private object PresentationCompilerLifecycle:
+  def supports(compiler: PresentationCompiler): Boolean =
+    queueState(compiler).nonEmpty
+
+  def captureExecutor(compiler: PresentationCompiler): Either[String, ThreadPoolExecutor] =
+    queueState(compiler) match
+      case None        => Left("the presentation compiler job queue cannot be observed")
+      case Some(state) => queueExecutor(state)
+
+  def shutdown(compiler: PresentationCompiler): Either[String, Unit] =
+    try
+      compiler.shutdown()
+      Right(())
+    catch case NonFatal(error) => Left(Option(error.getMessage).getOrElse(error.getClass.getName))
+
+  private def queueState(compiler: PresentationCompiler): Option[AtomicReference[?]] =
+    try
+      compilerAccess(compiler).flatMap: access =>
+        fields(access.getClass)
+          .find(field =>
+            val methods = field.getType.getMethods.iterator.map(_.getName).toSet
+            Set("submit", "reset", "shutdown").subsetOf(methods)
+          )
+          .flatMap: field =>
+            field.setAccessible(true)
+            Option(field.get(access)).flatMap: queue =>
+              fields(queue.getClass)
+                .find(field => classOf[AtomicReference[?]].isAssignableFrom(field.getType))
+                .flatMap: state =>
+                  state.setAccessible(true)
+                  Option(state.get(queue)).collect { case reference: AtomicReference[?] => reference }
+    catch case NonFatal(_) => None
+
+  private def compilerAccess(compiler: PresentationCompiler): Option[AnyRef] =
+    try
+      compiler.getClass.getMethods.iterator
+        .find(method =>
+          method.getParameterCount == 0 &&
+            Set("isLoaded", "shutdownCurrentCompiler").subsetOf(method.getReturnType.getMethods.map(_.getName).toSet)
+        )
+        .flatMap(method => Option(method.invoke(compiler)))
+    catch case NonFatal(_) => None
+
+  private def queueExecutor(state: AtomicReference[?]): Either[String, ThreadPoolExecutor] =
+    try
+      Option(state.get()) match
+        case None          => Left("the presentation compiler job queue has no observable state")
+        case Some(current) =>
+          val methods  = current.getClass.getMethods.iterator.filter(_.getParameterCount == 0).toVector
+          val executor = methods
+            .find(method => classOf[ThreadPoolExecutor].isAssignableFrom(method.getReturnType))
+            .flatMap(method => Option(method.invoke(current)).collect { case value: ThreadPoolExecutor => value })
+          executor.toRight("the presentation compiler job queue executor cannot be observed")
+    catch case NonFatal(error) => Left(Option(error.getMessage).getOrElse(error.getClass.getName))
+
+  def awaitTermination(executor: ThreadPoolExecutor, timeoutNanos: Long): Either[String, Unit] =
+    try
+      if timeoutNanos > 0 && executor.awaitTermination(timeoutNanos, TimeUnit.NANOSECONDS) then Right(())
+      else Left("the presentation compiler job queue did not terminate")
+    catch
+      case _: InterruptedException =>
+        Thread.currentThread.interrupt()
+        Left("interrupted while awaiting the presentation compiler job queue")
+
+  private def fields(origin: Class[?]): Vector[java.lang.reflect.Field] =
+    Iterator
+      .iterate(Option(origin))(_.flatMap(value => Option(value.getSuperclass)))
+      .takeWhile(_.nonEmpty)
+      .flatMap(_.toVector.flatMap(_.getDeclaredFields))
+      .toVector

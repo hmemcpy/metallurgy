@@ -7,13 +7,14 @@ import com.intellij.openapi.progress.{ProcessCanceledException, ProgressManager}
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
+import com.intellij.util.concurrency.AppExecutorUtil
 import org.eclipse.lsp4j.{CompletionItem, CompletionItemKind}
 import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler}
 
 import java.io.File
 import java.net.{URI, URL, URLClassLoader}
-import java.util.concurrent.{CompletableFuture, CompletionStage, ConcurrentHashMap, TimeUnit}
-import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.{CompletableFuture, CompletionStage, ConcurrentHashMap, ThreadPoolExecutor, TimeUnit}
+import java.util.concurrent.locks.{ReentrantLock, ReentrantReadWriteLock}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
@@ -28,19 +29,24 @@ final class PcSession private (
     initialCompilerPrototype: Option[PresentationCompiler]
 ) extends AutoCloseable:
 
-  private val Log                   = Logger.getInstance(classOf[PcSession])
-  private val presentationCompiler  = new AtomicReference[Option[PresentationCompiler]](None)
-  private val compilerPrototype     = new AtomicReference(initialCompilerPrototype)
-  private val inlineTypeDrivers     = new ConcurrentHashMap[String, InlineTypeDriverLease]()
-  private val inlineDriverCreations = new AtomicInteger(0)
-  private val snapshots             = new PcSnapshotStore()
-  private val requestedVersions     = new ConcurrentHashMap[String, java.lang.Long]()
-  private val retypecheckGeneration = new AtomicLong(0L)
-  private val pendingRetypecheck    = new AtomicReference[Option[PendingRetypecheck]](None)
-  private val retypecheckLock       = new ReentrantLock()
-  private val lifetime              = Disposer.newDisposable(s"Metallurgy PC session $scalaVersion")
-  private val retypecheckAlarm      = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, lifetime)
-  private val closed                = new AtomicBoolean(false)
+  private val Log                    = Logger.getInstance(classOf[PcSession])
+  private val presentationCompiler   = new AtomicReference[Option[PresentationCompiler]](None)
+  private val compilerPrototype      = new AtomicReference(initialCompilerPrototype)
+  private val compilerExecutors      = new ConcurrentHashMap[ThreadPoolExecutor, java.lang.Boolean]()
+  private val classloaderCloseable   = new AtomicBoolean(true)
+  private val inlineTypeDrivers      = new ConcurrentHashMap[String, InlineTypeDriverLease]()
+  private val inlineDriverLeases     = new ConcurrentHashMap[InlineTypeDriverLease, java.lang.Boolean]()
+  private val inlineDriverCreations  = new AtomicInteger(0)
+  private val snapshots              = new PcSnapshotStore()
+  private val requestedVersions      = new ConcurrentHashMap[String, java.lang.Long]()
+  private val retypecheckGeneration  = new AtomicLong(0L)
+  private val pendingRetypecheck     = new AtomicReference[Option[PendingRetypecheck]](None)
+  private val retypecheckLock        = new ReentrantLock()
+  private val compilerSubmissionLock = new ReentrantLock()
+  private val compilerRequestLock    = new ReentrantReadWriteLock()
+  private val lifetime               = Disposer.newDisposable(s"Metallurgy PC session $scalaVersion")
+  private val retypecheckAlarm       = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, lifetime)
+  private val closed                 = new AtomicBoolean(false)
 
   /** Ask the isolated Metals presentation compiler for semantic completion items. No Scala or LSP4J value may cross the
     * classloader boundary.
@@ -200,27 +206,33 @@ final class PcSession private (
       snapshot: PcSnapshot,
       driver: Scala3PcBridge
   ): Option[Vector[PcSemanticdbOccurrence]] =
-    if !capabilities.semanticdb.isAvailable then None
-    else
-      ProgressManager.checkCanceled()
-      val future = compiler.semanticdbTextDocument(PcSourceUri.normalize(snapshot.fileUri), snapshot.compilerText)
-      try
-        val bytes = future.get(5, TimeUnit.SECONDS)
+    withPresentationCompiler(None):
+      if !capabilities.semanticdb.isAvailable then None
+      else
         ProgressManager.checkCanceled()
-        Some(
-          driver
-            .semanticdbOccurrences(bytes, snapshot.compilerText)
-            .flatMap: occurrence =>
-              snapshot.projection
-                .toDocumentRange(occurrence.range.startOffset, occurrence.range.endOffset)
-                .map(documentRange => occurrence.copy(range = documentRange))
-        )
-      catch
-        case canceled: ProcessCanceledException => throw canceled
-        case NonFatal(error) =>
-          val _ = future.cancel(true)
-          Log.warn(s"PC SemanticDB extraction failed for ${snapshot.fileUri}", error)
-          None
+        val activeCompiler = compiler
+        val future         = submitCompilerRequest(activeCompiler):
+          activeCompiler.semanticdbTextDocument(
+            PcSourceUri.normalize(snapshot.fileUri),
+            snapshot.compilerText
+          )
+        try
+          val bytes = future.get(5, TimeUnit.SECONDS)
+          ProgressManager.checkCanceled()
+          Some(
+            driver
+              .semanticdbOccurrences(bytes, snapshot.compilerText)
+              .flatMap: occurrence =>
+                snapshot.projection
+                  .toDocumentRange(occurrence.range.startOffset, occurrence.range.endOffset)
+                  .map(documentRange => occurrence.copy(range = documentRange))
+          )
+        catch
+          case canceled: ProcessCanceledException => throw canceled
+          case NonFatal(error) =>
+            val _ = future.cancel(true)
+            Log.warn(s"PC SemanticDB extraction failed for ${snapshot.fileUri}", error)
+            None
 
   private def mergeReferenceOccurrences(
       snapshot: PcTypedTreeSnapshot,
@@ -298,43 +310,69 @@ final class PcSession private (
       retypecheckGeneration.incrementAndGet()
       pendingRetypecheck.getAndSet(None).foreach(_.supersede(retypecheckAlarm))
       Disposer.dispose(lifetime)
-      retypecheckLock.lock()
+      if applicationIsDispatchThread then AppExecutorUtil.getAppExecutorService.execute(() => drainAndClose())
+      else drainAndClose()
+
+  private def drainAndClose(): Unit =
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(PcSession.ShutdownTimeoutSeconds)
+    if !tryLock(compilerRequestLock.writeLock(), deadline) then
+      Log.warn("PcSession retains its classloader because active presentation-compiler requests did not quiesce")
+    else
       try
-        inlineTypeDrivers.values().asScala.foreach(_.retire())
-        inlineTypeDrivers.clear()
-        compilerPrototype.getAndSet(None).foreach(shutdown)
-        presentationCompiler.getAndSet(None).foreach(shutdown)
-        snapshots.clear()
-        requestedVersions.clear()
-        try classloader.close()
-        catch case NonFatal(error) => Log.warn("Error closing PcSession classloader", error)
-      finally retypecheckLock.unlock()
+        if !tryLock(retypecheckLock, deadline) then
+          Log.warn("PcSession retains its classloader because an active retypecheck did not quiesce")
+        else
+          try
+            val drivers         = inlineDriverLeases.keys().asScala.toVector
+            drivers.foreach(_.retire())
+            val driversClosed   = drivers.forall(_.awaitRetirement(deadline))
+            inlineTypeDrivers.clear()
+            if driversClosed then inlineDriverLeases.clear()
+            val prototypeClosed = compilerPrototype.getAndSet(None).forall(shutdown)
+            val compilerClosed  = presentationCompiler.getAndSet(None).forall(shutdown)
+            val executorsClosed = compilerExecutors
+              .keys()
+              .asScala
+              .forall(executor => Scala3PcBridge.awaitTermination(executor, remaining(deadline)).isRight)
+            snapshots.clear()
+            requestedVersions.clear()
+            if driversClosed && prototypeClosed && compilerClosed && executorsClosed && classloaderCloseable.get() then
+              try classloader.close()
+              catch case NonFatal(error) => Log.warn("Error closing PcSession classloader", error)
+            else Log.warn("PcSession retains its classloader because compiler shutdown did not quiesce")
+          finally retypecheckLock.unlock()
+      finally compilerRequestLock.writeLock().unlock()
 
   private[pc] def isClosed: Boolean = closed.get()
 
   private[pc] def inlineDriverCreationCount: Int = inlineDriverCreations.get()
 
   private def queryCompletion(snapshot: PcSnapshot, offset: Int): Option[Seq[PcCompletion]] =
-    ProgressManager.checkCanceled()
-    val future = compiler.complete(PcOffsetParams(PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText, offset))
-    try
-      val completionList = future.get(5, TimeUnit.SECONDS)
+    withPresentationCompiler(None):
       ProgressManager.checkCanceled()
-      val items          = completionList.getItems.asScala.flatMap(decodeItem).toSeq
-      val refinements    = structuralCompletions(snapshot, offset)
-      val declarations   =
-        cachedTypedTreeSnapshot(snapshot).toSeq.flatMap(_.entries).flatMap(_.symbol).filter(_.isDeferred)
-      val canonical      = (items ++ refinements).map: item =>
-        val matches = declarations
-          .filter(symbol => refinements.exists(_.lookupName == item.lookupName) && symbol.name == item.lookupName)
-          .distinctBy(_.id)
-        if matches.size == 1 then item.copy(symbol = Some(matches.head.id)) else item
-      Some(canonical.distinctBy(_.lookupName))
-    catch
-      case NonFatal(error) =>
-        val _ = future.cancel(true)
-        Log.warn(s"PC completion failed for ${snapshot.fileUri} at $offset", error)
-        None
+      val activeCompiler = compiler
+      val future         = submitCompilerRequest(activeCompiler):
+        activeCompiler.complete(
+          PcOffsetParams(PcSourceUri.normalize(snapshot.fileUri), snapshot.sourceText, offset)
+        )
+      try
+        val completionList = future.get(5, TimeUnit.SECONDS)
+        ProgressManager.checkCanceled()
+        val items          = completionList.getItems.asScala.flatMap(decodeItem).toSeq
+        val refinements    = structuralCompletions(snapshot, offset)
+        val declarations   =
+          cachedTypedTreeSnapshot(snapshot).toSeq.flatMap(_.entries).flatMap(_.symbol).filter(_.isDeferred)
+        val canonical      = (items ++ refinements).map: item =>
+          val matches = declarations
+            .filter(symbol => refinements.exists(_.lookupName == item.lookupName) && symbol.name == item.lookupName)
+            .distinctBy(_.id)
+          if matches.size == 1 then item.copy(symbol = Some(matches.head.id)) else item
+        Some(canonical.distinctBy(_.lookupName))
+      catch
+        case NonFatal(error) =>
+          val _ = future.cancel(true)
+          Log.warn(s"PC completion failed for ${snapshot.fileUri} at $offset", error)
+          None
 
   private def cachedTypedTreeSnapshot(snapshot: PcSnapshot): Option[PcTypedTreeSnapshot] =
     snapshots
@@ -356,11 +394,15 @@ final class PcSession private (
       generation: Long,
       result: CompletableFuture[RetypecheckOutcome]
   ): Unit =
-    val outcome =
-      if generation != retypecheckGeneration.get() || closed.get() then RetypecheckOutcome.Superseded
-      else compileAndPublish(snapshot, generation)
-    completeRetypecheck(result, outcome)
-    val _       = pendingRetypecheck.updateAndGet(_.filterNot(_.result eq result))
+    PcSession.settleRetypecheck(
+      result, {
+        val _ = pendingRetypecheck.updateAndGet(_.filterNot(_.result eq result))
+      }
+    ):
+      val outcome =
+        if generation != retypecheckGeneration.get() || closed.get() then RetypecheckOutcome.Superseded
+        else compileAndPublish(snapshot, generation)
+      completeRetypecheck(result, outcome)
 
   private def compileAndPublish(snapshot: PcSnapshot, generation: Long): RetypecheckOutcome =
     try
@@ -379,8 +421,9 @@ final class PcSession private (
               throw error
       finally retypecheckLock.unlock()
     catch
-      case _: InterruptedException => RetypecheckOutcome.Superseded
-      case NonFatal(error)         =>
+      case canceled: ProcessCanceledException => throw canceled
+      case _: InterruptedException            => RetypecheckOutcome.Superseded
+      case NonFatal(error)                    =>
         Log.warn(s"PC retypecheck failed for ${snapshot.fileUri}", error)
         RetypecheckOutcome.Failed(Option(error.getMessage).getOrElse(error.getClass.getSimpleName))
 
@@ -390,7 +433,12 @@ final class PcSession private (
       driver: Scala3PcBridge
   ): RetypecheckOutcome =
     if generation == retypecheckGeneration.get() && !closed.get() then
-      val replacement = new InlineTypeDriverLease(driver)
+      val replacement = new InlineTypeDriverLease(
+        driver,
+        lease =>
+          val _ = inlineDriverLeases.remove(lease)
+      )
+      val _           = inlineDriverLeases.put(replacement, java.lang.Boolean.TRUE)
       Option(inlineTypeDrivers.put(snapshot.fileUri, replacement)).foreach(_.retire())
       val _           = snapshots.accept(snapshot)
       RetypecheckOutcome.Applied
@@ -411,7 +459,7 @@ final class PcSession private (
       val created = createCompiler()
       if presentationCompiler.compareAndSet(observed, Some(created)) then created
       else
-        shutdown(created)
+        val _ = shutdown(created)
         presentationCompiler
           .get()
           .getOrElse:
@@ -431,7 +479,8 @@ final class PcSession private (
         compilerClasspath.map(_.toPath).asJava,
         compilerOptions.asJava
       )
-    finally shutdown(prototype)
+    finally
+      val _ = shutdown(prototype)
 
   private def decodeItem(item: CompletionItem): Option[PcCompletion] =
     Option(item.getLabel).map: label =>
@@ -465,9 +514,43 @@ final class PcSession private (
   private def applicationIsDispatchThread: Boolean =
     Option(ApplicationManager.getApplication).exists(_.isDispatchThread)
 
-  private def shutdown(compiler: PresentationCompiler): Unit =
-    try compiler.shutdown()
-    catch case NonFatal(error) => Log.warn("Error shutting down presentation compiler", error)
+  private def withPresentationCompiler[A](closedResult: => A)(request: => A): A =
+    if closed.get() || !compilerRequestLock.readLock().tryLock() then closedResult
+    else
+      try if closed.get() then closedResult else request
+      finally compilerRequestLock.readLock().unlock()
+
+  private def captureExecutor(compiler: PresentationCompiler): Unit =
+    Scala3PcBridge.captureExecutor(compiler) match
+      case Right(executor) => val _ = compilerExecutors.put(executor, java.lang.Boolean.TRUE)
+      case Left(reason)    =>
+        classloaderCloseable.set(false)
+        Log.warn(s"Presentation-compiler executor cannot be tracked: $reason")
+
+  private def submitCompilerRequest[A](compiler: PresentationCompiler)(request: => A): A =
+    compilerSubmissionLock.lock()
+    try
+      val result = request
+      captureExecutor(compiler)
+      result
+    finally compilerSubmissionLock.unlock()
+
+  private def shutdown(compiler: PresentationCompiler): Boolean =
+    Scala3PcBridge.shutdown(compiler) match
+      case Right(_)     => true
+      case Left(reason) =>
+        Log.warn(s"Error shutting down presentation compiler: $reason")
+        false
+
+  private def tryLock(lock: java.util.concurrent.locks.Lock, deadline: Long): Boolean =
+    try lock.tryLock(remaining(deadline), TimeUnit.NANOSECONDS)
+    catch
+      case _: InterruptedException =>
+        Thread.currentThread.interrupt()
+        false
+
+  private def remaining(deadline: Long): Long =
+    math.max(0L, deadline - System.nanoTime())
 
   private def shutdownInlineDriver(driver: Scala3PcBridge): Unit =
     try driver.close()
@@ -510,9 +593,14 @@ private final case class PendingRetypecheck(
     val _ = result.complete(RetypecheckOutcome.Superseded)
 
 /** Keeps an atomically published typed driver alive until its last concurrent reader completes. */
-private final class InlineTypeDriverLease(driver: Scala3PcBridge):
+private final class InlineTypeDriverLease(
+    driver: Scala3PcBridge,
+    onClosed: InlineTypeDriverLease => Unit = _ => ()
+):
   private val readers = new AtomicInteger(0)
   private val retired = new AtomicBoolean(false)
+  private val closing = new AtomicBoolean(false)
+  private val closed  = new CompletableFuture[Unit]()
 
   def use[A](query: Scala3PcBridge => A): Option[A] =
     if !acquire() then None
@@ -521,7 +609,17 @@ private final class InlineTypeDriverLease(driver: Scala3PcBridge):
       finally release()
 
   def retire(): Unit =
-    if retired.compareAndSet(false, true) && readers.get() == 0 then driver.close()
+    if retired.compareAndSet(false, true) && readers.get() == 0 then closeDriver()
+
+  def awaitRetirement(deadline: Long): Boolean =
+    try
+      val _ = closed.get(math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)
+      true
+    catch
+      case _: InterruptedException =>
+        Thread.currentThread.interrupt()
+        false
+      case NonFatal(_)             => false
 
   private def acquire(): Boolean =
     readers.incrementAndGet()
@@ -531,7 +629,22 @@ private final class InlineTypeDriverLease(driver: Scala3PcBridge):
     else true
 
   private def release(): Unit =
-    if readers.decrementAndGet() == 0 && retired.get() then driver.close()
+    if readers.decrementAndGet() == 0 then if retired.get() then closeDriver()
+
+  private def closeDriver(): Unit =
+    if retired.get() && closing.compareAndSet(false, true) then
+      try
+        AppExecutorUtil.getAppExecutorService.execute: () =>
+          try
+            driver.close()
+            val _ = closed.complete(())
+            onClosed(this)
+          catch
+            case NonFatal(error) =>
+              val _ = closed.completeExceptionally(error)
+      catch
+        case NonFatal(error) =>
+          val _ = closed.completeExceptionally(error)
 
 /** Loads the exact compiler distribution while exposing only the published Java presentation-compiler boundary from the
   * plugin classloader. Scala and compiler implementation classes always remain local to this loader.
@@ -559,6 +672,17 @@ private object PcClassLoader:
 
 object PcSession:
   private val RetypecheckDebounceMillis = 300L
+  private val ShutdownTimeoutSeconds    = 15L
+
+  private[pc] def settleRetypecheck(
+      result: CompletableFuture[RetypecheckOutcome],
+      cleanup: => Unit
+  )(operation: => Unit): Unit =
+    try operation
+    catch
+      case canceled: ProcessCanceledException =>
+        val _ = result.completeExceptionally(canceled)
+    finally cleanup
 
   def create(
       scalaVersion: String,
