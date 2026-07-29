@@ -862,6 +862,20 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
 
+  @Test def coverageReportRendersCapabilityProbedCompatibleTargets(): Unit =
+    val runtime = inventory(snapshot("/report", 1, Vector.empty))
+    val base    = completeCatalog(runtime)
+    val target  = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
+    val catalog = base.copy(productions =
+      base.productions.head.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible) +:
+        base.productions.tail
+    )
+    val report  = Scala3PsiProductionCoverageReport.markdown(catalog, aggregate(Vector(runtime)), surfaces(base))
+    assertTrue(
+      report,
+      report.contains(s"`Element:$target` — **Available:catalog-referenced:${catalog.productions.head.id}**")
+    )
+
   @Test def wholeFilePlanningCompilesAClosedTypedPlanDeterministically(): Unit =
     val value     = snapshot("/one", 1, Vector.empty)
     val compiler  = inventory(value)

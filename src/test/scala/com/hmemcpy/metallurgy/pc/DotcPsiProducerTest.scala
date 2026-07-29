@@ -1,14 +1,7 @@
 package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.build.ScalacFlagsService
-import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
-import com.hmemcpy.metallurgy.psiproducer.{
-  DotcTreeSource,
-  Scala3DotcLanguage,
-  Scala3DotcParserDefinition,
-  Scala3PsiProductionCatalog,
-  TargetRequirement
-}
+import com.hmemcpy.metallurgy.psiproducer.{DotcTreeSource, Scala3DotcLanguage, Scala3DotcParserDefinition}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.roots.OrderEnumerator
@@ -56,32 +49,6 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   private val StartMarker = "/*start*/"
   private val EndMarker   = "/*end*/"
-
-  def testNativeIntegerLiteralCapabilityPromotesReviewedCandidate(): Unit =
-    val observation = ScalaPluginSemanticBridge
-      .probeNativeIntegerLiteral(getProject)
-      .fold(message => throw new AssertionError(message), identity)
-    assertEquals("0", observation.text)
-    assertEquals("0", observation.contentText)
-    assertEquals("java.lang.Integer", observation.valueClass)
-    assertEquals("IntegerLiteral", observation.elementType)
-    assertTrue(observation.isScalaIntegerLiteralElementType)
-    assertEquals(
-      TargetRequirement.NativeCandidate,
-      Scala3PsiProductionCatalog.Reviewed.productions
-        .find(_.id == "integer-literal-number")
-        .get
-        .targetRequirement
-    )
-    assertTrue(Scala3PsiProductionCatalog.withNativeIntegerLiteral(observation.copy(text = "1")).isLeft)
-    val catalog     = Scala3PsiProductionCatalog
-      .withNativeIntegerLiteral(observation)
-      .fold(failure => throw new AssertionError(failure.toString), identity)
-    assertTrue(
-      catalog.productions
-        .find(_.id == "integer-literal-number")
-        .exists(_.targetRequirement == TargetRequirement.Native)
-    )
 
   def testMethodInvocationWithPartiallyNamedTypeArguments_InferSecondParam(): Unit =
     withDotcProducedFile(

@@ -642,6 +642,24 @@ private[metallurgy] final case class ScalaPsiSurfaceInventory(
   lazy val fingerprint: String    = CanonicalByteEncoder.sha256Hex(encoded)
   def canonicalBytes: Array[Byte] = encoded.clone()
 
+  def withCatalogCapabilities(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =
+    val ownedTargets = catalog.productions
+      .filter(_.targetRequirement == TargetRequirement.Compatible)
+      .map(_.targetSurfaceId)
+      .distinct
+      .filterNot(id => rows.exists(_.id == id))
+      .map(id =>
+        ScalaPsiSurfaceRow(
+          id,
+          SurfaceFactKind.Element,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract,
+          Vector("capability-probed compatible PSI target")
+        )
+      )
+    copy(rows = rows ++ ownedTargets)
+
 private[metallurgy] object ScalaPsiSurfaceInventory:
   def installed(): Either[String, ScalaPsiSurfaceInventory] =
     ScalaPluginSemanticBridge.installedPsiSurface().map(from)
@@ -843,7 +861,11 @@ private[metallurgy] enum RecoveryPolicy:
   case DiagnosticBound(diagnostic: ParserDiagnosticSeverity, alternatives: Vector[String])
 private[metallurgy] enum TargetRequirement:
   case Native, NativeCandidate, Compatible
-private[metallurgy] final case class AccessorObligation(surfaceId: String, required: Boolean)
+private[metallurgy] final case class AccessorObligation(
+    surfaceId: String,
+    required: Boolean,
+    surfaceKind: SurfaceFactKind = SurfaceFactKind.PublicAccessor
+)
 private[metallurgy] enum PersistenceObligations:
   case NotApplicable
   case Required(
@@ -852,6 +874,8 @@ private[metallurgy] enum PersistenceObligations:
       indexSurfaceIds: Vector[String],
       navigationSurfaceId: String
   )
+private[metallurgy] enum NavigationObligation:
+  case Self
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
     pattern: CompilerProductionPattern,
@@ -863,13 +887,17 @@ private[metallurgy] final case class Scala3PsiProduction(
     targetSurfaceId: String,
     targetRequirement: TargetRequirement,
     accessors: Vector[AccessorObligation],
-    persistence: PersistenceObligations
+    persistence: PersistenceObligations,
+    navigation: Option[NavigationObligation] = None
 )
 private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
 private[metallurgy] enum CatalogCapabilityFailure:
   case MissingProduction(id: String)
   case InvalidTargetRequirement(id: String, requirement: TargetRequirement)
-  case NativeIntegerLiteralMismatch(observation: NativeIntegerLiteralObservation)
+  case IntegerLiteralTargetsUnavailable(
+      native: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]],
+      compatible: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]]
+  )
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty)
 
@@ -918,14 +946,42 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         recovery = RecoveryPolicy.Reject,
         targetSurfaceId = "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl",
         targetRequirement = TargetRequirement.NativeCandidate,
-        accessors = Vector.empty,
-        persistence = PersistenceObligations.NotApplicable
+        accessors = Vector(
+          AccessorObligation(
+            "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#getValue()Ljava/lang/Object;",
+            required = true,
+            surfaceKind = SurfaceFactKind.Method
+          ),
+          AccessorObligation(
+            "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentText()Ljava/lang/String;",
+            required = true,
+            surfaceKind = SurfaceFactKind.Method
+          ),
+          AccessorObligation(
+            "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentRangeInParent()Lcom/intellij/openapi/util/TextRange;",
+            required = true,
+            surfaceKind = SurfaceFactKind.Method
+          ),
+          AccessorObligation(
+            "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#isSimpleLiteral()Z",
+            required = true,
+            surfaceKind = SurfaceFactKind.Method
+          ),
+          AccessorObligation(
+            "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#literalType()Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;",
+            required = true,
+            surfaceKind = SurfaceFactKind.Method
+          )
+        ),
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self)
       )
     )
   )
 
-  def withNativeIntegerLiteral(
-      observation: NativeIntegerLiteralObservation
+  def withIntegerLiteralTarget(
+      native: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]],
+      compatible: () => Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]]
   ): Either[CatalogCapabilityFailure, Scala3PsiProductionCatalog] =
     val id = "integer-literal-number"
     Reviewed.productions.find(_.id == id) match
@@ -933,24 +989,61 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       case Some(production) if production.targetRequirement != TargetRequirement.NativeCandidate =>
         Left(CatalogCapabilityFailure.InvalidTargetRequirement(id, production.targetRequirement))
       case Some(production)                                                                      =>
-        val expected =
-          observation.implementationSurfaceId == production.targetSurfaceId &&
-            observation.publicSurfaceId ==
+        def expectedBehavior(observation: NativeIntegerLiteralObservation): Boolean =
+          observation.publicSurfaceId ==
             "org/jetbrains/plugins/scala/lang/psi/api/base/literals/ScIntegerLiteral" &&
-            observation.elementType == "IntegerLiteral" && observation.isScalaIntegerLiteralElementType &&
-            observation.text == "0" &&
-            observation.contentText == "0" &&
+            observation.text == observation.contentText &&
             observation.valueClass == "java.lang.Integer" &&
-            observation.valueText == "0" &&
-            observation.contentStart == 0 && observation.contentEnd == 1
-        if !expected then Left(CatalogCapabilityFailure.NativeIntegerLiteralMismatch(observation))
+            observation.contentStart == 0 && observation.contentEnd == observation.text.length
+        val expectedValues                                                          = Vector("0" -> "0", "42" -> "42", "0x2a" -> "42", "1_000" -> "1000")
+        def validBehavior(values: Vector[NativeIntegerLiteralObservation]): Boolean =
+          values.map(value => value.text -> value.valueText) == expectedValues && values.forall(expectedBehavior)
+        def commonBehavior(observation: NativeIntegerLiteralObservation): Boolean   =
+          observation.isSimpleLiteral && observation.literalTypeIdentity &&
+            observation.literalType == observation.valueText && observation.widenedType == "Int" &&
+            observation.visitorDispatched && observation.visitorElementIdentity && observation.navigationIdentity &&
+            observation.validPsi && observation.validContainingFile && observation.validParent &&
+            observation.nodePsiIdentity && observation.projectIdentity && observation.exactTextRange &&
+            observation.directChildCount == 1 && observation.directChildText == observation.text &&
+            observation.integerTokenIdentity && !observation.stubBasedPsi && !observation.stubElementType
+        val nativeValid                                                             = native.exists(values =>
+          validBehavior(values) && values.forall(observation =>
+            observation.implementationSurfaceId == production.targetSurfaceId &&
+              observation.elementType == "IntegerLiteral" && observation.isScalaIntegerLiteralElementType &&
+              !observation.compatibleElementTypeIdentity && commonBehavior(observation)
+          )
+        )
+        if nativeValid then promote(production, TargetRequirement.Native, production.targetSurfaceId)
         else
-          Right(
-            Reviewed.copy(productions = Reviewed.productions.map:
-              case value if value.id == id => value.copy(targetRequirement = TargetRequirement.Native)
-              case value                   => value
+          val compatibleResult = compatible()
+          val compatibleValid  = compatibleResult.exists(values =>
+            validBehavior(values) && values.forall(observation =>
+              observation.implementationSurfaceId ==
+                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral" &&
+                observation.elementType == "METALLURGY_INTEGER_LITERAL" && !observation.isScalaIntegerLiteralElementType &&
+                observation.compatibleElementTypeIdentity && commonBehavior(observation)
             )
           )
+          if compatibleValid then
+            promote(
+              production,
+              TargetRequirement.Compatible,
+              "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
+            )
+          else Left(CatalogCapabilityFailure.IntegerLiteralTargetsUnavailable(native, compatibleResult))
+
+  private def promote(
+      production: Scala3PsiProduction,
+      requirement: TargetRequirement,
+      targetSurfaceId: String
+  ): Either[CatalogCapabilityFailure, Scala3PsiProductionCatalog] =
+    Right(
+      Reviewed.copy(productions = Reviewed.productions.map:
+        case value if value.id == production.id =>
+          value.copy(targetSurfaceId = targetSurfaceId, targetRequirement = requirement)
+        case value                              => value
+      )
+    )
 
 private[metallurgy] object Scala3PsiProductionCoverageReport:
   def markdown(
@@ -958,13 +1051,14 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       compiler: AggregatedCompilerProductionInventory,
       surfaces: ScalaPsiSurfaceInventory
   ): String =
-    val lines      = Vector.newBuilder[String]
-    val validation = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces)
+    val effectiveSurfaces = surfaces.withCatalogCapabilities(catalog)
+    val lines             = Vector.newBuilder[String]
+    val validation        = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, effectiveSurfaces)
     lines += "# Scala 3 PSI production coverage"
     lines += ""
     lines += s"- Compiler: `${compiler.identity.coordinate.organization}:${compiler.identity.coordinate.artifact}:${compiler.identity.coordinate.version}`"
     lines += s"- Compiler inventory: `${compiler.fingerprint}`"
-    lines += s"- Scala PSI inventory: `${surfaces.fingerprint}`"
+    lines += s"- Scala PSI inventory: `${effectiveSurfaces.fingerprint}`"
     lines += s"- Reviewed productions: ${catalog.productions.size}"
     lines += s"- Validation: **${if validation.isEmpty then "complete" else "incomplete"}**"
     validation
@@ -990,7 +1084,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       lines += ""
     lines += "## Scala PSI surfaces"
     lines += ""
-    val references = catalog.productions
+    val references        = catalog.productions
       .flatMap: production =>
         val terminals   = production.terminals.collect:
           case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id
@@ -1004,7 +1098,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       .view
       .mapValues(_.distinct.sorted)
       .toMap
-    surfaces.rows.foreach: row =>
+    effectiveSurfaces.rows.foreach: row =>
       val status = references.get(row.id) match
         case Some(productions) => s"catalog-referenced:${productions.mkString(",")}"
         case None              => s"unmapped:${row.classification}"
@@ -1191,18 +1285,19 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       surfaces: ScalaPsiSurfaceInventory,
       coverage: Vector[CatalogValidationError]
   ): Vector[CatalogValidationError] =
+    val effectiveSurfaces                                                                                             = surfaces.withCatalogCapabilities(catalog)
     val errors                                                                                                        = Vector.newBuilder[CatalogValidationError]
     duplicates(catalog.productions.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateProductionId(id))
     val productionIds                                                                                                 = catalog.productions.map(_.id).toSet
-    duplicates(surfaces.rows.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateSurfaceId(id))
-    surfaces.rows
+    duplicates(effectiveSurfaces.rows.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateSurfaceId(id))
+    effectiveSurfaces.rows
       .filter(_.classification == SurfaceClassification.Unclassified)
       .foreach(r => errors += CatalogValidationError.UnclassifiedSurface(r.id))
-    surfaces.rows
+    effectiveSurfaces.rows
       .filter(_.status != FactStatus.Available)
       .foreach: row =>
         errors += CatalogValidationError.UnresolvedSurface(row.id, row.status)
-    val surfaceMap                                                                                                    = surfaces.rows.groupBy(_.id).collect { case (id, Vector(row)) => id -> row }
+    val surfaceMap                                                                                                    = effectiveSurfaces.rows.groupBy(_.id).collect { case (id, Vector(row)) => id -> row }
     def requireSurface(p: Scala3PsiProduction, id: String, kind: SurfaceFactKind, owner: Option[String] = None): Unit =
       surfaceMap.get(id) match
         case None                                                                 => errors += CatalogValidationError.InvalidSurface(p.id, id, kind)
@@ -1275,7 +1370,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           requireSurface(p, id, SurfaceFactKind.Token)
         case _                                                          => ()
       requireSurface(p, p.targetSurfaceId, SurfaceFactKind.Element)
-      p.accessors.foreach(a => requireSurface(p, a.surfaceId, SurfaceFactKind.PublicAccessor))
+      p.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
       p.persistence match
         case PersistenceObligations.NotApplicable                                   => ()
         case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
@@ -1293,7 +1388,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             Vector(stub, serializer, navigation) ++ indices
         Vector(p.targetSurfaceId) ++ p.accessors.map(_.surfaceId) ++ terminals ++ persistence
       .toSet
-    surfaces.rows
+    effectiveSurfaces.rows
       .filter(r =>
         r.status == FactStatus.Available && r.classification == SurfaceClassification.SyntaxContract && !accounted(r.id)
       )
@@ -1499,6 +1594,10 @@ private[metallurgy] final case class PlannedStubAssertion(
     indexSurfaceIds: Vector[String],
     navigationSurfaceId: String
 )
+private[metallurgy] final case class PlannedNavigationAssertion(
+    owner: ProductionInstanceId,
+    obligation: NavigationObligation
+)
 private[metallurgy] final case class PlannedVirtualLayout(
     owner: ProductionInstanceId,
     anchor: Int,
@@ -1513,7 +1612,8 @@ private[metallurgy] final case class WholeFileProductionPlan(
     composites: Vector[PlannedComposite],
     targetAssertions: Vector[PlannedTargetAssertion],
     accessorAssertions: Vector[PlannedAccessorAssertion],
-    stubAssertions: Vector[PlannedStubAssertion]
+    stubAssertions: Vector[PlannedStubAssertion],
+    navigationAssertions: Vector[PlannedNavigationAssertion]
 )
 
 private[metallurgy] object WholeFileProductionPlanner:
@@ -1839,6 +1939,8 @@ private[metallurgy] object WholeFileProductionPlanner:
           case PersistenceObligations.NotApplicable                                   => Vector.empty
           case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
             Vector(PlannedStubAssertion(instance, stub, serializer, indices, navigation))
+      val navigation        = active.toVector.flatMap: instance =>
+        selected(instance).navigation.map(PlannedNavigationAssertion(instance, _))
       Right(
         WholeFileProductionPlan(
           snapshot.sourceUri,
@@ -1849,7 +1951,8 @@ private[metallurgy] object WholeFileProductionPlanner:
           composites.result(),
           targets,
           accessors,
-          stubs
+          stubs,
+          navigation
         )
       )
 

@@ -33,8 +33,39 @@ object MetallurgyStatus extends IntelliJApi {
       .toVector
       .map(module => s"module.${module.getName}" -> stateFor.invoke(lifecycle, module).toString)
     val language = read(PSI.resolve(fileRef).getLanguage.getDisplayName)
-    (Vector("globallyEnabled" -> globallyEnabled, "language" -> language) ++ moduleStates).toMap
+    val compatibility = if (moduleStates.exists(_._2.startsWith("Ready("))) compatibleIntegerLiteral(project, loader)
+    else Vector.empty
+    (Vector("globallyEnabled" -> globallyEnabled, "language" -> language) ++ compatibility ++ moduleStates).toMap
   }
+
+  private def compatibleIntegerLiteral(project: AnyRef, loader: ClassLoader): Vector[(String, String)] = {
+    val compatibleClass = "org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyIntegerLiteral"
+    val loadedBefore = hasLoadedClass(loader, compatibleClass)
+    val bridgeClass = Class.forName(
+      "com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge$",
+      true,
+      loader
+    )
+    val bridge = bridgeClass.getField("MODULE$").get(null)
+    val compatibleProbe = bridgeClass.getMethods
+      .find(method => method.getName == "probeCompatibleIntegerLiterals" && method.getParameterCount == 1)
+      .getOrElse(error("Compatible integer literal probe is absent"))
+      .invoke(bridge, project)
+    val loadedAfter = hasLoadedClass(loader, compatibleClass)
+    Vector(
+      "compatibleIntegerLiteral.loadedBeforeProbe" -> loadedBefore.toString,
+      "compatibleIntegerLiteral.loadedAfterProbe" -> loadedAfter.toString,
+      "compatibleIntegerLiteral.probe" -> compatibleProbe.toString
+    )
+  }
+
+  private def hasLoadedClass(loader: ClassLoader, name: String): Boolean =
+    loader.getClass.getMethods
+      .find(method => method.getName == "hasLoadedClass" && method.getParameterCount == 1)
+      .getOrElse(error("Plugin classloader does not expose loaded-class state"))
+      .invoke(loader, name)
+      .asInstanceOf[java.lang.Boolean]
+      .booleanValue()
 
   private def invoke(owner: Class[_], receiver: AnyRef, name: String): AnyRef = {
     val method: Method = owner.getMethod(name)

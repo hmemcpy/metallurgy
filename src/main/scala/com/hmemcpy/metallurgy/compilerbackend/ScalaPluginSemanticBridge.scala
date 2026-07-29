@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.intellij.lang.ASTFactory
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.Disposable
@@ -8,11 +9,20 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
-import com.intellij.psi.{PsiElement, PsiNamedElement}
+import com.intellij.psi.{PsiElement, PsiFileFactory, PsiNamedElement, StubBasedPsiElement}
+import com.intellij.psi.impl.source.tree.{CompositeElement, TreeElement}
+import com.intellij.psi.stubs.IStubElementType
+import com.intellij.psi.tree.IElementType
+import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
+import org.jetbrains.plugins.scala.Scala3Language
+import org.jetbrains.plugins.scala.lang.psi.api.ScalaElementVisitor
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiElementFactory
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyIntegerLiteral
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
+import org.jetbrains.plugins.scala.lang.psi.types.ScLiteralType
 import org.jetbrains.plugins.scala.project.ScalaFeatures
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
@@ -61,8 +71,29 @@ private[metallurgy] final case class NativeIntegerLiteralObservation(
     valueClass: String,
     valueText: String,
     contentStart: Int,
-    contentEnd: Int
+    contentEnd: Int,
+    isSimpleLiteral: Boolean,
+    literalTypeIdentity: Boolean,
+    literalType: String,
+    widenedType: String,
+    visitorDispatched: Boolean,
+    visitorElementIdentity: Boolean,
+    navigationIdentity: Boolean,
+    validPsi: Boolean,
+    validContainingFile: Boolean,
+    validParent: Boolean,
+    nodePsiIdentity: Boolean,
+    projectIdentity: Boolean,
+    exactTextRange: Boolean,
+    directChildCount: Int,
+    directChildText: String,
+    integerTokenIdentity: Boolean,
+    compatibleElementTypeIdentity: Boolean,
+    stubBasedPsi: Boolean,
+    stubElementType: Boolean
 )
+private[metallurgy] enum IntegerLiteralProbeFailure:
+  case Unavailable(boundary: String, message: String)
 
 /** IntelliJ-side compatibility seam for bundled Scala-plugin semantics.
   *
@@ -74,45 +105,134 @@ object ScalaPluginSemanticBridge:
   def installedPsiSurface(): Either[String, InstalledScalaPluginSurface] =
     InstalledScalaPluginSurfaceScanner.scan(classOf[org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement])
 
-  private[metallurgy] def probeNativeIntegerLiteral(
+  private[metallurgy] def probeNativeIntegerLiterals(
       project: Project
-  ): Either[String, NativeIntegerLiteralObservation] =
-    if project.isDisposed then Left("project is disposed")
+  ): Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]] =
+    atIntegerLiteralProbeBoundary("native"):
+      probeIntegerLiterals(project, "native", _ => false): text =>
+        ScalaPsiElementFactory.createExpressionFromText(text, ScalaFeatures.default)(using project) match
+          case literal: ScIntegerLiteral => Right(literal)
+          case other                     => Left(s"factory returned ${other.getClass.getName}")
+
+  private[metallurgy] def probeCompatibleIntegerLiterals(
+      project: Project
+  ): Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]] =
+    atIntegerLiteralProbeBoundary("compatible"):
+      val compatibleElementType = MetallurgyIntegerLiteral.ElementType
+      probeIntegerLiterals(project, "compatible", _ eq compatibleElementType): text =>
+        val targetNode = ASTFactory.composite(MetallurgyIntegerLiteral.ElementType)
+        targetNode.rawAddChildren(ASTFactory.leaf(ScalaTokenType.Integer, text).asInstanceOf[TreeElement])
+        val file       = PsiFileFactory
+          .getInstance(project)
+          .createFileFromText("Compatible.scala", Scala3Language.INSTANCE, "", false, false)
+        file.getNode.getFirstChildNode
+        file.getNode
+          .asInstanceOf[CompositeElement]
+          .rawAddChildren(targetNode)
+        targetNode.getPsi match
+          case literal: ScIntegerLiteral => Right(literal)
+          case other                     => Left(s"compatible target returned ${other.getClass.getName}")
+
+  private[metallurgy] def atIntegerLiteralProbeBoundary[A](
+      boundary: String
+  )(probe: => Either[IntegerLiteralProbeFailure, A]): Either[IntegerLiteralProbeFailure, A] =
+    try probe
+    catch
+      case control: ControlFlowException => throw control
+      case error: LinkageError           => Left(IntegerLiteralProbeFailure.Unavailable(boundary, error.toString))
+
+  private[metallurgy] def probeIntegerLiterals(
+      project: Project,
+      boundary: String,
+      isCompatibleElementType: IElementType => Boolean
+  )(
+      construct: String => Either[String, ScIntegerLiteral]
+  ): Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]] =
+    if project.isDisposed then Left(IntegerLiteralProbeFailure.Unavailable(boundary, "project is disposed"))
     else
       try
-        def observe(): Either[String, NativeIntegerLiteralObservation] =
-          ScalaPsiElementFactory.createExpressionFromText("0", ScalaFeatures.default)(using project) match
-            case literal: ScIntegerLiteral =>
-              val value = literal.getValue
-              if value == null then Left("integer literal value is absent")
-              else
-                val range = literal.contentRangeInParent
-                Right(
-                  NativeIntegerLiteralObservation(
-                    literal.getClass.getName.replace('.', '/'),
-                    classOf[ScIntegerLiteral].getName.replace('.', '/'),
-                    literal.getNode.getElementType.toString,
-                    literal.getNode.getElementType eq ScalaElementType.IntegerLiteral,
-                    literal.getText,
-                    literal.contentText,
-                    value.getClass.getName,
-                    value.toString,
-                    range.getStartOffset,
-                    range.getEndOffset
-                  )
-                )
-            case other                     =>
-              Left(s"factory returned ${other.getClass.getName} instead of ${classOf[ScIntegerLiteral].getName}")
-        val application                                                = ApplicationManager.getApplication
-        if application.isReadAccessAllowed then observe()
-        else
-          application.runReadAction(
-            new Computable[Either[String, NativeIntegerLiteralObservation]]:
-              override def compute(): Either[String, NativeIntegerLiteralObservation] = observe()
-          )
+        def observation(literal: ScIntegerLiteral): Either[String, NativeIntegerLiteralObservation] =
+          val value = literal.getValue
+          if value == null then Left("integer literal value is absent")
+          else
+            val range              = literal.contentRangeInParent
+            var visited: ScLiteral = null
+            literal.accept(
+              new ScalaElementVisitor:
+                override def visitLiteral(value: ScLiteral): Unit = visited = value
+            )
+            val children           = Iterator
+              .iterate(literal.getNode.getFirstChildNode)(_.getTreeNext)
+              .takeWhile(_ != null)
+              .toVector
+            val literalType        = literal.literalType
+            Right(
+              NativeIntegerLiteralObservation(
+                literal.getClass.getName.replace('.', '/'),
+                classOf[ScIntegerLiteral].getName.replace('.', '/'),
+                literal.getNode.getElementType.toString,
+                literal.getNode.getElementType eq ScalaElementType.IntegerLiteral,
+                literal.getText,
+                literal.contentText,
+                value.getClass.getName,
+                value.toString,
+                range.getStartOffset,
+                range.getEndOffset,
+                literal.isSimpleLiteral,
+                literalType.isInstanceOf[ScLiteralType],
+                literalType.toString,
+                (literalType match
+                  case value: ScLiteralType => value.wideType
+                  case value                => value
+                ).toString,
+                visited != null,
+                visited eq literal,
+                literal.getNavigationElement eq literal,
+                literal.isValid,
+                Option(literal.getContainingFile).exists(_.isValid),
+                Option(literal.getParent).exists(parent =>
+                  parent.isValid && (parent.getContainingFile eq literal.getContainingFile)
+                ),
+                literal.getNode.getPsi eq literal,
+                literal.getProject eq project,
+                literal.getTextRange.getLength == literal.getTextLength,
+                children.size,
+                children.map(_.getText).mkString,
+                children.headOption.exists(_.getElementType eq ScalaTokenType.Integer),
+                isCompatibleElementType(literal.getNode.getElementType),
+                literal.isInstanceOf[StubBasedPsiElement[?]],
+                literal.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
+              )
+            )
+
+        def observe(): Either[String, Vector[NativeIntegerLiteralObservation]] =
+          Vector("0", "42", "0x2a", "1_000")
+            .foldLeft[Either[String, Vector[NativeIntegerLiteralObservation]]](Right(Vector.empty)):
+              case (result, text) =>
+                result.flatMap(values => construct(text).flatMap(observation).map(values :+ _))
+        val application                                                        = ApplicationManager.getApplication
+        val result                                                             =
+          if application.isReadAccessAllowed then observe()
+          else
+            application.runReadAction(
+              new Computable[Either[String, Vector[NativeIntegerLiteralObservation]]]:
+                override def compute(): Either[String, Vector[NativeIntegerLiteralObservation]] = observe()
+            )
+        result.left.map(IntegerLiteralProbeFailure.Unavailable(boundary, _))
       catch
         case control: ControlFlowException => throw control
-        case NonFatal(error)               => Left(s"integer literal probe failed: ${error.getMessage}")
+        case error: LinkageError           => throw error
+        case NonFatal(error)               =>
+          controlFlowCause(error) match
+            case Some(control) => throw control
+            case None          => Left(IntegerLiteralProbeFailure.Unavailable(boundary, error.toString))
+
+  private def controlFlowCause(error: Throwable): Option[Throwable & ControlFlowException] =
+    Iterator
+      .iterate(Option(error))(_.flatMap(value => Option(value.getCause).filterNot(_ eq value)))
+      .takeWhile(_.nonEmpty)
+      .flatten
+      .collectFirst { case control: ControlFlowException => control }
 
   private val resolveGuard: ThreadLocal[java.util.Set[PsiElement]] =
     ThreadLocal.withInitial(() =>
