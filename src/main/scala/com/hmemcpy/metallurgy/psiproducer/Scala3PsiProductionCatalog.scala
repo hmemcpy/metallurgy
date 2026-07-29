@@ -1272,18 +1272,28 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory,
       surfaces: ScalaPsiSurfaceInventory
-  ): Vector[CatalogValidationError] = validateCatalog(catalog, surfaces, runtimeCoverage(catalog, compiler))
+  ): Vector[CatalogValidationError] =
+    validateCatalog(catalog, surfaces, runtimeCoverage(catalog, compiler), includeUnaccountedSurfaces = true)
 
   def validate(
       catalog: Scala3PsiProductionCatalog,
       compiler: AggregatedCompilerProductionInventory,
       surfaces: ScalaPsiSurfaceInventory
-  ): Vector[CatalogValidationError] = validateCatalog(catalog, surfaces, aggregatedCoverage(catalog, compiler))
+  ): Vector[CatalogValidationError] =
+    validateCatalog(catalog, surfaces, aggregatedCoverage(catalog, compiler), includeUnaccountedSurfaces = true)
+
+  def validateExecutable(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: AggregatedCompilerProductionInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): Vector[CatalogValidationError] =
+    validateCatalog(catalog, surfaces, aggregatedCoverage(catalog, compiler), includeUnaccountedSurfaces = false)
 
   private def validateCatalog(
       catalog: Scala3PsiProductionCatalog,
       surfaces: ScalaPsiSurfaceInventory,
-      coverage: Vector[CatalogValidationError]
+      coverage: Vector[CatalogValidationError],
+      includeUnaccountedSurfaces: Boolean
   ): Vector[CatalogValidationError] =
     val effectiveSurfaces                                                                                             = surfaces.withCatalogCapabilities(catalog)
     val errors                                                                                                        = Vector.newBuilder[CatalogValidationError]
@@ -1388,11 +1398,14 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             Vector(stub, serializer, navigation) ++ indices
         Vector(p.targetSurfaceId) ++ p.accessors.map(_.surfaceId) ++ terminals ++ persistence
       .toSet
-    effectiveSurfaces.rows
-      .filter(r =>
-        r.status == FactStatus.Available && r.classification == SurfaceClassification.SyntaxContract && !accounted(r.id)
-      )
-      .foreach(r => errors += CatalogValidationError.UnaccountedSyntaxSurface(r.id))
+    if includeUnaccountedSurfaces then
+      effectiveSurfaces.rows
+        .filter(r =>
+          r.status == FactStatus.Available && r.classification == SurfaceClassification.SyntaxContract && !accounted(
+            r.id
+          )
+        )
+        .foreach(r => errors += CatalogValidationError.UnaccountedSyntaxSurface(r.id))
     errors.result().distinct.sortBy(_.toString)
 
   private def runtimeCoverage(
@@ -1647,7 +1660,7 @@ private[metallurgy] object WholeFileProductionPlanner:
     if compiler.identity != catalogInventory.identity then
       Left(WholeFilePlanningFailure.CatalogInventoryIdentityMismatch(compiler.identity, catalogInventory.identity))
     else
-      val validation = Scala3PsiProductionCatalogValidator.validate(catalog, catalogInventory, surfaces)
+      val validation = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, catalogInventory, surfaces)
       if validation.nonEmpty then Left(WholeFilePlanningFailure.InvalidCatalog(validation))
       else compileClosedSubset(snapshot, evidence, catalog, compiler)
 

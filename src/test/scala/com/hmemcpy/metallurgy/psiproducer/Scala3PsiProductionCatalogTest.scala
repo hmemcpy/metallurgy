@@ -414,6 +414,22 @@ final class Scala3PsiProductionCatalogTest:
     val errors   = result.left.toOption.get.asInstanceOf[WholeFilePlanningFailure.InvalidCatalog].errors
     assertTrue(errors.exists(_.isInstanceOf[CatalogValidationError.UncoveredCompilerShape]))
 
+  @Test def executableValidationDoesNotRequireAPartialCatalogToOwnUnrelatedInstalledSyntaxSurfaces(): Unit =
+    val compiler         = inventory(snapshot("/one", 1, Vector.empty))
+    val catalog          = completeCatalog(compiler)
+    val unrelated        = ScalaPsiSurfaceRow(
+      "element.Unrelated",
+      SurfaceFactKind.Element,
+      None,
+      FactStatus.Available,
+      SurfaceClassification.SyntaxContract
+    )
+    val surfaceInventory = surfaces(catalog).copy(rows = surfaces(catalog).rows :+ unrelated)
+    val aggregate        = this.aggregate(Vector(compiler))
+    val reportGate       = Scala3PsiProductionCatalogValidator.validate(catalog, aggregate, surfaceInventory)
+    assertTrue(reportGate.contains(CatalogValidationError.UnaccountedSyntaxSurface(unrelated.id)))
+    assertTrue(Scala3PsiProductionCatalogValidator.validateExecutable(catalog, aggregate, surfaceInventory).isEmpty)
+
   @Test def matcherDistinguishesNodesFromScalarsAndChecksNestedFields(): Unit =
     assertFalse(
       CatalogShapeMatcher.matches(
