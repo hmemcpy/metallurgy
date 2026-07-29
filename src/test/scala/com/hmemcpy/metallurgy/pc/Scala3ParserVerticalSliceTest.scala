@@ -30,6 +30,48 @@ import java.nio.file.Path
 final class Scala3ParserVerticalSliceTest:
 
   @Test
+  def minimizedImportFormsHaveExactCompilerShapes(): Unit =
+    val bridge = openBridge()
+    try
+      val forms = Vector(
+        ("import a.b.c\n", Vector("c"), "262c1533c8ca5b09b137b7f5136d3fb2923a30856ab94b46189eec35032aa144"),
+        ("import a.b.*\n", Vector("_"), "ccb4206d2afbb0c55c24beed219536e2129c2bf39d24c8ac7c72d5158c06a9ec"),
+        ("import a.b.{c}\n", Vector("c"), "01bb164a10401a3e5c2f060b39982e89d97b75f16ddf71ffca4b8ced1915917d"),
+        ("import a.b.{c as d}\n", Vector("c", "d"), "95bfc676f47540630d89cad8b86f2666bce93fbd4934f5a54de3bce1a0b330a2"),
+        ("import a.b.{c => d}\n", Vector("c", "d"), "c8dc8a7d01b87991682707285a7e3ec76ecfaf9fb2721bdd2f27dfcad58f6ac6"),
+        ("import a.b.given\n", Vector(""), "83ad88645218cd5ae17ec9e1555c55e2eeac71881005d03d4591a83773d25c76"),
+        ("import a.b.given T\n", Vector("", "T"), "e925d7c12a5a58e8a147c9a6c5c7954b1de31fe7a3347f2514ff2f656079841b"),
+        (
+          "import a.b.{given, given T, *}\n",
+          Vector("", "", "T", "_"),
+          "b600221d01be377489fad79b19d6b773c39f0ff860112329a51a6c8e12b8b39f"
+        )
+      )
+      forms.zipWithIndex.foreach: (form, index) =>
+        val (source, names, fingerprint) = form
+        val snapshot                     = parse(bridge, source, s"file:///ImportForm$index.scala")
+        assertTrue(snapshot.diagnostics.isEmpty)
+        assertEquals(source, snapshot.sourceText)
+        assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
+        assertEquals(
+          Vector("PackageDef", "Ident", "Import", "Select", "Ident"),
+          snapshot.nodes.take(5).map(_.production)
+        )
+        assertEquals(
+          names,
+          snapshot.nodes.drop(5).filter(_.production == "Ident").flatMap(_.fields).collect {
+            case ParserSyntaxField("name", ParserFieldValue.Name(value), _) => value
+          }
+        )
+        val statement                    = snapshot.nodes(2)
+        assertEquals(
+          ParserNodePosition.Positioned(PcSourceRange(0, source.length - 1), 7, ParserPositionProvenance.SourceDerived),
+          statement.position
+        )
+        assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
+    finally bridge.close()
+
+  @Test
   def minimizedFilePackageFamilyHasAnExactInventory(): Unit =
     val bridge = openBridge()
     try
