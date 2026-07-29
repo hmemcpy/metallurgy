@@ -1289,6 +1289,13 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
   ): Vector[CatalogValidationError] =
     validateCatalog(catalog, surfaces, aggregatedCoverage(catalog, compiler), includeUnaccountedSurfaces = false)
 
+  def validateExecutable(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: CompilerRuntimeInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): Vector[CatalogValidationError] =
+    validateCatalog(catalog, surfaces, runtimeCoverage(catalog, compiler), includeUnaccountedSurfaces = false)
+
   private def validateCatalog(
       catalog: Scala3PsiProductionCatalog,
       surfaces: ScalaPsiSurfaceInventory,
@@ -1629,13 +1636,26 @@ private[metallurgy] final case class WholeFileProductionPlan(
     navigationAssertions: Vector[PlannedNavigationAssertion]
 )
 
+private[metallurgy] final class PreparedProductionCatalog private (
+    val catalog: Scala3PsiProductionCatalog,
+    val compiler: AggregatedCompilerProductionInventory,
+    val surfaces: ScalaPsiSurfaceInventory
+)
+
+private[metallurgy] object PreparedProductionCatalog:
+  def prepare(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: AggregatedCompilerProductionInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): Either[Vector[CatalogValidationError], PreparedProductionCatalog] =
+    val errors = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, compiler, surfaces)
+    Either.cond(errors.isEmpty, new PreparedProductionCatalog(catalog, compiler, surfaces), errors)
+
 private[metallurgy] object WholeFileProductionPlanner:
   def plan(
       snapshot: ParserSyntaxSnapshot,
       evidence: ProvisionalSourceEvidencePlan,
-      catalog: Scala3PsiProductionCatalog,
-      catalogInventory: AggregatedCompilerProductionInventory,
-      surfaces: ScalaPsiSurfaceInventory
+      prepared: PreparedProductionCatalog
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
     val fingerprint = ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
     if fingerprint != evidence.parserEvidenceFingerprint then
@@ -1647,22 +1667,21 @@ private[metallurgy] object WholeFileProductionPlanner:
         case Right(_)                                    =>
           CompilerRuntimeInventory.from(snapshot) match
             case Left(failures)  => Left(WholeFilePlanningFailure.InventoryFailures(failures))
-            case Right(compiler) => compile(snapshot, evidence, catalog, compiler, catalogInventory, surfaces)
+            case Right(compiler) => compile(snapshot, evidence, prepared, compiler)
 
   private def compile(
       snapshot: ParserSyntaxSnapshot,
       evidence: ProvisionalSourceEvidencePlan,
-      catalog: Scala3PsiProductionCatalog,
-      compiler: CompilerRuntimeInventory,
-      catalogInventory: AggregatedCompilerProductionInventory,
-      surfaces: ScalaPsiSurfaceInventory
+      prepared: PreparedProductionCatalog,
+      compiler: CompilerRuntimeInventory
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
-    if compiler.identity != catalogInventory.identity then
-      Left(WholeFilePlanningFailure.CatalogInventoryIdentityMismatch(compiler.identity, catalogInventory.identity))
+    if compiler.identity != prepared.compiler.identity then
+      Left(WholeFilePlanningFailure.CatalogInventoryIdentityMismatch(compiler.identity, prepared.compiler.identity))
     else
-      val validation = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, catalogInventory, surfaces)
+      val validation =
+        Scala3PsiProductionCatalogValidator.validateExecutable(prepared.catalog, compiler, prepared.surfaces)
       if validation.nonEmpty then Left(WholeFilePlanningFailure.InvalidCatalog(validation))
-      else compileClosedSubset(snapshot, evidence, catalog, compiler)
+      else compileClosedSubset(snapshot, evidence, prepared.catalog, compiler)
 
   private def compileClosedSubset(
       snapshot: ParserSyntaxSnapshot,

@@ -404,7 +404,7 @@ final class Scala3PsiProductionCatalogTest:
   @Test def emptyCatalogFailsValidationForNonemptyInventory(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)
     val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
-    val result   = WholeFileProductionPlanner.plan(
+    val result   = planned(
       value,
       evidence,
       Scala3PsiProductionCatalog.Empty,
@@ -429,6 +429,38 @@ final class Scala3PsiProductionCatalogTest:
     val reportGate       = Scala3PsiProductionCatalogValidator.validate(catalog, aggregate, surfaceInventory)
     assertTrue(reportGate.contains(CatalogValidationError.UnaccountedSyntaxSurface(unrelated.id)))
     assertTrue(Scala3PsiProductionCatalogValidator.validateExecutable(catalog, aggregate, surfaceInventory).isEmpty)
+
+  @Test def preparedCatalogBindsReviewedRowsBeforePlanningALiveSubset(): Unit =
+    val value            = snapshot("/one", 1, Vector.empty)
+    val baseCompiler     = inventory(value)
+    val unusedValue      = value.copy(nodes = value.nodes.updated(1, value.nodes(1).copy(production = "Unused")))
+    val unusedCompiler   = inventory(unusedValue)
+    val baseCatalog      = completeCatalog(baseCompiler)
+    val unusedProduction = completeCatalog(unusedCompiler).productions.find(_.id == "Unused").get
+    val catalog          = baseCatalog.copy(productions = baseCatalog.productions :+ unusedProduction)
+    val surface          = surfaces(catalog)
+    val prepared         = PreparedProductionCatalog
+      .prepare(catalog, aggregate(Vector(baseCompiler, unusedCompiler)), surface)
+      .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+
+    assertTrue(
+      WholeFileProductionPlanner
+        .plan(value, ProvisionalSourceEvidencePlanner.plan(value).toOption.get, prepared)
+        .isRight
+    )
+    assertTrue(
+      PreparedProductionCatalog
+        .prepare(catalog, aggregate(Vector(baseCompiler)), surface)
+        .left
+        .toOption
+        .get
+        .exists(_.isInstanceOf[CatalogValidationError.UnrepresentedCatalogProduction])
+    )
+    assertTrue(
+      scala.compiletime.testing
+        .typeCheckErrors("summon[scala.deriving.Mirror.ProductOf[PreparedProductionCatalog]]")
+        .nonEmpty
+    )
 
   @Test def matcherDistinguishesNodesFromScalarsAndChecksNestedFields(): Unit =
     assertFalse(
@@ -899,17 +931,15 @@ final class Scala3PsiProductionCatalogTest:
     val evidence  = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
     val aggregate = this.aggregate(Vector(compiler))
     val surface   = surfaces(catalog)
-    val first     = WholeFileProductionPlanner
-      .plan(value, evidence, catalog, aggregate, surface)
+    val first     = planned(value, evidence, catalog, aggregate, surface)
       .fold(failure => throw new AssertionError(failure.toString), identity)
-    val second    = WholeFileProductionPlanner
-      .plan(
-        value,
-        evidence,
-        catalog.copy(productions = catalog.productions.reverse),
-        aggregate,
-        surface.copy(rows = surface.rows.reverse)
-      )
+    val second    = planned(
+      value,
+      evidence,
+      catalog.copy(productions = catalog.productions.reverse),
+      aggregate,
+      surface.copy(rows = surface.rows.reverse)
+    )
       .fold(failure => throw new AssertionError(failure.toString), identity)
     assertEquals(first, second)
     assertEquals(value.sourceUri, first.sourceUri)
@@ -938,11 +968,7 @@ final class Scala3PsiProductionCatalogTest:
     val root                                                                   = base.productions.find(_.id == "Root").get
     val child                                                                  = base.productions.find(_.id == "Child").get
     def failure(catalog: Scala3PsiProductionCatalog): WholeFilePlanningFailure =
-      WholeFileProductionPlanner
-        .plan(value, evidence, catalog, aggregate, surfaces(catalog))
-        .left
-        .toOption
-        .get
+      planned(value, evidence, catalog, aggregate, surfaces(catalog)).left.toOption.get
 
     val unowned = base.copy(productions =
       base.productions.map(p => if p.id == child.id then p.copy(terminals = Vector.empty) else p)
@@ -965,8 +991,7 @@ final class Scala3PsiProductionCatalogTest:
         else p
       )
     )
-    val parentFallbackPlan = WholeFileProductionPlanner
-      .plan(value, evidence, parentFallback, aggregate, surfaces(parentFallback))
+    val parentFallbackPlan = planned(value, evidence, parentFallback, aggregate, surfaces(parentFallback))
       .fold(error => throw new AssertionError(error.toString), identity)
     assertEquals(
       child.id,
@@ -1025,7 +1050,7 @@ final class Scala3PsiProductionCatalogTest:
     val compiler  = inventory(value)
     val catalog   = completeCatalog(compiler)
     val aggregate = this.aggregate(Vector(compiler))
-    val result    = WholeFileProductionPlanner.plan(
+    val result    = planned(
       value,
       ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
       catalog,
@@ -1043,7 +1068,7 @@ final class Scala3PsiProductionCatalogTest:
         production.copy(targetRequirement = TargetRequirement.NativeCandidate)
       case production                            => production
     )
-    val result    = WholeFileProductionPlanner.plan(
+    val result    = planned(
       value,
       ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
       candidate,
@@ -1071,7 +1096,7 @@ final class Scala3PsiProductionCatalogTest:
       child.contexts
     )
     val catalog  = completeCatalog(compiler)
-    val result   = WholeFileProductionPlanner.plan(
+    val result   = planned(
       value,
       ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
       catalog,
@@ -1124,50 +1149,48 @@ final class Scala3PsiProductionCatalogTest:
           SurfaceClassification.Derived
         )
     )
-    val plan     = WholeFileProductionPlanner
-      .plan(
-        value,
-        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
-        catalog,
-        this.aggregate(Vector(compiler)),
-        surface
-      )
+    val plan     = planned(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      catalog,
+      this.aggregate(Vector(compiler)),
+      surface
+    )
       .fold(failure => throw new AssertionError(failure.toString), identity)
     assertFalse(plan.targetAssertions.exists(_.surfaceId == "token.optional"))
     assertFalse(plan.physicalLeafOwnership.exists(_.terminalId == "optional-token"))
 
   @Test def evidenceFingerprintMismatchFailsBeforeCatalogMatching(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)
+    val compiler = inventory(value)
+    val catalog  = completeCatalog(compiler)
     val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get.copy(parserEvidenceFingerprint = "other")
     assertTrue(
-      WholeFileProductionPlanner
-        .plan(
-          value,
-          evidence,
-          Scala3PsiProductionCatalog.Empty,
-          aggregate(Vector(inventory(value))),
-          ScalaPsiSurfaceInventory(Vector.empty)
-        )
-        .left
-        .toOption
-        .get
+      planned(
+        value,
+        evidence,
+        catalog,
+        aggregate(Vector(compiler)),
+        surfaces(catalog)
+      ).left.toOption.get
         .isInstanceOf[WholeFilePlanningFailure.EvidenceFingerprintMismatch]
     )
 
   @Test def wholeFilePlanningRecomputesDetachedEvidenceAndCompilerInventory(): Unit =
     val value     = snapshot("/one", 1, Vector.empty)
     val compiler  = inventory(value)
+    val catalog   = completeCatalog(compiler)
     val evidence  = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
     val firstAtom = evidence.atoms.head
     val detached  = evidence.copy(atoms = evidence.atoms.updated(0, firstAtom.copy(claims = Vector.empty)))
     assertEquals(
       Left(WholeFilePlanningFailure.SourceEvidencePlanMismatch),
-      WholeFileProductionPlanner.plan(
+      planned(
         value,
         detached,
-        Scala3PsiProductionCatalog.Empty,
+        catalog,
         aggregate(Vector(compiler)),
-        ScalaPsiSurfaceInventory(Vector.empty)
+        surfaces(catalog)
       )
     )
     assertEquals(
@@ -1179,22 +1202,30 @@ final class Scala3PsiProductionCatalogTest:
   @Test def wholeFilePlanningRejectsAnAggregateForAnotherCompilerIdentity(): Unit =
     val value            = snapshot("/one", 1, Vector.empty)
     val compiler         = inventory(value)
+    val catalog          = completeCatalog(compiler)
     val catalogInventory = aggregate(Vector(compiler))
       .copy(identity = compiler.identity.copy(compilerOptions = compiler.identity.compilerOptions :+ "-different"))
     assertTrue(
-      WholeFileProductionPlanner
-        .plan(
-          value,
-          ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
-          Scala3PsiProductionCatalog.Empty,
-          catalogInventory,
-          ScalaPsiSurfaceInventory(Vector.empty)
-        )
-        .left
-        .toOption
-        .get
+      planned(
+        value,
+        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+        catalog,
+        catalogInventory,
+        surfaces(catalog)
+      ).left.toOption.get
         .isInstanceOf[WholeFilePlanningFailure.CatalogInventoryIdentityMismatch]
     )
+
+  private def planned(
+      value: ParserSyntaxSnapshot,
+      evidence: ProvisionalSourceEvidencePlan,
+      catalog: Scala3PsiProductionCatalog,
+      aggregate: AggregatedCompilerProductionInventory,
+      surface: ScalaPsiSurfaceInventory
+  ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
+    PreparedProductionCatalog.prepare(catalog, aggregate, surface) match
+      case Left(errors)    => Left(WholeFilePlanningFailure.InvalidCatalog(errors))
+      case Right(prepared) => WholeFileProductionPlanner.plan(value, evidence, prepared)
 
   private def inventory(value: ParserSyntaxSnapshot): CompilerRuntimeInventory =
     CompilerRuntimeInventory.from(value).fold(f => throw new AssertionError(f.toString), identity)
