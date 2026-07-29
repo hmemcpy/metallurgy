@@ -243,24 +243,35 @@ final class Scala3PsiProductionCatalogTest:
     def value(observation: InventoryValueObservation) = CompilerRuntimeInventory(
       identity,
       s"evidence-${observation.hashCode}",
-      Vector(row(observation))
+      Vector(row(observation)),
+      Vector.empty
     )
+    val optionalDeclaration                           = CatalogValuePattern.Optional(CatalogValuePattern.Name)
     val optional                                      = Vector(
-      value(InventoryValueObservation.Optional(None)),
+      value(InventoryValueObservation.Optional(None))
+        .copy(shapes = Vector(row(InventoryValueObservation.Optional(None), Some(optionalDeclaration)))),
       value(InventoryValueObservation.Optional(Some(InventoryValueObservation.Name("x"))))
     )
+    val repeatedDeclaration                           = CatalogValuePattern.Repeated(CatalogValuePattern.Scalar("Integer"))
     val repeated                                      = Vector(
-      value(InventoryValueObservation.Repeated(Vector.empty)),
+      value(InventoryValueObservation.Repeated(Vector.empty))
+        .copy(shapes = Vector(row(InventoryValueObservation.Repeated(Vector.empty), Some(repeatedDeclaration)))),
       value(InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Scalar(ParserScalar.Integer(1)))))
     )
     assertEquals(
-      CatalogValuePattern.Optional(CatalogValuePattern.Name),
-      aggregate(optional).productions.head.fields.head.value
+      Set(
+        CatalogValuePattern.EmptyOptional(CatalogValuePattern.Name),
+        CatalogValuePattern.Optional(CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
+      ),
+      aggregate(optional).productions.map(_.fields.head.value).toSet
     )
     assertArrayEquals(aggregate(optional).canonicalBytes, aggregate(optional.reverse).canonicalBytes)
     assertEquals(
-      CatalogValuePattern.Repeated(CatalogValuePattern.Scalar("Integer")),
-      aggregate(repeated).productions.head.fields.head.value
+      Set(
+        CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Scalar("Integer")),
+        CatalogValuePattern.Repeated(CatalogValuePattern.Scalar("Integer"))
+      ),
+      aggregate(repeated).productions.map(_.fields.head.value).toSet
     )
     assertArrayEquals(aggregate(repeated).canonicalBytes, aggregate(repeated.reverse).canonicalBytes)
 
@@ -292,7 +303,7 @@ final class Scala3PsiProductionCatalogTest:
       ).productions.head.fields.head.value
     )
     assertEquals(
-      optional,
+      CatalogValuePattern.EmptyOptional(CatalogValuePattern.Name),
       aggregate(
         Vector(withField(InventoryValueObservation.Optional(None), Some(optional)))
       ).productions.head.fields.head.value
@@ -305,29 +316,32 @@ final class Scala3PsiProductionCatalogTest:
         .get
         .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
     )
-    Vector(
-      Vector(
-        withField(InventoryValueObservation.Repeated(Vector.empty), Some(repeated)),
-        withField(
-          InventoryValueObservation.Repeated(Vector.empty),
-          Some(CatalogValuePattern.Repeated(CatalogValuePattern.Name))
+    assertEquals(
+      2,
+      aggregate(
+        Vector(
+          withField(InventoryValueObservation.Repeated(Vector.empty), Some(repeated)),
+          withField(
+            InventoryValueObservation.Repeated(Vector.empty),
+            Some(CatalogValuePattern.Repeated(CatalogValuePattern.Name))
+          )
         )
-      ),
-      Vector(
-        withField(
-          InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Name("x"))),
-          Some(repeated)
+      ).productions.size
+    )
+    assertTrue(
+      AggregatedCompilerProductionInventory
+        .aggregate(
+          Vector(
+            withField(
+              InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Name("x"))),
+              Some(repeated)
+            )
+          )
         )
-      )
-    ).foreach(values =>
-      assertTrue(
-        AggregatedCompilerProductionInventory
-          .aggregate(values)
-          .left
-          .toOption
-          .get
-          .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
-      )
+        .left
+        .toOption
+        .get
+        .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
     )
     assertTrue(
       AggregatedCompilerProductionInventory
@@ -337,7 +351,8 @@ final class Scala3PsiProductionCatalogTest:
         .get
         .isInstanceOf[InventoryAggregationFailure.UnresolvedShape]
     )
-    assertTrue(
+    assertEquals(
+      2,
       AggregatedCompilerProductionInventory
         .aggregate(
           Vector(
@@ -345,10 +360,10 @@ final class Scala3PsiProductionCatalogTest:
             withValue(InventoryValueObservation.Scalar(ParserScalar.Text("x")))
           )
         )
-        .left
         .toOption
         .get
-        .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
+        .productions
+        .size
     )
     val different                                                                             = inventory(snapshot("/one", 1, Vector("different")))
     assertTrue(
@@ -366,7 +381,7 @@ final class Scala3PsiProductionCatalogTest:
     val renamed   = first.copy(shapes =
       Vector(
         first.shapes.head
-          .copy(observation = Vector(InventoryFieldObservation("renamed", InventoryValueObservation.Name("x"))))
+          .copy(observation = Vector(InventoryFieldObservation("renamed", InventoryValueObservation.Name("_"))))
       )
     )
     assertTrue(
@@ -385,13 +400,11 @@ final class Scala3PsiProductionCatalogTest:
       "Pair",
       Vector(InventoryFieldObservation("right", InventoryValueObservation.Name("x")))
     )
-    assertTrue(
-      AggregatedCompilerProductionInventory
-        .aggregate(Vector(first.copy(shapes = Vector(row(product))), first.copy(shapes = Vector(row(different)))))
-        .left
-        .toOption
-        .get
-        .isInstanceOf[InventoryAggregationFailure.IncompatibleShape]
+    assertEquals(
+      2,
+      aggregate(
+        Vector(first.copy(shapes = Vector(row(product))), first.copy(shapes = Vector(row(different))))
+      ).productions.size
     )
 
   @Test def aggregateCanonicalBytesCannotBeMutatedThroughTheResult(): Unit =
@@ -461,6 +474,154 @@ final class Scala3PsiProductionCatalogTest:
         .typeCheckErrors("summon[scala.deriving.Mirror.ProductOf[PreparedProductionCatalog]]")
         .nonEmpty
     )
+
+  @Test def runtimeSubsetRetainsCatalogAlternativesThatAreInactiveInTheCurrentFile(): Unit =
+    val value       = snapshot("/runtime-subset", 1, Vector.empty)
+    val runtime     = inventory(value)
+    val alternative = inventory(
+      value.copy(nodes = value.nodes.updated(1, value.nodes(1).copy(production = "Alternative")))
+    )
+    val base        = completeCatalog(runtime)
+    val catalog     = base.copy(productions =
+      base.productions :+ completeCatalog(alternative).productions.find(_.id == "Alternative").get
+    )
+    val compiler    = aggregate(Vector(runtime, alternative))
+    val prepared    = PreparedProductionCatalog.prepareRuntimeSubset(catalog, runtime, compiler, surfaces(catalog))
+    assertTrue(prepared.left.toOption.toString, prepared.isRight)
+    assertEquals(catalog.productions.map(_.id), prepared.toOption.get.catalog.productions.map(_.id))
+
+  @Test def runtimePreparationUsesDirectNodeOwnersAndRetainedPositionedOrigins(): Unit =
+    val inherited = ProductionInstanceId(
+      InventoryKind.Node,
+      2L,
+      Some(ProductionOccurrenceId(1L, Vector(ParserFieldPathSegment.NamedField("outer"))))
+    )
+    val direct    = ProductionInstanceLineage.child(
+      inherited,
+      InventoryKind.Node,
+      4L,
+      Vector(ParserFieldPathSegment.NamedField("left"))
+    )
+    assertEquals(
+      Some(ProductionOccurrenceId(2L, Vector(ParserFieldPathSegment.NamedField("left")))),
+      direct.occurrence
+    )
+
+    val positioned = ProductionInstanceId(
+      InventoryKind.Positioned,
+      3L,
+      Some(ProductionOccurrenceId(1L, Vector(ParserFieldPathSegment.NamedField("metadata"))))
+    )
+    val retained   = ProductionInstanceLineage.child(
+      positioned,
+      InventoryKind.Node,
+      4L,
+      Vector(ParserFieldPathSegment.NamedField("right"))
+    )
+    assertEquals(
+      Some(
+        ProductionOccurrenceId(
+          1L,
+          Vector(
+            ParserFieldPathSegment.NamedField("metadata"),
+            ParserFieldPathSegment.NamedField("right")
+          )
+        )
+      ),
+      retained.occurrence
+    )
+    assertEquals(
+      Vector(ParserFieldPathSegment.NamedField("left")),
+      ProductionInstanceLineage.relativePath(inherited, direct.occurrence.get)
+    )
+    assertEquals(
+      Vector(ParserFieldPathSegment.NamedField("right")),
+      ProductionInstanceLineage.relativePath(positioned, retained.occurrence.get)
+    )
+
+  @Test def preparationSelectsSharedChildrenFromTheirConcreteSamePrefixOwnerLineage(): Unit =
+    val value                                           = samePrefixOwnersSharedChildSnapshot
+    val runtime                                         = inventory(value)
+    val generated                                       = completeCatalog(runtime)
+    val root                                            = generated.productions.find(_.id == "Root").get
+    val owners                                          = generated.productions.filter(_.id == "Owner")
+    val leaves                                          = generated.productions.filter(_.id == "Leaf")
+    def branch(production: Scala3PsiProduction): String =
+      production.pattern.occurrences
+        .flatMap(_.context match
+          case ContextPattern.ParentWithAncestor(_, _, _, ancestor) => ancestor.path
+          case _                                                    => Vector.empty
+        )
+        .collectFirst { case CatalogPathSegment.NamedField(name @ ("left" | "right")) => name }
+        .get
+    val selectedLeaves                                  = Vector("left", "right").map: side =>
+      val production = leaves.head
+      production.copy(
+        id = s"Leaf-$side",
+        pattern = production.pattern.copy(occurrences = production.pattern.occurrences.filter: occurrence =>
+          branch(production.copy(pattern = production.pattern.copy(occurrences = Vector(occurrence)))) == side),
+        outputRealizations =
+          Vector(OutputRealization(s"realization-$side", Vector.empty, production.effectiveOutputTemplate))
+      )
+    val owner                                           = owners.head.copy(
+      pattern = owners.head.pattern.copy(occurrences = owners.flatMap(_.pattern.occurrences)),
+      children =
+        owners.head.children.map(_.copy(productionId = "Leaf-left", additionalProductionIds = Set("Leaf-right")))
+    )
+    val catalog                                         = generated.copy(productions = Vector(root, owner) ++ selectedLeaves)
+    val prepared                                        = PreparedProductionCatalog.prepare(catalog, aggregate(Vector(runtime)), surfaces(catalog))
+    assertTrue(prepared.left.toOption.toString, prepared.isRight)
+
+    val errors = RuntimeRealizationSelector.validate(catalog, runtime)
+    assertTrue(errors.toString, errors.isEmpty)
+
+  @Test def preparationRejectsAmbiguousAndUnknownConcreteScenarioRealizations(): Unit =
+    val runtime         = inventory(snapshot("/realizations", 1, Vector.empty))
+    val base            = completeCatalog(runtime)
+    val root            = base.productions.find(_.id == "Root").get
+    val template        = root.effectiveOutputTemplate
+    val ambiguous       = base.copy(productions = base.productions.map:
+      case production if production.id == root.id =>
+        production.copy(outputRealizations =
+          Vector(
+            OutputRealization("first", Vector.empty, template),
+            OutputRealization("second", Vector.empty, template)
+          )
+        )
+      case production                             => production
+    )
+    val ambiguousErrors = PreparedProductionCatalog
+      .prepare(ambiguous, aggregate(Vector(runtime)), surfaces(ambiguous))
+      .left
+      .toOption
+      .get
+    assertTrue(ambiguousErrors.exists(_.isInstanceOf[CatalogValidationError.AmbiguousScenarioRealization]))
+
+    val unknown       = base.copy(productions = base.productions.map:
+      case production if production.id == root.id =>
+        production.copy(outputRealizations =
+          Vector(
+            OutputRealization(
+              "missing",
+              Vector(
+                ChildOutcomeCondition(
+                  "child",
+                  ChildOccurrenceSelector.First,
+                  ChildOutcomeExpectation.Production("Root")
+                )
+              ),
+              template
+            )
+          )
+        )
+      case production                             => production
+    )
+    val unknownErrors = PreparedProductionCatalog
+      .prepare(unknown, aggregate(Vector(runtime)), surfaces(unknown))
+      .left
+      .toOption
+      .get
+    assertTrue(unknownErrors.exists(_.isInstanceOf[CatalogValidationError.UnknownScenarioRealization]))
 
   @Test def matcherDistinguishesNodesFromScalarsAndChecksNestedFields(): Unit =
     assertFalse(
@@ -827,10 +988,13 @@ final class Scala3PsiProductionCatalogTest:
       errors(LocalOutputCompositeTemplate(Vector(self), Map("child" -> Some("missing"))))
         .contains(CatalogValidationError.UnknownChildMountParent(root.id, "child", "missing"))
     )
-    val unsupported       = OutputRangeDeclaration.BoundaryDerived("start", "end")
+    val invalidBoundary   = OutputBoundary.Advance(OutputBoundary.ProductionStart(), -1)
+    val unsupported       = OutputRangeDeclaration.BoundaryDerived(invalidBoundary, OutputBoundary.ProductionEnd())
     assertTrue(
       errors(LocalOutputCompositeTemplate(Vector(self.copy(range = unsupported)), Map("child" -> Some("self"))))
-        .contains(CatalogValidationError.UnsupportedOutputRange(root.id, "self", unsupported))
+        .contains(
+          CatalogValidationError.InvalidOutputBoundary(root.id, "self", invalidBoundary, "negative boundary advance")
+        )
     )
     val siblingRoots      = Vector(self.copy(id = "left"), self.copy(id = "right"))
     assertTrue(
@@ -1062,6 +1226,51 @@ final class Scala3PsiProductionCatalogTest:
       .fold(error => throw new AssertionError(error.toString), identity)
     assertEquals(Vector("Child"), transparent.composites.map(_.productionId))
     assertEquals(1, transparent.targetAssertions.count(_.owner.isInstanceOf[TargetAssertionOwner.Composite]))
+
+  @Test def emptyTransparentTemplatesValidateMountsAndAdvanceOverflowFailsClosed(): Unit =
+    val value     = snapshot("/empty-template", 1, Vector.empty)
+    val compiler  = inventory(value)
+    val base      = completeCatalog(compiler)
+    val aggregate = this.aggregate(Vector(compiler))
+    val root      = base.productions.find(_.id == "Root").get
+    val missing   = base.copy(productions = base.productions.map:
+      case production if production.id == root.id =>
+        production.copy(outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map.empty)))
+      case production                             => production
+    )
+    val errors    = Scala3PsiProductionCatalogValidator.validateExecutable(missing, compiler, surfaces(missing))
+    assertTrue(errors.contains(CatalogValidationError.MissingChildMountRole(root.id, "child")))
+
+    val output   = root.effectiveOutputTemplate.composites.head
+    val overflow = base.copy(productions = base.productions.map:
+      case production if production.id == root.id =>
+        production.copy(outputTemplate =
+          Some(
+            root.effectiveOutputTemplate.copy(composites =
+              Vector(
+                output.copy(
+                  range = OutputRangeDeclaration.BoundaryDerived(
+                    OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
+                    OutputBoundary.Advance(
+                      OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
+                      Int.MaxValue
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      case production                             => production
+    )
+    val failure  = planned(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      overflow,
+      aggregate,
+      surfaces(overflow)
+    ).left.toOption.get
+    assertTrue(failure.isInstanceOf[WholeFilePlanningFailure.OutputBoundaryResolutionFailed])
 
   @Test def wholeFilePlanningFailsClosedForOwnershipAndChildContractGaps(): Unit =
     val value                                                                  = snapshot("/one", 1, Vector.empty)
@@ -1699,6 +1908,55 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
     value.copy(nodes = Vector(root, leaf), positioned = Vector(positioned))
+
+  private def samePrefixOwnersSharedChildSnapshot: ParserSyntaxSnapshot =
+    val value                         = snapshot("/same-prefix-owners", 1, Vector.empty)
+    val range                         = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
+    val root                          = ParserSyntaxNode(
+      1,
+      "Root",
+      Vector(
+        ParserSyntaxField(
+          "owners",
+          ParserFieldValue.Product(
+            "Pair",
+            Vector(
+              ParserSyntaxField("left", ParserFieldValue.Node(2)),
+              ParserSyntaxField("right", ParserFieldValue.Node(3))
+            )
+          )
+        )
+      ),
+      range,
+      Vector.empty
+    )
+    def owner(id: Long, side: String) = ParserSyntaxNode(
+      id,
+      "Owner",
+      Vector(ParserSyntaxField("child", ParserFieldValue.Node(4))),
+      range,
+      Vector(
+        ParserNodeOccurrence(
+          1,
+          Vector(
+            ParserFieldPathSegment.NamedField("owners"),
+            ParserFieldPathSegment.NestedProductBoundary("Pair"),
+            ParserFieldPathSegment.NamedField(side)
+          )
+        )
+      )
+    )
+    val leaf                          = ParserSyntaxNode(
+      4,
+      "Leaf",
+      Vector.empty,
+      range,
+      Vector(
+        ParserNodeOccurrence(2, Vector(ParserFieldPathSegment.NamedField("child"))),
+        ParserNodeOccurrence(3, Vector(ParserFieldPathSegment.NamedField("child")))
+      )
+    )
+    value.copy(nodes = Vector(root, owner(2, "left"), owner(3, "right"), leaf))
 
   private def snapshot(path: String, loader: Long, options: Vector[String]): ParserSyntaxSnapshot =
     val source = "x"

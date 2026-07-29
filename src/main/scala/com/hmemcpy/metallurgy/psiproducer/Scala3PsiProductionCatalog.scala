@@ -72,14 +72,25 @@ private[metallurgy] object InventoryContextLineage:
               InventoryAncestor(InventoryKind.Node, ancestor.production, normalized(occurrence.fieldPath)) +: _
             )
 
+private[metallurgy] enum NeutralNameClass:
+  case Ordinary, Wildcard, Empty
+
+private[metallurgy] object NeutralNameClass:
+  def classify(value: String): NeutralNameClass = value match
+    case ""  => Empty
+    case "_" => Wildcard
+    case _   => Ordinary
+
 private[metallurgy] enum CatalogValuePattern:
   case Node
   case Positioned
   case Optional(value: CatalogValuePattern)
+  case EmptyOptional(value: CatalogValuePattern)
   case Repeated(element: CatalogValuePattern)
   case EmptyRepeated(element: CatalogValuePattern)
   case Product(prefix: String, fields: Vector[CompilerFieldPattern])
   case Name, GeneratedName
+  case ClassifiedName(nameClass: NeutralNameClass)
   case Scalar(kind: String)
   case Unsupported(runtimeType: String)
 private[metallurgy] enum InventoryValueObservation:
@@ -130,7 +141,8 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
 private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
     parserEvidenceFingerprint: String,
-    shapes: Vector[CompilerShapeInventoryRow]
+    shapes: Vector[CompilerShapeInventoryRow],
+    nodes: Vector[ParserSyntaxNode]
 )
 private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
@@ -147,7 +159,8 @@ private[metallurgy] final case class AggregatedCompilerProductionRow(
 private[metallurgy] final case class AggregatedCompilerProductionInventory(
     identity: CompilerRuntimeIdentity,
     sourceEvidenceFingerprints: Vector[String],
-    productions: Vector[AggregatedCompilerProductionRow]
+    productions: Vector[AggregatedCompilerProductionRow],
+    scenarios: Vector[CompilerRuntimeInventory]
 ):
   private lazy val encoded: Array[Byte] = AggregatedCompilerProductionInventory.serialize(this)
   lazy val fingerprint: String          = CanonicalByteEncoder.sha256Hex(encoded)
@@ -178,10 +191,11 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   def serialize(inventory: AggregatedCompilerProductionInventory): Array[Byte] =
     val e = CanonicalByteEncoder()
-    e.tag(3)
+    e.tag(5)
     writeIdentity(inventory.identity, e)
     e.sequence(inventory.sourceEvidenceFingerprints)(e.string)
     e.sequence(inventory.productions)(writeRow(_, e))
+    e.sequence(inventory.scenarios)(writeScenario(_, e))
     e.result()
 
   private def aggregateMatching(
@@ -189,11 +203,51 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       inventories: Vector[CompilerRuntimeInventory]
   ): Either[InventoryAggregationFailure, AggregatedCompilerProductionInventory] =
     boundary:
-      val grouped = inventories.flatMap(_.shapes).groupBy(row => row.kind -> row.prefix)
-      val rows    = Vector.newBuilder[AggregatedCompilerProductionRow]
-      val ordered = grouped.toVector.sortBy((key, _) => (key._1.ordinal, key._2))
+      val all             = inventories.flatMap(_.shapes)
+      all
+        .groupBy(row => row.kind -> row.prefix)
+        .foreach:
+          case ((kind, prefix), observations) =>
+            val signatures = observations.map(_.observation.map(_.name)).distinct
+            if signatures.size != 1 then
+              break(
+                Left(InventoryAggregationFailure.FieldSignatureConflict(kind, prefix, signatures.head, signatures(1)))
+              )
+      val declaredByField = all
+        .groupBy(row => row.kind -> row.prefix)
+        .flatMap:
+          case ((kind, prefix), observations) =>
+            observations.head.observation.indices.flatMap: index =>
+              infer(observations.map(_.observation(index)), Vector.empty).toOption.map((kind, prefix, index) -> _)
+      def withEmptyDeclarations(
+          field: InventoryFieldObservation,
+          fallback: Option[CatalogValuePattern]
+      ): InventoryFieldObservation =
+        val value       = (field.value, fallback) match
+          case (
+                InventoryValueObservation.Product(prefix, nested),
+                Some(CatalogValuePattern.Product(actualPrefix, patterns))
+              ) if prefix == actualPrefix =>
+            InventoryValueObservation.Product(
+              prefix,
+              nested.zip(patterns).map((candidate, pattern) => withEmptyDeclarations(candidate, Some(pattern.value)))
+            )
+          case _ => field.value
+        val declaration = field.value match
+          case InventoryValueObservation.Optional(None) | InventoryValueObservation.Repeated(Vector()) =>
+            field.declaredPattern.orElse(fallback)
+          case _                                                                                       => field.declaredPattern
+        field.copy(value = value, declaredPattern = declaration)
+      val grouped         = all.groupBy: row =>
+        val e = CanonicalByteEncoder()
+        e.sequence(row.observation): field =>
+          e.string(field.name)
+          writeObservedPartition(field.value, field.declaredPattern, e)
+        (row.kind, row.prefix, java.util.Base64.getEncoder.encodeToString(e.result()))
+      val rows            = Vector.newBuilder[AggregatedCompilerProductionRow]
+      val ordered         = grouped.toVector.sortBy((key, _) => (key._1.ordinal, key._2, key._3))
       ordered.foreach:
-        case ((kind, prefix), observations) =>
+        case ((kind, prefix, _), observations) =>
           val signatures = observations.map(_.observation.map(_.name)).distinct
           if signatures.size != 1 then
             break(
@@ -205,8 +259,11 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
           val fieldRows  = observations.map(_.observation)
           val fields     = Vector.newBuilder[CompilerFieldPattern]
           signature.zipWithIndex.foreach: (name, index) =>
+            val observedFields = fieldRows
+              .map(_(index))
+              .map(field => withEmptyDeclarations(field, declaredByField.get((kind, prefix, index))))
             infer(
-              fieldRows.map(_(index)),
+              observedFields,
               Vector(CatalogPathSegment.NamedField(name))
             ) match
               case Left(failure) => break(Left(failure))
@@ -225,7 +282,8 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
         AggregatedCompilerProductionInventory(
           identity,
           inventories.map(_.parserEvidenceFingerprint).distinct.sorted,
-          rows.result()
+          rows.result(),
+          canonicalDistinct(inventories)(writeScenario)
         )
       )
 
@@ -239,8 +297,11 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       if declarations.forall(declaration =>
           declaration == result ||
             (declaration == CatalogValuePattern.Name && result == CatalogValuePattern.GeneratedName) ||
+            (declaration == CatalogValuePattern.Name && result.isInstanceOf[CatalogValuePattern.ClassifiedName]) ||
             ((declaration, result) match
               case (CatalogValuePattern.Repeated(expected), CatalogValuePattern.EmptyRepeated(actual)) =>
+                expected == actual
+              case (CatalogValuePattern.Optional(expected), CatalogValuePattern.EmptyOptional(actual)) =>
                 expected == actual
               case _                                                                                   => false
             )
@@ -272,7 +333,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
           else if fields.exists(_.declaredPattern.isEmpty) then Left(InventoryAggregationFailure.UnresolvedShape(path))
           else
             declarations match
-              case Vector(value: CatalogValuePattern.Optional) => Right(value)
+              case Vector(CatalogValuePattern.Optional(value)) => validate(CatalogValuePattern.EmptyOptional(value))
               case Vector()                                    => Left(InventoryAggregationFailure.UnresolvedShape(path))
               case _                                           => incompatible(path)
       case Some(_: InventoryValueObservation.Repeated)                                          =>
@@ -326,13 +387,18 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
           CatalogValuePattern.Positioned
         ).flatMap(validate)
       case Some(_: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName) =>
+        val classes = observations.collect { case InventoryValueObservation.Name(value) =>
+          NeutralNameClass.classify(value)
+        }
         if observations.forall(value =>
             value.isInstanceOf[InventoryValueObservation.Name] ||
               value.isInstanceOf[InventoryValueObservation.GeneratedName]
           )
         then
           val result =
-            if observations.forall(_.isInstanceOf[InventoryValueObservation.GeneratedName]) then
+            if classes.size == observations.size && classes.distinct.size == 1 then
+              CatalogValuePattern.ClassifiedName(classes.head)
+            else if observations.forall(_.isInstanceOf[InventoryValueObservation.GeneratedName]) then
               CatalogValuePattern.GeneratedName
             else CatalogValuePattern.Name
           validate(result)
@@ -386,6 +452,58 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     e.tag(row.kind.ordinal); e.string(row.prefix); e.sequence(row.fields)(writeField(_, e))
     e.sequence(row.occurrences)(writeProductionContext(_, e))
 
+  private def writeScenario(scenario: CompilerRuntimeInventory, e: CanonicalByteEncoder): Unit =
+    writeIdentity(scenario.identity, e)
+    e.string(scenario.parserEvidenceFingerprint)
+    e.sequence(scenario.shapes.sortBy(row => (row.kind.ordinal, row.id))): row =>
+      e.tag(row.kind.ordinal); e.long(row.id); e.string(row.prefix)
+      e.sequence(row.patternFields)(writeField(_, e))
+      e.sequence(row.observation): field =>
+        e.string(field.name); writeObservation(field.value, e)
+      e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
+
+  private def writeObservation(value: InventoryValueObservation, e: CanonicalByteEncoder): Unit = value match
+    case InventoryValueObservation.Node(id, prefix)                      => e.tag(1); e.long(id); e.string(prefix)
+    case InventoryValueObservation.Positioned(id, prefix)                => e.tag(2); e.long(id); e.string(prefix)
+    case InventoryValueObservation.Optional(value)                       =>
+      e.tag(3); value.fold(e.tag(0))(candidate => { e.tag(1); writeObservation(candidate, e) })
+    case InventoryValueObservation.Repeated(values)                      => e.tag(4); e.sequence(values)(writeObservation(_, e))
+    case InventoryValueObservation.Product(prefix, fields)               =>
+      e.tag(5); e.string(prefix);
+      e.sequence(fields)(field => { e.string(field.name); writeObservation(field.value, e) })
+    case InventoryValueObservation.Name(value)                           => e.tag(6); e.string(value)
+    case InventoryValueObservation.GeneratedName(base, separator, index) =>
+      e.tag(7); e.string(base); e.string(separator); e.int(index)
+    case InventoryValueObservation.Scalar(value)                         => e.tag(8); e.string(value.toString)
+    case InventoryValueObservation.Unsupported(value)                    => e.tag(9); e.string(value)
+
+  private def writeObservedPartition(
+      value: InventoryValueObservation,
+      declared: Option[CatalogValuePattern],
+      e: CanonicalByteEncoder
+  ): Unit = value match
+    case InventoryValueObservation.Optional(None)          =>
+      e.tag(10)
+      declared.collect { case CatalogValuePattern.Optional(inner) => inner }.fold(e.tag(0))(writePattern(_, e))
+    case InventoryValueObservation.Optional(Some(inner))   =>
+      e.tag(11)
+      writeObservedPartition(inner, declared.collect { case CatalogValuePattern.Optional(value) => value }, e)
+    case InventoryValueObservation.Repeated(Vector())      =>
+      e.tag(12)
+      declared.collect { case CatalogValuePattern.Repeated(inner) => inner }.fold(e.tag(0))(writePattern(_, e))
+    case InventoryValueObservation.Repeated(values)        =>
+      e.tag(13)
+      val inner = declared.collect { case CatalogValuePattern.Repeated(value) => value }
+      e.sequence(values)(writeObservedPartition(_, inner, e))
+    case InventoryValueObservation.Product(prefix, fields) =>
+      e.tag(14); e.string(prefix)
+      e.sequence(fields): field =>
+        e.string(field.name)
+        writeObservedPartition(field.value, field.declaredPattern, e)
+    case InventoryValueObservation.Name(name)              => e.tag(15); e.tag(NeutralNameClass.classify(name).ordinal)
+    case InventoryValueObservation.GeneratedName(_, _, _)  => e.tag(16)
+    case other                                             => writeObservation(other, e)
+
   private def writeProductionContext(context: CompilerProductionContext, e: CanonicalByteEncoder): Unit =
     writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
 
@@ -396,11 +514,13 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     case CatalogValuePattern.Node                    => e.tag(1)
     case CatalogValuePattern.Positioned              => e.tag(2)
     case CatalogValuePattern.Optional(inner)         => e.tag(3); writePattern(inner, e)
+    case CatalogValuePattern.EmptyOptional(inner)    => e.tag(12); writePattern(inner, e)
     case CatalogValuePattern.Repeated(inner)         => e.tag(4); writePattern(inner, e)
     case CatalogValuePattern.EmptyRepeated(inner)    => e.tag(10); writePattern(inner, e)
     case CatalogValuePattern.Product(prefix, fields) => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
     case CatalogValuePattern.Name                    => e.tag(6)
     case CatalogValuePattern.GeneratedName           => e.tag(7)
+    case CatalogValuePattern.ClassifiedName(value)   => e.tag(11); e.string(value.toString)
     case CatalogValuePattern.Scalar(kind)            => e.tag(8); e.string(kind)
     case CatalogValuePattern.Unsupported(runtime)    => e.tag(9); e.string(runtime)
 
@@ -607,7 +727,7 @@ private[metallurgy] object CompilerRuntimeInventory:
         )
       case InventoryValueObservation.Product(prefix, fields) =>
         CatalogValuePattern.Product(prefix, fields.map(f => CompilerFieldPattern(f.name, pattern(f.value))))
-      case InventoryValueObservation.Name(_)                 => CatalogValuePattern.Name
+      case InventoryValueObservation.Name(value)             => CatalogValuePattern.ClassifiedName(NeutralNameClass.classify(value))
       case InventoryValueObservation.GeneratedName(_, _, _)  => CatalogValuePattern.GeneratedName
       case InventoryValueObservation.Scalar(value)           => CatalogValuePattern.Scalar(value.productPrefix)
       case InventoryValueObservation.Unsupported(value)      => CatalogValuePattern.Unsupported(value)
@@ -664,7 +784,8 @@ private[metallurgy] object CompilerRuntimeInventory:
             snapshot.compilerOptions
           ),
           ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
-          rows
+          rows,
+          snapshot.nodes
         )
       )
   private def duplicate(ids: Vector[Long])                                                             =
@@ -696,7 +817,7 @@ private[metallurgy] final case class ScalaPsiSurfaceInventory(
 
   def withCatalogCapabilities(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =
     val ownedTargets = catalog.productions
-      .flatMap(_.effectiveOutputTemplate.composites)
+      .flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
       .filter(_.targetRequirement == TargetRequirement.Compatible)
       .map(_.targetSurfaceId)
       .distinct
@@ -882,8 +1003,11 @@ private[metallurgy] final case class ChildDeclaration(
     roleId: String,
     fieldName: String,
     cardinality: ChildCardinality,
-    productionId: String
-)
+    productionId: String,
+    additionalProductionIds: Set[String] = Set.empty
+):
+  require(productionId.nonEmpty)
+  val productionIds: Set[String] = additionalProductionIds + productionId
 private[metallurgy] enum TerminalIntervalSelector:
   case FieldBounds(startField: String, endField: String)
   case WholeProduction, WholeSource
@@ -923,9 +1047,21 @@ private[metallurgy] enum PersistenceObligations:
   )
 private[metallurgy] enum NavigationObligation:
   case Self
+private[metallurgy] enum PositionProvenancePolicy:
+  case SourceDerivedOnly, PositionedIncludingSynthetic
+private[metallurgy] enum ChildOccurrenceSelector:
+  case First, Last
+  case Exact(index: Int)
+private[metallurgy] enum OutputBoundary:
+  case ProductionStart(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
+  case ProductionEnd(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
+  case ChildStart(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
+  case ChildEnd(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
+  case Advance(boundary: OutputBoundary, boundaryCount: Int)
 private[metallurgy] enum OutputRangeDeclaration:
   case CompilerPosition
-  case BoundaryDerived(startBoundary: String, endBoundary: String)
+  case CompilerPositionWithPolicy(policy: PositionProvenancePolicy)
+  case BoundaryDerived(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
 private[metallurgy] final case class OutputCompositeDeclaration(
     id: String,
     parentId: Option[String],
@@ -940,6 +1076,19 @@ private[metallurgy] final case class LocalOutputCompositeTemplate(
     composites: Vector[OutputCompositeDeclaration],
     childMounts: Map[String, Option[String]]
 )
+private[metallurgy] enum ChildOutcomeExpectation:
+  case Production(productionId: String)
+  case Realization(realizationId: String)
+private[metallurgy] final case class ChildOutcomeCondition(
+    roleId: String,
+    occurrence: ChildOccurrenceSelector,
+    expected: ChildOutcomeExpectation
+)
+private[metallurgy] final case class OutputRealization(
+    id: String,
+    conditions: Vector[ChildOutcomeCondition],
+    template: LocalOutputCompositeTemplate
+)
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
     pattern: CompilerProductionPattern,
@@ -953,9 +1102,10 @@ private[metallurgy] final case class Scala3PsiProduction(
     accessors: Vector[AccessorObligation],
     persistence: PersistenceObligations,
     navigation: Option[NavigationObligation] = None,
-    outputTemplate: Option[LocalOutputCompositeTemplate] = None
+    outputTemplate: Option[LocalOutputCompositeTemplate] = None,
+    outputRealizations: Vector[OutputRealization] = Vector.empty
 ):
-  def effectiveOutputTemplate: LocalOutputCompositeTemplate = outputTemplate.getOrElse(
+  private def defaultOutputTemplate: LocalOutputCompositeTemplate = outputTemplate.getOrElse(
     LocalOutputCompositeTemplate(
       Vector(
         OutputCompositeDeclaration(
@@ -972,6 +1122,10 @@ private[metallurgy] final case class Scala3PsiProduction(
       children.map(child => child.roleId -> Some("self")).toMap
     )
   )
+  def effectiveOutputRealizations: Vector[OutputRealization]      =
+    if outputRealizations.nonEmpty then outputRealizations
+    else Vector(OutputRealization("self", Vector.empty, defaultOutputTemplate))
+  def effectiveOutputTemplate: LocalOutputCompositeTemplate       = effectiveOutputRealizations.head.template
 private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
 private[metallurgy] enum CatalogCapabilityFailure:
   case MissingProduction(id: String)
@@ -1312,7 +1466,8 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
         val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
         val status   = selected match
           case Vector(production) =>
-            val requirements = production.effectiveOutputTemplate.composites
+            val requirements = production.effectiveOutputRealizations
+              .flatMap(_.template.composites)
               .map(_.targetRequirement.toString)
               .distinct
               .sorted
@@ -1328,12 +1483,14 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       .flatMap: production =>
         val terminals = production.terminals.collect:
           case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id
-        val outputs   = production.effectiveOutputTemplate.composites.flatMap: output =>
-          val persistence = output.persistence match
-            case PersistenceObligations.NotApplicable                                   => Vector.empty
-            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-              Vector(stub, serializer, navigation) ++ indices
-          Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
+        val outputs   = production.effectiveOutputRealizations
+          .flatMap(_.template.composites)
+          .flatMap: output =>
+            val persistence = output.persistence match
+              case PersistenceObligations.NotApplicable                                   => Vector.empty
+              case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+                Vector(stub, serializer, navigation) ++ indices
+            Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
         (outputs ++ terminals)
           .map(_ -> production.id)
       .groupMap(_._1)(_._2)
@@ -1363,12 +1520,14 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.Node                     => "Node"
     case CatalogValuePattern.Positioned               => "Positioned"
     case CatalogValuePattern.Optional(value)          => s"Optional[${render(value)}]"
+    case CatalogValuePattern.EmptyOptional(value)     => s"EmptyOptional[${render(value)}]"
     case CatalogValuePattern.Repeated(value)          => s"Repeated[${render(value)}]"
     case CatalogValuePattern.EmptyRepeated(value)     => s"EmptyRepeated[${render(value)}]"
     case CatalogValuePattern.Product(prefix, fields)  =>
       s"$prefix(${fields.map(field => s"${field.name}:${render(field.value)}").mkString(",")})"
     case CatalogValuePattern.Name                     => "Name"
     case CatalogValuePattern.GeneratedName            => "GeneratedName"
+    case CatalogValuePattern.ClassifiedName(value)    => s"Name[$value]"
     case CatalogValuePattern.Scalar(kind)             => s"Scalar[$kind]"
     case CatalogValuePattern.Unsupported(runtimeType) => s"Unsupported[$runtimeType]"
 
@@ -1380,6 +1539,7 @@ private[metallurgy] object CatalogShapeMatcher:
       case (CatalogValuePattern.Optional(expected), InventoryValueObservation.Optional(Some(value)))          =>
         matches(expected, value)
       case (CatalogValuePattern.Optional(_), InventoryValueObservation.Optional(None))                        => true
+      case (CatalogValuePattern.EmptyOptional(_), InventoryValueObservation.Optional(None))                   => true
       case (CatalogValuePattern.Repeated(expected), InventoryValueObservation.Repeated(values))               =>
         values.forall(matches(expected, _))
       case (CatalogValuePattern.EmptyRepeated(_), InventoryValueObservation.Repeated(values))                 =>
@@ -1392,6 +1552,8 @@ private[metallurgy] object CatalogShapeMatcher:
           ) =>
         true
       case (CatalogValuePattern.GeneratedName, InventoryValueObservation.GeneratedName(_, _, _))              => true
+      case (CatalogValuePattern.ClassifiedName(expected), InventoryValueObservation.Name(value))              =>
+        expected == NeutralNameClass.classify(value)
       case (CatalogValuePattern.Scalar(kind), InventoryValueObservation.Scalar(value))                        =>
         kind == value.productPrefix
       case (CatalogValuePattern.Unsupported(runtimeType), InventoryValueObservation.Unsupported(actual))      =>
@@ -1410,7 +1572,14 @@ private[metallurgy] object CatalogShapeMatcher:
   def covers(expected: CatalogValuePattern, observed: CatalogValuePattern): Boolean =
     (expected, observed) match
       case (CatalogValuePattern.Name, CatalogValuePattern.Name | CatalogValuePattern.GeneratedName)             => true
+      case (CatalogValuePattern.Name, CatalogValuePattern.ClassifiedName(_))                                    => true
+      case (CatalogValuePattern.ClassifiedName(expected), CatalogValuePattern.ClassifiedName(observed))         =>
+        expected == observed
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue))           =>
+        covers(expectedValue, observedValue)
+      case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.EmptyOptional(observedValue))      =>
+        covers(expectedValue, observedValue)
+      case (CatalogValuePattern.EmptyOptional(expectedValue), CatalogValuePattern.EmptyOptional(observedValue)) =>
         covers(expectedValue, observedValue)
       case (CatalogValuePattern.Repeated(expectedValue), CatalogValuePattern.Repeated(observedValue))           =>
         covers(expectedValue, observedValue)
@@ -1490,6 +1659,22 @@ private[metallurgy] enum CatalogValidationError:
   case DuplicateOccurrencePattern(productionId: String, pattern: CompilerProductionContextPattern)
   case DuplicateChildRoleId(productionId: String, roleId: String)
   case UnknownChildProductionId(productionId: String, childProductionId: String)
+  case EmptyOutputRealizations(productionId: String)
+  case DuplicateOutputRealizationId(productionId: String, realizationId: String)
+  case UnknownRealizationConditionRole(productionId: String, realizationId: String, roleId: String)
+  case InvalidRealizationConditionOccurrence(
+      productionId: String,
+      realizationId: String,
+      occurrence: ChildOccurrenceSelector
+  )
+  case DuplicateRealizationCondition(
+      productionId: String,
+      realizationId: String,
+      roleId: String,
+      occurrence: ChildOccurrenceSelector
+  )
+  case UnknownConditionProductionId(productionId: String, realizationId: String, childProductionId: String)
+  case UnknownConditionRealizationId(productionId: String, realizationId: String, childRealizationId: String)
   case DuplicateTerminalId(productionId: String, terminalId: String)
   case DuplicateAccessorObligation(productionId: String, surfaceId: String)
   case DuplicateOutputId(productionId: String, outputId: String)
@@ -1499,6 +1684,7 @@ private[metallurgy] enum CatalogValidationError:
   case ExtraChildMountRole(productionId: String, roleId: String)
   case UnknownChildMountParent(productionId: String, roleId: String, parentId: String)
   case UnsupportedOutputRange(productionId: String, outputId: String, range: OutputRangeDeclaration)
+  case InvalidOutputBoundary(productionId: String, outputId: String, boundary: OutputBoundary, reason: String)
   case OverlappingCompilerPositionSiblings(
       productionId: String,
       parentId: Option[String],
@@ -1540,6 +1726,155 @@ private[metallurgy] enum CatalogValidationError:
       sourceClassification: SourceClassification,
       productionIds: Vector[String]
   )
+  case UnknownScenarioRealization(productionId: String, realizationIds: Vector[String])
+  case AmbiguousScenarioRealization(productionId: String, realizationIds: Vector[String])
+  case MissingScenarioOccurrenceOwner(instance: ProductionInstanceId, ownerNodeId: Long)
+  case MissingScenarioOccurrenceContext(instance: ProductionInstanceId, occurrence: ProductionOccurrenceId)
+
+private[metallurgy] object RuntimeRealizationSelector:
+  def validate(catalog: Scala3PsiProductionCatalog, runtime: CompilerRuntimeInventory): Vector[CatalogValidationError] =
+    val rows                                                                   = runtime.shapes.map(row => (row.kind, row.id) -> row).toMap
+    val nodes                                                                  = runtime.nodes.map(node => node.id -> node).toMap
+    val selected                                                               = collection.mutable.Map.empty[ProductionInstanceId, Scala3PsiProduction]
+    val errors                                                                 = Vector.newBuilder[CatalogValidationError]
+    def references(
+        value: InventoryValueObservation,
+        path: Vector[ParserFieldPathSegment]
+    ): Vector[(InventoryKind, Long, Vector[ParserFieldPathSegment])] = value match
+      case InventoryValueObservation.Node(id, _)             => Vector((InventoryKind.Node, id, path))
+      case InventoryValueObservation.Positioned(id, _)       => Vector((InventoryKind.Positioned, id, path))
+      case InventoryValueObservation.Optional(value)         =>
+        value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting))
+      case InventoryValueObservation.Repeated(values)        =>
+        values.zipWithIndex.flatMap((candidate, index) =>
+          references(candidate, path :+ ParserFieldPathSegment.RepeatedIndex(index))
+        )
+      case InventoryValueObservation.Product(prefix, fields) =>
+        fields.flatMap(field =>
+          references(
+            field.value,
+            path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+ ParserFieldPathSegment.NamedField(
+              field.name
+            )
+          )
+        )
+      case _                                                 => Vector.empty
+    def children(instance: ProductionInstanceId): Vector[ProductionInstanceId] =
+      if instance.kind == InventoryKind.Positioned then Vector.empty
+      else
+        rows(instance.kind -> instance.valueId).observation.flatMap(field =>
+          references(field.value, Vector(ParserFieldPathSegment.NamedField(field.name))).map: (kind, id, path) =>
+            ProductionInstanceLineage.child(instance, kind, id, path)
+        )
+    val roots                                                                  = runtime.shapes
+      .filter(row => row.kind == InventoryKind.Node && row.contexts.isEmpty)
+      .map(row => ProductionInstanceId(row.kind, row.id, None))
+    val pending                                                                = collection.mutable.Stack.from(roots.reverse)
+    val discovered                                                             = collection.mutable.LinkedHashSet.empty[ProductionInstanceId]
+    while pending.nonEmpty do
+      val instance = pending.pop()
+      if discovered.add(instance) then children(instance).reverseIterator.foreach(pending.push)
+    discovered.foreach: instance =>
+      val row      = rows(instance.kind -> instance.valueId)
+      val contexts = instance.occurrence match
+        case None             => Vector(None)
+        case Some(occurrence) =>
+          nodes.get(occurrence.ownerNodeId) match
+            case None        =>
+              errors += CatalogValidationError.MissingScenarioOccurrenceOwner(instance, occurrence.ownerNodeId)
+              Vector.empty
+            case Some(owner) =>
+              val derived = InventoryContextLineage.contexts(owner, occurrence.fieldPath, nodes)
+              if derived.isEmpty then
+                errors += CatalogValidationError.MissingScenarioOccurrenceContext(instance, occurrence)
+              derived.map(Some(_))
+      val matches  = contexts
+        .map(context =>
+          CatalogShapeMatcher.select(
+            catalog,
+            row.kind,
+            row.prefix,
+            row.observation,
+            context,
+            row.sourceClassification
+          )
+        )
+        .map(_.map(_.id))
+        .distinct
+      matches match
+        case Vector(Vector(id))          => selected += instance -> catalog.productions.find(_.id == id).get
+        case Vector(Vector()) | Vector() =>
+          errors += CatalogValidationError.UncoveredCompilerShape(
+            row.kind,
+            row.prefix,
+            contexts.headOption.flatten,
+            row.sourceClassification
+          )
+        case Vector(ids)                 =>
+          errors += CatalogValidationError.AmbiguousCompilerShape(
+            row.kind,
+            row.prefix,
+            contexts.headOption.flatten,
+            row.sourceClassification,
+            ids.sorted
+          )
+        case values                      =>
+          errors += CatalogValidationError.AmbiguousCompilerShape(
+            row.kind,
+            row.prefix,
+            contexts.headOption.flatten,
+            row.sourceClassification,
+            values.flatten.distinct.sorted
+          )
+
+    val resolved                                 = collection.mutable.Map.empty[ProductionInstanceId, OutputRealization]
+    val resolving                                = collection.mutable.Set.empty[ProductionInstanceId]
+    def resolve(key: ProductionInstanceId): Unit =
+      if !resolved.contains(key) && !resolving(key) then
+        selected.get(key) match
+          case Some(production) =>
+            resolving += key
+            val childOutcomes = production.children.map: declaration =>
+              val refs =
+                children(key).filter: child =>
+                  child.occurrence.exists(occurrence =>
+                    ProductionInstanceLineage
+                      .relativePath(key, occurrence)
+                      .headOption
+                      .contains(
+                        ParserFieldPathSegment.NamedField(declaration.fieldName)
+                      )
+                  )
+              declaration.roleId -> refs
+            childOutcomes.flatMap(_._2).foreach(resolve)
+            val matches       = production.effectiveOutputRealizations.filter: realization =>
+              realization.conditions.forall: condition =>
+                val values = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
+                val child  = condition.occurrence match
+                  case ChildOccurrenceSelector.First        => values.headOption
+                  case ChildOccurrenceSelector.Last         => values.lastOption
+                  case ChildOccurrenceSelector.Exact(index) => values.lift(index)
+                child.exists(candidate =>
+                  condition.expected match
+                    case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
+                    case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.id == id)
+                )
+            matches match
+              case Vector(realization) => resolved += key -> realization
+              case Vector()            =>
+                errors += CatalogValidationError.UnknownScenarioRealization(
+                  production.id,
+                  production.effectiveOutputRealizations.map(_.id).sorted
+                )
+              case many                =>
+                errors += CatalogValidationError.AmbiguousScenarioRealization(
+                  production.id,
+                  many.map(_.id).sorted
+                )
+            resolving -= key
+          case None             => ()
+    discovered.foreach(resolve)
+    errors.result()
 
 private[metallurgy] object Scala3PsiProductionCatalogValidator:
   def validate(
@@ -1599,60 +1934,130 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           errors += CatalogValidationError.IncompleteSurfaceStatus(p.id, id, row.status)
         case _                                                                    => ()
     catalog.productions.foreach: p =>
-      val names                                                = p.pattern.fields.map(_.name)
-      val template                                             = p.effectiveOutputTemplate
-      val outputIds                                            = template.composites.map(_.id)
-      val childRoles                                           = p.children.map(_.roleId).toSet
-      duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))
-      template.composites.foreach: output =>
-        output.parentId
-          .filterNot(outputIds.contains)
-          .foreach(parent => errors += CatalogValidationError.UnknownOutputParent(p.id, output.id, parent))
-        output.range match
-          case OutputRangeDeclaration.CompilerPosition => ()
-          case unsupported                             => errors += CatalogValidationError.UnsupportedOutputRange(p.id, output.id, unsupported)
-      template.composites
-        .filter(_.range == OutputRangeDeclaration.CompilerPosition)
-        .groupBy(_.parentId)
-        .values
-        .foreach: siblings =>
-          siblings
-            .map(_.id)
-            .sorted
-            .sliding(2)
-            .foreach:
-              case Vector(left, right) =>
-                errors += CatalogValidationError.OverlappingCompilerPositionSiblings(
-                  p.id,
-                  siblings.head.parentId,
-                  left,
-                  right
-                )
-              case _                   => ()
-      def cyclicOutput(id: String, seen: Set[String]): Boolean =
-        if seen(id) then true
-        else template.composites.find(_.id == id).flatMap(_.parentId).exists(cyclicOutput(_, seen + id))
-      outputIds.distinct
-        .filter(cyclicOutput(_, Set.empty))
-        .foreach(id => errors += CatalogValidationError.CyclicOutputParent(p.id, id))
-      childRoles
-        .diff(template.childMounts.keySet)
-        .foreach(role => errors += CatalogValidationError.MissingChildMountRole(p.id, role))
-      template.childMounts.keySet
-        .diff(childRoles)
-        .foreach(role => errors += CatalogValidationError.ExtraChildMountRole(p.id, role))
-      template.childMounts.foreach: (role, parent) =>
-        parent
-          .filterNot(outputIds.contains)
-          .foreach(id => errors += CatalogValidationError.UnknownChildMountParent(p.id, role, id))
+      val names        = p.pattern.fields.map(_.name)
+      val childRoles   = p.children.map(_.roleId).toSet
+      val realizations = p.effectiveOutputRealizations
+      if realizations.isEmpty then errors += CatalogValidationError.EmptyOutputRealizations(p.id)
+      duplicates(realizations.map(_.id)).foreach(id =>
+        errors += CatalogValidationError.DuplicateOutputRealizationId(p.id, id)
+      )
+      realizations.foreach(realization =>
+        duplicates(realization.conditions.map(condition => condition.roleId -> condition.occurrence)).foreach:
+          case (roleId, occurrence) =>
+            errors += CatalogValidationError.DuplicateRealizationCondition(
+              p.id,
+              realization.id,
+              roleId,
+              occurrence
+            )
+        realization.conditions.foreach: condition =>
+          if !childRoles(condition.roleId) then
+            errors += CatalogValidationError.UnknownRealizationConditionRole(p.id, realization.id, condition.roleId)
+          condition.occurrence match
+            case value @ ChildOccurrenceSelector.Exact(index) if index < 0 =>
+              errors += CatalogValidationError.InvalidRealizationConditionOccurrence(p.id, realization.id, value)
+            case _                                                         => ()
+          p.children
+            .find(_.roleId == condition.roleId)
+            .foreach: child =>
+              condition.expected match
+                case ChildOutcomeExpectation.Production(id) if !child.productionIds(id) =>
+                  errors += CatalogValidationError.UnknownConditionProductionId(p.id, realization.id, id)
+                case ChildOutcomeExpectation.Realization(id)
+                    if !catalog.productions
+                      .filter(production => child.productionIds(production.id))
+                      .exists(_.effectiveOutputRealizations.exists(_.id == id)) =>
+                  errors += CatalogValidationError.UnknownConditionRealizationId(p.id, realization.id, id)
+                case _                                                                  => ()
+      )
+      realizations.foreach { realization =>
+        val template                                             = realization.template; val outputIds = template.composites.map(_.id)
+        duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))
+        template.composites.foreach: output =>
+          output.parentId
+            .filterNot(outputIds.contains)
+            .foreach(parent => errors += CatalogValidationError.UnknownOutputParent(p.id, output.id, parent))
+          def validateBoundary(boundary: OutputBoundary): Unit = boundary match
+            case OutputBoundary.ChildStart(role, selector, _)  =>
+              if !childRoles(role) then
+                errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
+              selector match
+                case ChildOccurrenceSelector.Exact(index) if index < 0 =>
+                  errors += CatalogValidationError.InvalidOutputBoundary(
+                    p.id,
+                    output.id,
+                    boundary,
+                    "negative occurrence ordinal"
+                  )
+                case _                                                 => ()
+            case OutputBoundary.ChildEnd(role, selector, _)    =>
+              if !childRoles(role) then
+                errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
+              selector match
+                case ChildOccurrenceSelector.Exact(index) if index < 0 =>
+                  errors += CatalogValidationError.InvalidOutputBoundary(
+                    p.id,
+                    output.id,
+                    boundary,
+                    "negative occurrence ordinal"
+                  )
+                case _                                                 => ()
+            case OutputBoundary.Advance(_, count) if count < 0 =>
+              errors += CatalogValidationError.InvalidOutputBoundary(
+                p.id,
+                output.id,
+                boundary,
+                "negative boundary advance"
+              )
+            case OutputBoundary.Advance(base, _)               => validateBoundary(base)
+            case _                                             => ()
+          output.range match
+            case OutputRangeDeclaration.CompilerPosition | OutputRangeDeclaration.CompilerPositionWithPolicy(_) => ()
+            case OutputRangeDeclaration.BoundaryDerived(start, end)                                             => validateBoundary(start); validateBoundary(end)
+        template.composites
+          .filter(_.range == OutputRangeDeclaration.CompilerPosition)
+          .groupBy(_.parentId)
+          .values
+          .foreach: siblings =>
+            siblings
+              .map(_.id)
+              .sorted
+              .sliding(2)
+              .foreach:
+                case Vector(left, right) =>
+                  errors += CatalogValidationError.OverlappingCompilerPositionSiblings(
+                    p.id,
+                    siblings.head.parentId,
+                    left,
+                    right
+                  )
+                case _                   => ()
+        def cyclicOutput(id: String, seen: Set[String]): Boolean =
+          if seen(id) then true
+          else template.composites.find(_.id == id).flatMap(_.parentId).exists(cyclicOutput(_, seen + id))
+        outputIds.distinct
+          .filter(cyclicOutput(_, Set.empty))
+          .foreach(id => errors += CatalogValidationError.CyclicOutputParent(p.id, id))
+        childRoles
+          .diff(template.childMounts.keySet)
+          .foreach(role => errors += CatalogValidationError.MissingChildMountRole(p.id, role))
+        template.childMounts.keySet
+          .diff(childRoles)
+          .foreach(role => errors += CatalogValidationError.ExtraChildMountRole(p.id, role))
+        template.childMounts.foreach: (role, parent) =>
+          parent
+            .filterNot(outputIds.contains)
+            .foreach(id => errors += CatalogValidationError.UnknownChildMountParent(p.id, role, id))
+      }
       if p.pattern.occurrences.isEmpty then errors += CatalogValidationError.EmptyOccurrencePatterns(p.id)
       duplicates(p.pattern.occurrences)
         .foreach(pattern => errors += CatalogValidationError.DuplicateOccurrencePattern(p.id, pattern))
       duplicates(p.children.map(_.roleId))
         .foreach(role => errors += CatalogValidationError.DuplicateChildRoleId(p.id, role))
       p.children
-        .filterNot(child => productionIds(child.productionId))
-        .foreach(child => errors += CatalogValidationError.UnknownChildProductionId(p.id, child.productionId))
+        .flatMap(_.productionIds)
+        .filterNot(productionIds)
+        .foreach(id => errors += CatalogValidationError.UnknownChildProductionId(p.id, id))
       p.children
         .filter(child => !valid(child.cardinality))
         .foreach(child => errors += CatalogValidationError.InvalidChildCardinality(p.id, child.roleId))
@@ -1661,9 +2066,11 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       p.terminals
         .filter(terminal => !valid(terminal.cardinality))
         .foreach(terminal => errors += CatalogValidationError.InvalidTerminalCardinality(p.id, terminal.id))
-      template.composites.foreach: output =>
-        duplicates(output.accessors.map(_.surfaceId))
-          .foreach(id => errors += CatalogValidationError.DuplicateAccessorObligation(p.id, id))
+      realizations
+        .flatMap(_.template.composites)
+        .foreach: output =>
+          duplicates(output.accessors.map(_.surfaceId))
+            .foreach(id => errors += CatalogValidationError.DuplicateAccessorObligation(p.id, id))
       if p.layouts.isEmpty then errors += CatalogValidationError.EmptyLayoutAlternatives(p.id)
       duplicates(p.layouts)
         .foreach(layout => errors += CatalogValidationError.DuplicateLayoutAlternative(p.id, layout))
@@ -1706,26 +2113,30 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) =>
           requireSurface(p, id, SurfaceFactKind.Token)
         case _                                                          => ()
-      template.composites.foreach: output =>
-        requireSurface(p, output.targetSurfaceId, SurfaceFactKind.Element)
-        output.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
-        output.persistence match
-          case PersistenceObligations.NotApplicable                                   => ()
-          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-            requireSurface(p, stub, SurfaceFactKind.Stub)
-            requireSurface(p, serializer, SurfaceFactKind.Serializer)
-            indices.foreach(requireSurface(p, _, SurfaceFactKind.Index))
-            requireSurface(p, navigation, SurfaceFactKind.Navigation)
+      realizations
+        .flatMap(_.template.composites)
+        .foreach: output =>
+          requireSurface(p, output.targetSurfaceId, SurfaceFactKind.Element)
+          output.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
+          output.persistence match
+            case PersistenceObligations.NotApplicable                                   => ()
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              requireSurface(p, stub, SurfaceFactKind.Stub)
+              requireSurface(p, serializer, SurfaceFactKind.Serializer)
+              indices.foreach(requireSurface(p, _, SurfaceFactKind.Index))
+              requireSurface(p, navigation, SurfaceFactKind.Navigation)
     errors ++= coverage
     val accounted                                                                                                     = catalog.productions
       .flatMap: p =>
         val terminals = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id }
-        val outputs   = p.effectiveOutputTemplate.composites.flatMap: output =>
-          val persistence = output.persistence match
-            case PersistenceObligations.NotApplicable                                   => Vector.empty
-            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-              Vector(stub, serializer, navigation) ++ indices
-          Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
+        val outputs   = p.effectiveOutputRealizations
+          .flatMap(_.template.composites)
+          .flatMap: output =>
+            val persistence = output.persistence match
+              case PersistenceObligations.NotApplicable                                   => Vector.empty
+              case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+                Vector(stub, serializer, navigation) ++ indices
+            Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
         outputs ++ terminals
       .toSet
     if includeUnaccountedSurfaces then
@@ -1887,6 +2298,22 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case UnprobedNativeCandidate(owner: ProductionInstanceId, productionId: String)
   case UnassignedDiagnostic(index: Int)
   case OverlappingOutputForest(left: CompositeInstanceId, right: CompositeInstanceId)
+  case OutputBoundaryResolutionFailed(
+      owner: ProductionInstanceId,
+      outputId: String,
+      boundary: OutputBoundary,
+      reason: String
+  )
+  case InvalidOutputRange(
+      owner: ProductionInstanceId,
+      outputId: String,
+      start: Int,
+      end: Int,
+      productionRange: PcSourceRange
+  )
+  case UnknownOutputRealization(owner: ProductionInstanceId, productionId: String)
+  case AmbiguousOutputRealization(owner: ProductionInstanceId, productionId: String, realizationIds: Vector[String])
+  case OutputChildOutsideParent(parent: CompositeInstanceId, child: CompositeInstanceId)
 
 private[metallurgy] final case class ProductionOccurrenceId(
     ownerNodeId: Long,
@@ -1897,6 +2324,28 @@ private[metallurgy] final case class ProductionInstanceId(
     valueId: Long,
     occurrence: Option[ProductionOccurrenceId]
 )
+private[metallurgy] object ProductionInstanceLineage:
+  def child(
+      parent: ProductionInstanceId,
+      kind: InventoryKind,
+      id: Long,
+      path: Vector[ParserFieldPathSegment]
+  ): ProductionInstanceId =
+    val origin = parent.kind match
+      case InventoryKind.Node       => ProductionOccurrenceId(parent.valueId, Vector.empty)
+      case InventoryKind.Positioned =>
+        parent.occurrence.getOrElse(ProductionOccurrenceId(parent.valueId, Vector.empty))
+    ProductionInstanceId(kind, id, Some(ProductionOccurrenceId(origin.ownerNodeId, origin.fieldPath ++ path)))
+
+  def relativePath(
+      parent: ProductionInstanceId,
+      childOccurrence: ProductionOccurrenceId
+  ): Vector[ParserFieldPathSegment] =
+    val retainedPrefixLength = parent.kind match
+      case InventoryKind.Node       => 0
+      case InventoryKind.Positioned => parent.occurrence.fold(0)(_.fieldPath.size)
+    childOccurrence.fieldPath.drop(retainedPrefixLength)
+
 private[metallurgy] final case class CompositeInstanceId(
     origin: ProductionInstanceId,
     localOutputId: String,
@@ -1983,7 +2432,8 @@ private[metallurgy] object PreparedProductionCatalog:
       compiler: AggregatedCompilerProductionInventory,
       surfaces: ScalaPsiSurfaceInventory
   ): Either[Vector[CatalogValidationError], PreparedProductionCatalog] =
-    val errors = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, compiler, surfaces)
+    val errors = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, compiler, surfaces) ++
+      compiler.scenarios.flatMap(RuntimeRealizationSelector.validate(catalog, _))
     Either.cond(errors.isEmpty, new PreparedProductionCatalog(catalog, compiler, surfaces), errors)
 
   def prepareRuntimeSubset(
@@ -1992,20 +2442,9 @@ private[metallurgy] object PreparedProductionCatalog:
       compiler: AggregatedCompilerProductionInventory,
       surfaces: ScalaPsiSurfaceInventory
   ): Either[Vector[CatalogValidationError], PreparedProductionCatalog] =
-    val selected = runtime.shapes.flatMap: shape =>
-      val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
-      contexts.flatMap(context =>
-        CatalogShapeMatcher.select(
-          catalog,
-          shape.kind,
-          shape.prefix,
-          shape.observation,
-          context,
-          shape.sourceClassification
-        )
-      )
-    val subset   = catalog.copy(productions = catalog.productions.filter(selected.toSet))
-    prepare(subset, compiler, surfaces)
+    val errors = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, runtime, surfaces) ++
+      RuntimeRealizationSelector.validate(catalog, runtime)
+    Either.cond(errors.isEmpty, new PreparedProductionCatalog(catalog, compiler, surfaces), errors.distinct)
 
 private[metallurgy] object WholeFileProductionPlanner:
   def plan(
@@ -2045,7 +2484,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
-    boundary:
+    boundary[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]:
       val rows                                                                       = compiler.shapes.map(row => (row.kind, row.id) -> row).toMap
       val nodes                                                                      = snapshot.nodes.map(node => node.id -> node).toMap
       val positioned                                                                 = snapshot.positioned.map(value => value.id -> value).toMap
@@ -2076,18 +2515,13 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
           )
         case _                                        => Vector.empty
-      def childOrigin(instance: ProductionInstanceId): ProductionOccurrenceId        = instance.kind match
-        case InventoryKind.Node       => ProductionOccurrenceId(instance.valueId, Vector.empty)
-        case InventoryKind.Positioned =>
-          instance.occurrence.getOrElse(ProductionOccurrenceId(instance.valueId, Vector.empty))
       def childInstance(
           instance: ProductionInstanceId,
           kind: InventoryKind,
           id: Long,
           path: Vector[ParserFieldPathSegment]
       ): ProductionInstanceId =
-        val origin = childOrigin(instance)
-        ProductionInstanceId(kind, id, Some(ProductionOccurrenceId(origin.ownerNodeId, origin.fieldPath ++ path)))
+        ProductionInstanceLineage.child(instance, kind, id, path)
       def children(instance: ProductionInstanceId): Vector[ProductionInstanceId]     =
         if instance.kind == InventoryKind.Positioned then Vector.empty
         else
@@ -2213,13 +2647,13 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             found.foreach: (child, path) =>
               val actual = selected(child)
-              if actual.id != declaration.productionId then
+              if !declaration.productionIds(actual.id) then
                 break(
                   Left(
                     WholeFilePlanningFailure.ChildProductionMismatch(
                       instance,
                       declaration.roleId,
-                      declaration.productionId,
+                      declaration.productionIds.toVector.sorted.mkString("|"),
                       actual.id,
                       child
                     )
@@ -2238,15 +2672,134 @@ private[metallurgy] object WholeFileProductionPlanner:
           compilerChildren.update(instance, plannedChildren.result())
       if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
 
-      val outputRoots      = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
-      val localOutputRoots = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
-      val outputRows       = collection.mutable.Map
-        .empty[ProductionInstanceId, Vector[(OutputCompositeDeclaration, CompositeInstanceId, PcSourceRange)]]
+      val resolvedRealizations = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, OutputRealization]
       active.toVector.reverse.foreach: instance =>
-        val template   = selected(instance).effectiveOutputTemplate
+        val children                                                                   = compilerChildren.getOrElse(instance, Vector.empty)
+        def occurrence(condition: ChildOutcomeCondition): Option[ProductionInstanceId] =
+          val values = children.collect { case (condition.roleId, _, child) => child }
+          condition.occurrence match
+            case ChildOccurrenceSelector.First        => values.headOption
+            case ChildOccurrenceSelector.Last         => values.lastOption
+            case ChildOccurrenceSelector.Exact(index) => values.lift(index)
+        val matches                                                                    = selected(instance).effectiveOutputRealizations.filter(realization =>
+          realization.conditions.forall(condition =>
+            occurrence(condition).exists(child =>
+              condition.expected match
+                case ChildOutcomeExpectation.Production(id)  => selected(child).id == id
+                case ChildOutcomeExpectation.Realization(id) => resolvedRealizations(child).id == id
+            )
+          )
+        )
+        matches match
+          case Vector(value) => resolvedRealizations += instance -> value
+          case Vector()      =>
+            break(Left(WholeFilePlanningFailure.UnknownOutputRealization(instance, selected(instance).id)))
+          case values        =>
+            break(
+              Left(
+                WholeFilePlanningFailure.AmbiguousOutputRealization(
+                  instance,
+                  selected(instance).id,
+                  values.map(_.id).sorted
+                )
+              )
+            )
+
+      val outputRoots        = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val localOutputRoots   = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val outputRows         = collection.mutable.Map
+        .empty[ProductionInstanceId, Vector[(OutputCompositeDeclaration, CompositeInstanceId, PcSourceRange)]]
+      val evidenceBoundaries =
+        (evidence.atoms.map(_.start) ++ evidence.atoms.lastOption.map(_.end)).distinct.sorted
+      active.toVector.reverse.foreach: instance =>
+        val template   = resolvedRealizations(instance).template
+        def positionedRange(
+            target: ProductionInstanceId,
+            policy: PositionProvenancePolicy,
+            boundary: OutputBoundary,
+            outputId: String
+        )(using scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]): PcSourceRange =
+          position(target) match
+            case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
+            case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.Synthetic)
+                if policy == PositionProvenancePolicy.PositionedIncludingSynthetic =>
+              value
+            case _                                                                               =>
+              break(
+                Left(
+                  WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                    instance,
+                    outputId,
+                    boundary,
+                    "position is absent or synthetic"
+                  )
+                )
+              )
+        def resolve(boundary: OutputBoundary, outputId: String)(using
+            scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
+        ): Int = boundary match
+          case value @ OutputBoundary.ProductionStart(policy)            =>
+            positionedRange(instance, policy, value, outputId).startOffset
+          case value @ OutputBoundary.ProductionEnd(policy)              =>
+            positionedRange(instance, policy, value, outputId).endOffset
+          case value @ OutputBoundary.ChildStart(role, selector, policy) =>
+            val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
+            val selectedChild = selector match
+              case ChildOccurrenceSelector.First          => candidates.headOption
+              case ChildOccurrenceSelector.Last           => candidates.lastOption
+              case ChildOccurrenceSelector.Exact(ordinal) => candidates.lift(ordinal)
+            val child         = selectedChild.getOrElse(
+              break(
+                Left(
+                  WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                    instance,
+                    outputId,
+                    value,
+                    "child occurrence is missing"
+                  )
+                )
+              )
+            )
+            val range         = positionedRange(child, policy, value, outputId)
+            range.startOffset
+          case value @ OutputBoundary.ChildEnd(role, selector, policy)   =>
+            val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
+            val selectedChild = selector match
+              case ChildOccurrenceSelector.First          => candidates.headOption
+              case ChildOccurrenceSelector.Last           => candidates.lastOption
+              case ChildOccurrenceSelector.Exact(ordinal) => candidates.lift(ordinal)
+            val child         = selectedChild.getOrElse(
+              break(
+                Left(
+                  WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                    instance,
+                    outputId,
+                    value,
+                    "child occurrence is missing"
+                  )
+                )
+              )
+            )
+            positionedRange(child, policy, value, outputId).endOffset
+          case value @ OutputBoundary.Advance(base, count)               =>
+            val offset    = resolve(base, outputId)
+            val index     = evidenceBoundaries.indexOf(offset)
+            val remaining = if index < 0 then -1L else evidenceBoundaries.size.toLong - index.toLong - 1L
+            if index < 0 || count.toLong > remaining then
+              break(
+                Left(
+                  WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                    instance,
+                    outputId,
+                    value,
+                    "advance is outside evidence boundaries"
+                  )
+                )
+              )
+            evidenceBoundaries((index.toLong + count.toLong).toInt)
         val ranges     = template.composites.map: declaration =>
-          val range = declaration.range match
-            case OutputRangeDeclaration.CompilerPosition   =>
+          val range            = declaration.range match
+            case OutputRangeDeclaration.CompilerPosition                            =>
               position(instance) match
                 case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
                 case _                                                                               =>
@@ -2263,20 +2816,53 @@ private[metallurgy] object WholeFileProductionPlanner:
                       )
                     )
                   )
-            case _: OutputRangeDeclaration.BoundaryDerived =>
-              break(
-                Left(
-                  WholeFilePlanningFailure.InvalidCatalog(
-                    Vector(
-                      CatalogValidationError.UnsupportedOutputRange(
-                        selected(instance).id,
-                        declaration.id,
-                        declaration.range
+            case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)          =>
+              positionedRange(instance, policy, OutputBoundary.ProductionStart(policy), declaration.id)
+            case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary) =>
+              val start            = resolve(startBoundary, declaration.id)
+              val end              = resolve(endBoundary, declaration.id)
+              val emptyWholeSource = snapshot.sourceLength == 0 && start == 0 && end == 0
+              if start > end || (start == end && !emptyWholeSource) then
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidOutputRange(
+                      instance,
+                      declaration.id,
+                      start,
+                      end,
+                      positionedRange(
+                        instance,
+                        PositionProvenancePolicy.PositionedIncludingSynthetic,
+                        startBoundary,
+                        declaration.id
                       )
                     )
                   )
                 )
+              PcSourceRange(start, end)
+          val ownerRange       = positionedRange(
+            instance,
+            PositionProvenancePolicy.PositionedIncludingSynthetic,
+            OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
+            declaration.id
+          )
+          val emptyWholeSource = snapshot.sourceLength == 0 && range.startOffset == 0 && range.endOffset == 0
+          if range.startOffset < ownerRange.startOffset || range.endOffset > ownerRange.endOffset ||
+            (!emptyWholeSource && (range.startOffset >= range.endOffset || !evidenceBoundaries.contains(
+              range.startOffset
+            ) || !evidenceBoundaries.contains(range.endOffset)))
+          then
+            break(
+              Left(
+                WholeFilePlanningFailure.InvalidOutputRange(
+                  instance,
+                  declaration.id,
+                  range.startOffset,
+                  range.endOffset,
+                  ownerRange
+                )
               )
+            )
           (declaration, CompositeInstanceId(instance, declaration.id), range)
         outputRows.update(instance, ranges)
         val localRoots = ranges.collect { case (declaration, id, _) if declaration.parentId.isEmpty => id }
@@ -2284,12 +2870,22 @@ private[metallurgy] object WholeFileProductionPlanner:
         val exported   = compilerChildren
           .getOrElse(instance, Vector.empty)
           .flatMap: (role, _, child) =>
-            if template.childMounts(role).isEmpty then outputRoots.getOrElse(child, Vector.empty) else Vector.empty
+            val mount = template.childMounts.getOrElse(
+              role,
+              break(
+                Left(
+                  WholeFilePlanningFailure.InvalidCatalog(
+                    Vector(CatalogValidationError.MissingChildMountRole(selected(instance).id, role))
+                  )
+                )
+              )
+            )
+            if mount.isEmpty then outputRoots.getOrElse(child, Vector.empty) else Vector.empty
         outputRoots.update(instance, localRoots ++ exported)
 
       val composites                                            = active.toVector.flatMap: instance =>
         val production = selected(instance)
-        val template   = production.effectiveOutputTemplate
+        val template   = resolvedRealizations(instance).template
         outputRows(instance).map: (declaration, id, range) =>
           val localChildren = outputRows(instance).collect {
             case (child, childId, _) if child.parentId.contains(declaration.id) =>
@@ -2298,7 +2894,16 @@ private[metallurgy] object WholeFileProductionPlanner:
           val mounted       = compilerChildren
             .getOrElse(instance, Vector.empty)
             .flatMap: (role, path, child) =>
-              template.childMounts(role) match
+              template.childMounts.getOrElse(
+                role,
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidCatalog(
+                      Vector(CatalogValidationError.MissingChildMountRole(production.id, role))
+                    )
+                  )
+                )
+              ) match
                 case Some(parent) if parent == declaration.id => outputRoots(child).map(PlannedChild(role, path, _))
                 case None                                     => Vector.empty
                 case _                                        => Vector.empty
@@ -2309,6 +2914,13 @@ private[metallurgy] object WholeFileProductionPlanner:
             (childRange.startOffset, childRange.endOffset, child.child.toString)
           PlannedComposite(id, production.id, range, normalized, production.dispositions)
       val compositeRanges                                       = composites.map(value => value.instance -> value.range).toMap
+      composites.foreach(parent =>
+        parent.children.foreach: child =>
+          val parentRange = parent.range
+          val childRange  = compositeRanges(child.child)
+          if childRange.startOffset < parentRange.startOffset || childRange.endOffset > parentRange.endOffset then
+            break(Left(WholeFilePlanningFailure.OutputChildOutsideParent(parent.instance, child.child)))
+      )
       def rejectOverlap(ids: Vector[CompositeInstanceId]): Unit =
         ids
           .sortBy(id => (compositeRanges(id).startOffset, compositeRanges(id).endOffset, id.toString))
