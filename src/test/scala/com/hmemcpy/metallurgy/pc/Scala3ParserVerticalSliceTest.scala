@@ -2,10 +2,17 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
+  CatalogValidationError,
   CatalogValuePattern,
   CompilerRuntimeInventory,
+  FactStatus,
   InventoryFieldObservation,
-  InventoryValueObservation
+  InventoryValueObservation,
+  Scala3PsiProductionCatalog,
+  Scala3PsiProductionCatalogValidator,
+  Scala3PsiProductionCoverageReport,
+  ScalaPsiSurfaceInventory,
+  SurfaceClassification
 }
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
 import org.junit.Test
@@ -125,6 +132,117 @@ final class Scala3ParserVerticalSliceTest:
       assertEquals(
         firstAggregation,
         AggregatedCompilerProductionInventory.aggregate(Vector(secondInventory, firstInventory))
+      )
+      val number                                                                                   = first.nodes
+        .find(_.production == "Number")
+        .getOrElse(throw new AssertionError("integer Number production is absent"))
+      val numberStart                                                                              = Source.indexOf("0)")
+      assertEquals(
+        Vector(
+          ParserSyntaxField(
+            "digits",
+            ParserFieldValue.Scalar(ParserScalar.Text("0")),
+            Some(ParserDeclaredShape.Scalar("Text"))
+          ),
+          ParserSyntaxField(
+            "kind",
+            ParserFieldValue.Product(
+              "Whole",
+              Vector(
+                ParserSyntaxField(
+                  "radix",
+                  ParserFieldValue.Scalar(ParserScalar.Integer(10)),
+                  Some(ParserDeclaredShape.Scalar("Integer"))
+                )
+              )
+            )
+          )
+        ),
+        number.fields
+      )
+      assertEquals(
+        ParserNodePosition.Positioned(
+          PcSourceRange(numberStart, numberStart + 1),
+          numberStart,
+          ParserPositionProvenance.SourceDerived
+        ),
+        number.position
+      )
+      val comparison                                                                               = first.nodes
+        .find(node => node.production == "InfixOp" && node.fields.exists(_.value == ParserFieldValue.Node(number.id)))
+        .getOrElse(throw new AssertionError("integer Number owner is absent"))
+      assertEquals(
+        Vector(
+          ParserNodeOccurrence(
+            comparison.id,
+            Vector(ParserFieldPathSegment.NamedField("right"))
+          )
+        ),
+        number.occurrences
+      )
+      val aggregate                                                                                = firstAggregation.toOption.get
+      val surfaces                                                                                 = ScalaPsiSurfaceInventory
+        .installed()
+        .fold(message => throw new AssertionError(message), identity)
+      assertEquals("e71b759e4fa3e4749945b2882c83c0568fb3c8e3febe968b6b66b245d4e675d0", aggregate.fingerprint)
+      assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", surfaces.fingerprint)
+      val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
+        Scala3PsiProductionCatalog.Reviewed,
+        aggregate,
+        surfaces
+      )
+      val expectedUncovered                                                                        = aggregate.productions
+        .flatMap(row =>
+          row.occurrences.collect:
+            case occurrence if row.prefix != "Number" =>
+              CatalogValidationError.UncoveredCompilerShape(
+                row.kind,
+                row.prefix,
+                occurrence.context,
+                occurrence.sourceClassification
+              )
+        )
+        .toSet
+      val actualUncovered                                                                          = catalogErrors.collect:
+        case error: CatalogValidationError.UncoveredCompilerShape => error
+      assertEquals(expectedUncovered, actualUncovered.toSet)
+      val expectedUnaccounted                                                                      = surfaces.rows
+        .filter(row =>
+          row.status == FactStatus.Available &&
+            row.classification == SurfaceClassification.SyntaxContract &&
+            row.id != "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl"
+        )
+        .map(row => CatalogValidationError.UnaccountedSyntaxSurface(row.id))
+        .toSet
+      val actualUnaccounted                                                                        = catalogErrors.collect:
+        case error: CatalogValidationError.UnaccountedSyntaxSurface => error
+      assertEquals(expectedUnaccounted, actualUnaccounted.toSet)
+      assertFalse(
+        catalogErrors.toString,
+        catalogErrors.exists(error =>
+          !error.isInstanceOf[CatalogValidationError.UncoveredCompilerShape] &&
+            !error.isInstanceOf[CatalogValidationError.UnaccountedSyntaxSurface]
+        )
+      )
+      val report                                                                                   = Scala3PsiProductionCoverageReport.markdown(
+        Scala3PsiProductionCatalog.Reviewed,
+        aggregate,
+        surfaces
+      )
+      assertEquals(
+        report,
+        Scala3PsiProductionCoverageReport.markdown(Scala3PsiProductionCatalog.Reviewed, aggregate, surfaces)
+      )
+      assertTrue(report, report.contains("### `Node.Number`"))
+      assertTrue(report, report.contains("- Validation: **incomplete**"))
+      assertTrue(report, report.contains("**shape-mapped:NativeCandidate:integer-literal-number**"))
+      assertTrue(report, report.contains("### `Node.PackageDef`"))
+      assertTrue(report, report.contains("**unmapped:SourceReachable**"))
+      assertTrue(
+        report,
+        report.contains(
+          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:integer-literal-number**"
+        )
       )
       assertNoUnsupportedValues(first)
       assertAllPositionsBelongToSource(first)

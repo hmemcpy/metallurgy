@@ -988,6 +988,24 @@ final class Scala3PsiProductionCatalogTest:
     )
     assertTrue(result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference])
 
+  @Test def wholeFilePlanningRejectsUnprobedNativeCandidates(): Unit =
+    val value     = snapshot("/candidate", 1, Vector.empty)
+    val compiler  = inventory(value)
+    val base      = completeCatalog(compiler)
+    val candidate = base.copy(productions = base.productions.map:
+      case production if production.id == "Root" =>
+        production.copy(targetRequirement = TargetRequirement.NativeCandidate)
+      case production                            => production
+    )
+    val result    = WholeFileProductionPlanner.plan(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      candidate,
+      aggregate(Vector(compiler)),
+      surfaces(candidate)
+    )
+    assertTrue(result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.UnprobedNativeCandidate])
+
   @Test def positionedChildOriginsRemainAbsoluteAndFailAtTheSupportedSubsetBoundary(): Unit =
     val value    = positionedChildSnapshot
     val compiler = inventory(value)

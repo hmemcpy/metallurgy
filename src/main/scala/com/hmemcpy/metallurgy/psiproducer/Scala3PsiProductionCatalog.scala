@@ -842,7 +842,7 @@ private[metallurgy] enum RecoveryPolicy:
   case Reject
   case DiagnosticBound(diagnostic: ParserDiagnosticSeverity, alternatives: Vector[String])
 private[metallurgy] enum TargetRequirement:
-  case Native, Compatible
+  case Native, NativeCandidate, Compatible
 private[metallurgy] final case class AccessorObligation(surfaceId: String, required: Boolean)
 private[metallurgy] enum PersistenceObligations:
   case NotApplicable
@@ -868,6 +868,140 @@ private[metallurgy] final case class Scala3PsiProduction(
 private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty)
+
+  val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
+    Vector(
+      Scala3PsiProduction(
+        id = "integer-literal-number",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Number",
+          Vector(
+            CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+            CompilerFieldPattern(
+              "kind",
+              CatalogValuePattern.Product(
+                "Whole",
+                Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer")))
+              )
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "InfixOp",
+                Vector(CatalogPathSegment.NamedField("right"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("digits", FieldDispositionKind.TerminalOrLayout),
+          FieldDisposition("kind", FieldDispositionKind.TerminalOrLayout)
+        ),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "integer-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl",
+        targetRequirement = TargetRequirement.NativeCandidate,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable
+      )
+    )
+  )
+
+private[metallurgy] object Scala3PsiProductionCoverageReport:
+  def markdown(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: AggregatedCompilerProductionInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): String =
+    val lines      = Vector.newBuilder[String]
+    val validation = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces)
+    lines += "# Scala 3 PSI production coverage"
+    lines += ""
+    lines += s"- Compiler: `${compiler.identity.coordinate.organization}:${compiler.identity.coordinate.artifact}:${compiler.identity.coordinate.version}`"
+    lines += s"- Compiler inventory: `${compiler.fingerprint}`"
+    lines += s"- Scala PSI inventory: `${surfaces.fingerprint}`"
+    lines += s"- Reviewed productions: ${catalog.productions.size}"
+    lines += s"- Validation: **${if validation.isEmpty then "complete" else "incomplete"}**"
+    validation
+      .groupMapReduce(_.productPrefix)(_ => 1)(_ + _)
+      .toVector
+      .sortBy(_._1)
+      .foreach((name, count) => lines += s"- Outstanding `$name`: $count")
+    lines += ""
+    lines += "## Compiler productions"
+    lines += ""
+    compiler.productions.foreach: row =>
+      val fields = row.fields.map(field => s"${field.name}:${render(field.value)}").mkString(", ")
+      lines += s"### `${row.kind}.${row.prefix}`"
+      lines += ""
+      lines += s"- Fields: `$fields`"
+      row.occurrences.foreach: occurrence =>
+        val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
+        val status   = selected match
+          case Vector(production) => s"shape-mapped:${production.targetRequirement}:${production.id}"
+          case Vector()           => s"unmapped:${occurrence.sourceClassification}"
+          case productions        => s"ambiguous:${productions.map(_.id).sorted.mkString(",")}"
+        lines += s"- `${render(occurrence)}` — **$status**"
+      lines += ""
+    lines += "## Scala PSI surfaces"
+    lines += ""
+    val references = catalog.productions
+      .flatMap: production =>
+        val terminals   = production.terminals.collect:
+          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id
+        val persistence = production.persistence match
+          case PersistenceObligations.NotApplicable                                   => Vector.empty
+          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+            Vector(stub, serializer, navigation) ++ indices
+        (Vector(production.targetSurfaceId) ++ production.accessors.map(_.surfaceId) ++ terminals ++ persistence)
+          .map(_ -> production.id)
+      .groupMap(_._1)(_._2)
+      .view
+      .mapValues(_.distinct.sorted)
+      .toMap
+    surfaces.rows.foreach: row =>
+      val status = references.get(row.id) match
+        case Some(productions) => s"catalog-referenced:${productions.mkString(",")}"
+        case None              => s"unmapped:${row.classification}"
+      lines += s"- `${row.kind}:${row.id}` — **${row.status}:$status**"
+    lines.result().mkString("\n") + "\n"
+
+  private def render(occurrence: CompilerProductionContext): String =
+    val context = occurrence.context match
+      case None        => "root"
+      case Some(value) =>
+        val path = value.path.map:
+          case CatalogPathSegment.NamedField(name)        => name
+          case CatalogPathSegment.Optional                => "?"
+          case CatalogPathSegment.RepeatedElement         => "*"
+          case CatalogPathSegment.NestedProduct(producer) => s"product($producer)"
+        s"${value.ownerKind}.${value.ownerPrefix}/${path.mkString("/")}"
+    s"$context:${occurrence.sourceClassification}"
+
+  private def render(pattern: CatalogValuePattern): String = pattern match
+    case CatalogValuePattern.Node                     => "Node"
+    case CatalogValuePattern.Positioned               => "Positioned"
+    case CatalogValuePattern.Optional(value)          => s"Optional[${render(value)}]"
+    case CatalogValuePattern.Repeated(value)          => s"Repeated[${render(value)}]"
+    case CatalogValuePattern.Product(prefix, fields)  =>
+      s"$prefix(${fields.map(field => s"${field.name}:${render(field.value)}").mkString(",")})"
+    case CatalogValuePattern.Name                     => "Name"
+    case CatalogValuePattern.GeneratedName            => "GeneratedName"
+    case CatalogValuePattern.Scalar(kind)             => s"Scalar[$kind]"
+    case CatalogValuePattern.Unsupported(runtimeType) => s"Unsupported[$runtimeType]"
 
 private[metallurgy] object CatalogShapeMatcher:
   def matches(pattern: CatalogValuePattern, observation: InventoryValueObservation): Boolean =
@@ -1277,6 +1411,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   )
   case UnsupportedLayout(owner: ProductionInstanceId, alternatives: Vector[LayoutAlternative])
   case UnsupportedRecovery(owner: ProductionInstanceId, policy: RecoveryPolicy)
+  case UnprobedNativeCandidate(owner: ProductionInstanceId, productionId: String)
   case UnassignedDiagnostic(index: Int)
 
 private[metallurgy] final case class ProductionOccurrenceId(
@@ -1313,7 +1448,7 @@ private[metallurgy] enum TargetAssertionOwner:
   case Composite(instance: ProductionInstanceId)
   case Terminal(instance: ProductionInstanceId, terminalId: String)
 private[metallurgy] enum TargetAssertionKind:
-  case Composite(requirement: TargetRequirement)
+  case NativeComposite, CompatibleComposite
   case Token
 private[metallurgy] final case class PlannedTargetAssertion(
     owner: TargetAssertionOwner,
@@ -1506,6 +1641,8 @@ private[metallurgy] object WholeFileProductionPlanner:
       ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)
+          if production.targetRequirement == TargetRequirement.NativeCandidate then
+            break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
           val plannedChildren = Vector.newBuilder[PlannedChild]
           production.dispositions.collectFirst:
             case FieldDisposition(fieldName, FieldDispositionKind.Unsupported) => fieldName
@@ -1644,13 +1781,18 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
       val targets           = active.toVector.flatMap: instance =>
-        val production = selected(instance)
-        val composite  = PlannedTargetAssertion(
+        val production  = selected(instance)
+        val requirement = production.targetRequirement match
+          case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
+          case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
+          case TargetRequirement.NativeCandidate =>
+            break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
+        val composite   = PlannedTargetAssertion(
           TargetAssertionOwner.Composite(instance),
           production.targetSurfaceId,
-          TargetAssertionKind.Composite(production.targetRequirement)
+          requirement
         )
-        val terminals  = production.terminals.collect:
+        val terminals   = production.terminals.collect:
           case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId), _)
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
