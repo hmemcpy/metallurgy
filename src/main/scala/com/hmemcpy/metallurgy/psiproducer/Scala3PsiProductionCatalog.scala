@@ -696,6 +696,7 @@ private[metallurgy] final case class ScalaPsiSurfaceInventory(
 
   def withCatalogCapabilities(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =
     val ownedTargets = catalog.productions
+      .flatMap(_.effectiveOutputTemplate.composites)
       .filter(_.targetRequirement == TargetRequirement.Compatible)
       .map(_.targetSurfaceId)
       .distinct
@@ -877,16 +878,10 @@ private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
   case Repeated(minimum: Int, maximum: Option[Int])
   case Grouped(minimum: Int, maximum: Option[Int])
-private[metallurgy] enum ChildPlacement:
-  case Direct
-  case Wrapped(path: Vector[String])
-  case Before(path: Vector[String])
-  case After(path: Vector[String])
 private[metallurgy] final case class ChildDeclaration(
     roleId: String,
     fieldName: String,
     cardinality: ChildCardinality,
-    placement: ChildPlacement,
     productionId: String
 )
 private[metallurgy] enum TerminalIntervalSelector:
@@ -928,6 +923,23 @@ private[metallurgy] enum PersistenceObligations:
   )
 private[metallurgy] enum NavigationObligation:
   case Self
+private[metallurgy] enum OutputRangeDeclaration:
+  case CompilerPosition
+  case BoundaryDerived(startBoundary: String, endBoundary: String)
+private[metallurgy] final case class OutputCompositeDeclaration(
+    id: String,
+    parentId: Option[String],
+    range: OutputRangeDeclaration,
+    targetSurfaceId: String,
+    targetRequirement: TargetRequirement,
+    accessors: Vector[AccessorObligation],
+    persistence: PersistenceObligations,
+    navigation: Option[NavigationObligation]
+)
+private[metallurgy] final case class LocalOutputCompositeTemplate(
+    composites: Vector[OutputCompositeDeclaration],
+    childMounts: Map[String, Option[String]]
+)
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
     pattern: CompilerProductionPattern,
@@ -940,8 +952,26 @@ private[metallurgy] final case class Scala3PsiProduction(
     targetRequirement: TargetRequirement,
     accessors: Vector[AccessorObligation],
     persistence: PersistenceObligations,
-    navigation: Option[NavigationObligation] = None
-)
+    navigation: Option[NavigationObligation] = None,
+    outputTemplate: Option[LocalOutputCompositeTemplate] = None
+):
+  def effectiveOutputTemplate: LocalOutputCompositeTemplate = outputTemplate.getOrElse(
+    LocalOutputCompositeTemplate(
+      Vector(
+        OutputCompositeDeclaration(
+          "self",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          targetSurfaceId,
+          targetRequirement,
+          accessors,
+          persistence,
+          navigation
+        )
+      ),
+      children.map(child => child.roleId -> Some("self")).toMap
+    )
+  )
 private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
 private[metallurgy] enum CatalogCapabilityFailure:
   case MissingProduction(id: String)
@@ -977,7 +1007,6 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "package-reference",
             "pid",
             ChildCardinality.ExactlyOne,
-            ChildPlacement.Direct,
             "package-stable-reference"
           )
         ),
@@ -1035,7 +1064,6 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "qualifier",
             "qualifier",
             ChildCardinality.ExactlyOne,
-            ChildPlacement.Direct,
             "package-stable-identifier"
           )
         ),
@@ -1283,7 +1311,13 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       row.occurrences.foreach: occurrence =>
         val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
         val status   = selected match
-          case Vector(production) => s"shape-mapped:${production.targetRequirement}:${production.id}"
+          case Vector(production) =>
+            val requirements = production.effectiveOutputTemplate.composites
+              .map(_.targetRequirement.toString)
+              .distinct
+              .sorted
+            val rendered     = if requirements.isEmpty then "transparent" else requirements.mkString(",")
+            s"shape-mapped:$rendered:${production.id}"
           case Vector()           => s"unmapped:${occurrence.sourceClassification}"
           case productions        => s"ambiguous:${productions.map(_.id).sorted.mkString(",")}"
         lines += s"- `${render(occurrence)}` — **$status**"
@@ -1292,13 +1326,15 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     lines += ""
     val references        = catalog.productions
       .flatMap: production =>
-        val terminals   = production.terminals.collect:
+        val terminals = production.terminals.collect:
           case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id
-        val persistence = production.persistence match
-          case PersistenceObligations.NotApplicable                                   => Vector.empty
-          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-            Vector(stub, serializer, navigation) ++ indices
-        (Vector(production.targetSurfaceId) ++ production.accessors.map(_.surfaceId) ++ terminals ++ persistence)
+        val outputs   = production.effectiveOutputTemplate.composites.flatMap: output =>
+          val persistence = output.persistence match
+            case PersistenceObligations.NotApplicable                                   => Vector.empty
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              Vector(stub, serializer, navigation) ++ indices
+          Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
+        (outputs ++ terminals)
           .map(_ -> production.id)
       .groupMap(_._1)(_._2)
       .view
@@ -1456,6 +1492,19 @@ private[metallurgy] enum CatalogValidationError:
   case UnknownChildProductionId(productionId: String, childProductionId: String)
   case DuplicateTerminalId(productionId: String, terminalId: String)
   case DuplicateAccessorObligation(productionId: String, surfaceId: String)
+  case DuplicateOutputId(productionId: String, outputId: String)
+  case UnknownOutputParent(productionId: String, outputId: String, parentId: String)
+  case CyclicOutputParent(productionId: String, outputId: String)
+  case MissingChildMountRole(productionId: String, roleId: String)
+  case ExtraChildMountRole(productionId: String, roleId: String)
+  case UnknownChildMountParent(productionId: String, roleId: String, parentId: String)
+  case UnsupportedOutputRange(productionId: String, outputId: String, range: OutputRangeDeclaration)
+  case OverlappingCompilerPositionSiblings(
+      productionId: String,
+      parentId: Option[String],
+      leftOutputId: String,
+      rightOutputId: String
+  )
   case InvalidChildCardinality(productionId: String, roleId: String)
   case InvalidTerminalCardinality(productionId: String, terminalId: String)
   case EmptyLayoutAlternatives(productionId: String)
@@ -1550,7 +1599,52 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           errors += CatalogValidationError.IncompleteSurfaceStatus(p.id, id, row.status)
         case _                                                                    => ()
     catalog.productions.foreach: p =>
-      val names = p.pattern.fields.map(_.name)
+      val names                                                = p.pattern.fields.map(_.name)
+      val template                                             = p.effectiveOutputTemplate
+      val outputIds                                            = template.composites.map(_.id)
+      val childRoles                                           = p.children.map(_.roleId).toSet
+      duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))
+      template.composites.foreach: output =>
+        output.parentId
+          .filterNot(outputIds.contains)
+          .foreach(parent => errors += CatalogValidationError.UnknownOutputParent(p.id, output.id, parent))
+        output.range match
+          case OutputRangeDeclaration.CompilerPosition => ()
+          case unsupported                             => errors += CatalogValidationError.UnsupportedOutputRange(p.id, output.id, unsupported)
+      template.composites
+        .filter(_.range == OutputRangeDeclaration.CompilerPosition)
+        .groupBy(_.parentId)
+        .values
+        .foreach: siblings =>
+          siblings
+            .map(_.id)
+            .sorted
+            .sliding(2)
+            .foreach:
+              case Vector(left, right) =>
+                errors += CatalogValidationError.OverlappingCompilerPositionSiblings(
+                  p.id,
+                  siblings.head.parentId,
+                  left,
+                  right
+                )
+              case _                   => ()
+      def cyclicOutput(id: String, seen: Set[String]): Boolean =
+        if seen(id) then true
+        else template.composites.find(_.id == id).flatMap(_.parentId).exists(cyclicOutput(_, seen + id))
+      outputIds.distinct
+        .filter(cyclicOutput(_, Set.empty))
+        .foreach(id => errors += CatalogValidationError.CyclicOutputParent(p.id, id))
+      childRoles
+        .diff(template.childMounts.keySet)
+        .foreach(role => errors += CatalogValidationError.MissingChildMountRole(p.id, role))
+      template.childMounts.keySet
+        .diff(childRoles)
+        .foreach(role => errors += CatalogValidationError.ExtraChildMountRole(p.id, role))
+      template.childMounts.foreach: (role, parent) =>
+        parent
+          .filterNot(outputIds.contains)
+          .foreach(id => errors += CatalogValidationError.UnknownChildMountParent(p.id, role, id))
       if p.pattern.occurrences.isEmpty then errors += CatalogValidationError.EmptyOccurrencePatterns(p.id)
       duplicates(p.pattern.occurrences)
         .foreach(pattern => errors += CatalogValidationError.DuplicateOccurrencePattern(p.id, pattern))
@@ -1567,8 +1661,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       p.terminals
         .filter(terminal => !valid(terminal.cardinality))
         .foreach(terminal => errors += CatalogValidationError.InvalidTerminalCardinality(p.id, terminal.id))
-      duplicates(p.accessors.map(_.surfaceId))
-        .foreach(id => errors += CatalogValidationError.DuplicateAccessorObligation(p.id, id))
+      template.composites.foreach: output =>
+        duplicates(output.accessors.map(_.surfaceId))
+          .foreach(id => errors += CatalogValidationError.DuplicateAccessorObligation(p.id, id))
       if p.layouts.isEmpty then errors += CatalogValidationError.EmptyLayoutAlternatives(p.id)
       duplicates(p.layouts)
         .foreach(layout => errors += CatalogValidationError.DuplicateLayoutAlternative(p.id, layout))
@@ -1611,24 +1706,27 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) =>
           requireSurface(p, id, SurfaceFactKind.Token)
         case _                                                          => ()
-      requireSurface(p, p.targetSurfaceId, SurfaceFactKind.Element)
-      p.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
-      p.persistence match
-        case PersistenceObligations.NotApplicable                                   => ()
-        case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-          requireSurface(p, stub, SurfaceFactKind.Stub);
-          requireSurface(p, serializer, SurfaceFactKind.Serializer);
-          indices.foreach(requireSurface(p, _, SurfaceFactKind.Index));
-          requireSurface(p, navigation, SurfaceFactKind.Navigation)
+      template.composites.foreach: output =>
+        requireSurface(p, output.targetSurfaceId, SurfaceFactKind.Element)
+        output.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
+        output.persistence match
+          case PersistenceObligations.NotApplicable                                   => ()
+          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+            requireSurface(p, stub, SurfaceFactKind.Stub)
+            requireSurface(p, serializer, SurfaceFactKind.Serializer)
+            indices.foreach(requireSurface(p, _, SurfaceFactKind.Index))
+            requireSurface(p, navigation, SurfaceFactKind.Navigation)
     errors ++= coverage
     val accounted                                                                                                     = catalog.productions
       .flatMap: p =>
-        val terminals   = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id }
-        val persistence = p.persistence match
-          case PersistenceObligations.NotApplicable                                   => Vector.empty
-          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-            Vector(stub, serializer, navigation) ++ indices
-        Vector(p.targetSurfaceId) ++ p.accessors.map(_.surfaceId) ++ terminals ++ persistence
+        val terminals = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id }
+        val outputs   = p.effectiveOutputTemplate.composites.flatMap: output =>
+          val persistence = output.persistence match
+            case PersistenceObligations.NotApplicable                                   => Vector.empty
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              Vector(stub, serializer, navigation) ++ indices
+          Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
+        outputs ++ terminals
       .toSet
     if includeUnaccountedSurfaces then
       effectiveSurfaces.rows
@@ -1753,7 +1851,6 @@ private[metallurgy] enum WholeFilePlanningFailure:
       selections: Vector[(Option[InventoryContext], Vector[String])]
   )
   case MissingRuntimeShape(kind: InventoryKind, id: Long)
-  case UnsupportedChildPlacement(productionId: String, roleId: String, placement: ChildPlacement)
   case ChildCardinalityMismatch(
       owner: ProductionInstanceId,
       roleId: String,
@@ -1789,6 +1886,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case UnsupportedRecovery(owner: ProductionInstanceId, policy: RecoveryPolicy)
   case UnprobedNativeCandidate(owner: ProductionInstanceId, productionId: String)
   case UnassignedDiagnostic(index: Int)
+  case OverlappingOutputForest(left: CompositeInstanceId, right: CompositeInstanceId)
 
 private[metallurgy] final case class ProductionOccurrenceId(
     ownerNodeId: Long,
@@ -1799,29 +1897,37 @@ private[metallurgy] final case class ProductionInstanceId(
     valueId: Long,
     occurrence: Option[ProductionOccurrenceId]
 )
+private[metallurgy] final case class CompositeInstanceId(
+    origin: ProductionInstanceId,
+    localOutputId: String,
+    ordinal: Int = 0
+)
+private[metallurgy] enum PhysicalLeafOwner:
+  case Composite(instance: CompositeInstanceId)
+  case FileRoot
 private[metallurgy] final case class PlannedPhysicalLeaf(
     atomId: Long,
     start: Int,
     end: Int,
-    owner: ProductionInstanceId,
+    owner: PhysicalLeafOwner,
+    sourceOwner: ProductionInstanceId,
     terminalId: String,
     target: TerminalLeafTarget
 )
 private[metallurgy] final case class PlannedChild(
     roleId: String,
     fieldPath: Vector[ParserFieldPathSegment],
-    child: ProductionInstanceId,
-    placement: ChildPlacement
+    child: CompositeInstanceId
 )
 private[metallurgy] final case class PlannedComposite(
-    instance: ProductionInstanceId,
+    instance: CompositeInstanceId,
     productionId: String,
-    position: ParserNodePosition,
+    range: PcSourceRange,
     children: Vector[PlannedChild],
     fieldDispositions: Vector[FieldDisposition]
 )
 private[metallurgy] enum TargetAssertionOwner:
-  case Composite(instance: ProductionInstanceId)
+  case Composite(instance: CompositeInstanceId)
   case Terminal(instance: ProductionInstanceId, terminalId: String)
 private[metallurgy] enum TargetAssertionKind:
   case NativeComposite, CompatibleComposite
@@ -1832,19 +1938,19 @@ private[metallurgy] final case class PlannedTargetAssertion(
     kind: TargetAssertionKind
 )
 private[metallurgy] final case class PlannedAccessorAssertion(
-    owner: ProductionInstanceId,
+    owner: CompositeInstanceId,
     surfaceId: String,
     required: Boolean
 )
 private[metallurgy] final case class PlannedStubAssertion(
-    owner: ProductionInstanceId,
+    owner: CompositeInstanceId,
     stubSurfaceId: String,
     serializerSurfaceId: String,
     indexSurfaceIds: Vector[String],
     navigationSurfaceId: String
 )
 private[metallurgy] final case class PlannedNavigationAssertion(
-    owner: ProductionInstanceId,
+    owner: CompositeInstanceId,
     obligation: NavigationObligation
 )
 private[metallurgy] final case class PlannedVirtualLayout(
@@ -2060,15 +2166,14 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
 
-      val active     = collection.mutable.LinkedHashSet(root)
-      val incoming   = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Vector[ProductionInstanceId]]
-      val composites = Vector.newBuilder[PlannedComposite]
+      val active           = collection.mutable.LinkedHashSet(root)
+      val incoming         = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Vector[ProductionInstanceId]]
+      val compilerChildren = collection.mutable.LinkedHashMap
+        .empty[ProductionInstanceId, Vector[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)]]
       ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)
-          if production.targetRequirement == TargetRequirement.NativeCandidate then
-            break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
-          val plannedChildren = Vector.newBuilder[PlannedChild]
+          val plannedChildren = Vector.newBuilder[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)]
           production.dispositions.collectFirst:
             case FieldDisposition(fieldName, FieldDispositionKind.Unsupported) => fieldName
           match
@@ -2076,16 +2181,6 @@ private[metallurgy] object WholeFileProductionPlanner:
               break(Left(WholeFilePlanningFailure.UnsupportedFieldDisposition(instance, fieldName)))
             case None            => ()
           production.children.foreach: declaration =>
-            if declaration.placement != ChildPlacement.Direct then
-              break(
-                Left(
-                  WholeFilePlanningFailure.UnsupportedChildPlacement(
-                    production.id,
-                    declaration.roleId,
-                    declaration.placement
-                  )
-                )
-              )
             declaration.cardinality match
               case grouped: ChildCardinality.Grouped =>
                 break(
@@ -2135,19 +2230,95 @@ private[metallurgy] object WholeFileProductionPlanner:
               if owners.size > 1 then
                 break(Left(WholeFilePlanningFailure.MultiplyConsumedChildReference(child, owners)))
               active += child
-              plannedChildren += PlannedChild(declaration.roleId, path, child, declaration.placement)
+              plannedChildren += ((declaration.roleId, path, child))
           if production.layouts != Vector(LayoutAlternative.None) then
             break(Left(WholeFilePlanningFailure.UnsupportedLayout(instance, production.layouts)))
           if production.recovery != RecoveryPolicy.Reject then
             break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
-          composites += PlannedComposite(
-            instance,
-            production.id,
-            position(instance),
-            plannedChildren.result(),
-            production.dispositions
-          )
+          compilerChildren.update(instance, plannedChildren.result())
       if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
+
+      val outputRoots      = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val localOutputRoots = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val outputRows       = collection.mutable.Map
+        .empty[ProductionInstanceId, Vector[(OutputCompositeDeclaration, CompositeInstanceId, PcSourceRange)]]
+      active.toVector.reverse.foreach: instance =>
+        val template   = selected(instance).effectiveOutputTemplate
+        val ranges     = template.composites.map: declaration =>
+          val range = declaration.range match
+            case OutputRangeDeclaration.CompilerPosition   =>
+              position(instance) match
+                case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
+                case _                                                                               =>
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.InvalidCatalog(
+                        Vector(
+                          CatalogValidationError.UnsupportedOutputRange(
+                            selected(instance).id,
+                            declaration.id,
+                            declaration.range
+                          )
+                        )
+                      )
+                    )
+                  )
+            case _: OutputRangeDeclaration.BoundaryDerived =>
+              break(
+                Left(
+                  WholeFilePlanningFailure.InvalidCatalog(
+                    Vector(
+                      CatalogValidationError.UnsupportedOutputRange(
+                        selected(instance).id,
+                        declaration.id,
+                        declaration.range
+                      )
+                    )
+                  )
+                )
+              )
+          (declaration, CompositeInstanceId(instance, declaration.id), range)
+        outputRows.update(instance, ranges)
+        val localRoots = ranges.collect { case (declaration, id, _) if declaration.parentId.isEmpty => id }
+        localOutputRoots.update(instance, localRoots)
+        val exported   = compilerChildren
+          .getOrElse(instance, Vector.empty)
+          .flatMap: (role, _, child) =>
+            if template.childMounts(role).isEmpty then outputRoots.getOrElse(child, Vector.empty) else Vector.empty
+        outputRoots.update(instance, localRoots ++ exported)
+
+      val composites                                            = active.toVector.flatMap: instance =>
+        val production = selected(instance)
+        val template   = production.effectiveOutputTemplate
+        outputRows(instance).map: (declaration, id, range) =>
+          val localChildren = outputRows(instance).collect {
+            case (child, childId, _) if child.parentId.contains(declaration.id) =>
+              PlannedChild("output", Vector.empty, childId)
+          }
+          val mounted       = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .flatMap: (role, path, child) =>
+              template.childMounts(role) match
+                case Some(parent) if parent == declaration.id => outputRoots(child).map(PlannedChild(role, path, _))
+                case None                                     => Vector.empty
+                case _                                        => Vector.empty
+          val children      = localChildren ++ mounted
+          val childRanges   = outputRows.valuesIterator.flatten.map(row => row._2 -> row._3).toMap
+          val normalized    = children.sortBy: child =>
+            val childRange = childRanges(child.child)
+            (childRange.startOffset, childRange.endOffset, child.child.toString)
+          PlannedComposite(id, production.id, range, normalized, production.dispositions)
+      val compositeRanges                                       = composites.map(value => value.instance -> value.range).toMap
+      def rejectOverlap(ids: Vector[CompositeInstanceId]): Unit =
+        ids
+          .sortBy(id => (compositeRanges(id).startOffset, compositeRanges(id).endOffset, id.toString))
+          .sliding(2)
+          .foreach:
+            case Vector(left, right) if compositeRanges(left).endOffset > compositeRanges(right).startOffset =>
+              break(Left(WholeFilePlanningFailure.OverlappingOutputForest(left, right)))
+            case _                                                                                           => ()
+      rejectOverlap(outputRoots(root))
+      composites.foreach(parent => rejectOverlap(parent.children.map(_.child)))
 
       val candidates                                                                            = collection.mutable.Map.empty[Long, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
       val resolvedTerminals                                                                     = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
@@ -2192,10 +2363,17 @@ private[metallurgy] object WholeFileProductionPlanner:
                     terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _))
                   )
                   .foreach: atom =>
-                    val leaf = PlannedPhysicalLeaf(
+                    val owner = localOutputRoots(instance)
+                      .find: root =>
+                        val range = outputRows(instance).find(_._2 == root).get._3
+                        range.startOffset <= atom.start && atom.end <= range.endOffset
+                      .map(PhysicalLeafOwner.Composite(_))
+                      .getOrElse(PhysicalLeafOwner.FileRoot)
+                    val leaf  = PlannedPhysicalLeaf(
                       atom.id,
                       atom.start,
                       atom.end,
+                      owner,
                       instance,
                       terminal.id,
                       terminal.target
@@ -2212,8 +2390,9 @@ private[metallurgy] object WholeFileProductionPlanner:
       val leaves                                                                                = evidence.atoms.map: atom =>
         val eligible = candidates(atom.id).filterNot(candidate =>
           candidate.target == TerminalLeafTarget.Parent && active.exists(descendant =>
-            descendant != candidate.owner && isAncestor(candidate.owner, descendant) &&
-              atom.claims.exists(claims(descendant, _))
+            descendant != candidate.sourceOwner && isAncestor(candidate.sourceOwner, descendant) && atom.claims.exists(
+              claims(descendant, _)
+            ) && localOutputRoots(descendant).nonEmpty
           )
         )
         eligible match
@@ -2221,14 +2400,15 @@ private[metallurgy] object WholeFileProductionPlanner:
           case Vector()     =>
             break(Left(WholeFilePlanningFailure.UnownedSourceAtom(atom.id, atom.start, atom.end)))
           case conflicts    =>
-            val byOwner = conflicts.groupBy(_.owner)
+            val byOwner = conflicts.groupBy(_.sourceOwner)
             val winner  =
               if byOwner.values.exists(_.size != 1) then None
               else
                 conflicts.filter(candidate =>
                   conflicts.forall(other =>
                     other == candidate ||
-                      (other.target == TerminalLeafTarget.Parent && isAncestor(other.owner, candidate.owner))
+                      (other.target == TerminalLeafTarget.Parent &&
+                        isAncestor(other.sourceOwner, candidate.sourceOwner))
                   )
                 ) match
                   case Vector(value) => Some(value)
@@ -2240,40 +2420,40 @@ private[metallurgy] object WholeFileProductionPlanner:
                     atom.id,
                     atom.start,
                     atom.end,
-                    conflicts.map(leaf => leaf.owner -> leaf.terminalId)
+                    conflicts.map(leaf => leaf.sourceOwner -> leaf.terminalId)
                   )
                 )
               )
             )
       val targets                                                                               = active.toVector.flatMap: instance =>
-        val production  = selected(instance)
-        val requirement = production.targetRequirement match
-          case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
-          case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
-          case TargetRequirement.NativeCandidate =>
-            break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
-        val composite   = PlannedTargetAssertion(
-          TargetAssertionOwner.Composite(instance),
-          production.targetSurfaceId,
-          requirement
-        )
-        val terminals   = production.terminals.collect:
+        val production = selected(instance)
+        val composites = outputRows(instance).map: (declaration, id, _) =>
+          val requirement = declaration.targetRequirement match
+            case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
+            case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
+            case TargetRequirement.NativeCandidate =>
+              break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
+          PlannedTargetAssertion(TargetAssertionOwner.Composite(id), declaration.targetSurfaceId, requirement)
+        val terminals  = production.terminals.collect:
           case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId), _)
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
-        composite +: terminals
+        composites ++ terminals
       val accessors                                                                             = active.toVector.flatMap(instance =>
-        selected(instance).accessors.map(obligation =>
-          PlannedAccessorAssertion(instance, obligation.surfaceId, obligation.required)
-        )
+        outputRows(instance).flatMap: (declaration, id, _) =>
+          declaration.accessors.map(obligation =>
+            PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required)
+          )
       )
       val stubs                                                                                 = active.toVector.flatMap: instance =>
-        selected(instance).persistence match
-          case PersistenceObligations.NotApplicable                                   => Vector.empty
-          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-            Vector(PlannedStubAssertion(instance, stub, serializer, indices, navigation))
+        outputRows(instance).flatMap: (declaration, id, _) =>
+          declaration.persistence match
+            case PersistenceObligations.NotApplicable                                   => Vector.empty
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              Vector(PlannedStubAssertion(id, stub, serializer, indices, navigation))
       val navigation                                                                            = active.toVector.flatMap: instance =>
-        selected(instance).navigation.map(PlannedNavigationAssertion(instance, _))
+        outputRows(instance).flatMap: (declaration, id, _) =>
+          declaration.navigation.map(PlannedNavigationAssertion(id, _))
       Right(
         WholeFileProductionPlan(
           snapshot.sourceUri,
@@ -2281,7 +2461,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           evidence.parserEvidenceFingerprint,
           leaves,
           Vector.empty,
-          composites.result(),
+          composites,
           targets,
           accessors,
           stubs,

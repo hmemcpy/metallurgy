@@ -8,6 +8,7 @@ import com.hmemcpy.metallurgy.psiproducer.{
   CatalogValuePattern,
   CompilerRuntimeInventory,
   FactStatus,
+  PhysicalLeafOwner,
   InventoryFieldObservation,
   InventoryKind,
   InventoryAncestor,
@@ -139,10 +140,20 @@ final class Scala3ParserVerticalSliceTest:
         Vector("file-package", "package-stable-reference", "package-stable-identifier"),
         plan.composites.map(_.productionId)
       )
-      assertEquals(2L, plan.physicalLeafOwnership.find(leaf => leaf.start == 8 && leaf.end == 15).get.owner.valueId)
-      assertEquals(1L, plan.physicalLeafOwnership.find(leaf => leaf.start == 15 && leaf.end == 22).get.owner.valueId)
+      assertEquals(
+        2L,
+        plan.physicalLeafOwnership.find(leaf => leaf.start == 8 && leaf.end == 15).get.owner match
+          case PhysicalLeafOwner.Composite(owner) => owner.origin.valueId
+          case PhysicalLeafOwner.FileRoot         => throw new AssertionError("package identifier leaf is file-owned")
+      )
+      assertEquals(
+        1L,
+        plan.physicalLeafOwnership.find(leaf => leaf.start == 15 && leaf.end == 22).get.owner match
+          case PhysicalLeafOwner.Composite(owner) => owner.origin.valueId
+          case PhysicalLeafOwner.FileRoot         => throw new AssertionError("package identifier leaf is file-owned")
+      )
       val trailing  = plan.physicalLeafOwnership.find(leaf => leaf.start == 22 && leaf.end == 23).get
-      assertEquals(0L, trailing.owner.valueId)
+      assertEquals(PhysicalLeafOwner.FileRoot, trailing.owner)
       assertEquals("whole-file", trailing.terminalId)
       assertEquals(
         PackageSource,

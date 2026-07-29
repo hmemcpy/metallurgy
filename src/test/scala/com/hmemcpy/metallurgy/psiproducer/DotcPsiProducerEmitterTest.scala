@@ -19,8 +19,6 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
   def testRejectsUnsupportedPlanFeaturesBeforeOpeningMarkers(): Unit =
     val source           = "x"
     val base             = emitterPlan(source, 2)
-    val unsupportedChild = base.copy(composites = base.composites.map: composite =>
-      composite.copy(children = composite.children.map(_.copy(placement = ChildPlacement.Wrapped(Vector("owner"))))))
     val unsupportedField = base.copy(composites =
       base.composites.updated(
         0,
@@ -33,12 +31,19 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
         _.copy(target = TerminalLeafTarget.Token(packagingSurface))
       )
     )
-    Vector(unsupportedChild, unsupportedField, unsupportedToken).foreach: plan =>
+    Vector(unsupportedField, unsupportedToken).foreach: plan =>
       val builder = recordingEmitterBuilder(source)
       assertFalse(
         DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, nativeBindings)
       )
       assertEquals(0, builder.getCurrentOffset)
+
+    val widerSource  = "xy"
+    val wider        = emitterPlan(widerSource, 1)
+    val outsideOwner = wider.copy(composites = wider.composites.map(_.copy(range = PcSourceRange(0, 1))))
+    val builder      = recordingEmitterBuilder(widerSource)
+    assertFalse(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, outsideOwner, nativeBindings))
+    assertEquals(0, builder.getCurrentOffset)
 
   def testHandlesDeepCompositeNestingWithoutJvmRecursion(): Unit =
     val source  = "x"
@@ -54,6 +59,56 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       builder
     )
     assertTrue(builder.eof())
+
+  def testAcceptsTwoOrderedForestRootsAndRejectsOverlapBeforeMarkers(): Unit =
+    val source   = "xy"
+    val base     = emitterPlan(source, 1)
+    val first    = base.composites.head.copy(range = PcSourceRange(0, 1))
+    val secondId = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 2L, None), "self")
+    val second   = first.copy(instance = secondId, range = PcSourceRange(1, 2))
+    val forest   = base.copy(
+      physicalLeafOwnership = Vector(
+        PlannedPhysicalLeaf(
+          1L,
+          0,
+          1,
+          PhysicalLeafOwner.FileRoot,
+          first.instance.origin,
+          "source",
+          TerminalLeafTarget.Parent
+        ),
+        PlannedPhysicalLeaf(
+          2L,
+          1,
+          2,
+          PhysicalLeafOwner.FileRoot,
+          second.instance.origin,
+          "source",
+          TerminalLeafTarget.Parent
+        )
+      ),
+      composites = Vector(second, first),
+      targetAssertions = Vector(first.instance, second.instance).map(id =>
+        PlannedTargetAssertion(
+          TargetAssertionOwner.Composite(id),
+          packagingSurface,
+          TargetAssertionKind.NativeComposite
+        )
+      )
+    )
+    assertTrue(
+      DotcPsiProducer.parse(
+        Scala3DotcParserDefinition.FileNodeType,
+        recordingEmitterBuilder(source),
+        forest,
+        nativeBindings
+      )
+    )
+
+    val malformed = forest.copy(composites = Vector(first.copy(range = PcSourceRange(0, 2)), second))
+    val builder   = recordingEmitterBuilder(source)
+    assertFalse(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, malformed, nativeBindings))
+    assertEquals(0, builder.getCurrentOffset)
 
   private def recordingEmitterBuilder(source: String): PsiBuilder =
     val offset = new AtomicInteger(0)
@@ -72,12 +127,13 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
           override def invoke(proxy: Object, method: Method, arguments: Array[Object]): Object =
             method.getName match
               case "getOriginalText"   => source
-              case "rawLookup"         => if arguments(0).asInstanceOf[Int] == 0 then ScalaElementType.PACKAGING else null
-              case "rawTokenTypeStart" => Integer.valueOf(0)
+              case "rawLookup"         =>
+                if arguments(0).asInstanceOf[Int] < source.length then ScalaElementType.PACKAGING else null
+              case "rawTokenTypeStart" => Integer.valueOf(arguments(0).asInstanceOf[Int])
               case "mark"              => marker
               case "eof"               => java.lang.Boolean.valueOf(offset.get() >= source.length)
               case "getCurrentOffset"  => Integer.valueOf(offset.get())
-              case "advanceLexer"      => offset.set(source.length); null
+              case "advanceLexer"      => offset.incrementAndGet(); null
               case "toString"          => "recording emitter builder"
               case "hashCode"          => Integer.valueOf(System.identityHashCode(proxy))
               case "equals"            => java.lang.Boolean.valueOf(proxy eq arguments(0))
@@ -89,24 +145,31 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
 
   private def emitterPlan(source: String, depth: Int): WholeFileProductionPlan =
-    val ids        = Vector.tabulate(depth)(index => ProductionInstanceId(InventoryKind.Node, index + 1L, None))
-    val position   = ParserNodePosition.Positioned(
-      PcSourceRange(0, source.length),
-      0,
-      ParserPositionProvenance.SourceDerived
-    )
+    val origins    = Vector.tabulate(depth)(index => ProductionInstanceId(InventoryKind.Node, index + 1L, None))
+    val ids        = origins.map(CompositeInstanceId(_, "self"))
+    val position   = PcSourceRange(0, source.length)
     val composites = ids.zipWithIndex.map: (id, index) =>
       val children = ids
         .lift(index + 1)
         .toVector
         .map: child =>
-          PlannedChild("child", Vector.empty, child, ChildPlacement.Direct)
+          PlannedChild("child", Vector.empty, child)
       PlannedComposite(id, "test", position, children, Vector.empty)
     WholeFileProductionPlan(
       ParserSourceUri.from("file:///EmitterCase.scala").toOption.get,
       ParserSyntaxSnapshot.digest(source),
       "test",
-      Vector(PlannedPhysicalLeaf(1L, 0, source.length, ids.last, "source", TerminalLeafTarget.Parent)),
+      Vector(
+        PlannedPhysicalLeaf(
+          1L,
+          0,
+          source.length,
+          PhysicalLeafOwner.Composite(ids.last),
+          ids.last.origin,
+          "source",
+          TerminalLeafTarget.Parent
+        )
+      ),
       Vector.empty,
       composites,
       ids.map(id =>

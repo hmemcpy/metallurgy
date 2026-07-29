@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.{ParserNodePosition, ParserSyntaxSnapshot}
+import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
 import com.intellij.lang.PsiBuilder
 import com.intellij.psi.tree.IElementType
 
@@ -25,7 +25,9 @@ private[metallurgy] object DotcPsiProducer:
         val roots    = plan.composites.filterNot(value => byParent.contains(value.instance))
         val byId     = plan.composites.map(value => value.instance -> value).toMap
         val root     = builder.mark()
-        emit(roots.head, byId, targets.toMap, bindings, builder)
+        roots
+          .sortBy(value => (value.range.startOffset, value.range.endOffset, value.instance.toString))
+          .foreach(emit(_, byId, targets.toMap, bindings, builder))
         advanceTo(builder.getOriginalText.length, builder)
         root.done(fileElementType)
         true
@@ -38,8 +40,8 @@ private[metallurgy] object DotcPsiProducer:
 
   private[psiproducer] def emit(
       composite: PlannedComposite,
-      byId: Map[ProductionInstanceId, PlannedComposite],
-      targets: Map[ProductionInstanceId, String],
+      byId: Map[CompositeInstanceId, PlannedComposite],
+      targets: Map[CompositeInstanceId, String],
       bindings: NativePsiElementBindings,
       builder: PsiBuilder
   ): Unit =
@@ -88,18 +90,19 @@ private[metallurgy] object DotcPsiProducer:
       Vector(from, to)
     )).toSet
     if ParserSyntaxSnapshot.digest(source.toString) != plan.sourceDigest then Some("source digest differs from plan")
-    else if leaves.isEmpty || leaves.head.start != 0 || leaves.last.end != length then Some("plan does not own source")
+    else if (length > 0 && leaves.isEmpty) || leaves.headOption.exists(_.start != 0) || leaves.lastOption.exists(
+        _.end != length
+      )
+    then Some("plan does not own source")
     else if leaves.exists(leaf => leaf.start < 0 || leaf.start >= leaf.end || leaf.end > length) then
       Some("invalid physical leaf range")
     else if leaves.sliding(2).exists { case Vector(left, right) => left.end != right.start; case _ => false } then
       Some("physical leaves are not contiguous")
     else if ids.distinct.size != ids.size then Some("composite instances are not unique")
-    else if roots.size != 1 then Some("plan does not have exactly one structural root")
+    else if roots.isEmpty && plan.composites.nonEmpty then Some("plan has no structural roots")
     else if edges.distinct.size != edges.size || parents.values.exists(_.size != 1) then
       Some("composite child has duplicate or multiple parent edges")
     else if plan.virtualLayout.nonEmpty then Some("virtual layout emission is unavailable")
-    else if plan.composites.exists(_.children.exists(_.placement != ChildPlacement.Direct)) then
-      Some("non-direct child placement emission is unavailable")
     else if plan.composites.exists(_.fieldDispositions.exists(_.kind == FieldDispositionKind.Unsupported)) then
       Some("unsupported field disposition emission is unavailable")
     else if leaves.exists(_.target.isInstanceOf[TerminalLeafTarget.Token]) then
@@ -112,24 +115,40 @@ private[metallurgy] object DotcPsiProducer:
         value.kind != TargetAssertionKind.NativeComposite && value.kind != TargetAssertionKind.CompatibleComposite
       ) || targets.exists(value => !bindings.elementTypes.contains(value.surfaceId))
     then Some("composite target is not exactly one supported bound composite")
-    else if leaves.exists(leaf => !composite(leaf.owner)) then Some("physical leaf owner is not an active composite")
+    else if leaves.exists:
+        case PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.Composite(owner), _, _, _) => !composite(owner)
+        case PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.FileRoot, _, _, _)         => false
+    then Some("physical leaf owner is not an active composite or file root")
+    else if leaves.exists:
+        case PlannedPhysicalLeaf(_, start, end, PhysicalLeafOwner.Composite(owner), _, _, _) =>
+          ranges.get(owner).forall { case (ownerStart, ownerEnd) => start < ownerStart || end > ownerEnd }
+        case PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.FileRoot, _, _, _)               => false
+    then Some("physical leaf is outside its owner composite")
     else if plan.composites.exists(value => value.children.exists(child => !composite(child.child))) then
       Some("planned child is absent")
-    else if reachable(roots.head, children).size != composite.size then
+    else if roots.flatMap(reachable(_, children)).toSet.size != composite.size then
       Some("composite graph has a cycle or unreachable node")
     else if plan.composites.exists(value =>
         val (from, to) = range(value)
-        !isSourceDerived(value.position) || from < 0 || from >= to || to > length || value.children
+        from < 0 || from >= to || to > length || value.children
           .flatMap(child => ranges.get(child.child))
           .exists: child =>
             val (childFrom, childTo) = child
             childFrom < from || childTo > to
       )
     then Some("composite containment is invalid")
+    else if roots.map(ranges).sortBy(_._1).sliding(2).exists {
+        case Vector((_, leftTo), (rightFrom, _)) => leftTo > rightFrom
+        case _                                   => false
+      }
+    then Some("composite roots are unordered or overlapping")
     else if plan.composites.exists(value =>
-        value.children.flatMap(child => ranges.get(child.child)).sliding(2).exists {
-          case Vector((leftFrom, leftTo), (rightFrom, _)) => leftFrom > rightFrom || leftTo > rightFrom
-          case _                                          => false
+        val normalized = value.children.sortBy: child =>
+          val (start, end) = ranges(child.child)
+          (start, end, child.child.toString)
+        value.children != normalized || normalized.flatMap(child => ranges.get(child.child)).sliding(2).exists {
+          case Vector((_, leftTo), (rightFrom, _)) => leftTo > rightFrom
+          case _                                   => false
         }
       )
     then Some("composite children are unordered or overlapping")
@@ -137,20 +156,16 @@ private[metallurgy] object DotcPsiProducer:
     else None
 
   private def reachable(
-      root: ProductionInstanceId,
-      children: Map[ProductionInstanceId, Vector[ProductionInstanceId]]
-  ): Set[ProductionInstanceId] =
-    def loop(pending: List[ProductionInstanceId], seen: Set[ProductionInstanceId]): Set[ProductionInstanceId] =
+      root: CompositeInstanceId,
+      children: Map[CompositeInstanceId, Vector[CompositeInstanceId]]
+  ): Set[CompositeInstanceId] =
+    def loop(pending: List[CompositeInstanceId], seen: Set[CompositeInstanceId]): Set[CompositeInstanceId] =
       pending match
         case Nil          => seen
         case head :: tail =>
           if seen(head) then loop(tail, seen)
           else loop(children.getOrElse(head, Vector.empty).toList ::: tail, seen + head)
     loop(List(root), Set.empty)
-
-  private def isSourceDerived(position: ParserNodePosition): Boolean = position match
-    case ParserNodePosition.Positioned(_, _, com.hmemcpy.metallurgy.pc.ParserPositionProvenance.SourceDerived) => true
-    case _                                                                                                     => false
 
   private def lexerBoundariesAreSafe(boundaries: Set[Int], builder: PsiBuilder): Boolean =
     var observed = Set(0, builder.getOriginalText.length)
@@ -160,9 +175,7 @@ private[metallurgy] object DotcPsiProducer:
       index += 1
     boundaries.subsetOf(observed)
 
-  private def range(value: PlannedComposite): (Int, Int) = value.position match
-    case ParserNodePosition.Positioned(value, _, _) => value.startOffset -> value.endOffset
-    case ParserNodePosition.Absent                  => 0                 -> 0
+  private def range(value: PlannedComposite): (Int, Int) = value.range.startOffset -> value.range.endOffset
 
   private def advanceTo(offset: Int, builder: PsiBuilder): Unit =
     while !builder.eof() && builder.getCurrentOffset < offset do builder.advanceLexer()

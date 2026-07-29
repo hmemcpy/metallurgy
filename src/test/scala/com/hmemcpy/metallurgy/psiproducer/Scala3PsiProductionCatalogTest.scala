@@ -792,6 +792,72 @@ final class Scala3PsiProductionCatalogTest:
     ).foreach(error => assertTrue(error.toString, errors.contains(error)))
     assertFalse(errors.contains(CatalogValidationError.UnknownChildProductionId(root.id, child.id)))
 
+  @Test def validatorRejectsEveryMalformedOutputTemplateCategory(): Unit =
+    val compiler                                                                       = inventory(snapshot("/templates", 1, Vector.empty))
+    val base                                                                           = completeCatalog(compiler)
+    val root                                                                           = base.productions.find(_.pattern.prefix == "Root").get
+    val self                                                                           = root.effectiveOutputTemplate.composites.head
+    def errors(template: LocalOutputCompositeTemplate): Vector[CatalogValidationError] =
+      val updated = root.copy(outputTemplate = Some(template))
+      val catalog = base.copy(productions = base.productions.map(p => if p.id == root.id then updated else p))
+      Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces(catalog))
+
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self, self), Map("child" -> Some("self"))))
+        .contains(CatalogValidationError.DuplicateOutputId(root.id, "self"))
+    )
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self.copy(parentId = Some("missing"))), Map("child" -> Some("self"))))
+        .contains(CatalogValidationError.UnknownOutputParent(root.id, "self", "missing"))
+    )
+    val cycle             = Vector(self.copy(id = "a", parentId = Some("b")), self.copy(id = "b", parentId = Some("a")))
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(cycle, Map("child" -> Some("a"))))
+        .contains(CatalogValidationError.CyclicOutputParent(root.id, "a"))
+    )
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self), Map.empty))
+        .contains(CatalogValidationError.MissingChildMountRole(root.id, "child"))
+    )
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self), Map("child" -> Some("self"), "extra" -> None)))
+        .contains(CatalogValidationError.ExtraChildMountRole(root.id, "extra"))
+    )
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self), Map("child" -> Some("missing"))))
+        .contains(CatalogValidationError.UnknownChildMountParent(root.id, "child", "missing"))
+    )
+    val unsupported       = OutputRangeDeclaration.BoundaryDerived("start", "end")
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self.copy(range = unsupported)), Map("child" -> Some("self"))))
+        .contains(CatalogValidationError.UnsupportedOutputRange(root.id, "self", unsupported))
+    )
+    val siblingRoots      = Vector(self.copy(id = "left"), self.copy(id = "right"))
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(siblingRoots, Map("child" -> Some("left"))))
+        .contains(CatalogValidationError.OverlappingCompilerPositionSiblings(root.id, None, "left", "right"))
+    )
+    val parentAndSiblings = Vector(
+      self.copy(id = "parent"),
+      self.copy(id = "left", parentId = Some("parent")),
+      self.copy(id = "right", parentId = Some("parent"))
+    )
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(parentAndSiblings, Map("child" -> Some("left"))))
+        .contains(
+          CatalogValidationError.OverlappingCompilerPositionSiblings(root.id, Some("parent"), "left", "right")
+        )
+    )
+    val sharedAccessor    = AccessorObligation("shared", required = true)
+    val wrappers          = Vector(
+      self.copy(id = "outer", accessors = Vector(sharedAccessor)),
+      self.copy(id = "inner", parentId = Some("outer"), accessors = Vector(sharedAccessor))
+    )
+    assertFalse(
+      errors(LocalOutputCompositeTemplate(wrappers, Map("child" -> Some("inner"))))
+        .contains(CatalogValidationError.DuplicateAccessorObligation(root.id, "shared"))
+    )
+
   @Test def validatorAccountsTokenAndPersistenceClaimsAndRejectsIncompleteFacts(): Unit =
     val compiler    = inventory(snapshot("/one", 1, Vector.empty))
     val base        = completeCatalog(compiler)
@@ -952,12 +1018,50 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(Vector.empty, first.stubAssertions)
     val leaf      = first.physicalLeafOwnership.head
     val child     = first.composites(1).instance
-    assertEquals((0L, 0, 1, child, "contents"), (leaf.atomId, leaf.start, leaf.end, leaf.owner, leaf.terminalId))
+    assertEquals(
+      (0L, 0, 1, PhysicalLeafOwner.Composite(child), "contents"),
+      (leaf.atomId, leaf.start, leaf.end, leaf.owner, leaf.terminalId)
+    )
     assertEquals("x", value.sourceText.substring(leaf.start, leaf.end))
     assertEquals(
       Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0)),
       first.composites.head.children.head.fieldPath
     )
+
+  @Test def wholeFilePlanningLowersLocalParentsAndTransparentOutputs(): Unit =
+    val value     = snapshot("/outputs", 1, Vector.empty)
+    val compiler  = inventory(value)
+    val base      = completeCatalog(compiler)
+    val aggregate = this.aggregate(Vector(compiler))
+    val evidence  = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val root      = base.productions.find(_.id == "Root").get
+    val self      = root.effectiveOutputTemplate.composites.head
+
+    val wrappedRoot    = root.copy(outputTemplate =
+      Some(
+        LocalOutputCompositeTemplate(
+          Vector(self.copy(id = "outer"), self.copy(id = "inner", parentId = Some("outer"))),
+          Map("child" -> Some("inner"))
+        )
+      )
+    )
+    val wrappedCatalog = base.copy(productions = base.productions.map(p => if p.id == root.id then wrappedRoot else p))
+    val wrapped        = planned(value, evidence, wrappedCatalog, aggregate, surfaces(wrappedCatalog))
+      .fold(error => throw new AssertionError(error.toString), identity)
+    val outer          = wrapped.composites.find(_.instance.localOutputId == "outer").get
+    val inner          = wrapped.composites.find(_.instance.localOutputId == "inner").get
+    assertEquals(Vector(inner.instance), outer.children.map(_.child))
+    assertEquals("Child", wrapped.composites.find(_.instance == inner.children.head.child).get.productionId)
+    assertEquals(3, wrapped.targetAssertions.count(_.owner.isInstanceOf[TargetAssertionOwner.Composite]))
+
+    val transparentRoot    =
+      root.copy(outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map("child" -> None))))
+    val transparentCatalog =
+      base.copy(productions = base.productions.map(p => if p.id == root.id then transparentRoot else p))
+    val transparent        = planned(value, evidence, transparentCatalog, aggregate, surfaces(transparentCatalog))
+      .fold(error => throw new AssertionError(error.toString), identity)
+    assertEquals(Vector("Child"), transparent.composites.map(_.productionId))
+    assertEquals(1, transparent.targetAssertions.count(_.owner.isInstanceOf[TargetAssertionOwner.Composite]))
 
   @Test def wholeFilePlanningFailsClosedForOwnershipAndChildContractGaps(): Unit =
     val value                                                                  = snapshot("/one", 1, Vector.empty)
@@ -996,7 +1100,9 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(
       child.id,
       parentFallbackPlan.composites
-        .find(_.instance == parentFallbackPlan.physicalLeafOwnership.head.owner)
+        .find(composite =>
+          parentFallbackPlan.physicalLeafOwnership.head.owner == PhysicalLeafOwner.Composite(composite.instance)
+        )
         .get
         .productionId
     )
@@ -1024,7 +1130,7 @@ final class Scala3PsiProductionCatalogTest:
     ).fold(error => throw new AssertionError(error.toString), identity)
     val trailingLeaf     = trailingPlan.physicalLeafOwnership.last
     assertEquals("\n", trailingSource.substring(trailingLeaf.start, trailingLeaf.end))
-    assertEquals(root.id, trailingPlan.composites.find(_.instance == trailingLeaf.owner).get.productionId)
+    assertEquals(PhysicalLeafOwner.FileRoot, trailingLeaf.owner)
 
     val missingChildTerminal = wholeSource.copy(productions =
       wholeSource.productions.map(production =>
@@ -1122,6 +1228,57 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
     assertTrue(failure(unsupported).isInstanceOf[WholeFilePlanningFailure.UnsupportedFieldDisposition])
+
+  @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
+    val baseValue       = snapshot("/transparent-siblings", 1, Vector.empty)
+    val root            = baseValue.nodes.head.copy(fields =
+      Vector(
+        ParserSyntaxField("left", ParserFieldValue.Node(2)),
+        ParserSyntaxField("right", ParserFieldValue.Node(3))
+      )
+    )
+    val child           = baseValue
+      .nodes(1)
+      .copy(occurrences = Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("left")))))
+    val sibling         = baseValue
+      .nodes(1)
+      .copy(
+        id = 3,
+        production = "Sibling",
+        occurrences = Vector(
+          ParserNodeOccurrence(
+            1,
+            Vector(ParserFieldPathSegment.NamedField("right"))
+          )
+        )
+      )
+    val value           = baseValue.copy(nodes = Vector(root, child, sibling))
+    val compiler        = inventory(value)
+    val base            = completeCatalog(compiler)
+    val childProduction = base.productions.find(_.id == "Child").get
+    val catalog         = base.copy(productions = base.productions.map: production =>
+      if production.id == childProduction.id then
+        production.copy(outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map.empty)))
+      else if production.id == "Root" then
+        production.copy(
+          dispositions = Vector("left", "right").map(FieldDisposition(_, FieldDispositionKind.Child)),
+          children = Vector(
+            ChildDeclaration("left", "left", ChildCardinality.ExactlyOne, "Child"),
+            ChildDeclaration("right", "right", ChildCardinality.ExactlyOne, "Sibling")
+          )
+        )
+      else production)
+    val result          = planned(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      catalog,
+      aggregate(Vector(compiler)),
+      surfaces(catalog).copy(rows = surfaces(catalog).rows.filterNot(_.id == childProduction.targetSurfaceId))
+    )
+    val conflict        = result.left.toOption.get match
+      case value: WholeFilePlanningFailure.ConflictingSourceAtomOwners => value
+      case failure                                                     => throw new AssertionError(failure.toString)
+    assertEquals(Vector(2L, 3L), conflict.owners.map(_._1.valueId).sorted)
 
   @Test def wholeFilePlanningRejectsMultiplyParentedDescendants(): Unit =
     val value     = sharedDescendantSnapshot
@@ -1221,8 +1378,9 @@ final class Scala3PsiProductionCatalogTest:
           )
         )
       case production if production.id == child.id =>
-        production.copy(terminals =
-          Vector(
+        production.copy(
+          outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map.empty)),
+          terminals = Vector(
             TerminalDeclaration(
               "optional-token",
               TerminalIntervalSelector.WholeProduction,
@@ -1384,7 +1542,7 @@ final class Scala3PsiProductionCatalogTest:
           childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
           childField.toVector.flatMap(field =>
             childProduction.map(production =>
-              ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), ChildPlacement.Direct, production)
+              ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), production)
             )
           ),
           if childField.isEmpty then
