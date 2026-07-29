@@ -866,6 +866,10 @@ private[metallurgy] final case class Scala3PsiProduction(
     persistence: PersistenceObligations
 )
 private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
+private[metallurgy] enum CatalogCapabilityFailure:
+  case MissingProduction(id: String)
+  case InvalidTargetRequirement(id: String, requirement: TargetRequirement)
+  case NativeIntegerLiteralMismatch(observation: NativeIntegerLiteralObservation)
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty)
 
@@ -919,6 +923,34 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       )
     )
   )
+
+  def withNativeIntegerLiteral(
+      observation: NativeIntegerLiteralObservation
+  ): Either[CatalogCapabilityFailure, Scala3PsiProductionCatalog] =
+    val id = "integer-literal-number"
+    Reviewed.productions.find(_.id == id) match
+      case None                                                                                  => Left(CatalogCapabilityFailure.MissingProduction(id))
+      case Some(production) if production.targetRequirement != TargetRequirement.NativeCandidate =>
+        Left(CatalogCapabilityFailure.InvalidTargetRequirement(id, production.targetRequirement))
+      case Some(production)                                                                      =>
+        val expected =
+          observation.implementationSurfaceId == production.targetSurfaceId &&
+            observation.publicSurfaceId ==
+            "org/jetbrains/plugins/scala/lang/psi/api/base/literals/ScIntegerLiteral" &&
+            observation.elementType == "IntegerLiteral" && observation.isScalaIntegerLiteralElementType &&
+            observation.text == "0" &&
+            observation.contentText == "0" &&
+            observation.valueClass == "java.lang.Integer" &&
+            observation.valueText == "0" &&
+            observation.contentStart == 0 && observation.contentEnd == 1
+        if !expected then Left(CatalogCapabilityFailure.NativeIntegerLiteralMismatch(observation))
+        else
+          Right(
+            Reviewed.copy(productions = Reviewed.productions.map:
+              case value if value.id == id => value.copy(targetRequirement = TargetRequirement.Native)
+              case value                   => value
+            )
+          )
 
 private[metallurgy] object Scala3PsiProductionCoverageReport:
   def markdown(

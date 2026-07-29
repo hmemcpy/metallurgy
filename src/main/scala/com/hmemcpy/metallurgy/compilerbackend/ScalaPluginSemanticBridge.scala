@@ -1,13 +1,19 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Computable
 import com.intellij.psi.{PsiElement, PsiNamedElement}
+import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiElementFactory
+import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
+import org.jetbrains.plugins.scala.project.ScalaFeatures
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
@@ -45,6 +51,18 @@ private[metallurgy] final case class InstalledScalaPluginSurface(
     descriptorFacts: Vector[InstalledScalaPluginDescriptorFact],
     unresolved: Vector[String]
 )
+private[metallurgy] final case class NativeIntegerLiteralObservation(
+    implementationSurfaceId: String,
+    publicSurfaceId: String,
+    elementType: String,
+    isScalaIntegerLiteralElementType: Boolean,
+    text: String,
+    contentText: String,
+    valueClass: String,
+    valueText: String,
+    contentStart: Int,
+    contentEnd: Int
+)
 
 /** IntelliJ-side compatibility seam for bundled Scala-plugin semantics.
   *
@@ -55,6 +73,46 @@ object ScalaPluginSemanticBridge:
 
   def installedPsiSurface(): Either[String, InstalledScalaPluginSurface] =
     InstalledScalaPluginSurfaceScanner.scan(classOf[org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement])
+
+  private[metallurgy] def probeNativeIntegerLiteral(
+      project: Project
+  ): Either[String, NativeIntegerLiteralObservation] =
+    if project.isDisposed then Left("project is disposed")
+    else
+      try
+        def observe(): Either[String, NativeIntegerLiteralObservation] =
+          ScalaPsiElementFactory.createExpressionFromText("0", ScalaFeatures.default)(using project) match
+            case literal: ScIntegerLiteral =>
+              val value = literal.getValue
+              if value == null then Left("integer literal value is absent")
+              else
+                val range = literal.contentRangeInParent
+                Right(
+                  NativeIntegerLiteralObservation(
+                    literal.getClass.getName.replace('.', '/'),
+                    classOf[ScIntegerLiteral].getName.replace('.', '/'),
+                    literal.getNode.getElementType.toString,
+                    literal.getNode.getElementType eq ScalaElementType.IntegerLiteral,
+                    literal.getText,
+                    literal.contentText,
+                    value.getClass.getName,
+                    value.toString,
+                    range.getStartOffset,
+                    range.getEndOffset
+                  )
+                )
+            case other                     =>
+              Left(s"factory returned ${other.getClass.getName} instead of ${classOf[ScIntegerLiteral].getName}")
+        val application                                                = ApplicationManager.getApplication
+        if application.isReadAccessAllowed then observe()
+        else
+          application.runReadAction(
+            new Computable[Either[String, NativeIntegerLiteralObservation]]:
+              override def compute(): Either[String, NativeIntegerLiteralObservation] = observe()
+          )
+      catch
+        case control: ControlFlowException => throw control
+        case NonFatal(error)               => Left(s"integer literal probe failed: ${error.getMessage}")
 
   private val resolveGuard: ThreadLocal[java.util.Set[PsiElement]] =
     ThreadLocal.withInitial(() =>
