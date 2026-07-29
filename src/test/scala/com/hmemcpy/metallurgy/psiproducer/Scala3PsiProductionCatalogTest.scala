@@ -286,7 +286,7 @@ final class Scala3PsiProductionCatalogTest:
     val repeated                                                                              = CatalogValuePattern.Repeated(CatalogValuePattern.Node)
     val optional                                                                              = CatalogValuePattern.Optional(CatalogValuePattern.Name)
     assertEquals(
-      repeated,
+      CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node),
       aggregate(
         Vector(withField(InventoryValueObservation.Repeated(Vector.empty), Some(repeated)))
       ).productions.head.fields.head.value
@@ -1126,16 +1126,32 @@ final class Scala3PsiProductionCatalogTest:
   @Test def wholeFilePlanningRejectsMultiplyParentedDescendants(): Unit =
     val value     = sharedDescendantSnapshot
     val compiler  = inventory(value)
+    val leaf      = compiler.shapes.find(_.id == 3).get
+    assertEquals(
+      Set("left", "right"),
+      leaf.contexts
+        .flatMap(_.ancestors.headOption)
+        .flatMap(_.path.collect { case CatalogPathSegment.NamedField(name) => name }.lastOption)
+        .toSet
+    )
     val catalog   = completeCatalog(compiler)
     val aggregate = this.aggregate(Vector(compiler))
-    val result    = planned(
+    Vector(
       value,
-      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
-      catalog,
-      aggregate,
-      surfaces(catalog)
+      value.copy(nodes = value.nodes.updated(1, value.nodes(1).copy(occurrences = value.nodes(1).occurrences.reverse)))
     )
-    assertTrue(result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference])
+      .foreach: candidate =>
+        val result = planned(
+          candidate,
+          ProvisionalSourceEvidencePlanner.plan(candidate).toOption.get,
+          catalog,
+          aggregate,
+          surfaces(catalog)
+        )
+        assertTrue(
+          result.toString,
+          result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference]
+        )
 
   @Test def wholeFilePlanningRejectsUnprobedNativeCandidates(): Unit =
     val value     = snapshot("/candidate", 1, Vector.empty)
@@ -1352,7 +1368,15 @@ final class Scala3PsiProductionCatalogTest:
             (if shape.contexts.isEmpty then Vector(ContextPattern.Root)
              else
                shape.contexts.map(context =>
-                 ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path)
+                 context.ancestors.headOption match
+                   case Some(ancestor) =>
+                     ContextPattern.ParentWithAncestor(
+                       context.ownerKind,
+                       context.ownerPrefix,
+                       context.path,
+                       ancestor
+                     )
+                   case None           => ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path)
                )
             )
               .map(CompilerProductionContextPattern(_, shape.sourceClassification))
@@ -1414,7 +1438,13 @@ final class Scala3PsiProductionCatalogTest:
       Vector(
         ParserSyntaxField(
           "children",
-          ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(2), ParserFieldValue.Node(2)))
+          ParserFieldValue.Product(
+            "Pair",
+            Vector(
+              ParserSyntaxField("left", ParserFieldValue.Node(2)),
+              ParserSyntaxField("right", ParserFieldValue.Node(2))
+            )
+          )
         )
       ),
       range,
@@ -1428,11 +1458,19 @@ final class Scala3PsiProductionCatalogTest:
       Vector(
         ParserNodeOccurrence(
           1,
-          Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0))
+          Vector(
+            ParserFieldPathSegment.NamedField("children"),
+            ParserFieldPathSegment.NestedProductBoundary("Pair"),
+            ParserFieldPathSegment.NamedField("left")
+          )
         ),
         ParserNodeOccurrence(
           1,
-          Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(1))
+          Vector(
+            ParserFieldPathSegment.NamedField("children"),
+            ParserFieldPathSegment.NestedProductBoundary("Pair"),
+            ParserFieldPathSegment.NamedField("right")
+          )
         )
       )
     )

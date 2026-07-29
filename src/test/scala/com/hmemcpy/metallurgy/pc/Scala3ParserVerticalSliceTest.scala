@@ -3,17 +3,23 @@ package com.hmemcpy.metallurgy.pc
 import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
   CatalogValidationError,
+  CatalogShapeMatcher,
+  CatalogPathSegment,
   CatalogValuePattern,
   CompilerRuntimeInventory,
   FactStatus,
   InventoryFieldObservation,
+  InventoryKind,
+  InventoryAncestor,
   InventoryValueObservation,
   Scala3PsiProductionCatalog,
   Scala3PsiProductionCatalogValidator,
   Scala3PsiProductionCoverageReport,
   ScalaPsiSurfaceInventory,
   SurfaceClassification,
-  ProvisionalSourceEvidencePlanner
+  ProvisionalSourceEvidencePlanner,
+  PreparedProductionCatalog,
+  WholeFileProductionPlanner
 }
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
 import org.junit.Test
@@ -74,7 +80,32 @@ final class Scala3ParserVerticalSliceTest:
         value.nodes
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
-      assertEquals("f6e351328d6b5371aef687227db3678479cb27aa08f8c7ec8fcff37220efd3e5", aggregate.fingerprint)
+      assertEquals("b9f42c4a3e0a013f4e7aa66c7471d4b901b079db179a268270fe6f8ef89a497c", aggregate.fingerprint)
+      val surfaces  = ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
+      val catalog   = Scala3PsiProductionCatalog(
+        Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
+          production.id.startsWith("file-package") || production.id.startsWith("package-stable")
+        )
+      )
+      val prepared  = PreparedProductionCatalog
+        .prepare(catalog, aggregate, surfaces)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val plan      = WholeFileProductionPlanner
+        .plan(value, evidence, prepared)
+        .fold(failure => throw new AssertionError(failure.toString), identity)
+      assertEquals(
+        Vector("file-package", "package-stable-reference", "package-stable-identifier"),
+        plan.composites.map(_.productionId)
+      )
+      assertEquals(2L, plan.physicalLeafOwnership.find(leaf => leaf.start == 8 && leaf.end == 15).get.owner.valueId)
+      assertEquals(1L, plan.physicalLeafOwnership.find(leaf => leaf.start == 15 && leaf.end == 22).get.owner.valueId)
+      val trailing  = plan.physicalLeafOwnership.find(leaf => leaf.start == 22 && leaf.end == 23).get
+      assertEquals(0L, trailing.owner.valueId)
+      assertEquals("whole-file", trailing.terminalId)
+      assertEquals(
+        PackageSource,
+        plan.physicalLeafOwnership.sortBy(_.start).map(leaf => PackageSource.substring(leaf.start, leaf.end)).mkString
+      )
     finally bridge.close()
 
   @Test
@@ -157,7 +188,20 @@ final class Scala3ParserVerticalSliceTest:
         ),
         first.nodes.map(_.occurrences)
       )
-      assertEquals("b7a285e27db862ca0ed7471d648e96d6d505a90e975e973f367276f2255db37c", aggregate.fingerprint)
+      assertEquals("2391e1245d1b5fc0a921f1bbb00d9fa2ee9e0baea304670560177f9c8e5d3326", aggregate.fingerprint)
+      val catalog                = Scala3PsiProductionCatalog(
+        Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
+          production.id.startsWith("file-package") || production.id.startsWith("package-stable")
+        )
+      )
+      def selected(nodeId: Long) =
+        val row      = inventory.shapes.find(_.id == nodeId).get
+        val contexts = if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_))
+        contexts.flatMap(context =>
+          CatalogShapeMatcher.select(catalog, row.kind, row.prefix, row.observation, context, row.sourceClassification)
+        )
+      assertTrue(selected(0).isEmpty)
+      assertTrue(selected(6).isEmpty)
     finally bridge.close()
 
   @Test
@@ -322,7 +366,7 @@ final class Scala3ParserVerticalSliceTest:
       val surfaces                                                                                 = ScalaPsiSurfaceInventory
         .installed()
         .fold(message => throw new AssertionError(message), identity)
-      assertEquals("e71b759e4fa3e4749945b2882c83c0568fb3c8e3febe968b6b66b245d4e675d0", aggregate.fingerprint)
+      assertEquals("8199ddb5c14f00c6a2ab508bd0b943e5becb293cdc03ca924061c6b290da3705", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", surfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,
@@ -332,7 +376,25 @@ final class Scala3ParserVerticalSliceTest:
       val expectedUncovered                                                                        = aggregate.productions
         .flatMap(row =>
           row.occurrences.collect:
-            case occurrence if row.prefix != "Number" =>
+            case occurrence
+                if !(
+                  row.prefix == "Number" ||
+                    (row.prefix == "Select" && occurrence.context.exists(context =>
+                      context.ownerPrefix == "PackageDef" &&
+                        context.path == Vector(CatalogPathSegment.NamedField("pid"))
+                    )) ||
+                    (row.prefix == "Ident" && occurrence.context.exists(context =>
+                      context.ownerPrefix == "Select" &&
+                        context.path == Vector(CatalogPathSegment.NamedField("qualifier")) &&
+                        context.ancestors.headOption.contains(
+                          InventoryAncestor(
+                            InventoryKind.Node,
+                            "PackageDef",
+                            Vector(CatalogPathSegment.NamedField("pid"))
+                          )
+                        )
+                    ))
+                ) =>
               CatalogValidationError.UncoveredCompilerShape(
                 row.kind,
                 row.prefix,
@@ -344,22 +406,33 @@ final class Scala3ParserVerticalSliceTest:
       val actualUncovered                                                                          = catalogErrors.collect:
         case error: CatalogValidationError.UncoveredCompilerShape => error
       assertEquals(expectedUncovered, actualUncovered.toSet)
+      val accounted                                                                                = Set(
+        "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl",
+        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl",
+        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl",
+        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#reference()Lscala/Option;",
+        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#keyword()Lcom/intellij/psi/PsiElement;",
+        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#qualifier()Lscala/Option;",
+        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#nameId()Lcom/intellij/psi/PsiElement;"
+      )
       val expectedUnaccounted                                                                      = surfaces.rows
         .filter(row =>
           row.status == FactStatus.Available &&
             row.classification == SurfaceClassification.SyntaxContract &&
-            row.id != "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl"
+            !accounted(row.id)
         )
         .map(row => CatalogValidationError.UnaccountedSyntaxSurface(row.id))
         .toSet
       val actualUnaccounted                                                                        = catalogErrors.collect:
         case error: CatalogValidationError.UnaccountedSyntaxSurface => error
       assertEquals(expectedUnaccounted, actualUnaccounted.toSet)
+      assertTrue(catalogErrors.contains(CatalogValidationError.UnrepresentedCatalogProduction("file-package")))
       assertFalse(
         catalogErrors.toString,
         catalogErrors.exists(error =>
           !error.isInstanceOf[CatalogValidationError.UncoveredCompilerShape] &&
-            !error.isInstanceOf[CatalogValidationError.UnaccountedSyntaxSurface]
+            !error.isInstanceOf[CatalogValidationError.UnaccountedSyntaxSurface] &&
+            error != CatalogValidationError.UnrepresentedCatalogProduction("file-package")
         )
       )
       val report                                                                                   = Scala3PsiProductionCoverageReport.markdown(
