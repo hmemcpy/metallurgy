@@ -12,7 +12,8 @@ import com.hmemcpy.metallurgy.psiproducer.{
   Scala3PsiProductionCatalogValidator,
   Scala3PsiProductionCoverageReport,
   ScalaPsiSurfaceInventory,
-  SurfaceClassification
+  SurfaceClassification,
+  ProvisionalSourceEvidencePlanner
 }
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertTrue}
 import org.junit.Test
@@ -21,6 +22,89 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 
 final class Scala3ParserVerticalSliceTest:
+
+  @Test
+  def minimizedFilePackageImportFamilyHasAnExactInventory(): Unit =
+    val bridge = openBridge()
+    try
+      val first     = parse(bridge, FamilySource, "file:///Scala3FileFamily.scala")
+      val second    = parse(bridge, FamilySource, "file:///Scala3FileFamily.scala")
+      val inventory = CompilerRuntimeInventory
+        .from(first)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val aggregate = AggregatedCompilerProductionInventory
+        .aggregate(Vector(inventory))
+        .fold(failure => throw new AssertionError(failure.toString), identity)
+      val evidence  = ProvisionalSourceEvidencePlanner
+        .plan(first)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+
+      assertEquals(first, second)
+      assertEquals(FamilySource, first.sourceText)
+      assertEquals(ParserSyntaxSnapshot.digest(FamilySource), first.sourceDigest)
+      assertEquals(ParserSyntaxSnapshot.evidenceFingerprint(first), evidence.parserEvidenceFingerprint)
+      assertEquals(FamilySource, evidence.reconstruct(FamilySource))
+      assertTrue(first.diagnostics.isEmpty)
+      assertEquals(
+        Vector(
+          "PackageDef"     -> Vector("pid", "stats"),
+          "Select"         -> Vector("qualifier", "name"),
+          "Ident"          -> Vector("name"),
+          "Import"         -> Vector("expr", "selectors"),
+          "Select"         -> Vector("qualifier", "name"),
+          "Select"         -> Vector("qualifier", "name"),
+          "Ident"          -> Vector("name"),
+          "ImportSelector" -> Vector("imported", "renamed", "bound"),
+          "Ident"          -> Vector("name"),
+          "Thicket"        -> Vector("trees")
+        ),
+        first.nodes.map(node => node.production -> node.fields.map(_.name))
+      )
+      assertEquals(
+        Vector(
+          ParserNodePosition.Positioned(PcSourceRange(0, 62), 16, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(8, 22), 16, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(8, 15), 8, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(24, 62), 31, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(31, 57), 48, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(31, 47), 37, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(31, 36), 31, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(58, 62), 58, ParserPositionProvenance.Synthetic),
+          ParserNodePosition.Positioned(PcSourceRange(58, 62), 58, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Absent
+        ),
+        first.nodes.map(_.position)
+      )
+      assertEquals(
+        Vector(
+          Vector.empty,
+          Vector(ParserNodeOccurrence(0, Vector(ParserFieldPathSegment.NamedField("pid")))),
+          Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+          Vector(
+            ParserNodeOccurrence(
+              0,
+              Vector(ParserFieldPathSegment.NamedField("stats"), ParserFieldPathSegment.RepeatedIndex(0))
+            )
+          ),
+          Vector(ParserNodeOccurrence(3, Vector(ParserFieldPathSegment.NamedField("expr")))),
+          Vector(ParserNodeOccurrence(4, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+          Vector(ParserNodeOccurrence(5, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+          Vector(
+            ParserNodeOccurrence(
+              3,
+              Vector(ParserFieldPathSegment.NamedField("selectors"), ParserFieldPathSegment.RepeatedIndex(0))
+            )
+          ),
+          Vector(ParserNodeOccurrence(7, Vector(ParserFieldPathSegment.NamedField("imported")))),
+          Vector(
+            ParserNodeOccurrence(7, Vector(ParserFieldPathSegment.NamedField("renamed"))),
+            ParserNodeOccurrence(7, Vector(ParserFieldPathSegment.NamedField("bound")))
+          )
+        ),
+        first.nodes.map(_.occurrences)
+      )
+      assertEquals("b7a285e27db862ca0ed7471d648e96d6d505a90e975e973f367276f2255db37c", aggregate.fingerprint)
+    finally bridge.close()
 
   @Test
   def broadIndentationSourceProducesAStableExactParserSnapshot(): Unit =
@@ -308,13 +392,16 @@ final class Scala3ParserVerticalSliceTest:
         assertTrue(point <= range.endOffset)
 
   private def parse(bridge: Scala3ParserBridge): ParserSyntaxSnapshot =
+    parse(bridge, Source, "file:///Scala3ParserVerticalSlice.scala")
+
+  private def parse(bridge: Scala3ParserBridge, source: String, uri: String): ParserSyntaxSnapshot =
     bridge
       .parse(
         Scala3ParserRequest(
           ParserSourceUri
-            .from("file:///Scala3ParserVerticalSlice.scala")
+            .from(uri)
             .fold(message => throw new AssertionError(message), identity),
-          Source,
+          source,
           Vector.empty
         )
       )
@@ -366,6 +453,12 @@ final class Scala3ParserVerticalSliceTest:
       |    values
       |      .filter(_.age > 0)
       |      .map(person => person.greeting("Hello"))
+      |""".stripMargin
+
+  private val FamilySource =
+    """package example.syntax
+      |
+      |import scala.collection.immutable.List
       |""".stripMargin
 
   private val ScalaVersion = "3.7.4"
