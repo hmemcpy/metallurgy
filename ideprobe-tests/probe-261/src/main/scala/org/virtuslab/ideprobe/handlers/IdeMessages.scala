@@ -1,5 +1,7 @@
 package org.virtuslab.ideprobe.handlers
 
+import java.io.{PrintWriter, StringWriter}
+
 import scala.jdk.CollectionConverters._
 
 import com.intellij.diagnostic.MessagePool
@@ -21,8 +23,17 @@ object IdeMessages {
         val pluginId = value.throwable
           .flatMap(error => Option(PluginUtil.getInstance.findPluginId(error)))
           .map(_.getIdString)
-        IdeMessage(value.level, value.render, pluginId)
+        IdeMessage(value.level, render(value), pluginId)
       }
       .toArray
+  }
+
+  private def render(value: Message): String = {
+    val throwable = value.throwable.map { error =>
+      val output = new StringWriter
+      error.printStackTrace(new PrintWriter(output))
+      output.toString
+    }
+    (value.content.toVector ++ throwable).mkString("\n")
   }
 }
