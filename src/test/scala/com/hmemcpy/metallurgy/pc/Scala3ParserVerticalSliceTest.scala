@@ -116,8 +116,7 @@ final class Scala3ParserVerticalSliceTest:
         case InventoryValueObservation.Repeated(values)             => values.flatMap(modifierAnnotations)
         case _                                                      => Vector.empty
       val annotations                                                                              = firstInventory.shapes
-        .flatMap(_.observations)
-        .flatten
+        .flatMap(_.observation)
         .flatMap(field => modifierAnnotations(field.value))
         .headOption
         .getOrElse(throw new AssertionError("Modifiers.annotations is absent"))

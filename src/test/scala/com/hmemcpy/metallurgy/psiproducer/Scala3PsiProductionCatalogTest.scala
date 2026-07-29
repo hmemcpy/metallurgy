@@ -208,7 +208,7 @@ final class Scala3PsiProductionCatalogTest:
     val result = inventory(snapshot("/one", 1, Vector.empty))
     val root   = result.shapes.find(_.prefix == "Root").get
     assertTrue(root.patternFields.head.value.isInstanceOf[CatalogValuePattern.Repeated])
-    assertTrue(root.observations.head.head.value.isInstanceOf[InventoryValueObservation.Repeated])
+    assertTrue(root.observation.head.value.isInstanceOf[InventoryValueObservation.Repeated])
 
   @Test def aggregateIsCanonicalAndDeduplicatesEvidence(): Unit =
     val first    = inventory(snapshot("/one", 1, Vector.empty))
@@ -224,24 +224,19 @@ final class Scala3PsiProductionCatalogTest:
   @Test def aggregateRetainsRootAndParentContexts(): Unit =
     val base   = inventory(snapshot("/one", 1, Vector.empty))
     val root   = row(InventoryValueObservation.Name("x")).copy(contexts = Vector.empty)
-    val nested = root.copy(contexts =
-      Vector(
-        InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))
-      )
+    val parent = InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))
+    val nested = root.copy(
+      contexts = Vector(parent),
+      sourceClassification = SourceClassification.Synthetic
     )
     val result = aggregate(Vector(base.copy(shapes = Vector(root)), base.copy(shapes = Vector(nested))))
-    assertTrue(result.productions.head.contexts.contains(None))
-    assertTrue(result.productions.head.contexts.exists(_.nonEmpty))
-
-  @Test def aggregateRejectsMissingObservationsWithoutDiscardingTheRow(): Unit =
-    val base    = inventory(snapshot("/one", 1, Vector.empty))
-    val present = row(InventoryValueObservation.Name("x"))
-    val missing = present.copy(observations = Vector.empty)
-    Vector(Vector(missing), Vector(present, missing)).foreach: shapes =>
-      assertEquals(
-        Left(InventoryAggregationFailure.MissingObservations(InventoryKind.Node, "Observed")),
-        AggregatedCompilerProductionInventory.aggregate(Vector(base.copy(shapes = shapes)))
-      )
+    assertEquals(
+      Set(
+        CompilerProductionContext(None, SourceClassification.SourceReachable),
+        CompilerProductionContext(Some(parent), SourceClassification.Synthetic)
+      ),
+      result.productions.head.occurrences.toSet
+    )
 
   @Test def aggregateInfersOptionalAndRepeatedFromAllEvidence(): Unit =
     val identity                                      = inventory(snapshot("/one", 1, Vector.empty)).identity
@@ -370,11 +365,8 @@ final class Scala3PsiProductionCatalogTest:
     val first     = base.copy(shapes = Vector(row(InventoryValueObservation.Name("x"))))
     val renamed   = first.copy(shapes =
       Vector(
-        first.shapes.head.copy(observations =
-          Vector(
-            Vector(InventoryFieldObservation("renamed", InventoryValueObservation.Name("x")))
-          )
-        )
+        first.shapes.head
+          .copy(observation = Vector(InventoryFieldObservation("renamed", InventoryValueObservation.Name("x"))))
       )
     )
     assertTrue(
@@ -417,6 +409,7 @@ final class Scala3PsiProductionCatalogTest:
       evidence,
       Scala3PsiProductionCatalog.Empty,
       inventory(value),
+      aggregate(Vector(inventory(value))),
       ScalaPsiSurfaceInventory(Vector.empty)
     )
     val errors   = result.left.toOption.get.asInstanceOf[WholeFilePlanningFailure.InvalidCatalog].errors
@@ -440,6 +433,18 @@ final class Scala3PsiProductionCatalogTest:
           Vector(CompilerFieldPattern("expected", CatalogValuePattern.Name))
         ),
         observed
+      )
+    )
+
+  @Test def canonicalNamePatternMatchesOrdinaryAndGeneratedRuntimeNames(): Unit =
+    Vector(
+      InventoryValueObservation.Name("name"),
+      InventoryValueObservation.GeneratedName("name", "$", 1)
+    ).foreach(observation => assertTrue(CatalogShapeMatcher.matches(CatalogValuePattern.Name, observation)))
+    assertFalse(
+      CatalogShapeMatcher.matches(
+        CatalogValuePattern.GeneratedName,
+        InventoryValueObservation.Name("name")
       )
     )
 
@@ -488,10 +493,185 @@ final class Scala3PsiProductionCatalogTest:
     val base       = completeCatalog(compiler)
     val child      = base.productions.find(_.pattern.prefix == "Child").get
     val ambiguous  =
-      child.copy(id = "Child.general", pattern = child.pattern.copy(contexts = Vector(ContextPattern.Any)))
+      child.copy(
+        id = "Child.general",
+        pattern = child.pattern.copy(occurrences =
+          Vector(
+            CompilerProductionContextPattern(ContextPattern.Any, child.pattern.occurrences.head.sourceClassification)
+          )
+        )
+      )
     val catalog    = base.copy(productions = base.productions :+ ambiguous)
     val validation = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces(catalog))
     assertTrue(validation.exists(_.isInstanceOf[CatalogValidationError.AmbiguousCompilerShape]))
+
+  @Test def aggregatedValidationCoversShapesAndSourceClassificationsBeyondOneSnapshot(): Unit =
+    val compiler   = inventory(snapshot("/one", 1, Vector.empty))
+    val catalog    = completeCatalog(compiler)
+    val root       = compiler.shapes.find(_.prefix == "Root").get
+    val synthetic  = root.copy(sourceClassification = SourceClassification.Synthetic)
+    val additional = row(InventoryValueObservation.Name("x"))
+    val aggregated = aggregate(
+      Vector(
+        compiler,
+        compiler.copy(
+          parserEvidenceFingerprint = "additional",
+          shapes = Vector(synthetic, additional)
+        )
+      )
+    )
+    val validation = Scala3PsiProductionCatalogValidator.validate(catalog, aggregated, surfaces(catalog))
+    assertTrue(
+      validation.contains(
+        CatalogValidationError.UncoveredCompilerShape(
+          root.kind,
+          root.prefix,
+          None,
+          SourceClassification.Synthetic
+        )
+      )
+    )
+    assertTrue(
+      validation.exists:
+        case CatalogValidationError.UncoveredCompilerShape(_, "Observed", _, _) => true
+        case _                                                                  => false
+    )
+
+  @Test def aggregatedValidationRejectsCatalogProductionsAbsentFromCanonicalInventory(): Unit =
+    val compiler = inventory(snapshot("/one", 1, Vector.empty))
+    val base     = completeCatalog(compiler)
+    val stale    = base.productions.head.copy(
+      id = "stale",
+      pattern = base.productions.head.pattern.copy(prefix = "Removed")
+    )
+    val catalog  = base.copy(productions = base.productions :+ stale)
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction("stale"))
+    )
+
+  @Test def aggregatedValidationPreservesContextAndSourceClassificationAssociations(): Unit =
+    val compiler      = inventory(snapshot("/one", 1, Vector.empty))
+    val root          = compiler.shapes.find(_.prefix == "Root").get
+    val parentContext = InventoryContext(
+      InventoryKind.Node,
+      "Owner",
+      Vector(CatalogPathSegment.NamedField("value"))
+    )
+    val paired        = aggregate(
+      Vector(
+        compiler.copy(shapes =
+          Vector(
+            root.copy(contexts = Vector.empty, sourceClassification = SourceClassification.SourceReachable),
+            root.copy(contexts = Vector(parentContext), sourceClassification = SourceClassification.Synthetic)
+          )
+        )
+      )
+    )
+    val base          = completeCatalog(compiler).productions.find(_.pattern.prefix == "Root").get
+    val pattern       = base.pattern.copy(occurrences =
+      Vector(
+        CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable),
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(parentContext.ownerKind, parentContext.ownerPrefix, parentContext.path),
+          SourceClassification.Synthetic
+        )
+      )
+    )
+    val production    = base.copy(pattern = pattern)
+    val catalog       = Scala3PsiProductionCatalog(Vector(production))
+    assertFalse(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, paired, surfaces(catalog))
+        .exists(_.isInstanceOf[CatalogValidationError.UncoveredCompilerShape])
+    )
+
+    val crossed = paired.copy(productions =
+      paired.productions.map(row =>
+        row.copy(occurrences = row.occurrences.map {
+          case CompilerProductionContext(None, _)          =>
+            CompilerProductionContext(None, SourceClassification.Synthetic)
+          case CompilerProductionContext(Some(context), _) =>
+            CompilerProductionContext(Some(context), SourceClassification.SourceReachable)
+        })
+      )
+    )
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, crossed, surfaces(catalog))
+        .exists(_.isInstanceOf[CatalogValidationError.UncoveredCompilerShape])
+    )
+
+  @Test def aggregatedValidationRejectsAnUnobservedOccurrenceAlternative(): Unit =
+    val compiler = inventory(snapshot("/one", 1, Vector.empty))
+    val base     = completeCatalog(compiler)
+    val root     = base.productions.find(_.pattern.prefix == "Root").get
+    val stale    = root.copy(pattern =
+      root.pattern.copy(occurrences =
+        root.pattern.occurrences :+
+          CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.Synthetic)
+      )
+    )
+    val catalog  = base.copy(productions = base.productions.map(p => if p.id == root.id then stale else p))
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id))
+    )
+
+  @Test def aggregatedValidationRejectsWildcardOccurrenceAlternatives(): Unit =
+    val compiler = inventory(snapshot("/one", 1, Vector.empty))
+    val base     = completeCatalog(compiler)
+    val root     = base.productions.find(_.pattern.prefix == "Root").get
+    val stale    = root.copy(pattern =
+      root.pattern.copy(occurrences =
+        root.pattern.occurrences :+
+          CompilerProductionContextPattern(ContextPattern.Any, SourceClassification.SourceReachable)
+      )
+    )
+    val catalog  = base.copy(productions = base.productions.map(p => if p.id == root.id then stale else p))
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id))
+    )
+
+  @Test def aggregateGeneratedNamesRemainCoveredByTheCanonicalNamePattern(): Unit =
+    val compiler   = inventory(snapshot("/one", 1, Vector.empty))
+    val generated  = row(
+      InventoryValueObservation.GeneratedName("x", "$", 1),
+      Some(CatalogValuePattern.Name)
+    )
+    val aggregate  = AggregatedCompilerProductionInventory
+      .aggregate(Vector(compiler.copy(shapes = Vector(generated))))
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val context    = generated.contexts.head
+    val base       = completeCatalog(compiler).productions.head
+    val production = base.copy(
+      id = "Observed",
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Observed",
+        Vector(CompilerFieldPattern("value", CatalogValuePattern.Name)),
+        Vector(
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path),
+            SourceClassification.SourceReachable
+          )
+        )
+      )
+    )
+    val catalog    = Scala3PsiProductionCatalog(Vector(production))
+    assertFalse(
+      Scala3PsiProductionCatalogValidator
+        .validate(catalog, aggregate, surfaces(catalog))
+        .exists:
+          case _: CatalogValidationError.UncoveredCompilerShape |
+              _: CatalogValidationError.UnrepresentedCatalogProduction =>
+            true
+          case _ => false
+    )
 
   @Test def validatorRequiresExactFieldDispositionsAndChildDeclarations(): Unit =
     val compiler                                                             = inventory(snapshot("/one", 1, Vector.empty))
@@ -642,12 +822,34 @@ final class Scala3PsiProductionCatalogTest:
           evidence,
           Scala3PsiProductionCatalog.Empty,
           inventory(value),
+          aggregate(Vector(inventory(value))),
           ScalaPsiSurfaceInventory(Vector.empty)
         )
         .left
         .toOption
         .get
         .isInstanceOf[WholeFilePlanningFailure.EvidenceFingerprintMismatch]
+    )
+
+  @Test def wholeFilePlanningRejectsAnAggregateForAnotherCompilerIdentity(): Unit =
+    val value            = snapshot("/one", 1, Vector.empty)
+    val compiler         = inventory(value)
+    val catalogInventory = aggregate(Vector(compiler))
+      .copy(identity = compiler.identity.copy(compilerOptions = compiler.identity.compilerOptions :+ "-different"))
+    assertTrue(
+      WholeFileProductionPlanner
+        .plan(
+          value,
+          ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+          Scala3PsiProductionCatalog.Empty,
+          compiler,
+          catalogInventory,
+          ScalaPsiSurfaceInventory(Vector.empty)
+        )
+        .left
+        .toOption
+        .get
+        .isInstanceOf[WholeFilePlanningFailure.CatalogInventoryIdentityMismatch]
     )
 
   private def inventory(value: ParserSyntaxSnapshot): CompilerRuntimeInventory =
@@ -664,9 +866,9 @@ final class Scala3PsiProductionCatalogTest:
       InventoryKind.Node,
       "Observed",
       Vector.empty,
-      Vector(Vector(InventoryFieldObservation("value", value, declaration))),
+      Vector(InventoryFieldObservation("value", value, declaration)),
       Vector(InventoryContext(InventoryKind.Node, "Owner", Vector(CatalogPathSegment.NamedField("value")))),
-      Vector(SourceClassification.SourceReachable)
+      SourceClassification.SourceReachable
     )
 
   private def failures(value: ParserSyntaxSnapshot): Vector[InventoryFailure] =
@@ -682,9 +884,13 @@ final class Scala3PsiProductionCatalogTest:
             shape.kind,
             shape.prefix,
             shape.patternFields,
-            if shape.contexts.isEmpty then Vector(ContextPattern.Root)
-            else
-              shape.contexts.map(context => ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path))
+            (if shape.contexts.isEmpty then Vector(ContextPattern.Root)
+             else
+               shape.contexts.map(context =>
+                 ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path)
+               )
+            )
+              .map(CompilerProductionContextPattern(_, shape.sourceClassification))
           ),
           childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
           childField.toVector.map(field =>

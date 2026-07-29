@@ -59,11 +59,15 @@ private[metallurgy] final case class InventoryFieldObservation(
     declaredPattern: Option[CatalogValuePattern] = None
 )
 private[metallurgy] final case class CompilerFieldPattern(name: String, value: CatalogValuePattern)
+private[metallurgy] final case class CompilerProductionContextPattern(
+    context: ContextPattern,
+    sourceClassification: SourceClassification
+)
 private[metallurgy] final case class CompilerProductionPattern(
     kind: InventoryKind,
     prefix: String,
     fields: Vector[CompilerFieldPattern],
-    contexts: Vector[ContextPattern] = Vector(ContextPattern.Any)
+    occurrences: Vector[CompilerProductionContextPattern]
 )
 private[metallurgy] enum ContextPattern:
   case Any
@@ -73,22 +77,27 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     kind: InventoryKind,
     prefix: String,
     patternFields: Vector[CompilerFieldPattern],
-    observations: Vector[Vector[InventoryFieldObservation]],
+    observation: Vector[InventoryFieldObservation],
     contexts: Vector[InventoryContext],
-    sourceClassifications: Vector[SourceClassification]
+    sourceClassification: SourceClassification
 )
 private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
     parserEvidenceFingerprint: String,
     shapes: Vector[CompilerShapeInventoryRow]
 )
+private[metallurgy] final case class CompilerProductionContext(
+    context: Option[InventoryContext],
+    sourceClassification: SourceClassification
+)
 private[metallurgy] final case class AggregatedCompilerProductionRow(
     kind: InventoryKind,
     prefix: String,
     fields: Vector[CompilerFieldPattern],
-    contexts: Vector[Option[InventoryContext]],
-    sourceClassifications: Vector[SourceClassification]
-)
+    occurrences: Vector[CompilerProductionContext]
+):
+  def contexts: Vector[Option[InventoryContext]]          = occurrences.map(_.context).distinct
+  def sourceClassifications: Vector[SourceClassification] = occurrences.map(_.sourceClassification).distinct
 private[metallurgy] final case class AggregatedCompilerProductionInventory(
     identity: CompilerRuntimeIdentity,
     sourceEvidenceFingerprints: Vector[String],
@@ -101,7 +110,6 @@ private[metallurgy] final case class AggregatedCompilerProductionInventory(
 private[metallurgy] enum InventoryAggregationFailure:
   case EmptyInput
   case RuntimeIdentityMismatch(expected: CompilerRuntimeIdentity, actual: CompilerRuntimeIdentity)
-  case MissingObservations(kind: InventoryKind, prefix: String)
   case FieldSignatureConflict(
       kind: InventoryKind,
       prefix: String,
@@ -124,7 +132,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   def serialize(inventory: AggregatedCompilerProductionInventory): Array[Byte] =
     val e = CanonicalByteEncoder()
-    e.tag(1)
+    e.tag(2)
     writeIdentity(inventory.identity, e)
     e.sequence(inventory.sourceEvidenceFingerprints)(e.string)
     e.sequence(inventory.productions)(writeRow(_, e))
@@ -140,9 +148,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       val ordered = grouped.toVector.sortBy((key, _) => (key._1.ordinal, key._2))
       ordered.foreach:
         case ((kind, prefix), observations) =>
-          if observations.exists(_.observations.isEmpty) then
-            break(Left(InventoryAggregationFailure.MissingObservations(kind, prefix)))
-          val signatures = observations.flatMap(_.observations).map(_.map(_.name)).distinct
+          val signatures = observations.map(_.observation.map(_.name)).distinct
           if signatures.size != 1 then
             break(
               Left(
@@ -150,7 +156,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
               )
             )
           val signature  = signatures.head
-          val fieldRows  = observations.flatMap(_.observations)
+          val fieldRows  = observations.map(_.observation)
           val fields     = Vector.newBuilder[CompilerFieldPattern]
           signature.zipWithIndex.foreach: (name, index) =>
             infer(
@@ -164,9 +170,10 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
             prefix,
             fields.result(),
             canonicalDistinct(
-              observations.flatMap(row => if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_)))
-            )(writeOptionalContext),
-            observations.flatMap(_.sourceClassifications).distinct.sortBy(_.ordinal)
+              observations.flatMap: row =>
+                val contexts = if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_))
+                contexts.map(CompilerProductionContext(_, row.sourceClassification))
+            )(writeProductionContext)
           )
       Right(
         AggregatedCompilerProductionInventory(
@@ -325,7 +332,10 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   private def writeRow(row: AggregatedCompilerProductionRow, e: CanonicalByteEncoder): Unit =
     e.tag(row.kind.ordinal); e.string(row.prefix); e.sequence(row.fields)(writeField(_, e))
-    e.sequence(row.contexts)(writeOptionalContext(_, e)); e.sequence(row.sourceClassifications)(v => e.tag(v.ordinal))
+    e.sequence(row.occurrences)(writeProductionContext(_, e))
+
+  private def writeProductionContext(context: CompilerProductionContext, e: CanonicalByteEncoder): Unit =
+    writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
 
   private def writeField(field: CompilerFieldPattern, e: CanonicalByteEncoder): Unit =
     e.string(field.name); writePattern(field.value, e)
@@ -576,9 +586,9 @@ private[metallurgy] object CompilerRuntimeInventory:
         kind,
         prefix,
         observed.map(f => CompilerFieldPattern(f.name, f.declaredPattern.getOrElse(pattern(f.value)))),
-        Vector(observed),
+        observed,
         occurrences.flatMap(context(kind, id, _)),
-        Vector(classification)
+        classification
       )
     val found                                                                        = failures.result()
     if found.nonEmpty then Left(found.distinct.sortBy(_.toString))
@@ -861,7 +871,11 @@ private[metallurgy] object CatalogShapeMatcher:
         values.forall(matches(expected, _))
       case (CatalogValuePattern.Product(prefix, expected), InventoryValueObservation.Product(actual, fields)) =>
         prefix == actual && matchesFields(expected, fields)
-      case (CatalogValuePattern.Name, InventoryValueObservation.Name(_))                                      => true
+      case (
+            CatalogValuePattern.Name,
+            _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName
+          ) =>
+        true
       case (CatalogValuePattern.GeneratedName, InventoryValueObservation.GeneratedName(_, _, _))              => true
       case (CatalogValuePattern.Scalar(kind), InventoryValueObservation.Scalar(value))                        =>
         kind == value.productPrefix
@@ -878,8 +892,36 @@ private[metallurgy] object CatalogShapeMatcher:
       .forall: (pattern, observation) =>
         pattern.name == observation.name && matches(pattern.value, observation.value)
 
+  def covers(expected: CatalogValuePattern, observed: CatalogValuePattern): Boolean =
+    (expected, observed) match
+      case (CatalogValuePattern.Name, CatalogValuePattern.Name | CatalogValuePattern.GeneratedName)   => true
+      case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue)) =>
+        covers(expectedValue, observedValue)
+      case (CatalogValuePattern.Repeated(expectedValue), CatalogValuePattern.Repeated(observedValue)) =>
+        covers(expectedValue, observedValue)
+      case (
+            CatalogValuePattern.Product(expectedPrefix, expectedFields),
+            CatalogValuePattern.Product(observedPrefix, observedFields)
+          ) =>
+        expectedPrefix == observedPrefix && coversFields(expectedFields, observedFields)
+      case _                                                                                          => expected == observed
+
+  def coversFields(
+      expected: Vector[CompilerFieldPattern],
+      observed: Vector[CompilerFieldPattern]
+  ): Boolean =
+    expected.size == observed.size && expected
+      .zip(observed)
+      .forall: (catalogField, compilerField) =>
+        catalogField.name == compilerField.name && covers(catalogField.value, compilerField.value)
+
   def contextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
     case ContextPattern.Any                    => true
+    case ContextPattern.Root                   => context.isEmpty
+    case ContextPattern.Parent(kind, owner, p) => context.contains(InventoryContext(kind, owner, p))
+
+  def aggregateContextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
+    case ContextPattern.Any                    => false
     case ContextPattern.Root                   => context.isEmpty
     case ContextPattern.Parent(kind, owner, p) => context.contains(InventoryContext(kind, owner, p))
 
@@ -888,11 +930,27 @@ private[metallurgy] object CatalogShapeMatcher:
       kind: InventoryKind,
       prefix: String,
       fields: Vector[InventoryFieldObservation],
-      context: Option[InventoryContext]
+      context: Option[InventoryContext],
+      sourceClassification: SourceClassification
   ): Vector[Scala3PsiProduction] =
     catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
-        p.pattern.contexts.exists(contextMatches(_, context))
+        p.pattern.occurrences.exists(occurrence =>
+          contextMatches(occurrence.context, context) && occurrence.sourceClassification == sourceClassification
+        )
+    )
+
+  def selectAggregated(
+      catalog: Scala3PsiProductionCatalog,
+      row: AggregatedCompilerProductionRow,
+      occurrence: CompilerProductionContext
+  ): Vector[Scala3PsiProduction] =
+    catalog.productions.filter(p =>
+      p.pattern.kind == row.kind && p.pattern.prefix == row.prefix && coversFields(p.pattern.fields, row.fields) &&
+        p.pattern.occurrences.exists(pattern =>
+          aggregateContextMatches(pattern.context, occurrence.context) &&
+            pattern.sourceClassification == occurrence.sourceClassification
+        )
     )
 
 private[metallurgy] enum CatalogValidationError:
@@ -913,11 +971,18 @@ private[metallurgy] enum CatalogValidationError:
   case InvalidSurfaceOwner(productionId: String, surfaceId: String, expectedOwner: String)
   case IncompleteSurfaceStatus(productionId: String, surfaceId: String, status: FactStatus)
   case UnaccountedSyntaxSurface(surfaceId: String)
-  case UncoveredCompilerShape(kind: InventoryKind, prefix: String, context: Option[InventoryContext])
+  case UnrepresentedCatalogProduction(productionId: String)
+  case UncoveredCompilerShape(
+      kind: InventoryKind,
+      prefix: String,
+      context: Option[InventoryContext],
+      sourceClassification: SourceClassification
+  )
   case AmbiguousCompilerShape(
       kind: InventoryKind,
       prefix: String,
       context: Option[InventoryContext],
+      sourceClassification: SourceClassification,
       productionIds: Vector[String]
   )
 
@@ -926,6 +991,18 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory,
       surfaces: ScalaPsiSurfaceInventory
+  ): Vector[CatalogValidationError] = validateCatalog(catalog, surfaces, runtimeCoverage(catalog, compiler))
+
+  def validate(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: AggregatedCompilerProductionInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): Vector[CatalogValidationError] = validateCatalog(catalog, surfaces, aggregatedCoverage(catalog, compiler))
+
+  private def validateCatalog(
+      catalog: Scala3PsiProductionCatalog,
+      surfaces: ScalaPsiSurfaceInventory,
+      coverage: Vector[CatalogValidationError]
   ): Vector[CatalogValidationError] =
     val errors                                                                                                        = Vector.newBuilder[CatalogValidationError]
     duplicates(catalog.productions.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateProductionId(id))
@@ -993,20 +1070,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           requireSurface(p, serializer, SurfaceFactKind.Serializer);
           indices.foreach(requireSurface(p, _, SurfaceFactKind.Index));
           requireSurface(p, navigation, SurfaceFactKind.Navigation)
-    compiler.shapes.foreach: shape =>
-      val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
-      shape.observations.foreach: observation =>
-        contexts.foreach: context =>
-          val selected = CatalogShapeMatcher.select(catalog, shape.kind, shape.prefix, observation, context)
-          if selected.isEmpty then
-            errors += CatalogValidationError.UncoveredCompilerShape(shape.kind, shape.prefix, context)
-          else if selected.size > 1 then
-            errors += CatalogValidationError.AmbiguousCompilerShape(
-              shape.kind,
-              shape.prefix,
-              context,
-              selected.map(_.id).sorted
-            )
+    errors ++= coverage
     val accounted                                                                                                     = catalog.productions
       .flatMap: p =>
         val terminals   = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id }
@@ -1022,6 +1086,75 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       )
       .foreach(r => errors += CatalogValidationError.UnaccountedSyntaxSurface(r.id))
     errors.result().distinct.sortBy(_.toString)
+
+  private def runtimeCoverage(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: CompilerRuntimeInventory
+  ): Vector[CatalogValidationError] =
+    compiler.shapes.flatMap: shape =>
+      val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
+      for
+        context <- contexts
+        selected = CatalogShapeMatcher.select(
+                     catalog,
+                     shape.kind,
+                     shape.prefix,
+                     shape.observation,
+                     context,
+                     shape.sourceClassification
+                   )
+        error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
+      yield error
+
+  private def aggregatedCoverage(
+      catalog: Scala3PsiProductionCatalog,
+      compiler: AggregatedCompilerProductionInventory
+  ): Vector[CatalogValidationError] =
+    val uncovered     = compiler.productions.flatMap: row =>
+      row.occurrences.flatMap: occurrence =>
+        coverageError(
+          row.kind,
+          row.prefix,
+          occurrence.context,
+          occurrence.sourceClassification,
+          CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
+        )
+    val unrepresented = catalog.productions.collect:
+      case production
+          if production.pattern.occurrences.exists(pattern =>
+            !compiler.productions.exists(row =>
+              row.kind == production.pattern.kind && row.prefix == production.pattern.prefix &&
+                CatalogShapeMatcher.coversFields(production.pattern.fields, row.fields) &&
+                row.occurrences.exists(occurrence =>
+                  CatalogShapeMatcher.aggregateContextMatches(pattern.context, occurrence.context) &&
+                    pattern.sourceClassification == occurrence.sourceClassification
+                )
+            )
+          ) =>
+        CatalogValidationError.UnrepresentedCatalogProduction(production.id)
+    uncovered ++ unrepresented
+
+  private def coverageError(
+      kind: InventoryKind,
+      prefix: String,
+      context: Option[InventoryContext],
+      sourceClassification: SourceClassification,
+      selected: Vector[Scala3PsiProduction]
+  ): Vector[CatalogValidationError] =
+    if selected.isEmpty then
+      Vector(CatalogValidationError.UncoveredCompilerShape(kind, prefix, context, sourceClassification))
+    else if selected.size > 1 then
+      Vector(
+        CatalogValidationError.AmbiguousCompilerShape(
+          kind,
+          prefix,
+          context,
+          sourceClassification,
+          selected.map(_.id).sorted
+        )
+      )
+    else Vector.empty
+
   private def duplicates(values: Vector[String]) =
     values.groupMapReduce(identity)(_ => 1)(_ + _).collect { case (id, n) if n > 1 => id }.toVector.sorted
 
@@ -1029,6 +1162,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case InventoryFailures(failures: Vector[InventoryFailure])
   case EvidenceFingerprintMismatch(snapshot: String, evidence: String)
   case InventoryFingerprintMismatch(snapshot: String, inventory: String)
+  case CatalogInventoryIdentityMismatch(runtime: CompilerRuntimeIdentity, catalog: CompilerRuntimeIdentity)
   case InvalidCatalog(errors: Vector[CatalogValidationError])
   case UnknownProduction(
       kind: InventoryKind,
@@ -1060,6 +1194,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       evidence: ProvisionalSourceEvidencePlan,
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory,
+      catalogInventory: AggregatedCompilerProductionInventory,
       surfaces: ScalaPsiSurfaceInventory
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
     val fingerprint = ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
@@ -1067,15 +1202,26 @@ private[metallurgy] object WholeFileProductionPlanner:
       Left(WholeFilePlanningFailure.EvidenceFingerprintMismatch(fingerprint, evidence.parserEvidenceFingerprint))
     else if fingerprint != compiler.parserEvidenceFingerprint then
       Left(WholeFilePlanningFailure.InventoryFingerprintMismatch(fingerprint, compiler.parserEvidenceFingerprint))
+    else if compiler.identity != catalogInventory.identity then
+      Left(WholeFilePlanningFailure.CatalogInventoryIdentityMismatch(compiler.identity, catalogInventory.identity))
     else
-      val validation = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces)
+      val validation = (
+        Scala3PsiProductionCatalogValidator.validate(catalog, catalogInventory, surfaces) ++
+          Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces)
+      ).distinct.sortBy(_.toString)
       if validation.nonEmpty then Left(WholeFilePlanningFailure.InvalidCatalog(validation))
       else
         val matched = compiler.shapes.flatMap: shape =>
           val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
-          shape.observations.flatMap(observation =>
-            contexts.flatMap(context =>
-              CatalogShapeMatcher.select(catalog, shape.kind, shape.prefix, observation, context).map(_.id)
-            )
-          )
+          contexts.flatMap: context =>
+            CatalogShapeMatcher
+              .select(
+                catalog,
+                shape.kind,
+                shape.prefix,
+                shape.observation,
+                context,
+                shape.sourceClassification
+              )
+              .map(_.id)
         Left(WholeFilePlanningFailure.IncompleteWholeFilePlan(matched))
