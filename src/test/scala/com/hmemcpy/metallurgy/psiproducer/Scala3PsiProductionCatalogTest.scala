@@ -408,7 +408,6 @@ final class Scala3PsiProductionCatalogTest:
       value,
       evidence,
       Scala3PsiProductionCatalog.Empty,
-      inventory(value),
       aggregate(Vector(inventory(value))),
       ScalaPsiSurfaceInventory(Vector.empty)
     )
@@ -694,6 +693,57 @@ final class Scala3PsiProductionCatalogTest:
         .exists(_.isInstanceOf[CatalogValidationError.MissingChildDeclaration])
     )
 
+  @Test def validatorRejectsStructurallyIncompleteCatalogDeclarations(): Unit =
+    val compiler = inventory(snapshot("/one", 1, Vector.empty))
+    val base     = completeCatalog(compiler)
+    val root     = base.productions.find(_.pattern.prefix == "Root").get
+    val child    = base.productions.find(_.pattern.prefix == "Child").get
+    val invalid  = root.copy(
+      pattern = root.pattern.copy(occurrences = Vector.empty),
+      children = root.children.map(
+        _.copy(
+          roleId = "duplicate",
+          productionId = "missing",
+          cardinality = ChildCardinality.Repeated(2, Some(1))
+        )
+      ) ++ root.children.map(_.copy(roleId = "duplicate")),
+      terminals = Vector.fill(2)(
+        TerminalDeclaration(
+          "duplicate",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.Repeated(-1, None)
+        )
+      ),
+      layouts = Vector.empty,
+      recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector.empty),
+      accessors = Vector.fill(2)(AccessorObligation("accessor", required = true))
+    )
+    val catalog  = base.copy(productions = base.productions.map(p => if p.id == root.id then invalid else p))
+    val surface  = surfaces(catalog).copy(rows =
+      surfaces(catalog).rows :+
+        ScalaPsiSurfaceRow(
+          "accessor",
+          SurfaceFactKind.PublicAccessor,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.Derived
+        )
+    )
+    val errors   = Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surface)
+    Vector(
+      CatalogValidationError.EmptyOccurrencePatterns(root.id),
+      CatalogValidationError.DuplicateChildRoleId(root.id, "duplicate"),
+      CatalogValidationError.UnknownChildProductionId(root.id, "missing"),
+      CatalogValidationError.InvalidChildCardinality(root.id, "duplicate"),
+      CatalogValidationError.DuplicateTerminalId(root.id, "duplicate"),
+      CatalogValidationError.InvalidTerminalCardinality(root.id, "duplicate"),
+      CatalogValidationError.DuplicateAccessorObligation(root.id, "accessor"),
+      CatalogValidationError.EmptyLayoutAlternatives(root.id),
+      CatalogValidationError.EmptyRecoveryAlternatives(root.id)
+    ).foreach(error => assertTrue(error.toString, errors.contains(error)))
+    assertFalse(errors.contains(CatalogValidationError.UnknownChildProductionId(root.id, child.id)))
+
   @Test def validatorAccountsTokenAndPersistenceClaimsAndRejectsIncompleteFacts(): Unit =
     val compiler    = inventory(snapshot("/one", 1, Vector.empty))
     val base        = completeCatalog(compiler)
@@ -812,6 +862,216 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
 
+  @Test def wholeFilePlanningCompilesAClosedTypedPlanDeterministically(): Unit =
+    val value     = snapshot("/one", 1, Vector.empty)
+    val compiler  = inventory(value)
+    val catalog   = completeCatalog(compiler)
+    val evidence  = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val aggregate = this.aggregate(Vector(compiler))
+    val surface   = surfaces(catalog)
+    val first     = WholeFileProductionPlanner
+      .plan(value, evidence, catalog, aggregate, surface)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val second    = WholeFileProductionPlanner
+      .plan(
+        value,
+        evidence,
+        catalog.copy(productions = catalog.productions.reverse),
+        aggregate,
+        surface.copy(rows = surface.rows.reverse)
+      )
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    assertEquals(first, second)
+    assertEquals(value.sourceUri, first.sourceUri)
+    assertEquals(value.sourceDigest, first.sourceDigest)
+    assertEquals(evidence.parserEvidenceFingerprint, first.parserEvidenceFingerprint)
+    assertEquals(Vector("Root", "Child"), first.composites.map(_.productionId))
+    assertEquals(Vector("element.Root", "element.Child"), first.targetAssertions.map(_.surfaceId))
+    assertEquals(Vector.empty, first.virtualLayout)
+    assertEquals(Vector.empty, first.accessorAssertions)
+    assertEquals(Vector.empty, first.stubAssertions)
+    val leaf      = first.physicalLeafOwnership.head
+    val child     = first.composites(1).instance
+    assertEquals((0L, 0, 1, child, "contents"), (leaf.atomId, leaf.start, leaf.end, leaf.owner, leaf.terminalId))
+    assertEquals("x", value.sourceText.substring(leaf.start, leaf.end))
+    assertEquals(
+      Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0)),
+      first.composites.head.children.head.fieldPath
+    )
+
+  @Test def wholeFilePlanningFailsClosedForOwnershipAndChildContractGaps(): Unit =
+    val value                                                                  = snapshot("/one", 1, Vector.empty)
+    val compiler                                                               = inventory(value)
+    val base                                                                   = completeCatalog(compiler)
+    val evidence                                                               = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val aggregate                                                              = this.aggregate(Vector(compiler))
+    val root                                                                   = base.productions.find(_.id == "Root").get
+    val child                                                                  = base.productions.find(_.id == "Child").get
+    def failure(catalog: Scala3PsiProductionCatalog): WholeFilePlanningFailure =
+      WholeFileProductionPlanner
+        .plan(value, evidence, catalog, aggregate, surfaces(catalog))
+        .left
+        .toOption
+        .get
+
+    val unowned = base.copy(productions =
+      base.productions.map(p => if p.id == child.id then p.copy(terminals = Vector.empty) else p)
+    )
+    assertEquals(WholeFilePlanningFailure.UnownedSourceAtom(0, 0, 1), failure(unowned))
+
+    val conflict = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == root.id then
+          p.copy(terminals =
+            Vector(
+              TerminalDeclaration(
+                "contents",
+                TerminalIntervalSelector.WholeProduction,
+                TerminalLeafTarget.Parent,
+                OccurrenceCardinality.ExactlyOne
+              )
+            )
+          )
+        else p
+      )
+    )
+    assertTrue(failure(conflict).isInstanceOf[WholeFilePlanningFailure.ConflictingSourceAtomOwners])
+
+    val cardinality = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == root.id then
+          p.copy(children = p.children.map(_.copy(cardinality = ChildCardinality.Repeated(2, None))))
+        else p
+      )
+    )
+    assertTrue(failure(cardinality).isInstanceOf[WholeFilePlanningFailure.ChildCardinalityMismatch])
+
+    val layout = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == child.id then p.copy(layouts = Vector(LayoutAlternative.Indented(Vector("i"), Vector("o")))) else p
+      )
+    )
+    assertTrue(failure(layout).isInstanceOf[WholeFilePlanningFailure.UnsupportedLayout])
+
+    val grouped = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == root.id then
+          p.copy(children = p.children.map(_.copy(cardinality = ChildCardinality.Grouped(1, None))))
+        else p
+      )
+    )
+    assertTrue(failure(grouped).isInstanceOf[WholeFilePlanningFailure.UnsupportedChildCardinality])
+
+    val unsupported = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == root.id then
+          p.copy(
+            dispositions = p.dispositions.map(_.copy(kind = FieldDispositionKind.Unsupported)),
+            children = Vector.empty
+          )
+        else p
+      )
+    )
+    assertTrue(failure(unsupported).isInstanceOf[WholeFilePlanningFailure.UnsupportedFieldDisposition])
+
+  @Test def wholeFilePlanningRejectsMultiplyParentedDescendants(): Unit =
+    val value     = sharedDescendantSnapshot
+    val compiler  = inventory(value)
+    val catalog   = completeCatalog(compiler)
+    val aggregate = this.aggregate(Vector(compiler))
+    val result    = WholeFileProductionPlanner.plan(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      catalog,
+      aggregate,
+      surfaces(catalog)
+    )
+    assertTrue(result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference])
+
+  @Test def positionedChildOriginsRemainAbsoluteAndFailAtTheSupportedSubsetBoundary(): Unit =
+    val value    = positionedChildSnapshot
+    val compiler = inventory(value)
+    val child    = compiler.shapes.find(row => row.kind == InventoryKind.Node && row.prefix == "Leaf").get
+    assertEquals(
+      Vector(
+        InventoryContext(
+          InventoryKind.Node,
+          "Root",
+          Vector(
+            CatalogPathSegment.NamedField("mods"),
+            CatalogPathSegment.RepeatedElement,
+            CatalogPathSegment.NamedField("child")
+          )
+        )
+      ),
+      child.contexts
+    )
+    val catalog  = completeCatalog(compiler)
+    val result   = WholeFileProductionPlanner.plan(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      catalog,
+      this.aggregate(Vector(compiler)),
+      surfaces(catalog)
+    )
+    assertTrue(result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.UnsupportedPositionedChildren])
+
+  @Test def absentOptionalTokenTerminalProducesNoTargetAssertion(): Unit =
+    val original = snapshot("/absent", 1, Vector.empty)
+    val value    = original.copy(nodes =
+      original.nodes.map(node => if node.id == 2 then node.copy(position = ParserNodePosition.Absent) else node)
+    )
+    val compiler = inventory(value)
+    val base     = completeCatalog(compiler)
+    val root     = base.productions.find(_.id == "Root").get
+    val child    = base.productions.find(_.id == "Child").get
+    val catalog  = base.copy(productions = base.productions.map:
+      case production if production.id == root.id  =>
+        production.copy(terminals =
+          Vector(
+            TerminalDeclaration(
+              "root-contents",
+              TerminalIntervalSelector.WholeProduction,
+              TerminalLeafTarget.Parent,
+              OccurrenceCardinality.ExactlyOne
+            )
+          )
+        )
+      case production if production.id == child.id =>
+        production.copy(terminals =
+          Vector(
+            TerminalDeclaration(
+              "optional-token",
+              TerminalIntervalSelector.WholeProduction,
+              TerminalLeafTarget.Token("token.optional"),
+              OccurrenceCardinality.Optional
+            )
+          )
+        )
+      case production                              => production
+    )
+    val surface  = surfaces(catalog).copy(rows =
+      surfaces(catalog).rows :+
+        ScalaPsiSurfaceRow(
+          "token.optional",
+          SurfaceFactKind.Token,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.Derived
+        )
+    )
+    val plan     = WholeFileProductionPlanner
+      .plan(
+        value,
+        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+        catalog,
+        this.aggregate(Vector(compiler)),
+        surface
+      )
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    assertFalse(plan.targetAssertions.exists(_.surfaceId == "token.optional"))
+    assertFalse(plan.physicalLeafOwnership.exists(_.terminalId == "optional-token"))
+
   @Test def evidenceFingerprintMismatchFailsBeforeCatalogMatching(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)
     val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get.copy(parserEvidenceFingerprint = "other")
@@ -821,7 +1081,6 @@ final class Scala3PsiProductionCatalogTest:
           value,
           evidence,
           Scala3PsiProductionCatalog.Empty,
-          inventory(value),
           aggregate(Vector(inventory(value))),
           ScalaPsiSurfaceInventory(Vector.empty)
         )
@@ -829,6 +1088,28 @@ final class Scala3PsiProductionCatalogTest:
         .toOption
         .get
         .isInstanceOf[WholeFilePlanningFailure.EvidenceFingerprintMismatch]
+    )
+
+  @Test def wholeFilePlanningRecomputesDetachedEvidenceAndCompilerInventory(): Unit =
+    val value     = snapshot("/one", 1, Vector.empty)
+    val compiler  = inventory(value)
+    val evidence  = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val firstAtom = evidence.atoms.head
+    val detached  = evidence.copy(atoms = evidence.atoms.updated(0, firstAtom.copy(claims = Vector.empty)))
+    assertEquals(
+      Left(WholeFilePlanningFailure.SourceEvidencePlanMismatch),
+      WholeFileProductionPlanner.plan(
+        value,
+        detached,
+        Scala3PsiProductionCatalog.Empty,
+        aggregate(Vector(compiler)),
+        ScalaPsiSurfaceInventory(Vector.empty)
+      )
+    )
+    assertEquals(
+      (value.nodes.map(node => InventoryKind.Node -> node.id) ++
+        value.positioned.map(positioned => InventoryKind.Positioned -> positioned.id)).toSet,
+      compiler.shapes.map(row => row.kind -> row.id).toSet
     )
 
   @Test def wholeFilePlanningRejectsAnAggregateForAnotherCompilerIdentity(): Unit =
@@ -842,7 +1123,6 @@ final class Scala3PsiProductionCatalogTest:
           value,
           ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
           Scala3PsiProductionCatalog.Empty,
-          compiler,
           catalogInventory,
           ScalaPsiSurfaceInventory(Vector.empty)
         )
@@ -864,6 +1144,7 @@ final class Scala3PsiProductionCatalogTest:
   ): CompilerShapeInventoryRow =
     CompilerShapeInventoryRow(
       InventoryKind.Node,
+      1L,
       "Observed",
       Vector.empty,
       Vector(InventoryFieldObservation("value", value, declaration)),
@@ -877,7 +1158,18 @@ final class Scala3PsiProductionCatalogTest:
   private def completeCatalog(compiler: CompilerRuntimeInventory): Scala3PsiProductionCatalog =
     Scala3PsiProductionCatalog(
       compiler.shapes.map: shape =>
-        val childField = shape.patternFields.headOption.map(_.name)
+        def referencedProduction(value: InventoryValueObservation): Option[String] = value match
+          case InventoryValueObservation.Node(_, prefix)       => Some(prefix)
+          case InventoryValueObservation.Positioned(_, prefix) => Some(prefix)
+          case InventoryValueObservation.Optional(value)       => value.flatMap(referencedProduction)
+          case InventoryValueObservation.Repeated(values)      => values.flatMap(referencedProduction).headOption
+          case InventoryValueObservation.Product(_, fields)    =>
+            fields.flatMap(field => referencedProduction(field.value)).headOption
+          case _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName |
+              _: InventoryValueObservation.Scalar | _: InventoryValueObservation.Unsupported =>
+            None
+        val childField                                                             = shape.patternFields.headOption.map(_.name)
+        val childProduction                                                        = shape.observation.flatMap(field => referencedProduction(field.value)).headOption
         Scala3PsiProduction(
           shape.prefix,
           CompilerProductionPattern(
@@ -893,10 +1185,21 @@ final class Scala3PsiProductionCatalogTest:
               .map(CompilerProductionContextPattern(_, shape.sourceClassification))
           ),
           childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
-          childField.toVector.map(field =>
-            ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), ChildPlacement.Direct, "Child")
+          childField.toVector.flatMap(field =>
+            childProduction.map(production =>
+              ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), ChildPlacement.Direct, production)
+            )
           ),
-          Vector.empty,
+          if childField.isEmpty then
+            Vector(
+              TerminalDeclaration(
+                "contents",
+                TerminalIntervalSelector.WholeProduction,
+                TerminalLeafTarget.Parent,
+                OccurrenceCardinality.ExactlyOne
+              )
+            )
+          else Vector.empty,
           Vector(LayoutAlternative.None),
           RecoveryPolicy.Reject,
           s"element.${shape.prefix}",
@@ -928,6 +1231,105 @@ final class Scala3PsiProductionCatalogTest:
     ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived),
     Vector.empty
   )
+
+  private def sharedDescendantSnapshot: ParserSyntaxSnapshot =
+    val value  = snapshot("/shared", 1, Vector.empty)
+    val range  = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
+    val root   = ParserSyntaxNode(
+      1,
+      "Root",
+      Vector(
+        ParserSyntaxField(
+          "children",
+          ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(2), ParserFieldValue.Node(2)))
+        )
+      ),
+      range,
+      Vector.empty
+    )
+    val parent = ParserSyntaxNode(
+      2,
+      "Parent",
+      Vector(ParserSyntaxField("children", ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(3))))),
+      range,
+      Vector(
+        ParserNodeOccurrence(
+          1,
+          Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0))
+        ),
+        ParserNodeOccurrence(
+          1,
+          Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(1))
+        )
+      )
+    )
+    val leaf   = ParserSyntaxNode(
+      3,
+      "Leaf",
+      Vector.empty,
+      range,
+      Vector(
+        ParserNodeOccurrence(
+          2,
+          Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0))
+        )
+      )
+    )
+    value.copy(nodes = Vector(root, parent, leaf))
+
+  private def positionedChildSnapshot: ParserSyntaxSnapshot =
+    val value      = snapshot("/positioned", 1, Vector.empty)
+    val range      = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
+    val root       = ParserSyntaxNode(
+      1,
+      "Root",
+      Vector(
+        ParserSyntaxField(
+          "mods",
+          ParserFieldValue.Repeated(
+            Vector(
+              ParserFieldValue.Positioned(0),
+              ParserFieldValue.Positioned(0)
+            )
+          )
+        )
+      ),
+      range,
+      Vector.empty
+    )
+    val positioned = ParserPositionedSyntax(
+      0,
+      "Metadata",
+      Vector(ParserSyntaxField("child", ParserFieldValue.Node(2))),
+      range,
+      Vector(
+        ParserPositionedOccurrence(
+          1,
+          Vector(ParserFieldPathSegment.NamedField("mods"), ParserFieldPathSegment.RepeatedIndex(0))
+        ),
+        ParserPositionedOccurrence(
+          1,
+          Vector(ParserFieldPathSegment.NamedField("mods"), ParserFieldPathSegment.RepeatedIndex(1))
+        )
+      )
+    )
+    val leaf       = ParserSyntaxNode(
+      2,
+      "Leaf",
+      Vector.empty,
+      range,
+      Vector(
+        ParserNodeOccurrence(
+          1,
+          Vector(
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.RepeatedIndex(0),
+            ParserFieldPathSegment.NamedField("child")
+          )
+        )
+      )
+    )
+    value.copy(nodes = Vector(root, leaf), positioned = Vector(positioned))
 
   private def snapshot(path: String, loader: Long, options: Vector[String]): ParserSyntaxSnapshot =
     val source = "x"
