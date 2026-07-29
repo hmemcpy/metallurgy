@@ -24,6 +24,60 @@ import java.nio.file.Path
 final class Scala3ParserVerticalSliceTest:
 
   @Test
+  def minimizedFilePackageFamilyHasAnExactInventory(): Unit =
+    val bridge = openBridge()
+    try
+      val value     = parse(bridge, PackageSource, "file:///Scala3PackageFamily.scala")
+      val inventory = CompilerRuntimeInventory
+        .from(value)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val aggregate = AggregatedCompilerProductionInventory
+        .aggregate(Vector(inventory))
+        .fold(failure => throw new AssertionError(failure.toString), identity)
+      val evidence  = ProvisionalSourceEvidencePlanner
+        .plan(value)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      assertEquals(
+        Vector(
+          ParserSyntaxNode(
+            0,
+            "PackageDef",
+            Vector(
+              ParserSyntaxField("pid", ParserFieldValue.Node(1), Some(ParserDeclaredShape.Node)),
+              ParserSyntaxField(
+                "stats",
+                ParserFieldValue.Repeated(Vector.empty),
+                Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node))
+              )
+            ),
+            ParserNodePosition.Positioned(PcSourceRange(0, 22), 16, ParserPositionProvenance.SourceDerived),
+            Vector.empty
+          ),
+          ParserSyntaxNode(
+            1,
+            "Select",
+            Vector(
+              ParserSyntaxField("qualifier", ParserFieldValue.Node(2), Some(ParserDeclaredShape.Node)),
+              ParserSyntaxField("name", ParserFieldValue.Name("syntax"), Some(ParserDeclaredShape.Name))
+            ),
+            ParserNodePosition.Positioned(PcSourceRange(8, 22), 16, ParserPositionProvenance.SourceDerived),
+            Vector(ParserNodeOccurrence(0, Vector(ParserFieldPathSegment.NamedField("pid"))))
+          ),
+          ParserSyntaxNode(
+            2,
+            "Ident",
+            Vector(ParserSyntaxField("name", ParserFieldValue.Name("example"), Some(ParserDeclaredShape.Name))),
+            ParserNodePosition.Positioned(PcSourceRange(8, 15), 8, ParserPositionProvenance.SourceDerived),
+            Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("qualifier"))))
+          )
+        ),
+        value.nodes
+      )
+      assertEquals(PackageSource, evidence.reconstruct(PackageSource))
+      assertEquals("f6e351328d6b5371aef687227db3678479cb27aa08f8c7ec8fcff37220efd3e5", aggregate.fingerprint)
+    finally bridge.close()
+
+  @Test
   def minimizedFilePackageImportFamilyHasAnExactInventory(): Unit =
     val bridge = openBridge()
     try
@@ -460,5 +514,7 @@ final class Scala3ParserVerticalSliceTest:
       |
       |import scala.collection.immutable.List
       |""".stripMargin
+
+  private val PackageSource = "package example.syntax\n"
 
   private val ScalaVersion = "3.7.4"
