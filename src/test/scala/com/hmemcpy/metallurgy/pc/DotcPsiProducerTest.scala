@@ -5,6 +5,7 @@ import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.psiproducer.{
   DotcTreeSource,
   Scala3DotcLanguage,
+  Scala3DotcParserDefinition,
   Scala3PsiProductionCatalog,
   TargetRequirement
 }
@@ -175,6 +176,30 @@ final class DotcPsiProducerTest extends ScalaLightCodeInsightFixtureTestCase:
     withDotcProducedFile("def foo(x: Int): Int = x\nval v = foo(42)\n"): file =>
       val stubTree = file.asInstanceOf[com.intellij.psi.impl.source.PsiFileImpl].calcStubTree
       assertNotNull("producer file yields a stub tree", stubTree)
+      val root     = stubTree.getRoot.asInstanceOf[com.intellij.psi.stubs.PsiFileStub[?]]
+      assertEquals(
+        "metallurgy.scala3.file",
+        root.getFileElementType.asInstanceOf[com.intellij.psi.tree.IStubFileElementType[?]].getExternalId
+      )
+      assertEquals(Scala3DotcParserDefinition.FileNodeType, root.getFileElementType)
+      assertEquals("METALLURGY_SCALA3_FILE", Scala3DotcParserDefinition.FileNodeType.toString)
+      assertEquals(
+        org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion + 1,
+        Scala3DotcParserDefinition.FileNodeType.getStubVersion
+      )
+      val bytes    = new java.io.ByteArrayOutputStream
+      val names    = new com.intellij.psi.stubs.FileLocalStringEnumerator(true)
+      val output   = new com.intellij.psi.stubs.StubOutputStream(bytes, names)
+      Scala3DotcParserDefinition.FileNodeType.serialize(
+        root.asInstanceOf[org.jetbrains.plugins.scala.lang.psi.stubs.ScFileStub],
+        output
+      )
+      output.close()
+      assertEquals(0, bytes.size())
+      val input    = new com.intellij.psi.stubs.StubInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray), names)
+      val restored = Scala3DotcParserDefinition.FileNodeType.deserialize(input, null)
+      assertEquals(Scala3DotcParserDefinition.FileNodeType, restored.getFileElementType)
+      assertEquals(null, restored.getPsi)
       // the stub tree must carry the declarations so resolve-by-name / find-usages work
       val plain    = stubTree.getPlainList.asScala
       assertTrue(s"stub tree contains the function and val declarations (got ${plain.size})", plain.size >= 3)
