@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.hmemcpy.metallurgy.pc.{ExactScala3ParserPreparation, Scala3ParserBridge}
@@ -273,8 +274,17 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
         case Right(bridge) =>
           if !isPreparing(module, epoch) then bridge.close()
           else
-            val catalog =
-              try catalogPreparer.prepare(project)
+            val prepared =
+              try
+                for
+                  catalog   <- catalogPreparer.prepare(project)
+                  installed <- ScalaPsiSurfaceInventory.installed()
+                yield PreparedScala3Parser(
+                  bridge,
+                  catalog,
+                  ScalacFlagsService.get(project).presentationCompilerOptions(module).toVector,
+                  installed.withCatalogCapabilities(catalog)
+                )
               catch
                 case control: ControlFlowException =>
                   bridge.close()
@@ -285,11 +295,11 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
                   rethrowControlFlow(error)(cancelPreparation(module, epoch))
                   publishUnavailable(module, epoch, failureMessage(error))
                   return
-            catalog match
-              case Left(message)  =>
+            prepared match
+              case Left(message)   =>
                 bridge.close()
                 publishUnavailable(module, epoch, message)
-              case Right(catalog) => publishActivating(module, epoch, PreparedScala3Parser(bridge, catalog))
+              case Right(prepared) => publishActivating(module, epoch, prepared)
 
   private def cancelPreparation(module: Module, epoch: ParserPreparationEpoch): Unit = synchronized:
     Option(entries.get(module)) match
@@ -484,7 +494,9 @@ private final case class ParserPreparationEntry(
 
 private[metallurgy] final case class PreparedScala3Parser(
     bridge: Scala3ParserBridge,
-    catalog: Scala3PsiProductionCatalog
+    catalog: Scala3PsiProductionCatalog,
+    compilerOptions: Vector[String],
+    surfaces: ScalaPsiSurfaceInventory
 )
 
 private[psiproducer] trait Scala3PsiCatalogPreparer:

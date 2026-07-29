@@ -52,6 +52,14 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       assertFalse(catalogs.ranOnDispatchThread)
       val prepared = lifecycle.parserFor(getModule).get
       assertSame(bridge, prepared.bridge)
+      assertEquals(
+        com.hmemcpy.metallurgy.build.ScalacFlagsService
+          .get(getProject)
+          .presentationCompilerOptions(getModule)
+          .toVector,
+        prepared.compilerOptions
+      )
+      assertTrue(prepared.surfaces.rows.nonEmpty)
       assertTrue(
         prepared.catalog.productions
           .find(_.id == "integer-literal-number")
@@ -78,6 +86,31 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       assertTrue(bridge.closed)
       assertTrue(lifecycle.parserFor(getModule).isEmpty)
       assertEquals(0, activation.batchCount)
+    finally lifecycle.dispose()
+
+  def testPreparedSurfacesIncludeCapabilityPromotedCompatibleTargets(): Unit =
+    val file       = myFixture.addFileToProject("src/Compatible.scala", "val value = 1\n").getVirtualFile
+    val preparer   = new DeferredPreparer
+    val activation = new ControlledActivation
+    val target     = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/TestCompatibleIntegerLiteral"
+    val catalog    = Scala3PsiProductionCatalog.Reviewed.copy(productions =
+      Scala3PsiProductionCatalog.Reviewed.productions.map(
+        _.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible)
+      )
+    )
+    val lifecycle  = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
+
+    try
+      val _      = lifecycle.prepare(getModule)
+      val bridge = new TestParserBridge
+      preparer.complete(0, bridge)
+      await(lifecycle)(_.isInstanceOf[ParserPreparationState.Activating])
+      activation.runNext()
+
+      val surface = lifecycle.parserFor(getModule).get.surfaces.rows.find(_.id == target)
+      assertTrue(surface.isDefined)
+      assertEquals(FactStatus.Available, surface.get.status)
+      assertEquals(SurfaceClassification.SyntaxContract, surface.get.classification)
     finally lifecycle.dispose()
 
   def testNativePsiCapabilityExceptionClosesTheBridgeAndPublishesFailure(): Unit =
