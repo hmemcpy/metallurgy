@@ -1,466 +1,172 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.{CompilerSourceNode, CompilerTreeExtraction}
+import com.hmemcpy.metallurgy.pc.{ParserNodePosition, ParserSyntaxSnapshot}
 import com.intellij.lang.PsiBuilder
 import com.intellij.psi.tree.IElementType
-import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
-import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 
-/** Produces a whole-file bundled-compatible PSI tree from the compiler's typed tree. The walk emits a marker for each
-  * compiler node whose kind has a bundled element-type mapping and advances over the original token stream, so every
-  * emitted node's text is the verbatim source substring. Tokens not under a mapped node remain ordinary lexer leaves.
-  */
-object DotcPsiProducer:
+import java.util.ArrayDeque
 
-  def parse(fileElementType: IElementType, builder: PsiBuilder, extraction: CompilerTreeExtraction): Unit =
-    val nodes      = extraction.tree.physicalNodes
-    val byId       = nodes.map(n => n.id -> n).toMap
-    val childrenBy = nodes.groupBy(_.parentId)
-    val ctx        = EmitCtx(childrenBy, builder)
-    val topLevel   =
-      nodes.filter(n => n.parentId.forall(p => !byId.contains(p))).sortBy(_.range.map(_.startOffset).getOrElse(0))
-    val root       = builder.mark()
-    topLevel.foreach(n => emit(n, ctx))
-    advanceTo(builder.getOriginalText.length(), builder)
+/** Emits a previously validated whole-file plan without interpreting compiler productions. */
+private[metallurgy] object DotcPsiProducer:
+
+  def parse(
+      fileElementType: IElementType,
+      builder: PsiBuilder,
+      plan: WholeFileProductionPlan,
+      bindings: NativePsiElementBindings
+  ): Boolean =
+    validate(builder, plan, bindings) match
+      case None    =>
+        val targets  = plan.targetAssertions.collect:
+          case PlannedTargetAssertion(TargetAssertionOwner.Composite(owner), surfaceId, _) => owner -> surfaceId
+        val byParent = plan.composites
+          .flatMap(parent => parent.children.map(child => child.child -> parent.instance))
+          .toMap
+        val roots    = plan.composites.filterNot(value => byParent.contains(value.instance))
+        val byId     = plan.composites.map(value => value.instance -> value).toMap
+        val root     = builder.mark()
+        emit(roots.head, byId, targets.toMap, bindings, builder)
+        advanceTo(builder.getOriginalText.length, builder)
+        root.done(fileElementType)
+        true
+      case Some(_) => false
+
+  def emitClosedFile(fileElementType: IElementType, builder: PsiBuilder): Unit =
+    val root = builder.mark()
+    advanceTo(builder.getOriginalText.length, builder)
     root.done(fileElementType)
 
-  private def emit(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    // A type-position child (a def's return type, a param/val's declared type) is emitted as a type element, not a
-    // reference, so ScFunction.returnTypeElement / parameter types resolve.
-    if node.role.isDefined then emitTypeElement(node, ctx)
-    else
-      node.kind match
-        case "Apply"            => emitApply(node, ctx)
-        case "TypeApply"        => emitTypeApply(node, ctx)
-        case "ValDef"           => emitValueDefinition(node, ctx)
-        case "DefDef"           => emitFunctionDefinition(node, ctx)
-        case "TypeDef"          => emitTypeDefinition(node, ctx)
-        case "ForYield"         => emitForStatement(node, ctx)
-        case "If"               => emitIf(node, ctx)
-        case "InfixOp"          => emitInfixExpression(node, ctx)
-        case "Import"           => emitImport(node, ctx)
-        case "ModuleDef"        => emitObjectDefinition(node, ctx)
-        case "PackageDef"       => emitPackaging(node, ctx)
-        case "Ident" | "Select" => emitReference(node, ctx)
-        case _                  => emitRaw(node, ctx)
-
-  private def emitPackaging(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder  = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker   = builder.mark()
-      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      // The leading Select/Ident is the package qualifier; emit it as a stable code reference (ScStableCodeReference)
-      // so ScPackaging.reference / qualName resolve the package FQN. The bundled QualId is a single REFERENCE node
-      // wrapping the dotted name.
-      children.headOption match
-        case Some(pid) if pid.kind == "Select" || pid.kind == "Ident" =>
-          emitStableReference(pid, ctx)
-          children.tail.foreach(emit(_, ctx))
-        case _                                                        =>
-          children.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.PACKAGING)
-
-  private def emitStableReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark() // REFERENCE (ScStableCodeReference); a dotted qualifier is a nested chain
-      node.kind match
-        case "Select" =>
-          // qualifier (a child Ident/Select) emitted as an inner REFERENCE, then `.` + the name token
-          ctx
-            .childrenOf(node.id)
-            .sortBy(_.range.map(_.startOffset).getOrElse(0))
-            .headOption
-            .foreach(emitStableReference(_, ctx))
-          node.name.foreach: name =>
-            advanceToToken(name, range.endOffset, builder)
-            builder.advanceLexer()
-        case "Ident"  =>
-          node.name.foreach: name =>
-            advanceToToken(name, range.endOffset, builder)
-            builder.advanceLexer()
-        case _        =>
-          advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.REFERENCE)
-
-  private def emitTypeElement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder  = ctx.builder
-      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      advanceTo(range.startOffset, builder)
-      node.kind match
-        case "Ident" | "Select" =>
-          // a leaf named type reference: SIMPLE_TYPE > REFERENCE (the resolver's nameId is the identifier token)
-          val outer = builder.mark()
-          val inner = builder.mark()
-          advanceTo(range.endOffset, builder)
-          inner.done(ScalaElementType.REFERENCE)
-          outer.done(ScalaElementType.SIMPLE_TYPE)
-        case "Tuple"            =>
-          // a tuple type (A, B): TUPLE_TYPE whose elements are themselves types, so each is navigatable.
-          val wrapper = builder.mark()
-          children.headOption.flatMap(_.range).foreach(child => advanceTo(child.startOffset, builder))
-          val types   = builder.mark()
-          children.foreach(emitTypeElement(_, ctx))
-          types.done(ScalaElementType.TYPES)
-          advanceTo(range.endOffset, builder)
-          wrapper.done(ScalaElementType.TUPLE_TYPE)
-        case _                  =>
-          // any other composite type: emit the children as types (no specific wrapper yet) so a REFERENCE never wraps a
-          // non-ref (which would leave nameId null and crash navigation).
-          children.foreach(emitTypeElement(_, ctx))
-          advanceTo(range.endOffset, builder)
-
-  private def emitReference(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.REFERENCE_EXPRESSION)
-
-  private def emitFunctionDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder            = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker             = builder.mark()
-      // The name identifier must be a direct child of FUNCTION_DEFINITION (ScFunctionImpl.nameId reads it via
-      // findChildByType(tIDENTIFIER)); consume the `def` keyword and the name before opening the param-clause marker.
-      node.name.foreach: name =>
-        advanceToToken(name, range.endOffset, builder)
-        builder.advanceLexer()
-      val children           = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      // A DefDef's direct TypeDef children are its type parameters and its direct ValDef children its value
-      // parameters (body locals nest in a Block). Emit the type-param clause first so the type params are in scope
-      // for the param/return types (otherwise A/B resolve to Any).
-      val (typeParams, rest) = children.partition(_.kind == "TypeDef")
-      val (params, others)   = rest.partition(_.kind == "ValDef")
-      emitTypeParamClause(typeParams, ctx)
-      emitParamClauses(params, ctx)
-      others.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.FUNCTION_DEFINITION)
-
-  private def emitTypeParamClause(typeParams: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
-    if typeParams.nonEmpty then
-      val builder      = ctx.builder
-      val clauseMarker = builder.mark()
-      typeParams
-        .sortBy(_.range.map(_.startOffset).getOrElse(0))
-        .foreach: tp =>
-          tp.range.foreach: r =>
-            advanceTo(r.startOffset, builder)
-            val tpMarker = builder.mark()
-            advanceTo(r.endOffset, builder)
-            tpMarker.done(ScalaElementType.TYPE_PARAM)
-      clauseMarker.done(ScalaElementType.TYPE_PARAM_CLAUSE)
-
-  private def emitParamClauses(params: Vector[CompilerSourceNode], ctx: EmitCtx): Unit =
-    val builder       = ctx.builder
-    val clausesMarker = builder.mark()
-    // Params arrive flattened under the DefDef (the reflection walk descends DefDef.paramss, a List of Lists, without
-    // recording clause membership). Two params belong to different clauses when the source between the previous
-    // param's end and this one's start contains a `)` followed by a `(` — the closing paren of one clause and the
-    // opening paren of the next.
-    val source        = builder.getOriginalText
-    splitIntoClauses(params, source).foreach: clauseParams =>
-      val clauseMarker = builder.mark()
-      // A clause may open with a soft keyword ('using') that the lexer tokenizes as an identifier; remap it to the
-      // keyword token type so the PSI matches the bundled grammar (the bundled parser does this via tryParseSoftKeyword).
-      clauseParams.headOption.flatMap(_.range).foreach(first => advanceToWithSoftKeyRemap(first.startOffset, builder))
-      clauseParams.foreach: p =>
-        p.range.foreach: r =>
-          advanceTo(r.startOffset, builder)
-          val paramMarker = builder.mark()
-          p.name.foreach: name =>
-            advanceToToken(name, r.endOffset, builder)
-            builder.advanceLexer()
-          ctx
-            .childrenOf(p.id)
-            .sortBy(_.range.map(_.startOffset).getOrElse(0))
-            .foreach: c =>
-              if c.role.isDefined then
-                c.range.foreach: cr =>
-                  advanceTo(cr.startOffset, builder)
-                  val paramTypeMarker = builder.mark()
-                  emit(c, ctx)
-                  paramTypeMarker.done(ScalaElementType.PARAM_TYPE)
-          advanceTo(r.endOffset, builder)
-          paramMarker.done(ScalaElementType.PARAM)
-      // The clause's closing ')' must land inside this clause (it is its own terminator), not be swept into the next
-      // clause's opening marker. After the last param, advance over the ')' before closing the clause.
-      clauseParams.lastOption
-        .flatMap(_.range)
-        .foreach: lastRange =>
-          advanceTo(lastRange.endOffset, builder)
-          if !builder.eof() && builder.getTokenText == ")" then builder.advanceLexer()
-      clauseMarker.done(ScalaElementType.PARAM_CLAUSE)
-    clausesMarker.done(ScalaElementType.PARAM_CLAUSES)
-
-  private def splitIntoClauses(
-      params: Vector[CompilerSourceNode],
-      source: CharSequence
-  ): Vector[Vector[CompilerSourceNode]] =
-    val sorted = params.sortBy(_.range.map(_.startOffset).getOrElse(0))
-    sorted.foldLeft(Vector.empty[Vector[CompilerSourceNode]]): (clauses, param) =>
-      if clauses.isEmpty then Vector(Vector(param))
-      else
-        val prev       = clauses.last.last
-        val prevEnd    = prev.range.map(_.endOffset).getOrElse(0)
-        val paramStart = param.range.map(_.startOffset).getOrElse(0)
-        val between    = if prevEnd < paramStart then source.subSequence(prevEnd, paramStart).toString else ""
-        if between.contains(')') && between.contains('(') then clauses :+ Vector(param)
-        else clauses.init :+ (clauses.last :+ param)
-
-  private def emitObjectDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val source = ctx.builder.getOriginalText
-      val head   = source.subSequence(range.startOffset, math.min(range.startOffset + 8, range.endOffset)).toString
-      // The parser models an anonymous `given T with { ... }` as a ModuleDef whose leading keyword is `given`.
-      if head.startsWith("given") then emitTemplateDefinition(node, ctx, ScalaElementType.GivenDefinition)
-      else emitTemplateDefinition(node, ctx, ScalaElementType.ObjectDefinition)
-
-  private def emitTypeDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val source    = ctx.builder.getOriginalText
-      // A TypeDef is a class, trait, enum, or type alias; the kind is not in the node kind, so read the keyword the
-      // user wrote before the name. Type parameters ([A]) never reach here — they are partitioned out in
-      // emitFunctionDefinition and emitted as TYPE_PARAM.
-      val nameStart =
-        node.name.flatMap(n => Some(source.toString.indexOf(n, range.startOffset))).getOrElse(range.startOffset)
-      val prefix    = source.subSequence(range.startOffset, nameStart).toString
-      if prefix.contains("trait") then emitTemplateDefinition(node, ctx, ScalaElementType.TraitDefinition)
-      else if prefix.contains("enum") then emitTemplateDefinition(node, ctx, ScalaElementType.EnumDefinition)
-      else if prefix.contains("class") then emitTemplateDefinition(node, ctx, ScalaElementType.ClassDefinition)
-      else if prefix.contains("type") then emitTypeAlias(node, ctx)
-      else emitRaw(node, ctx)
-
-  private def emitTypeAlias(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      node.name.foreach: name =>
-        advanceToToken(name, range.endOffset, builder)
-        builder.advanceLexer()
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.TYPE_DEFINITION)
-
-  private def emitTemplateDefinition(
-      node: CompilerSourceNode,
-      ctx: EmitCtx,
-      elementType: IElementType
+  private[psiproducer] def emit(
+      composite: PlannedComposite,
+      byId: Map[ProductionInstanceId, PlannedComposite],
+      targets: Map[ProductionInstanceId, String],
+      bindings: NativePsiElementBindings,
+      builder: PsiBuilder
   ): Unit =
-    node.range.foreach: range =>
-      val builder       = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker        = builder.mark()
-      // The name identifier is a direct child of the template definition (ScTypeDefinitionImpl.nameId reads it via
-      // findChildByType(tIDENTIFIER)); consume the leading keyword and the name before opening the template.
-      node.name match
-        case Some(name) =>
-          advanceToToken(name, range.endOffset, builder)
-          builder.advanceLexer()
-        case None       =>
-          // An anonymous definition (e.g. `given T with { ... }`) has no name token; consume the leading keyword
-          // (`given`) so it is a direct child of the definition, not swept into the extends block.
-          if !builder.eof() then builder.advanceLexer()
-      val children      = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      // The parser models a template's type parameters inside a synthetic `DefDef <init>` (the primary constructor).
-      // Extract its TypeDef children into the template's TYPE_PARAM_CLAUSE (after the name, before the extends block)
-      // so they are not emitted as a stray function definition, and skip the synthetic constructor itself.
-      val init          = children.find(c => c.kind == "DefDef" && c.name.contains("<init>"))
-      val typeParams    = init.toList.flatMap(c => ctx.childrenOf(c.id).filter(_.kind == "TypeDef")).toVector
-      emitTypeParamClause(typeParams, ctx)
-      val members       = children.filterNot(c => c.kind == "DefDef" && c.name.contains("<init>"))
-      // ScTypeDefinitionImpl.extendsBlock is found via stubOrPsiChild(EXTENDS_BLOCK); members are reached through
-      // extendsBlock.templateBody, so the members must nest inside TEMPLATE_BODY inside EXTENDS_BLOCK.
-      val extendsMarker = builder.mark()
-      val bodyMarker    = builder.mark()
-      members.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      bodyMarker.done(ScalaElementType.TEMPLATE_BODY)
-      extendsMarker.done(ScalaElementType.EXTENDS_BLOCK)
-      marker.done(elementType)
+    val pending = new ArrayDeque[EmitEvent]()
+    pending.addFirst(EmitEvent.Enter(composite))
+    while !pending.isEmpty do
+      pending.removeFirst() match
+        case EmitEvent.Enter(current)                =>
+          val (from, to) = range(current)
+          advanceTo(from, builder)
+          val marker     = builder.mark()
+          pending.addFirst(EmitEvent.Exit(marker, to, bindings.elementTypes(targets(current.instance))))
+          current.children.reverseIterator
+            .flatMap(child => byId.get(child.child))
+            .foreach(child => pending.addFirst(EmitEvent.Enter(child)))
+        case EmitEvent.Exit(marker, to, elementType) =>
+          advanceTo(to, builder)
+          marker.done(elementType)
 
-  private def emitInfixExpression(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark() // INFIX_EXPR; left operand, operator, right operand
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.INFIX_EXPR)
+  private def validate(
+      builder: PsiBuilder,
+      plan: WholeFileProductionPlan,
+      bindings: NativePsiElementBindings
+  ): Option[String] =
+    val source       = builder.getOriginalText
+    val length       = source.length
+    val leaves       = plan.physicalLeafOwnership.sortBy(_.start)
+    val ids          = plan.composites.map(_.instance)
+    val composite    = ids.toSet
+    val targets      = plan.targetAssertions.collect {
+      case value @ PlannedTargetAssertion(
+            TargetAssertionOwner.Composite(_),
+            _,
+            _
+          ) =>
+        value
+    }
+    val targetOwners = targets.map(_.owner).collect { case TargetAssertionOwner.Composite(owner) => owner }.toSet
+    val edges        = plan.composites.flatMap(parent => parent.children.map(child => parent.instance -> child.child))
+    val children     = edges.groupMap(_._1)(_._2)
+    val parents      = edges.groupMap(_._2)(_._1)
+    val roots        = ids.filterNot(parents.contains)
+    val ranges       = plan.composites.map(value => value.instance -> range(value)).toMap
+    val boundaries   = (Vector(0, length) ++ plan.composites.flatMap(value =>
+      val (from, to) = range(value)
+      Vector(from, to)
+    )).toSet
+    if ParserSyntaxSnapshot.digest(source.toString) != plan.sourceDigest then Some("source digest differs from plan")
+    else if leaves.isEmpty || leaves.head.start != 0 || leaves.last.end != length then Some("plan does not own source")
+    else if leaves.exists(leaf => leaf.start < 0 || leaf.start >= leaf.end || leaf.end > length) then
+      Some("invalid physical leaf range")
+    else if leaves.sliding(2).exists { case Vector(left, right) => left.end != right.start; case _ => false } then
+      Some("physical leaves are not contiguous")
+    else if ids.distinct.size != ids.size then Some("composite instances are not unique")
+    else if roots.size != 1 then Some("plan does not have exactly one structural root")
+    else if edges.distinct.size != edges.size || parents.values.exists(_.size != 1) then
+      Some("composite child has duplicate or multiple parent edges")
+    else if plan.virtualLayout.nonEmpty then Some("virtual layout emission is unavailable")
+    else if plan.composites.exists(_.children.exists(_.placement != ChildPlacement.Direct)) then
+      Some("non-direct child placement emission is unavailable")
+    else if plan.composites.exists(_.fieldDispositions.exists(_.kind == FieldDispositionKind.Unsupported)) then
+      Some("unsupported field disposition emission is unavailable")
+    else if leaves.exists(_.target.isInstanceOf[TerminalLeafTarget.Token]) then
+      Some("token target emission is unavailable")
+    else if plan.targetAssertions.exists(_.owner.isInstanceOf[TargetAssertionOwner.Terminal]) then
+      Some("terminal target emission is unavailable")
+    else if targetOwners != composite || targets.groupBy(_.owner).exists(_._2.size != 1) ||
+      targets.size != plan.composites.size ||
+      targets.exists(value =>
+        value.kind != TargetAssertionKind.NativeComposite && value.kind != TargetAssertionKind.CompatibleComposite
+      ) || targets.exists(value => !bindings.elementTypes.contains(value.surfaceId))
+    then Some("composite target is not exactly one supported bound composite")
+    else if leaves.exists(leaf => !composite(leaf.owner)) then Some("physical leaf owner is not an active composite")
+    else if plan.composites.exists(value => value.children.exists(child => !composite(child.child))) then
+      Some("planned child is absent")
+    else if reachable(roots.head, children).size != composite.size then
+      Some("composite graph has a cycle or unreachable node")
+    else if plan.composites.exists(value =>
+        val (from, to) = range(value)
+        !isSourceDerived(value.position) || from < 0 || from >= to || to > length || value.children
+          .flatMap(child => ranges.get(child.child))
+          .exists: child =>
+            val (childFrom, childTo) = child
+            childFrom < from || childTo > to
+      )
+    then Some("composite containment is invalid")
+    else if plan.composites.exists(value =>
+        value.children.flatMap(child => ranges.get(child.child)).sliding(2).exists {
+          case Vector((leftFrom, leftTo), (rightFrom, _)) => leftFrom > rightFrom || leftTo > rightFrom
+          case _                                          => false
+        }
+      )
+    then Some("composite children are unordered or overlapping")
+    else if !lexerBoundariesAreSafe(boundaries, builder) then Some("composite boundary is not a lexer boundary")
+    else None
 
-  private def emitIf(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark() // IF_STMT; the if/then/else keywords and branches are its children
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.IF_STMT)
+  private def reachable(
+      root: ProductionInstanceId,
+      children: Map[ProductionInstanceId, Vector[ProductionInstanceId]]
+  ): Set[ProductionInstanceId] =
+    def loop(pending: List[ProductionInstanceId], seen: Set[ProductionInstanceId]): Set[ProductionInstanceId] =
+      pending match
+        case Nil          => seen
+        case head :: tail =>
+          if seen(head) then loop(tail, seen)
+          else loop(children.getOrElse(head, Vector.empty).toList ::: tail, seen + head)
+    loop(List(root), Set.empty)
 
-  private def emitImport(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder  = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker   = builder.mark() // IMPORT_STMT; the `import` keyword is its first token
-      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      // Each path is an IMPORT_EXPR; ScImportStmtImpl.importExpressions reads them via getStubOrPsiChildren.
-      children.foreach: path =>
-        val exprMarker = builder.mark()
-        emit(path, ctx)
-        exprMarker.done(ScalaElementType.IMPORT_EXPR)
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.ImportStatement)
+  private def isSourceDerived(position: ParserNodePosition): Boolean = position match
+    case ParserNodePosition.Positioned(_, _, com.hmemcpy.metallurgy.pc.ParserPositionProvenance.SourceDerived) => true
+    case _                                                                                                     => false
 
-  private def emitForStatement(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder     = ctx.builder
-      val children    = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      advanceTo(range.startOffset, builder)
-      val marker      = builder.mark() // FOR_STMT; the `for` keyword is its first token
-      val enumerators = children.init  // all but the last (the yield body); the parser attaches the body last
-      val body        = children.lastOption
-      // Advance to the first enumerator so the `for` keyword lands inside FOR_STMT but before ENUMERATORS.
-      enumerators.headOption.flatMap(_.range).foreach(r => advanceTo(r.startOffset, builder))
-      val enumsMarker = builder.mark()
-      enumerators.foreach(emitEnumerator(_, ctx))
-      enumsMarker.done(ScalaElementType.ENUMERATORS)
-      // `yield` follows the enumerators and precedes the body; advancing to the body consumes it inside FOR_STMT.
-      body.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.FOR_STMT)
+  private def lexerBoundariesAreSafe(boundaries: Set[Int], builder: PsiBuilder): Boolean =
+    var observed = Set(0, builder.getOriginalText.length)
+    var index    = 0
+    while builder.rawLookup(index) != null do
+      observed += builder.rawTokenTypeStart(index)
+      index += 1
+    boundaries.subsetOf(observed)
 
-  private def emitEnumerator(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder  = ctx.builder
-      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      node.kind match
-        case "GenFrom" | "GenAlias" =>
-          advanceTo(range.startOffset, builder)
-          val marker = builder.mark() // GENERATOR / FOR_BINDING
-          // The first child is the pattern (an Ident); wrap it in a reference pattern so the binding is declared.
-          children.headOption.foreach(emitEnumeratorPattern(_, ctx))
-          // The `<-` (generator) or `=` (binding) separator and the source/value expression follow; emitting the
-          // remaining children advances over the separator and the expression.
-          children.tail.foreach(emit(_, ctx))
-          advanceTo(range.endOffset, builder)
-          node.kind match
-            case "GenFrom"  => marker.done(ScalaElementType.GENERATOR)
-            case "GenAlias" => marker.done(ScalaElementType.FOR_BINDING)
-        case _                      =>
-          // A guard (`if cond`): the parser attaches the condition as a bare expression; the `if` keyword precedes
-          // the node's span, so the GUARD marker must open before advancing so `if` lands inside it.
-          val marker = builder.mark()
-          advanceTo(range.startOffset, builder) // consumes the `if` keyword
-          children.foreach(emit(_, ctx))
-          advanceTo(range.endOffset, builder)
-          marker.done(ScalaElementType.GUARD)
-
-  private def emitEnumeratorPattern(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker  = builder.mark()
-      node.name.foreach: name =>
-        advanceToToken(name, range.endOffset, builder)
-        builder.advanceLexer()
-      marker.done(ScalaElementType.REFERENCE_PATTERN)
-
-  private def emitValueDefinition(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder        = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val marker         = builder.mark()
-      // The `val`/`var` keyword must be a direct child of PATTERN_DEFINITION (ScValueOrVariable.keywordToken reads
-      // it via findChildByType); advance to the name first so the keyword lands in PATTERN_DEFINITION, then open
-      // PATTERN_LIST and wrap the name in a reference pattern so declaredElements is non-empty.
-      node.name.foreach: name =>
-        advanceToToken(name, range.endOffset, builder)
-      val patternsMarker = builder.mark()
-      if node.name.isDefined then
-        val refMarker = builder.mark()
-        builder.advanceLexer()
-        refMarker.done(ScalaElementType.REFERENCE_PATTERN)
-      patternsMarker.done(ScalaElementType.PATTERN_LIST)
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      marker.done(ScalaElementType.PATTERN_DEFINITION)
-
-  private def advanceToToken(text: String, bound: Int, builder: PsiBuilder): Unit =
-    while !builder.eof() && builder.getCurrentOffset < bound && builder.getTokenText != text do builder.advanceLexer()
-
-  private def emitApply(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder    = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val methodCall = builder.mark()
-      val children   = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      children.headOption.foreach(emit(_, ctx))
-      val argExprs   = builder.mark()
-      children.tail.foreach(emit(_, ctx))
-      advanceTo(range.endOffset, builder)
-      argExprs.done(ScalaElementType.ARG_EXPRS)
-      methodCall.done(ScalaElementType.METHOD_CALL)
-
-  private def emitRaw(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      advanceTo(range.startOffset, ctx.builder)
-      ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0)).foreach(c => emit(c, ctx))
-      advanceTo(range.endOffset, ctx.builder)
-
-  private def emitTypeApply(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder  = ctx.builder
-      advanceTo(range.startOffset, builder)
-      val generic  = builder.mark()
-      val children = ctx.childrenOf(node.id).sortBy(_.range.map(_.startOffset).getOrElse(0))
-      children.headOption.foreach: callee =>
-        callee.range.foreach: r =>
-          advanceTo(r.startOffset, builder)
-          val ref = builder.mark()
-          advanceTo(r.endOffset, builder)
-          ref.done(ScalaElementType.REFERENCE_EXPRESSION)
-      val typeArgs = builder.mark()
-      children.tail.foreach(emitTypeArg(_, ctx))
-      advanceTo(range.endOffset, builder)
-      typeArgs.done(ScalaElementType.TYPE_ARGS)
-      generic.done(ScalaElementType.GENERIC_CALL)
-
-  private def emitTypeArg(node: CompilerSourceNode, ctx: EmitCtx): Unit =
-    node.range.foreach: range =>
-      val builder = ctx.builder
-      advanceTo(range.startOffset, builder)
-      ctx
-        .childrenOf(node.id)
-        .sortBy(_.range.map(_.startOffset).getOrElse(0))
-        .foreach: c =>
-          c.kind match
-            case "Ident" | "Select" | "TypeTree" =>
-              c.range.foreach: r =>
-                advanceTo(r.startOffset, builder)
-                val outer = builder.mark()
-                val inner = builder.mark()
-                advanceTo(r.endOffset, builder)
-                inner.done(ScalaElementType.REFERENCE)
-                outer.done(ScalaElementType.SIMPLE_TYPE)
-            case _                               => emit(c, ctx)
-      advanceTo(range.endOffset, builder)
+  private def range(value: PlannedComposite): (Int, Int) = value.position match
+    case ParserNodePosition.Positioned(value, _, _) => value.startOffset -> value.endOffset
+    case ParserNodePosition.Absent                  => 0                 -> 0
 
   private def advanceTo(offset: Int, builder: PsiBuilder): Unit =
     while !builder.eof() && builder.getCurrentOffset < offset do builder.advanceLexer()
 
-  private def advanceToWithSoftKeyRemap(offset: Int, builder: PsiBuilder): Unit =
-    while !builder.eof() && builder.getCurrentOffset < offset do
-      if builder.getTokenText == "using" then builder.remapCurrentToken(ScalaTokenType.UsingKeyword)
-      builder.advanceLexer()
-
-  private final case class EmitCtx(childrenBy: Map[Option[Long], Vector[CompilerSourceNode]], builder: PsiBuilder):
-    def childrenOf(parentId: Long): Vector[CompilerSourceNode] =
-      childrenBy.getOrElse(Some(parentId), Vector.empty)
+  private enum EmitEvent:
+    case Enter(composite: PlannedComposite)
+    case Exit(marker: PsiBuilder.Marker, to: Int, elementType: IElementType)

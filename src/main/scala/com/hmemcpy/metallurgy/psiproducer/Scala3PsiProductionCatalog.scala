@@ -1880,6 +1880,27 @@ private[metallurgy] object PreparedProductionCatalog:
     val errors = Scala3PsiProductionCatalogValidator.validateExecutable(catalog, compiler, surfaces)
     Either.cond(errors.isEmpty, new PreparedProductionCatalog(catalog, compiler, surfaces), errors)
 
+  def prepareRuntimeSubset(
+      catalog: Scala3PsiProductionCatalog,
+      runtime: CompilerRuntimeInventory,
+      compiler: AggregatedCompilerProductionInventory,
+      surfaces: ScalaPsiSurfaceInventory
+  ): Either[Vector[CatalogValidationError], PreparedProductionCatalog] =
+    val selected = runtime.shapes.flatMap: shape =>
+      val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
+      contexts.flatMap(context =>
+        CatalogShapeMatcher.select(
+          catalog,
+          shape.kind,
+          shape.prefix,
+          shape.observation,
+          context,
+          shape.sourceClassification
+        )
+      )
+    val subset   = catalog.copy(productions = catalog.productions.filter(selected.toSet))
+    prepare(subset, compiler, surfaces)
+
 private[metallurgy] object WholeFileProductionPlanner:
   def plan(
       snapshot: ParserSyntaxSnapshot,

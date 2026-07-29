@@ -57,7 +57,11 @@ final class Scala3ParserPhysicalActivationTest extends Scala3CompatTestCase:
     assertTrue(s"pending PSI has semantic findings: $semanticFindings", semanticFindings.isEmpty)
 
     preparer.complete(0, new TestParserBridge)
-    PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+    PlatformTestUtil.waitWithEventsDispatching(
+      "physical parser activation",
+      () => lifecycle.stateFor(getModule).isInstanceOf[ParserPreparationState.Ready],
+      10000
+    )
 
     val ready = PsiManager.getInstance(getProject).findFile(file)
     assertEquals(ParserPreparationState.Ready(epoch), lifecycle.stateFor(getModule))

@@ -5,6 +5,7 @@ import java.lang.reflect.{Constructor, Method, ParameterizedType, Type, TypeVari
 import java.net.URLClassLoader
 import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import com.intellij.openapi.diagnostic.ControlFlowException
 import scala.reflect.Selectable.reflectiveSelectable
 import scala.util.control.NonFatal
 
@@ -384,11 +385,25 @@ private final class StructuralScala3ParserBridge private (
                   case Left(error)    => Left(error)
                   case Right(context) =>
                     parseSource(active, request, context)
-            catch case NonFatal(error) => Left(Scala3ParserError.ParseFailed(errorMessage(error)))
+            catch
+              case control: ControlFlowException => throw control
+              case NonFatal(error)               =>
+                controlFlowCause(error).fold(Left(Scala3ParserError.ParseFailed(errorMessage(error))))(throw _)
           .getOrElse(Left(Scala3ParserError.Closed))
 
   override def close(): Unit =
     runtime.getAndSet(None).foreach(_.retire())
+
+  private def controlFlowCause(error: Throwable): Option[Throwable & ControlFlowException] =
+    val seen = new IdentityHashMap[Throwable, java.lang.Boolean]()
+    var next = Option(error)
+    while next.nonEmpty && !seen.containsKey(next.get) do
+      val value = next.get
+      seen.put(value, java.lang.Boolean.TRUE)
+      value match
+        case control: ControlFlowException => return Some(control)
+        case _                             => next = Option(value.getCause)
+    None
 
   private def configuredContext(
       active: ParserRuntime,

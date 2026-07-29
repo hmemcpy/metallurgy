@@ -279,11 +279,13 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
                 for
                   catalog   <- catalogPreparer.prepare(project)
                   installed <- ScalaPsiSurfaceInventory.installed()
+                  bindings  <- NativePsiElementBindings.probe(project)
                 yield PreparedScala3Parser(
                   bridge,
                   catalog,
                   ScalacFlagsService.get(project).presentationCompilerOptions(module).toVector,
-                  installed.withCatalogCapabilities(catalog)
+                  installed.withCatalogCapabilities(catalog),
+                  bindings
                 )
               catch
                 case control: ControlFlowException =>
@@ -496,7 +498,8 @@ private[metallurgy] final case class PreparedScala3Parser(
     bridge: Scala3ParserBridge,
     catalog: Scala3PsiProductionCatalog,
     compilerOptions: Vector[String],
-    surfaces: ScalaPsiSurfaceInventory
+    surfaces: ScalaPsiSurfaceInventory,
+    bindings: NativePsiElementBindings
 )
 
 private[psiproducer] trait Scala3PsiCatalogPreparer:

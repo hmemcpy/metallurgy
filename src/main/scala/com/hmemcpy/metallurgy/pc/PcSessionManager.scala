@@ -10,10 +10,8 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, PcHighlightRenderer}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
-import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, DotcTreeSource}
 import com.hmemcpy.metallurgy.projectmodel.{CompilerBackendModelState, CompilerBackendModuleDescriptor}
 import com.intellij.openapi.Disposable
-import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.EditorFactory
@@ -24,8 +22,6 @@ import com.intellij.openapi.project.{ModuleListener, Project}
 import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener}
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.{VirtualFile, VirtualFileManager}
-import com.intellij.psi.{PsiFile, PsiManager}
-import com.intellij.psi.AbstractFileViewProvider
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
@@ -334,10 +330,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
       case RetypecheckOutcome.Applied    =>
         val publication = session.typedTreeSnapshot(snapshot) match
           case Some(typedTree) =>
-            session
-              .untypedTreeExtraction(snapshot)
-              .foreach: extraction =>
-                installAndReload(module, snapshot, extraction, () => snapshotCurrency(module, session, generation))
             backendPublisher.publish(module, typedTree, generation, () => snapshotCurrency(module, session, generation))
           case None            =>
             backend.markFailed(module, snapshot.fileUri, snapshot.documentVersion, generation)
@@ -356,43 +348,6 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         renderer.blank(snapshot.fileUri, snapshot.documentVersion)
         CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
       case RetypecheckOutcome.Superseded => CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
-
-  private def installAndReload(
-      module: Module,
-      snapshot: PcSnapshot,
-      extraction: CompilerTreeExtraction,
-      currency: () => PcSnapshotCurrency
-  ): Unit =
-    if currency() != PcSnapshotCurrency.Current then return
-    val project           = module.getProject
-    val vfile             = VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri)
-    if vfile == null then return
-    val target            = readAction(
-      new Computable[PsiFile]:
-        override def compute(): PsiFile =
-          val f = PsiManager.getInstance(project).findFile(vfile)
-          if f != null
-            && ModuleDetectionService.get(project).isActive(module)
-            && f.getText == snapshot.sourceText
-          then f
-          else null
-    )
-    if target == null then return
-    val hasCompilerErrors = extraction.diagnostics.exists(_.isError)
-    val stateChanged      = !hasCompilerErrors &&
-      BundledScala3Parse.hasErrors(snapshot.sourceText, project) &&
-      DotcTreeSource.install(snapshot.sourceText, extraction)
-    if !stateChanged then return
-    ApplicationManager.getApplication.invokeAndWait(() =>
-      ApplicationManager.getApplication.runWriteAction(
-        new Computable[Unit]:
-          override def compute(): Unit =
-            target.getViewProvider match
-              case provider: AbstractFileViewProvider => provider.onContentReload()
-              case _                                  => ()
-      )
-    )
-    DaemonCodeAnalyzer.getInstance(project).restart(target, "metallurgy producer reload")
 
   private def trackFile(module: Module, fileUrl: String): Unit =
     val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)

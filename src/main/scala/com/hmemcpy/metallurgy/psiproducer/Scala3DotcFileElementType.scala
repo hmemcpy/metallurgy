@@ -1,6 +1,9 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.pc.{ParserSourceUri, Scala3ParserCancellation, Scala3ParserRequest}
 import com.intellij.lang.{ASTNode, PsiBuilderFactory}
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.vfs.{StandardFileSystems, VirtualFile}
 import com.intellij.psi.stubs.*
 import com.intellij.psi.tree.IStubFileElementType
@@ -36,15 +39,46 @@ final class Scala3DotcFileElementType
   override def indexStub(stub: ScFileStub, sink: IndexSink): Unit = ()
 
   override protected def doParseContents(chameleon: ASTNode, psi: PsiElement): ASTNode =
-    val source = chameleon.getChars.toString
-    DotcTreeSource.extractionFor(source) match
-      case Some(extraction) =>
-        val builder = PsiBuilderFactory
-          .getInstance()
-          .createBuilder(psi.getProject, chameleon, null, Scala3DotcLanguage.INSTANCE, chameleon.getChars)
-        DotcPsiProducer.parse(this, builder, extraction)
-        builder.getTreeBuilt.getFirstChildNode
-      case None             => super.doParseContents(chameleon, psi)
+    val source  = chameleon.getChars.toString
+    val builder = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(psi.getProject, chameleon, null, Scala3DotcLanguage.INSTANCE, chameleon.getChars)
+    val module  = Option(ModuleUtilCore.findModuleForPsiElement(psi)).orElse(
+      Option(psi.getContainingFile)
+        .flatMap(file => Option(file.getVirtualFile))
+        .flatMap(file => Option(ModuleUtilCore.findModuleForFile(file, psi.getProject)))
+    )
+    val emitted = for
+      active    <- module
+      prepared  <- Scala3ParserPreparationLifecycle.get(psi.getProject).parserFor(active)
+      uri       <- ParserSourceUri.from(sourceUri(psi)).toOption
+      snapshot  <- prepared.bridge
+                     .parse(
+                       Scala3ParserRequest(
+                         uri,
+                         source,
+                         prepared.compilerOptions,
+                         new Scala3ParserCancellation:
+                           override def checkCanceled(): Unit = ProgressManager.checkCanceled()
+                       )
+                     )
+                     .toOption
+      evidence  <- ProvisionalSourceEvidencePlanner.plan(snapshot).toOption
+      runtime   <- CompilerRuntimeInventory.from(snapshot).toOption
+      aggregate <- AggregatedCompilerProductionInventory.aggregate(Vector(runtime)).toOption
+      catalog   <- PreparedProductionCatalog
+                     .prepareRuntimeSubset(prepared.catalog, runtime, aggregate, prepared.surfaces)
+                     .toOption
+      plan      <- WholeFileProductionPlanner.plan(snapshot, evidence, catalog).toOption
+    yield DotcPsiProducer.parse(this, builder, plan, prepared.bindings)
+    if !emitted.contains(true) then DotcPsiProducer.emitClosedFile(this, builder)
+    builder.getTreeBuilt.getFirstChildNode
+
+  private def sourceUri(psi: PsiElement): String =
+    Option(psi.getContainingFile)
+      .flatMap(file => Option(file.getVirtualFile))
+      .map(_.getUrl)
+      .getOrElse("file:///metallurgy/Detached.scala")
 
 private object Scala3DotcFileElementType:
   val ExternalId    = "metallurgy.scala3.file"

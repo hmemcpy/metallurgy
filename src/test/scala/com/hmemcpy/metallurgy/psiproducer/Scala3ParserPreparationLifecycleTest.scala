@@ -551,7 +551,10 @@ private final class RecordingExecutor extends Executor:
 
   def runNext(): Unit = commands.remove(0).run()
 
-private[psiproducer] final class TestParserBridge extends Scala3ParserBridge:
+private[psiproducer] final class TestParserBridge(
+    parseFunction: Option[(TestParserBridge, Scala3ParserRequest) => Either[Scala3ParserError, ParserSyntaxSnapshot]] =
+      None
+) extends Scala3ParserBridge:
   private val loader = Scala3ParserLoaderIdentity(TestParserBridge.nextLoader.incrementAndGet())
   private var open   = true
   private var closes = 0
@@ -580,7 +583,9 @@ private[psiproducer] final class TestParserBridge extends Scala3ParserBridge:
     if open then Scala3ParserLoaderState.Open else Scala3ParserLoaderState.Closed
 
   override def parse(request: Scala3ParserRequest): Either[Scala3ParserError, ParserSyntaxSnapshot] =
-    Left(Scala3ParserError.Closed)
+    parseFunction.fold[Either[Scala3ParserError, ParserSyntaxSnapshot]](Left(Scala3ParserError.Closed))(
+      _(this, request)
+    )
 
   override def close(): Unit =
     closes += 1

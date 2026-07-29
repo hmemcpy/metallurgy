@@ -2,12 +2,7 @@ package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
 import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.psiproducer.{
-  BundledScala3Parse,
-  DotcTreeSource,
-  ParserPreparationState,
-  Scala3ParserPreparationLifecycle
-}
+import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, ParserPreparationState, Scala3ParserPreparationLifecycle}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
@@ -76,7 +71,6 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
         throw BackendUnavailableException(s"Exact Scala 3 parser is unavailable: $detail")
       case state                                         =>
         throw BackendUnavailableException(s"Exact Scala 3 parser did not become ready: $state")
-    DotcTreeSource.clear()
 
   override protected def tearDown(): Unit =
     try
@@ -84,7 +78,6 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
       val settings = ScalaProjectSettings.getInstance(getProject)
       settings.setCompilerHighlightingScala3(savedSettings._1)
       settings.setUseCompilerTypes(savedSettings._2)
-      DotcTreeSource.clear()
     finally super.tearDown()
 
   private val StartMarker = "/*start*/"
@@ -227,9 +220,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
           s"[parity]   message mismatch @${b.getStartOffset}-${b.getEndOffset}: bundled='${b.getDescription}' | dotc='${d.getDescription}'"
         )
 
-  /** Run the compiler on the verbatim source and install the typed-tree extraction before the file is parsed, so the
-    * dialect file-root parse builds the PSI from the typed tree on its first pass (no later reparse needed).
-    */
+  /** Run the compiler on the verbatim source before asserting compiler-valid behavior. */
   private def preCompileAndInstall(source: String): Boolean =
     val manager          = PcSessionManager.get(getProject)
     val session          = PlatformTestUtil
@@ -242,11 +233,7 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
         session.compilerTreeExtraction(snapshot)
       )
       .get(60, TimeUnit.SECONDS)
-    // Install only when the bundled parser cannot represent the source (it leaves parser errors) AND the compiler
-    // typed it cleanly (no ERROR diagnostics) — never produce valid PSI for code the compiler rejected.
     val compilerAccepted = extraction.exists(_.diagnostics.forall(!_.isError))
-    if compilerAccepted && hasBundledParseError(source) then
-      extraction.foreach(e => { val _ = DotcTreeSource.install(source, e); () })
     compilerAccepted
 
   private def hasBundledParseError(source: String): Boolean =
