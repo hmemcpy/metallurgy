@@ -949,7 +949,7 @@ final class Scala3PsiProductionCatalogTest:
     )
     assertEquals(WholeFilePlanningFailure.UnownedSourceAtom(0, 0, 1), failure(unowned))
 
-    val conflict = base.copy(productions =
+    val parentFallback     = base.copy(productions =
       base.productions.map(p =>
         if p.id == root.id then
           p.copy(terminals =
@@ -963,6 +963,22 @@ final class Scala3PsiProductionCatalogTest:
             )
           )
         else p
+      )
+    )
+    val parentFallbackPlan = WholeFileProductionPlanner
+      .plan(value, evidence, parentFallback, aggregate, surfaces(parentFallback))
+      .fold(error => throw new AssertionError(error.toString), identity)
+    assertEquals(
+      child.id,
+      parentFallbackPlan.composites
+        .find(_.instance == parentFallbackPlan.physicalLeafOwnership.head.owner)
+        .get
+        .productionId
+    )
+
+    val conflict = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == child.id then p.copy(terminals = p.terminals :+ p.terminals.head.copy(id = "duplicate")) else p
       )
     )
     assertTrue(failure(conflict).isInstanceOf[WholeFilePlanningFailure.ConflictingSourceAtomOwners])

@@ -1915,13 +1915,33 @@ private[metallurgy] object WholeFileProductionPlanner:
           case Vector()     =>
             break(Left(WholeFilePlanningFailure.UnownedSourceAtom(atom.id, atom.start, atom.end)))
           case conflicts    =>
-            break(
-              Left(
-                WholeFilePlanningFailure.ConflictingSourceAtomOwners(
-                  atom.id,
-                  atom.start,
-                  atom.end,
-                  conflicts.map(leaf => leaf.owner -> leaf.terminalId)
+            def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
+              Iterator
+                .iterate(Vector(descendant))(_.flatMap(incoming.getOrElse(_, Vector.empty)))
+                .takeWhile(_.nonEmpty)
+                .flatten
+                .contains(ancestor)
+            val byOwner                                                                               = conflicts.groupBy(_.owner)
+            val winner                                                                                =
+              if byOwner.values.exists(_.size != 1) then None
+              else
+                conflicts.filter(candidate =>
+                  conflicts.forall(other =>
+                    other == candidate ||
+                      (other.target == TerminalLeafTarget.Parent && isAncestor(other.owner, candidate.owner))
+                  )
+                ) match
+                  case Vector(value) => Some(value)
+                  case _             => None
+            winner.getOrElse(
+              break(
+                Left(
+                  WholeFilePlanningFailure.ConflictingSourceAtomOwners(
+                    atom.id,
+                    atom.start,
+                    atom.end,
+                    conflicts.map(leaf => leaf.owner -> leaf.terminalId)
+                  )
                 )
               )
             )
