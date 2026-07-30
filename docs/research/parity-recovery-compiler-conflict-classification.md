@@ -751,10 +751,8 @@ compatibility list.
 
 ## Relationship to the PSI architecture
 
-The architectural pivot separates deterministic syntax from asynchronous semantics
-([issue history](https://github.com/hmemcpy/metallurgy/issues/84)). Its successor map requires compiler-valid copied
-tests to pass unchanged, invalid-edit safety, and separately reported exact-dotc conflicts
-([map](https://github.com/hmemcpy/metallurgy/issues/85)).
+Deterministic syntax remains separate from asynchronous semantics. Compiler-valid copied tests pass unchanged;
+invalid-edit safety and exact-dotc conflicts are reported separately.
 
 Classification does not choose production behavior:
 

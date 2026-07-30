@@ -923,6 +923,11 @@ final class Scala3PsiProductionCatalogTest:
           TerminalLeafTarget.Parent,
           OccurrenceCardinality.Repeated(-1, None)
         )
+      ) :+ TerminalDeclaration(
+        "gap",
+        TerminalIntervalSelector.ChildGap("duplicate", "absent"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Optional
       ),
       layouts = Vector.empty,
       recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector.empty),
@@ -949,7 +954,8 @@ final class Scala3PsiProductionCatalogTest:
       CatalogValidationError.InvalidTerminalCardinality(root.id, "duplicate"),
       CatalogValidationError.DuplicateAccessorObligation(root.id, "accessor"),
       CatalogValidationError.EmptyLayoutAlternatives(root.id),
-      CatalogValidationError.EmptyRecoveryAlternatives(root.id)
+      CatalogValidationError.EmptyRecoveryAlternatives(root.id),
+      CatalogValidationError.UnknownTerminalChildRole(root.id, "absent")
     ).foreach(error => assertTrue(error.toString, errors.contains(error)))
     assertFalse(errors.contains(CatalogValidationError.UnknownChildProductionId(root.id, child.id)))
 
@@ -994,6 +1000,26 @@ final class Scala3PsiProductionCatalogTest:
       errors(LocalOutputCompositeTemplate(Vector(self.copy(range = unsupported)), Map("child" -> Some("self"))))
         .contains(
           CatalogValidationError.InvalidOutputBoundary(root.id, "self", invalidBoundary, "negative boundary advance")
+        )
+    )
+    val emptyDelimiters   = OutputBoundary.EvidenceBoundaryAfterChild(
+      "child",
+      ChildOccurrenceSelector.First,
+      "child",
+      ChildOccurrenceSelector.First,
+      Vector.empty,
+      PositionProvenancePolicy.SourceDerivedOnly
+    )
+    val delimiterRange    = OutputRangeDeclaration.BoundaryDerived(emptyDelimiters, OutputBoundary.ProductionEnd())
+    assertTrue(
+      errors(LocalOutputCompositeTemplate(Vector(self.copy(range = delimiterRange)), Map("child" -> Some("self"))))
+        .contains(
+          CatalogValidationError.InvalidOutputBoundary(
+            root.id,
+            "self",
+            emptyDelimiters,
+            "expected delimiters must be nonempty"
+          )
         )
     )
     val siblingRoots      = Vector(self.copy(id = "left"), self.copy(id = "right"))
@@ -1272,6 +1298,41 @@ final class Scala3PsiProductionCatalogTest:
     ).left.toOption.get
     assertTrue(failure.isInstanceOf[WholeFilePlanningFailure.OutputBoundaryResolutionFailed])
 
+    val missingDelimiterBoundary = OutputBoundary.EvidenceBoundaryAfterChild(
+      "child",
+      ChildOccurrenceSelector.First,
+      "child",
+      ChildOccurrenceSelector.First,
+      Vector("{"),
+      PositionProvenancePolicy.SourceDerivedOnly
+    )
+    val missingDelimiter         = base.copy(productions = base.productions.map:
+      case production if production.id == root.id =>
+        production.copy(outputTemplate =
+          Some(
+            root.effectiveOutputTemplate.copy(composites =
+              Vector(
+                output.copy(
+                  range = OutputRangeDeclaration.BoundaryDerived(
+                    missingDelimiterBoundary,
+                    OutputBoundary.ProductionEnd()
+                  )
+                )
+              )
+            )
+          )
+        )
+      case production                             => production
+    )
+    val delimiterFailure         = planned(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      missingDelimiter,
+      aggregate,
+      surfaces(missingDelimiter)
+    ).left.toOption.get
+    assertTrue(delimiterFailure.isInstanceOf[WholeFilePlanningFailure.OutputBoundaryResolutionFailed])
+
   @Test def wholeFilePlanningFailsClosedForOwnershipAndChildContractGaps(): Unit =
     val value                                                                  = snapshot("/one", 1, Vector.empty)
     val compiler                                                               = inventory(value)
@@ -1417,14 +1478,40 @@ final class Scala3PsiProductionCatalogTest:
     )
     assertTrue(failure(layout).isInstanceOf[WholeFilePlanningFailure.UnsupportedLayout])
 
-    val grouped = base.copy(productions =
+    val grouped     = base.copy(productions =
       base.productions.map(p =>
         if p.id == root.id then
           p.copy(children = p.children.map(_.copy(cardinality = ChildCardinality.Grouped(1, None))))
         else p
       )
     )
-    assertTrue(failure(grouped).isInstanceOf[WholeFilePlanningFailure.UnsupportedChildCardinality])
+    val groupedPlan = planned(value, evidence, grouped, aggregate, surfaces(grouped))
+      .fold(error => throw new AssertionError(error.toString), identity)
+    assertEquals(Vector("Root", "Child"), groupedPlan.composites.map(_.productionId))
+
+    val groupedMinimum = grouped.copy(productions =
+      grouped.productions.map(p =>
+        if p.id == root.id then
+          p.copy(children = p.children.map(_.copy(cardinality = ChildCardinality.Grouped(2, None))))
+        else p
+      )
+    )
+    assertTrue(failure(groupedMinimum).isInstanceOf[WholeFilePlanningFailure.ChildCardinalityMismatch])
+
+    val groupedMultipleRoots        = grouped.copy(productions = grouped.productions.map: p =>
+      if p.id == child.id then
+        val template = p.effectiveOutputTemplate
+        p.copy(outputTemplate =
+          Some(template.copy(composites = template.composites :+ template.composites.head.copy(id = "second")))
+        )
+      else p)
+    val groupedMultipleRootsFailure = failure(groupedMultipleRoots)
+    assertEquals(
+      WholeFilePlanningFailure.InvalidCatalog(
+        Vector(CatalogValidationError.OverlappingCompilerPositionSiblings("Child", None, "second", "self"))
+      ),
+      groupedMultipleRootsFailure
+    )
 
     val unsupported = base.copy(productions =
       base.productions.map(p =>

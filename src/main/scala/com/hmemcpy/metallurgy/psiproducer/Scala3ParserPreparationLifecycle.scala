@@ -68,6 +68,7 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
       com.intellij.openapi.project.ModuleListener.TOPIC,
       new com.intellij.openapi.project.ModuleListener:
         override def beforeModuleRemoved(project: Project, module: Module): Unit =
+          Scala3SyntaxCapabilityService.get(project).discard(module)
           retire(module).foreach(_.bridge.close())
           closePending(module)
     )
@@ -96,6 +97,7 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           ParserPreparationState.Preparing(epoch)
       entries.put(module, ParserPreparationEntry(state, None))
       epoch -> previous
+    Scala3SyntaxCapabilityService.get(project).discard(module)
     previous match
       case Some(ParserPreparationEntry(ParserPreparationState.Ready(_), retired))  =>
         queuePendingTransition(module, retired)
@@ -111,6 +113,7 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
     val close   = trackedCloseOnce(module, retired)
     try
       val files = fileCollector.filesFor(module)
+      Scala3SyntaxCapabilityService.get(project).discard(files)
       activation.queue(
         files,
         () => stateFor(module) == ParserPreparationState.Inactive,
@@ -280,12 +283,14 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
                   catalog   <- catalogPreparer.prepare(project)
                   installed <- ScalaPsiSurfaceInventory.installed()
                   bindings  <- NativePsiElementBindings.probe(project)
+                  bound     <- bindings.bind(catalog)
+                  surfaces   = installed.withCatalogCapabilities(catalog)
                 yield PreparedScala3Parser(
                   bridge,
                   catalog,
                   ScalacFlagsService.get(project).presentationCompilerOptions(module).toVector,
-                  installed.withCatalogCapabilities(catalog),
-                  bindings
+                  surfaces.copy(rows = surfaces.rows ++ bound.surfaceRows),
+                  bound
                 )
               catch
                 case control: ControlFlowException =>

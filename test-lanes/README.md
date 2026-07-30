@@ -4,8 +4,9 @@ Each `<lane>.txt` file is a bytewise-sorted, duplicate-free list of fully qualif
 `<lane>.invocations.txt` companion lists every expected `class<TAB>test-name` identity. Selection is explicit: wildcards
 and runtime discovery never decide which suites or test methods a lane intends to execute.
 
-`ci.txt` is the representative ordinary check. `compatibility.txt` is the current locally owned Scala 3 compatibility
-area. The pre-migration comparison is split by ownership boundary:
+`ci.txt` is the representative ordinary check for the currently admitted grammar and backend surface.
+`compatibility.txt` is the complete locally owned Scala 3 compatibility area, including tests that remain red while
+their syntax roles are unsupported. The broader retained evidence is split by ownership boundary:
 
 - `baseline-syntax-psi.txt` covers parser/AST shape, public Scala PSI accessors, stubs, indices, closed-file loading,
   navigation, copies, reload, project close/reopen, and smart pointers.

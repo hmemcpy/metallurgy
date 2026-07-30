@@ -60,8 +60,6 @@
         language="Scala"
         implementationClass="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendDocumentationProvider"
         order="before ScalaDocumentationProvider"/>
-    <daemon.highlightInfoFilter
-        implementation="com.hmemcpy.metallurgy.feature.diagnostics.PcHighlightInfoFilter"/>
     <highlightingPassFactory
         implementation="com.hmemcpy.metallurgy.compilerbackend.CompilerBackendPassFactory"/>
     <lang.parserDefinition

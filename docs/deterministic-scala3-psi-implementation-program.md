@@ -31,6 +31,12 @@ registered, but each active ownership boundary changes atomically and deletes th
    facilities.
 10. IntelliJ's ordinary build and compile-server path is the authoritative producer for the end-to-end best-effort
     TASTy highlighting gate. Direct dotc invocations are lower-level controls.
+11. Metallurgy owns stable neutral grammar roles and PSI output-role contracts. Compiler production names and host
+    implementation classes are inventory evidence, not durable role identities.
+12. Each output role independently binds to a capability-proven native implementation or a Metallurgy compatibility
+    implementation. Native and compatible roles may coexist in one file without observable contract differences.
+13. A newly published compiler with covered inventories and semantic contracts admits without production-code
+    changes. Novel drift identifies bridge, role, or compatibility work and never selects behavior by version.
 
 ## Dependency graph
 
@@ -39,8 +45,8 @@ registered, but each active ownership boundary changes atomically and deletes th
 | Contract replacement | Confirmed implementation program | One non-contradictory architecture |
 | Deterministic test execution | Contract replacement | Trustworthy test evidence |
 | Owned test foundation | Deterministic test execution | Verbatim upstream-oracle verification |
-| Pre-migration baselines | Owned test foundation | Regression gates for every replacement |
-| Exact parser bridge | Pre-migration baselines | Compiler-owned syntax evidence |
+| Executable product baselines | Owned test foundation | Regression gates for every replacement |
+| Exact parser bridge | Executable product baselines | Compiler-owned syntax evidence |
 | Neutral parser lifecycle | Exact parser bridge | Safe synchronous activation |
 | Source evidence and catalog | Exact parser bridge | Exhaustive whole-file PSI planning |
 | PSI, stub, and index production | Source evidence and catalog | Active syntax replacement |
@@ -53,33 +59,47 @@ registered, but each active ownership boundary changes atomically and deletes th
 No semantic cutover depends on a partial or asynchronously replaced syntax tree. The existing best-effort TASTy tests
 remain active while syntax changes, but their final editor guarantee depends on the compiler-exclusive semantic facade.
 
+## Current implementation inventory
+
+The active syntax path is `Scala3DotcFileElementType` → `Scala3ParserBridge` →
+`ProvisionalSourceEvidencePlanner` → `PreparedProductionCatalog` → `WholeFileProductionPlanner` →
+`PlannedScala3Lexer` and generic `DotcPsiProducer`. Preparing files use the neutral language; ready PSI construction
+never invokes the bundled Scala parser or lexer. Editor coloring uses the installed Scala 3 lexical highlighter and
+does not construct PSI. `Scala3SyntaxCapabilityService` retains exact file-scoped failure stage, detail, source digest,
+parser preparation epoch, and compiler identity when a required production is unavailable.
+
+The reviewed catalog currently owns file/package roots and the supported import family: one-level selected paths, direct and
+braced selectors, aliases, wildcard, unbounded `given`, and bounded `given` with simple identifier-headed or recursive
+applied types, plus ordinary/operator names, local output-composite templates, stable output roles, exact physical
+ownership, accessors, navigation, stubs, serializers, and the aliased import index. Qualified, wildcard-bound, and
+infix bounded-given types and deeper selected import paths remain part of their connected grammar cuts and fail closed.
+Native bindings execute their public PSI and persistence contracts before activation. All other grammar families
+remain unavailable and therefore produce deterministic neutral file-scoped PSI.
+
+The active semantic foundation consists of exact artifact/session management, immutable versioned snapshots,
+compiler-type conversion, symbol occurrence mapping, completion integration, diagnostics, and best-effort TASTy
+producer/consumer controls. Those components remain work in progress until every active Scala semantic role has an
+executable no-fallback cutover. They are not syntax inputs.
+
+Deterministic lane execution, copied-test provenance/invocation accounting, parser vertical slices, physical PSI
+lifecycle tests, two-module best-effort controls, and IntelliJ lifecycle automation are active infrastructure. Full
+grammar coverage, complete copied-suite execution, source-wide representative-project IDE lanes, moving compiler/host
+matrices, and resource budgets remain graduation requirements.
+
 ## Change sequence
 
 Each numbered change is an independently reviewable commit unless its text explicitly defines a short series. A
 grammar-family or semantic-role series may contain several commits, but every commit closes a connected contract and
 leaves its direct tests passing.
 
-### 1. Replace the architecture contract
+### 1. Maintain one architecture contract
 
-Rewrite `docs/scala3-compiler-backend.md` and the package instructions to describe only the target architecture.
+Keep `docs/scala3-compiler-backend.md` and package instructions aligned with the synchronous parser bridge, neutral
+preparation lifecycle, source evidence plan, production catalog, compatibility PSI boundary, compiler-exclusive
+semantic facade, role-sized cutovers, owned-test integrity rules, and build-produced best-effort TASTy editor
+guarantee.
 
-Remove directions for:
-
-- typed-tree or regional syntax production;
-- parser-error-triggered repair;
-- asynchronous syntax installation and file reload;
-- bundled-parser or bundled-inference fallback in active modules;
-- parser, stub, or index work being out of scope;
-- building the IntelliJ Scala plugin as a verification prerequisite;
-- side-by-side compatibility rollout;
-- obsolete terminology and historical narration.
-
-Add the synchronous parser bridge, neutral preparation lifecycle, source evidence plan, production catalog,
-compatibility PSI boundary, compiler-exclusive semantic facade, role-sized cutovers, owned-test integrity rules, and
-the build-produced best-effort TASTy editor guarantee.
-
-**Gate:** documentation contains one architecture and no instruction points implementation back to the superseded
-pipeline.
+**Gate:** documentation contains one architecture and every implementation instruction follows it.
 
 ### 2. Make test execution deterministic
 
@@ -113,7 +133,7 @@ role they exercise.
 
 **Gate:** mutating one snippet, assertion, helper contract, or expected value makes the integrity check fail.
 
-### 4. Record pre-migration product baselines
+### 4. Record executable product baselines
 
 Convert the measured current state into reproducible test lanes for:
 
@@ -145,6 +165,9 @@ classloader boundary:
 - parser diagnostics;
 - capability results;
 - exact artifact coordinates and loader identity.
+
+The whole-file plan lowers physical ownership to an immutable lexer tape before constructing `PsiBuilder`. Ready files
+must pass that tape explicitly; a null lexer or registered Scala lexer silently reintroduces bundled syntax ownership.
 
 Published interfaces come first, typed structural protocols second, and isolated raw reflection last. Raw reflection
 is limited to exact-loader construction and operations that cannot be expressed structurally.
@@ -209,16 +232,18 @@ layout-sensitive fixtures are deterministic.
 ### 10. Generate inventories and compile the production catalog
 
 Generate one inventory of exact compiler parser productions and fields and one inventory of Scala PSI element types,
-implementations, public accessors, stub element types, serializers, and indices. Join them through a reviewed typed
-catalog.
+implementations, public accessors, stub element types, serializers, and indices. Normalize them through Metallurgy-owned
+grammar roles and stable PSI output roles, then join them through a reviewed typed catalog. Parser products and output
+composites may lower one-to-many or many-to-one.
 
 Each catalog entry declares:
 
 - compiler production and capability shape;
+- neutral grammar role and explicit local output-role forest;
 - source and token ownership;
 - required, optional, repeated, and recovered children;
 - ordering and parent contract;
-- native target probe or compatibility target;
+- per-role native target probe or compatibility binding;
 - every public accessor the resulting `Sc*` element must satisfy;
 - stub fields, serializer, indices, and navigation identity;
 - compiler-valid, invalid-edit, and unknown-production behavior.
@@ -226,8 +251,8 @@ Each catalog entry declares:
 Generate a closed whole-file production plan before touching `PsiBuilder`. The validator rejects uncovered compiler
 fields, unreachable PSI requirements, overlapping ownership, or incomplete stub/index accounting.
 
-**Gate:** the compiler and Scala PSI inventories are reproducible, and the catalog validator fails closed for every
-unaccounted production.
+**Gate:** the compiler and Scala PSI inventories are reproducible, stable output roles are distinct from native
+implementation identities, and the catalog validator fails closed for every unaccounted production or unbound role.
 
 ### 11. Add PSI and stub factories
 
@@ -286,25 +311,11 @@ Run target-local and target-neutral checks for:
 
 ### 14. Cut syntax over atomically
 
-Register the ready parser and neutral lifecycle in one commit. Delete the old syntax mechanism in that same commit:
+Register the ready parser and neutral lifecycle as the only active syntax route. Keep language/module detection,
+compiler artifact boundaries, parser definition, file element, view provider, and substitution registrations aligned
+with synchronous whole-file production rather than layering a second route beside them.
 
-- `DotcTreeSource`;
-- `DotcPsiProducer`;
-- `ProducerParseState`;
-- `ProducerParseScheduler`;
-- `Scala3DotcPendingLeaf`;
-- production `BundledScala3Parse`;
-- the old `Scala3DotcFileElementType` implementation;
-- `PcSessionManager.installAndReload`;
-- edit resets and untyped-tree publication;
-- `preCompileAndInstall` and other mechanism-specific test helpers;
-- tests that exist only to assert the superseded lifecycle.
-
-Retain language/module detection and compiler artifact boundaries where their contracts remain valid. Replace parser
-definition, file element, view provider, and substitution registrations rather than layering another route beside
-them.
-
-**Gate:** no production reference to the deleted mechanism remains; active ready files have one parser path; all
+**Gate:** active ready files have one parser path; all
 syntax, PSI, stub, index, recovery, and build-produced best-effort TASTy baselines pass.
 
 ### 15. Build the structured semantic facade
@@ -386,12 +397,8 @@ Delete in the same commit:
 
 - `PcDiagnosticSetCache`;
 - `PcHighlightRenderer`;
-- `PcHighlightInfoFilter` and its registration;
 - duplicate diagnostic pass wiring;
 - remaining bundled semantic diagnostic routes for active Scala 3 files.
-
-The filter currently accepts every highlight; its deletion removes unused plumbing rather than changing visibility.
-No replacement filter is introduced.
 
 **Gate:** valid code has no error or warning highlight, invalid code exposes dotc findings, IDE-only inspections retain
 their classified behavior, and every visible finding has exactly one owner.
@@ -413,7 +420,7 @@ Every environment exposing both capabilities must prove:
 **Gate:** the same editor assertions pass in focused fixtures and the selected Cats Effect and FS2 multi-module
 break-repair scenarios.
 
-### 22. Run final graduation
+### 22. Graduate rolling compiler, host, and project admission
 
 Completion requires all of the following:
 
@@ -421,12 +428,18 @@ Completion requires all of the following:
 - independently proven compiler conflicts execute and report separately as non-passes;
 - invalid-state recovery and editor-operation lanes pass;
 - catalog, accessor, stub, index, and runtime-invocation accounting are complete;
-- every published final Scala 3 artifact passes the baseline parser and semantic capability contract;
+- every compiler artifact in the declared rolling support matrix passes the baseline parser and semantic capability
+  contract;
+- newly published artifacts with covered inventories and contracts admit without production-code changes;
+- deliberate parser, semantic, and host drift fails closed and identifies the missing bridge, grammar role, output
+  role, semantic role, or compatibility binding;
 - representative pull-request Scala versions and stable/EAP/nightly hosts pass their applicable roles;
 - all pinned real-project offline slices pass;
 - exhaustive source-wide and live sbt/BSP real-project lanes pass;
 - Cats Effect and FS2 pass build-produced best-effort TASTy break-repair;
 - resource budgets, clean restart, packaging, formatting, and fatal-warning checks pass.
+- preparing, unsupported syntax/output roles, unavailable or stale semantics, and asymmetric best-effort capabilities
+  expose deterministic project/file capability UX.
 
 The IntelliJ Scala plugin and Scala compiler repositories are never built by these lanes.
 

@@ -265,8 +265,10 @@ private[metallurgy] final class OracleExecutor(fixture: JavaCodeInsightTestFixtu
       new MetallurgyStatusListener:
         override def statusChanged(status: MetallurgyStatus): Unit =
           status match
-            case MetallurgyStatus.Resolving(_) | MetallurgyStatus.Enabled => ()
-            case terminal                                                 =>
+            case MetallurgyStatus.Resolving(_) | MetallurgyStatus.Enabled |
+                MetallurgyStatus.SyntaxUnavailable(_, _, _, _) | MetallurgyStatus.SyntaxAvailable(_) =>
+              ()
+            case terminal =>
               val _ = completion.complete(terminal)
     )
 

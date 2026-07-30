@@ -198,13 +198,18 @@ from and checked against two inventories:
 - exact compiler parser productions and named fields;
 - installed Scala PSI element types, public `Sc*` accessors, implementations, stubs, serializers, and indices.
 
+The catalog owns stable neutral grammar roles and PSI output roles. Compiler production names and host implementation
+classes are inventory evidence, not durable role identities. Parser products and output composites do not have to map
+one-to-one: one parser product may lower to several output roles, and several products may supply one output role.
+
 Each catalog entry declares:
 
 - the compiler production and accepted capability shape;
+- the neutral grammar role and one or more stable output roles;
 - source, token, trivia, delimiter, and layout ownership;
 - required, optional, repeated, and recovered fields;
 - child ordering and parent requirements;
-- the native PSI target probe or compatibility target;
+- each output role's native PSI probe or compatibility binding;
 - every public Scala PSI accessor the result must satisfy;
 - stub fields, serializer identity, indices, and navigation identity;
 - behavior for compiler-valid source, invalid edits, and an unknown production.
@@ -220,13 +225,16 @@ rejects:
 - an incomplete stub or index contract;
 - an unbalanced or order-dependent builder plan.
 
-A newly published Scala syntax feature enters through capability and inventory discovery followed by a complete catalog
-entry. Parser-error messages, version checks, and isolated construct patches are not grammar mechanisms.
+A newly published compiler whose discovered inventory is already covered requires no grammar production-code change.
+Novel syntax enters through capability and inventory discovery followed by bridge normalization, a grammar-role or
+output-role entry, or a compatibility binding as identified by the drift. Parser-error messages, version checks, and
+isolated construct patches are not grammar mechanisms.
 
 ### 3.6 Native and compatible PSI
 
-The installed Scala plugin remains the public PSI vocabulary. Metallurgy prefers its element types and implementations
-when executable probes demonstrate the complete catalog contract.
+The installed Scala plugin remains the public PSI vocabulary and an optional implementation provider. Metallurgy owns
+the stable output-role contract and prefers the plugin's element types and implementations when executable probes
+demonstrate that complete contract.
 
 A probe verifies observable behavior:
 
@@ -238,17 +246,24 @@ A probe verifies observable behavior:
 - stub construction and serialization;
 - index and navigation identity.
 
-When no native production satisfies the contract, `ScalaPluginSemanticBridge` owns a source-compatible PSI and stub
-implementation. Consumers receive ordinary public IntelliJ and Scala PSI interfaces and cannot observe how a target
-was supplied.
+Each output role binds independently. When no native production satisfies its contract,
+`ScalaPluginSemanticBridge` owns a source-compatible PSI and stub implementation. Native and compatible roles may
+coexist in one file. Consumers receive ordinary public IntelliJ and Scala PSI interfaces and cannot observe how a
+target was supplied.
 
 Raw Scala-plugin implementation access is confined to this bridge. Production consumers do not inspect plugin versions
-or implementation class names.
+or implementation class names. Concrete implementation identities remain capability evidence behind the role binding;
+they never become grammar dispatch keys.
 
 ### 3.7 AST, stubs, and indices
 
 The producer emits a complete balanced AST. Composite PSI uses balanced `PsiBuilder.Marker.done(elementType)` calls;
 visual resemblance from a leaf or collapsed node is insufficient.
+
+The completed whole-file plan also supplies the immutable lexer tape used by `PsiBuilder`. Exact physical ownership
+and catalogued terminal targets determine token boundaries and native token identities before the builder exists. The
+registered dialect parser definition has only a closed neutral lexer/parser for platform entry points that cannot
+carry a completed plan; ready parsing never instantiates the bundled Scala lexer or parser.
 
 `doParseContents` returns `builder.getTreeBuilt.getFirstChildNode`, matching
 `ILazyParseableElementType.doParseContents`. Returning the wrapper root nests an extra file node and hides top-level
@@ -538,11 +553,8 @@ Inactive modules remain exact pass-through behavior.
 ### 8.4 Ownership transitions
 
 New syntax and semantic components may be exercised through direct tests while they remain unregistered. Active
-runtime ownership never has parallel old and new routes.
-
-Syntax changes in one atomic boundary: register the exact-parser/catalog path and neutral lifecycle while deleting the
-asynchronous syntax handoff, placeholder, bundled-parser decision path, publication hooks, and mechanism-specific
-helpers and tests in the same change.
+runtime ownership has one syntax route: exact parser evidence is lowered through the reviewed catalog into a closed
+output-role forest. The neutral lifecycle represents modules whose required parser capabilities are not ready.
 
 Semantic ownership changes at complete IntelliJ role boundaries:
 
@@ -552,9 +564,8 @@ Semantic ownership changes at complete IntelliJ role boundaries:
 4. documentation, navigation, and usages;
 5. diagnostics and semantic inspections.
 
-Each role cutover activates its compiler-facade route and deletes the implementation, side table, adapter, extension
-registration, and tests that exist only for the replaced route in the same change. Disabled remnants and compatibility
-switches are not retained. Diagnostics change last because their semantic inspections depend on the preceding roles.
+Each semantic role has one compiler-facade route and no inactive alternative implementation. Diagnostics change last
+because their semantic inspections depend on the preceding roles.
 
 ## 9. Verification contract
 
@@ -608,13 +619,17 @@ Each active role proves:
 
 Ordinary checks use the baseline host and a representative exact-compiler selection. Scheduled checks cover:
 
-- every published final Scala 3 artifact;
+- every compiler artifact in the declared rolling support matrix;
+- newly published artifacts whose covered inventories must admit without production-code changes;
 - representative pull-request Scala versions;
 - stable, EAP, and nightly IntelliJ/Scala-plugin hosts;
 - transitions where a production moves from compatibility PSI to native PSI;
 - every capable best-effort TASTy cell.
 
-Drift appears as capability and contract evidence, never as a production version switch.
+Each cell records exact artifacts and options, parser and semantic capabilities, inventory coverage, output-role
+bindings, and retained lane evidence. Drift names the missing bridge normalization, grammar role, output role, semantic
+role, or compatibility binding. It never becomes a production version switch. An old Metallurgy binary does not claim
+support for arbitrary unseen future grammar.
 
 ### 9.5 Real projects
 
@@ -635,7 +650,8 @@ The architecture is implemented only when:
 - active semantic roles are compiler-exclusive;
 - valid Scala 3 has no false error or warning highlight;
 - capable best-effort TASTy environments pass build-produced cross-module break-consume-repair;
-- published-version, moving-host, and real-project lanes pass;
+- rolling compiler-admission, moving-host, and real-project lanes pass;
+- unknown required syntax, output roles, and semantic capabilities expose deterministic project/file capability UX;
 - formatting, fatal warnings, packaging, resource, and clean-restart gates pass.
 
 A partial semantic overlay, a hidden diagnostic, a retained active-module fallback, or an unaccounted copied test does

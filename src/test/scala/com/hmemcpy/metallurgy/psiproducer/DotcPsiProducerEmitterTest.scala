@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.hmemcpy.metallurgy.pc.*
 import com.intellij.lang.PsiBuilder
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
 
@@ -13,6 +14,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
 
   private val packagingSurface =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
+  private val packagingRole    = PsiOutputRoleId.PackageStatement.value
 
   override def getTestDataPath: String = "src/test/testdata"
 
@@ -31,12 +33,29 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
         _.copy(target = TerminalLeafTarget.Token(packagingSurface))
       )
     )
-    Vector(unsupportedField, unsupportedToken).foreach: plan =>
+    val unknownOwner     = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 999L, None), "missing")
+    val malformedStub    = base.copy(stubAssertions =
+      Vector(
+        PlannedStubAssertion(unknownOwner, "stub", "serializer", Vector("index"), "navigation")
+      )
+    )
+    Vector(unsupportedField, unsupportedToken, malformedStub).foreach: plan =>
       val builder = recordingEmitterBuilder(source)
       assertFalse(
         DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, nativeBindings)
       )
       assertEquals(0, builder.getCurrentOffset)
+
+    val unboundRole = base.copy(targetAssertions =
+      base.targetAssertions.map(
+        _.copy(surfaceId = "scala.output.unbound")
+      )
+    )
+    val roleBuilder = recordingEmitterBuilder(source)
+    assertFalse(
+      DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, roleBuilder, unboundRole, nativeBindings)
+    )
+    assertEquals(0, roleBuilder.getCurrentOffset)
 
     val widerSource  = "xy"
     val wider        = emitterPlan(widerSource, 1)
@@ -59,6 +78,219 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       builder
     )
     assertTrue(builder.eof())
+
+  def testRejectsTerminalTextMismatchBeforeOpeningMarkers(): Unit =
+    val source    = "x"
+    val base      = emitterPlan(source, 1)
+    val origin    = base.composites.head.instance.origin
+    val terminal  = "wildcard"
+    val malformed = base.copy(
+      physicalLeafOwnership = base.physicalLeafOwnership.map(
+        _.copy(
+          sourceOwner = origin,
+          terminalId = terminal,
+          target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("*"))
+        )
+      ),
+      targetAssertions = base.targetAssertions :+ PlannedTargetAssertion(
+        TargetAssertionOwner.Terminal(origin, terminal),
+        NativePsiElementBindings.ImportWildcardTokenSurface,
+        TargetAssertionKind.Token
+      )
+    )
+    val builder   = recordingEmitterBuilder(source)
+    assertFalse(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, malformed, nativeBindings))
+    assertEquals(0, builder.getCurrentOffset)
+    assertEquals(
+      Left("terminal token text differs from plan"),
+      DotcPsiProducer.parseResult(
+        Scala3DotcParserDefinition.FileNodeType,
+        recordingEmitterBuilder(source),
+        malformed,
+        nativeBindings
+      )
+    )
+
+    val mismatchedSurface = malformed.copy(
+      physicalLeafOwnership = malformed.physicalLeafOwnership.map(
+        _.copy(
+          target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("x"))
+        )
+      ),
+      targetAssertions = malformed.targetAssertions.map:
+        case assertion @ PlannedTargetAssertion(TargetAssertionOwner.Terminal(_, _), _, _) =>
+          assertion.copy(surfaceId = NativePsiElementBindings.ImportAliasAsTokenSurface)
+        case assertion                                                                     => assertion
+    )
+    val surfaceBuilder    = recordingEmitterBuilder(source)
+    assertFalse(
+      DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, surfaceBuilder, mismatchedSurface, nativeBindings)
+    )
+    assertEquals(0, surfaceBuilder.getCurrentOffset)
+
+  def testOneTerminalTargetContractBindsEveryValidatedOccurrence(): Unit =
+    val source   = "**"
+    val base     = emitterPlan(source, 1)
+    val origin   = base.composites.head.instance.origin
+    val terminal = "wildcards"
+    val target   = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("*"))
+    val plan     = base.copy(
+      physicalLeafOwnership = Vector(
+        PlannedPhysicalLeaf(1L, 0, 1, PhysicalLeafOwner.FileRoot, origin, terminal, target),
+        PlannedPhysicalLeaf(2L, 1, 2, PhysicalLeafOwner.FileRoot, origin, terminal, target)
+      ),
+      targetAssertions = base.targetAssertions :+ PlannedTargetAssertion(
+        TargetAssertionOwner.Terminal(origin, terminal),
+        NativePsiElementBindings.ImportWildcardTokenSurface,
+        TargetAssertionKind.Token
+      )
+    )
+    assertTrue(PlannedScala3Lexer.compile(source, plan, nativeBindings).isRight)
+
+    val duplicatedContract = plan.copy(targetAssertions = plan.targetAssertions :+ plan.targetAssertions.last)
+    val builder            = recordingEmitterBuilder(source)
+    assertFalse(
+      DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, duplicatedContract, nativeBindings)
+    )
+    assertEquals(0, builder.getCurrentOffset)
+
+  def testNativeBindingsRejectAnOutputRoleBoundToAnotherHostSurface(): Unit =
+    val catalog = Scala3PsiProductionCatalog(
+      Scala3PsiProductionCatalog.Reviewed.productions.map:
+        case production if production.id == "file-package" =>
+          production.copy(outputRoleId = Some(PsiOutputRoleId.ImportSelector))
+        case production                                    => production
+    )
+    assertTrue(nativeBindings.validate(catalog).isLeft)
+
+  def testRejectsMissingOrUnexpectedBoundOutputObligationsBeforeOpeningMarkers(): Unit =
+    val source      = "x"
+    val base        = emitterPlan(source, 1)
+    val owner       = base.composites.head.instance
+    val accessor    = AccessorObligation("accessor", required = true)
+    val persistence = PersistenceObligations.Required("stub", "serializer", Vector("index"), "stub-navigation")
+    val contract    =
+      NativeOutputContract(packagingSurface, Vector(accessor), persistence, Some(NavigationObligation.Self))
+    val bindings    = nativeBindings.copy(outputContracts = Map(PsiOutputRoleId.PackageStatement -> contract))
+    val complete    = base.copy(
+      accessorAssertions = Vector(PlannedAccessorAssertion(owner, accessor.surfaceId, accessor.required)),
+      stubAssertions = Vector(PlannedStubAssertion(owner, "stub", "serializer", Vector("index"), "stub-navigation")),
+      navigationAssertions = Vector(PlannedNavigationAssertion(owner, NavigationObligation.Self))
+    )
+    assertTrue(
+      DotcPsiProducer.parse(
+        Scala3DotcParserDefinition.FileNodeType,
+        recordingEmitterBuilder(source),
+        complete,
+        bindings
+      )
+    )
+    Vector(
+      complete.copy(accessorAssertions = Vector.empty),
+      complete.copy(accessorAssertions = complete.accessorAssertions :+ PlannedAccessorAssertion(owner, "extra", true)),
+      complete.copy(stubAssertions = Vector.empty),
+      complete.copy(stubAssertions = complete.stubAssertions.map(_.copy(serializerSurfaceId = "wrong"))),
+      complete.copy(navigationAssertions = Vector.empty)
+    ).foreach: malformed =>
+      val builder = recordingEmitterBuilder(source)
+      assertFalse(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, malformed, bindings))
+      assertEquals(0, builder.getCurrentOffset)
+
+  def testPlanBackedLexerOwnsExactSourceWithoutBundledLexer(): Unit =
+    val source     = "import a.b.{c /* => */ => d}\n"
+    val arrowStart = source.lastIndexOf("=>")
+    val base       = emitterPlan(source, 1)
+    val origin     = base.composites.head.instance.origin
+    val plan       = base.copy(physicalLeafOwnership =
+      Vector(
+        PlannedPhysicalLeaf(1L, 0, arrowStart, PhysicalLeafOwner.FileRoot, origin, "source", TerminalLeafTarget.Parent),
+        PlannedPhysicalLeaf(
+          2L,
+          arrowStart,
+          arrowStart + 2,
+          PhysicalLeafOwner.FileRoot,
+          origin,
+          "alias",
+          TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasArrowTokenSurface, Some("=>"))
+        ),
+        PlannedPhysicalLeaf(
+          3L,
+          arrowStart + 2,
+          source.length,
+          PhysicalLeafOwner.FileRoot,
+          origin,
+          "source",
+          TerminalLeafTarget.Parent
+        )
+      )
+    )
+    val lexer      = PlannedScala3Lexer.compile(source, plan, nativeBindings).toOption.get
+    lexer.start(source, 0, source.length, 0)
+    val observed   = Vector.newBuilder[(String, com.intellij.psi.tree.IElementType)]
+    while lexer.getTokenType != null do
+      observed += source.substring(lexer.getTokenStart, lexer.getTokenEnd) -> lexer.getTokenType
+      lexer.advance()
+    val tokens     = observed.result()
+    assertEquals(source, tokens.map(_._1).mkString)
+    assertEquals(ScalaTokenTypes.kIMPORT, tokens.head._2)
+    assertTrue(
+      tokens.contains("=>" -> nativeBindings.elementTypes(NativePsiElementBindings.ImportAliasArrowTokenSurface))
+    )
+    assertTrue(new Scala3DotcParserDefinition().createLexer(getProject).isInstanceOf[PlannedScala3Lexer])
+
+  def testPlanBackedLexerRejectsMalformedTokenTargetsBeforeBuilderConstruction(): Unit =
+    val source        = "x"
+    val base          = emitterPlan(source, 1)
+    val leaf          = base.physicalLeafOwnership.head.copy(
+      target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface)
+    )
+    val invalidRanges = Vector(leaf.copy(end = 0), leaf.copy(start = -1), leaf.copy(end = 2))
+    assertEquals(
+      Vector(
+        LexerPlanFailure.InvalidTargetRange(0, 0, 1),
+        LexerPlanFailure.InvalidTargetRange(-1, 1, 1),
+        LexerPlanFailure.InvalidTargetRange(0, 2, 1)
+      ),
+      invalidRanges.map(value =>
+        PlannedScala3Lexer
+          .compile(source, base.copy(physicalLeafOwnership = Vector(value)), nativeBindings)
+          .left
+          .toOption
+          .get
+      )
+    )
+    assertEquals(
+      Some(LexerPlanFailure.DuplicateTargetStart(0)),
+      PlannedScala3Lexer
+        .compile(source, base.copy(physicalLeafOwnership = Vector(leaf, leaf.copy(atomId = 2L))), nativeBindings)
+        .left
+        .toOption
+    )
+    assertEquals(
+      Some(LexerPlanFailure.UnsupportedTargetSurface("missing")),
+      PlannedScala3Lexer
+        .compile(
+          source,
+          base.copy(physicalLeafOwnership = Vector(leaf.copy(target = TerminalLeafTarget.Token("missing")))),
+          nativeBindings
+        )
+        .left
+        .toOption
+    )
+    val overlapSource = "xy"
+    val overlapBase   = emitterPlan(overlapSource, 1)
+    val first         = overlapBase.physicalLeafOwnership.head.copy(
+      end = 2,
+      target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface)
+    )
+    val second        = first.copy(atomId = 2L, start = 1)
+    assertEquals(
+      Some(LexerPlanFailure.OverlappingTargetRanges(0, 2, 1, 2)),
+      PlannedScala3Lexer
+        .compile(overlapSource, overlapBase.copy(physicalLeafOwnership = Vector(first, second)), nativeBindings)
+        .left
+        .toOption
+    )
 
   def testAcceptsTwoOrderedForestRootsAndRejectsOverlapBeforeMarkers(): Unit =
     val source   = "xy"
@@ -91,7 +323,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       targetAssertions = Vector(first.instance, second.instance).map(id =>
         PlannedTargetAssertion(
           TargetAssertionOwner.Composite(id),
-          packagingSurface,
+          packagingRole,
           TargetAssertionKind.NativeComposite
         )
       )
@@ -142,7 +374,19 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       .asInstanceOf[PsiBuilder]
 
   private def nativeBindings: NativePsiElementBindings =
-    NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+    NativePsiElementBindings
+      .probe(getProject)
+      .fold(error => throw new AssertionError(error), identity)
+      .copy(outputContracts =
+        Map(
+          PsiOutputRoleId.PackageStatement -> NativeOutputContract(
+            packagingSurface,
+            Vector.empty,
+            PersistenceObligations.NotApplicable,
+            None
+          )
+        )
+      )
 
   private def emitterPlan(source: String, depth: Int): WholeFileProductionPlan =
     val origins    = Vector.tabulate(depth)(index => ProductionInstanceId(InventoryKind.Node, index + 1L, None))
@@ -175,7 +419,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ids.map(id =>
         PlannedTargetAssertion(
           TargetAssertionOwner.Composite(id),
-          packagingSurface,
+          packagingRole,
           TargetAssertionKind.NativeComposite
         )
       ),

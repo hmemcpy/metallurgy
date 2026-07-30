@@ -74,7 +74,7 @@ Dotc's parser constructs an untyped AST and retains scanner comments separately.
 Untyped tree products preserve important surface productions, child fields, and source spans, but punctuation,
 whitespace, most comments, and some literal internals are not tree children.
 
-Accordingly, the untyped tree proposed in issue 84 is richer than the typed tree for recovering source grammar, but it
+Accordingly, the untyped tree is richer than the typed tree for recovering source grammar, but it
 is not itself lossless. Calling it lossless would incorrectly imply that punctuation, trivia, recovery skips, and XML
 character structure can be reconstructed from tree products alone. The exact source is what makes the combined
 representation lossless.

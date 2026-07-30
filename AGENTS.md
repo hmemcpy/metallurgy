@@ -146,6 +146,11 @@ Typed trees never produce syntax. Parsing never waits for semantic work. No back
 Unknown required compiler-valid productions fail closed to deterministic neutral PSI and a capability report rather
 than a bundled parse.
 
+Metallurgy owns stable neutral grammar roles and PSI output-role contracts. Compiler production names and installed
+implementation classes are inventory evidence, not durable role identities. Parser products and output composites may
+lower one-to-many or many-to-one. Each output role independently binds to a capability-proven native implementation or
+a Metallurgy compatibility implementation; native and compatible roles may coexist in one file.
+
 ### Semantics
 
 `PcSessionManager` owns per-module exact-version sessions. Published Scalameta PC operations are preferred. A
@@ -213,6 +218,9 @@ Best-effort TASTy is a cross-module semantic input. It never parses the current 
   break, consume, repair, rename, removal, reload, and restart.
 - Final checks include published Scala versions, moving IntelliJ/Scala-plugin hosts, pinned real projects, and resource
   budgets.
+- Compiler support is a declared rolling evidence matrix. A newly published artifact with covered inventories and
+  contracts admits without production-code changes; novel drift identifies bridge, grammar-role, output-role,
+  semantic-role, or compatibility-binding work. Never claim that an old binary supports arbitrary unseen grammar.
 
 ## Agent resources
 

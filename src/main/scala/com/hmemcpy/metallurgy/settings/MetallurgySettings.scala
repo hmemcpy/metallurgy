@@ -34,6 +34,7 @@ final class MetallurgySettings(project: Project) extends PersistentStateComponen
         else if !myState.enabledModules.contains(module.getName) then
           clearCompilerBackend(module)
           ScalacFlagsService.get(project).disableFor(module)
+          Scala3ParserPreparationLifecycle.get(project).deactivate(module)
 
   def isEnabled(module: Module): Boolean =
     isGloballyEnabled || myState.enabledModules.contains(module.getName)

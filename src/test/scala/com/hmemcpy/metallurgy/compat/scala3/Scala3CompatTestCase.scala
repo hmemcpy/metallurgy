@@ -1,13 +1,12 @@
 package com.hmemcpy.metallurgy.compat.scala3
 
 import com.hmemcpy.metallurgy.compilerbackend.{CompilerBackendRole, CompilerBackendState, Scala3CompilerBackend}
-import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager, PcSnapshot}
-import com.hmemcpy.metallurgy.psiproducer.{BundledScala3Parse, ParserPreparationState, Scala3ParserPreparationLifecycle}
+import com.hmemcpy.metallurgy.pc.{PcProjectionInsertion, PcSessionManager}
+import com.hmemcpy.metallurgy.psiproducer.{ParserPreparationState, Scala3ParserPreparationLifecycle}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
@@ -220,35 +219,13 @@ abstract class Scala3CompatTestCase extends ScalaLightCodeInsightFixtureTestCase
           s"[parity]   message mismatch @${b.getStartOffset}-${b.getEndOffset}: bundled='${b.getDescription}' | dotc='${d.getDescription}'"
         )
 
-  /** Run the compiler on the verbatim source before asserting compiler-valid behavior. */
-  private def preCompileAndInstall(source: String): Boolean =
-    val manager          = PcSessionManager.get(getProject)
-    val session          = PlatformTestUtil
-      .waitForFuture(manager.sessionForAsync(getModule), TimeUnit.SECONDS.toMillis(120))
-      .getOrElse(throw BackendUnavailableException(s"no PC session for ${getModule.getName}"))
-    val snapshot         = PcSnapshot("file:///PreCompile.scala", 0L, source)
-    val extraction       = ApplicationManager.getApplication
-      .executeOnPooledThread(() =>
-        session.scheduleRetypecheck(snapshot).get(30, TimeUnit.SECONDS)
-        session.compilerTreeExtraction(snapshot)
-      )
-      .get(60, TimeUnit.SECONDS)
-    val compilerAccepted = extraction.exists(_.diagnostics.forall(!_.isError))
-    compilerAccepted
-
-  private def hasBundledParseError(source: String): Boolean =
-    BundledScala3Parse.hasErrors(source, getProject)
-
   protected def assertExprType(source: String): Unit =
     val (code, expected) = splitExpected(source)
     assertConfiguredExprType(code, expected, None)
 
   protected final def assertTypeInferenceResult(source: String): Unit =
-    val code             = TypeInferenceTestInput.normalizedSource(source)
-    val expected         = TypeInferenceTestInput.expectedType(code)
-    val compilerAccepted = preCompileAndInstall(code)
-    if !compilerAccepted && hasBundledParseError(code) then
-      throw new AssertionError("type inference input contains parser errors")
+    val code     = TypeInferenceTestInput.normalizedSource(source)
+    val expected = TypeInferenceTestInput.expectedType(code)
     assertConfiguredExprType(code, expected, Some("dummy.scala"))
 
   private def assertConfiguredExprType(code: String, expected: String, fileName: Option[String]): Unit =

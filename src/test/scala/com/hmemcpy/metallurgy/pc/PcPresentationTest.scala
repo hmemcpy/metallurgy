@@ -115,8 +115,10 @@ final class PcPresentationTest extends ScalaLightCodeInsightFixtureTestCase:
     connection.subscribe(
       MetallurgyStatus.Topic,
       (_: MetallurgyStatus) match
-        case MetallurgyStatus.Resolving(_) | MetallurgyStatus.Enabled => ()
-        case terminal                                                 => val _ = done.complete(terminal)
+        case MetallurgyStatus.Resolving(_) | MetallurgyStatus.Enabled | MetallurgyStatus.SyntaxUnavailable(_, _, _, _) |
+            MetallurgyStatus.SyntaxAvailable(_) =>
+          ()
+        case terminal => val _ = done.complete(terminal)
     )
     try
       CompilerTypeRequestResolver(project).request(element)

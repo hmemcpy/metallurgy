@@ -13,6 +13,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.FileContentUtilCore
 import org.junit.Assert.{assertEquals, assertFalse, assertSame, assertTrue}
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyIntegerLiteral
 
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.{Executor, RejectedExecutionException}
@@ -88,7 +89,7 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       assertEquals(0, activation.batchCount)
     finally lifecycle.dispose()
 
-  def testPreparedSurfacesIncludeCapabilityPromotedCompatibleTargets(): Unit =
+  def testUnboundCompatibleTargetsKeepTheModuleUnavailable(): Unit =
     val file       = myFixture.addFileToProject("src/Compatible.scala", "val value = 1\n").getVirtualFile
     val preparer   = new DeferredPreparer
     val activation = new ControlledActivation
@@ -101,16 +102,40 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
     val lifecycle  = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
 
     try
-      val _      = lifecycle.prepare(getModule)
-      val bridge = new TestParserBridge
+      val _           = lifecycle.prepare(getModule)
+      val bridge      = new TestParserBridge
+      preparer.complete(0, bridge)
+      await(lifecycle)(_.isInstanceOf[ParserPreparationState.Unavailable])
+      val unavailable = lifecycle.stateFor(getModule).asInstanceOf[ParserPreparationState.Unavailable]
+      assertTrue(unavailable.detail.contains("output roles have no element-type binding"))
+      assertTrue(unavailable.detail.contains(target))
+      assertTrue(bridge.closed)
+      assertTrue(lifecycle.parserFor(getModule).isEmpty)
+      assertEquals(0, activation.batchCount)
+    finally lifecycle.dispose()
+
+  def testCapabilityProvenCompatibleTargetBindsItsElementType(): Unit =
+    val file       = myFixture.addFileToProject("src/CompatibleBound.scala", "val value = 1\n").getVirtualFile
+    val preparer   = new DeferredPreparer
+    val activation = new ControlledActivation
+    val target     = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
+    val catalog    =
+      Scala3PsiProductionCatalog.Reviewed.copy(productions = Scala3PsiProductionCatalog.Reviewed.productions.map:
+        production =>
+          if production.id == "integer-literal-number" then
+            production.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible)
+          else production
+      )
+    val lifecycle  = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
+
+    try
+      val _        = lifecycle.prepare(getModule)
+      val bridge   = new TestParserBridge
       preparer.complete(0, bridge)
       await(lifecycle)(_.isInstanceOf[ParserPreparationState.Activating])
       activation.runNext()
-
-      val surface = lifecycle.parserFor(getModule).get.surfaces.rows.find(_.id == target)
-      assertTrue(surface.isDefined)
-      assertEquals(FactStatus.Available, surface.get.status)
-      assertEquals(SurfaceClassification.SyntaxContract, surface.get.classification)
+      val prepared = lifecycle.parserFor(getModule).get
+      assertSame(MetallurgyIntegerLiteral.ElementType, prepared.bindings.outputRoles(PsiOutputRoleId.IntegerLiteral))
     finally lifecycle.dispose()
 
   def testNativePsiCapabilityExceptionClosesTheBridgeAndPublishesFailure(): Unit =

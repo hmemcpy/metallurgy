@@ -143,65 +143,6 @@ final class PcSession private (
                   None
       case _                                            => None
 
-  private[metallurgy] def untypedTreeDto(snapshot: PcSnapshot): Option[CompilerTreeDto] =
-    treeDto(snapshot, (driver, currency) => driver.untypedTreeDto(snapshot, currency))
-
-  private[metallurgy] def compilerTreeDto(snapshot: PcSnapshot): Option[CompilerTreeDto]              =
-    treeDto(snapshot, (driver, currency) => driver.compilerTreeDto(snapshot, currency))
-
-  private def treeDto(
-      snapshot: PcSnapshot,
-      extract: (Scala3PcBridge, () => PcSnapshotCurrency) => Option[CompilerTreeDto]
-  ): Option[CompilerTreeDto] =
-    snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
-      case Some(active) if !applicationIsDispatchThread =>
-        try
-          def currency: () => PcSnapshotCurrency = () =>
-            if !closed.get() &&
-              Option(requestedVersions.get(snapshot.fileUri)).exists(_.longValue() == snapshot.documentVersion) &&
-              snapshots.matching(snapshot.fileUri, snapshot.documentVersion).exists(_ eq active)
-            then PcSnapshotCurrency.Current
-            else PcSnapshotCurrency.Superseded
-          Option(inlineTypeDrivers.get(snapshot.fileUri))
-            .flatMap(_.use(driver => extract(driver, currency)))
-            .flatten
-            .filter(_ => currency() == PcSnapshotCurrency.Current)
-        catch
-          case canceled: ProcessCanceledException => throw canceled
-          case NonFatal(error)                    =>
-            Log.warn(s"PC compiler-tree DTO extraction failed for ${snapshot.fileUri}", error)
-            None
-      case _                                            => None
-  private[metallurgy] def untypedTreeExtraction(snapshot: PcSnapshot): Option[CompilerTreeExtraction] =
-    treeExtraction(snapshot, (driver, currency) => driver.untypedTreeExtraction(snapshot, currency))
-
-  private[metallurgy] def compilerTreeExtraction(snapshot: PcSnapshot): Option[CompilerTreeExtraction] =
-    treeExtraction(snapshot, (driver, currency) => driver.compilerTreeExtraction(snapshot, currency))
-
-  private def treeExtraction(
-      snapshot: PcSnapshot,
-      extract: (Scala3PcBridge, () => PcSnapshotCurrency) => Option[CompilerTreeExtraction]
-  ): Option[CompilerTreeExtraction] =
-    snapshots.matching(snapshot.fileUri, snapshot.documentVersion) match
-      case Some(active) if !applicationIsDispatchThread =>
-        try
-          def currency: () => PcSnapshotCurrency = () =>
-            if !closed.get() &&
-              Option(requestedVersions.get(snapshot.fileUri)).exists(_.longValue() == snapshot.documentVersion) &&
-              snapshots.matching(snapshot.fileUri, snapshot.documentVersion).exists(_ eq active)
-            then PcSnapshotCurrency.Current
-            else PcSnapshotCurrency.Superseded
-          Option(inlineTypeDrivers.get(snapshot.fileUri))
-            .flatMap(_.use(driver => extract(driver, currency)))
-            .flatten
-            .filter(_ => currency() == PcSnapshotCurrency.Current)
-        catch
-          case canceled: ProcessCanceledException => throw canceled
-          case NonFatal(error)                    =>
-            Log.warn(s"PC compiler-tree extraction failed for ${snapshot.fileUri}", error)
-            None
-      case _                                            => None
-
   private def querySemanticdbOccurrences(
       snapshot: PcSnapshot,
       driver: Scala3PcBridge

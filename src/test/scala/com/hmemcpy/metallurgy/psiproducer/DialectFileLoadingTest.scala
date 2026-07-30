@@ -5,14 +5,16 @@ import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.psi.impl.source.PsiFileImpl
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.stubs.StubIndex
 import com.intellij.testFramework.IndexingTestUtil
 import org.jetbrains.plugins.scala.Scala3Language
-import org.jetbrains.plugins.scala.caches.ScalaShortNamesCacheManager
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.ScImportSelector
+import org.jetbrains.plugins.scala.lang.psi.stubs.index.ScalaIndexKeys
 import org.junit.Assert.{assertEquals, assertFalse, assertNull, assertTrue}
 
-/** A `.scala` file in an active Metallurgy module loads as the dialect, its declarations are stub-indexed through the
-  * Scala short-names cache, and an inactive module stays on the bundled Scala 3. Exercises real file loading (a
-  * physical module file), not an in-memory copy.
+/** A `.scala` file in an active Metallurgy module loads as the dialect, its supported syntax is stub-indexed, and an
+  * inactive module stays on the bundled Scala 3. Exercises real file loading (a physical module file), not an in-memory
+  * copy.
   */
 final class DialectFileLoadingTest extends Scala3CompatTestCase:
 
@@ -21,7 +23,7 @@ final class DialectFileLoadingTest extends Scala3CompatTestCase:
     assertEquals("active-module .scala loads as the dialect", Scala3DotcLanguage.INSTANCE, file.getLanguage)
 
   def testClosedDialectFileResolvesFromTheStubIndexWithoutLoadingItsAst(): Unit =
-    val file           = myFixture.addFileToProject("Bar.scala", "class Bar\n")
+    val file           = myFixture.addFileToProject("Bar.scala", "import a.b.{Original as Alias}\n")
     IndexingTestUtil.waitUntilIndexesAreReady(getProject)
     val implementation = file.asInstanceOf[PsiFileImpl]
     assertFalse(
@@ -30,11 +32,16 @@ final class DialectFileLoadingTest extends Scala3CompatTestCase:
     )
     assertNull("the AST must be absent before the index query", implementation.getTreeElement)
 
-    val found          = ScalaShortNamesCacheManager
-      .getInstance(using getProject)
-      .getClassesByName("Bar", GlobalSearchScope.projectScope(getProject))
-    assertTrue("a class in a dialect file is stub-indexed and resolvable", found.exists(_.getName == "Bar"))
-    val navigationFile = found.find(_.getName == "Bar").map(_.getNavigationElement.getContainingFile.getVirtualFile)
+    val found          = StubIndex
+      .getElements(
+        ScalaIndexKeys.ALIASED_IMPORT_KEY,
+        "Original",
+        getProject,
+        GlobalSearchScope.projectScope(getProject),
+        classOf[ScImportSelector]
+      )
+    assertTrue("an aliased import in a dialect file is stub-indexed and resolvable", !found.isEmpty)
+    val navigationFile = Option(found.iterator().next()).map(_.getNavigationElement.getContainingFile.getVirtualFile)
     assertEquals("stub navigation must target the physical source", Some(file.getVirtualFile), navigationFile)
     assertNull("stub-index lookup must not load the file AST", implementation.getTreeElement)
 

@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tools_root="$HOME/.local/share/metallurgy-orb"
 bin_dir="$HOME/.local/bin"
 bootstrap_jdk="$tools_root/temurin-21"
+fixture_jdk="$tools_root/temurin-17"
 sbt_home="$tools_root/sbt"
 intellij_sdk="$HOME/.metallurgyPluginIC/sdk/261.26222.65"
 profile_env="$HOME/.config/metallurgy/orb-env.sh"
@@ -29,6 +30,21 @@ if [[ ! -x "$bootstrap_jdk/bin/java" ]]; then
   rm -f "$archive"
   trap - EXIT
 fi
+
+if [[ ! -x "$fixture_jdk/bin/javac" ]]; then
+  echo "Installing fixture JDK 17"
+  archive="$(mktemp)"
+  trap 'rm -f "$archive"' EXIT
+  curl --fail --location --retry 3 \
+    --output "$archive" \
+    "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
+  mkdir -p "$fixture_jdk"
+  tar -xzf "$archive" --strip-components=1 -C "$fixture_jdk"
+  rm -f "$archive"
+  trap - EXIT
+fi
+mkdir -p "$HOME/.jdks"
+ln -sfn "$fixture_jdk" "$HOME/.jdks/temurin-17"
 
 if [[ ! -x "$sbt_home/bin/sbt" ]]; then
   echo "Installing sbt 1.11.7"

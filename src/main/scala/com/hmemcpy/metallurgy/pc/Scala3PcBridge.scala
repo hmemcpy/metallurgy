@@ -21,24 +21,6 @@ private[pc] trait Scala3PcBridge extends AutoCloseable:
 
   def typedTreeSnapshot(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): PcTypedTreeExtraction
 
-  /** The typed tree as source-classified DTOs: physical nodes (real, non-zero, source-derived spans) separated from
-    * synthetic ones. A separate extraction path from the slot overlay; used by PSI production.
-    */
-  def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto]
-
-  /** The untyped (parser) tree as source-classified DTOs. The parser tree preserves the source grammar the typed tree
-    * desugars away (param-clause kinds, for-comprehensions, extension, modifiers); it is the source of truth for PSI
-    * grammar production.
-    */
-  def untypedTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto]
-
-  /** The typed tree and the compiler's diagnostics for the same snapshot, extracted together. */
-  def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction]
-
-  /** The untyped (parser) tree paired with the same run's diagnostics; the producer's data source for faithful grammar.
-    */
-  def untypedTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction]
-
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence]
 
   def structuralCompletions(snapshot: PcSnapshot, offset: Int): Seq[PcCompletion]

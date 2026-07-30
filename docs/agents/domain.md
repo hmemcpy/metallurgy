@@ -4,9 +4,8 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-For this repository, read `docs/scala3-compiler-backend.md` (consumer surface and bundled background). The target
-architecture — producing source-compatible PSI from the Scala 3 compiler — is epic
-[#73](https://github.com/hmemcpy/metallurgy/issues/73).
+For this repository, read `docs/scala3-compiler-backend.md` for the architecture and
+`docs/deterministic-scala3-psi-implementation-program.md` for its implementation program.
 
 The generic convention below applies only when a repository has not declared a single canonical document.
 

@@ -5,7 +5,7 @@ import com.intellij.psi.{PsiFile, SingleRootFileViewProvider}
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.ScFileViewProvider
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
-import org.jetbrains.plugins.scala.lang.psi.api.statements.ScFunctionDefinition
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.ScImportStmt
 import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 
 /** A dialect file in an active module uses the Metallurgy-owned view provider, not the bundled (final)
@@ -14,7 +14,7 @@ import org.junit.Assert.{assertEquals, assertNotNull, assertTrue}
 final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
 
   def testActiveModuleFileUsesMetallurgyViewProvider(): Unit =
-    val file = myFixture.addFileToProject("ProviderProbe.scala", "class ProviderProbe\n")
+    val file = myFixture.addFileToProject("ProviderProbe.scala", "import a.b.c\n")
     val vp   = file.getViewProvider
     assertTrue(
       s"active-module dialect file uses Scala3DotcFileViewProvider, got ${vp.getClass.getName}",
@@ -22,7 +22,7 @@ final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
     )
 
   def testProviderIsNotBundledScFileViewProvider(): Unit =
-    val file = myFixture.addFileToProject("NotBundledProbe.scala", "class NotBundledProbe\n")
+    val file = myFixture.addFileToProject("NotBundledProbe.scala", "import a.b.c\n")
     val vp   = file.getViewProvider
     assertTrue(
       s"dialect provider must not be the final bundled ScFileViewProvider, got ${vp.getClass.getName}",
@@ -30,7 +30,7 @@ final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
     )
 
   def testCreateCopyReturnsMetallurgyProvider(): Unit =
-    val file = myFixture.addFileToProject("CopyProbe.scala", "class CopyProbe\n")
+    val file = myFixture.addFileToProject("CopyProbe.scala", "import a.b.c\n")
     val vp   = file.getViewProvider.asInstanceOf[Scala3DotcFileViewProvider]
     val copy = vp.createCopy(file.getVirtualFile)
     assertTrue(
@@ -42,32 +42,28 @@ final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
   def testCreateFileProducesDialectBoundScalaFile(): Unit =
     val file = myFixture.addFileToProject(
       "CreationProbe.scala",
-      """class CreationProbe {
-        |  def answer = 42
-        |}""".stripMargin + "\n"
+      "import a.b.c\n"
     )
     assertTrue("provider's file is a ScalaFile", file.isInstanceOf[ScalaFile])
     assertEquals("file language is the dialect", Scala3DotcLanguage.INSTANCE, file.getLanguage)
-    val fn   = PsiTreeUtil.findChildOfType(file, classOf[ScFunctionDefinition])
-    assertNotNull("createFile produces real Scala PSI (a function definition)", fn)
+    val stmt = PsiTreeUtil.findChildOfType(file, classOf[ScImportStmt])
+    assertNotNull("createFile produces native import PSI", stmt)
 
   def testCreateCopyFileParsesIntoScalaPsi(): Unit =
     val file = myFixture.addFileToProject(
       "CopyParseProbe.scala",
-      """class CopyParseProbe {
-        |  def amount = 7
-        |}""".stripMargin + "\n"
+      "import a.b.c\n"
     )
     val vp   = file.getViewProvider.asInstanceOf[Scala3DotcFileViewProvider]
     val copy = vp.createCopy(file.getVirtualFile)
     val psi  = copy.getPsi(vp.getBaseLanguage)
     assertNotNull("copy creates a PsiFile", psi)
     assertEquals("copy file language is the dialect", Scala3DotcLanguage.INSTANCE, psi.getLanguage)
-    val fn   = PsiTreeUtil.findChildOfType(psi, classOf[ScFunctionDefinition])
-    assertNotNull("copy's file parses into real Scala PSI", fn)
+    val stmt = PsiTreeUtil.findChildOfType(psi, classOf[ScImportStmt])
+    assertNotNull("copy's file parses into native import PSI", stmt)
 
   def testProviderIsSingleRoot(): Unit =
-    val file = myFixture.addFileToProject("SingleRootProbe.scala", "class SingleRootProbe\n")
+    val file = myFixture.addFileToProject("SingleRootProbe.scala", "import a.b.c\n")
     val vp   = file.getViewProvider
     assertTrue(
       s"dialect provider is a SingleRootFileViewProvider (matches bundled semantics), got ${vp.getClass.getName}",
@@ -77,9 +73,7 @@ final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
   def testFileCopyProducesParsableDialectFile(): Unit =
     val original = myFixture.addFileToProject(
       "CopyViaCopyProbe.scala",
-      """class CopyViaCopyProbe {
-        |  def tally = 99
-        |}""".stripMargin + "\n"
+      "import a.b.c\n"
     )
     val copy     = original.copy().asInstanceOf[PsiFile]
     assertEquals("copied file keeps the dialect language", Scala3DotcLanguage.INSTANCE, copy.getLanguage)
@@ -87,5 +81,5 @@ final class Scala3DotcFileViewProviderTest extends Scala3CompatTestCase:
       "copied file uses the Metallurgy provider",
       copy.getViewProvider.isInstanceOf[Scala3DotcFileViewProvider]
     )
-    val fn       = PsiTreeUtil.findChildOfType(copy, classOf[ScFunctionDefinition])
-    assertNotNull("copied file parses into real Scala PSI", fn)
+    val stmt     = PsiTreeUtil.findChildOfType(copy, classOf[ScImportStmt])
+    assertNotNull("copied file parses into native import PSI", stmt)

@@ -1010,9 +1010,10 @@ private[metallurgy] final case class ChildDeclaration(
   val productionIds: Set[String] = additionalProductionIds + productionId
 private[metallurgy] enum TerminalIntervalSelector:
   case FieldBounds(startField: String, endField: String)
+  case ChildGap(startRole: String, endRole: String)
   case WholeProduction, WholeSource
 private[metallurgy] enum TerminalLeafTarget:
-  case Token(surfaceId: String)
+  case Token(surfaceId: String, expectedText: Option[String] = None)
   case Trivia, Delimiter, Separator, Parent
 private[metallurgy] enum OccurrenceCardinality:
   case ExactlyOne, Optional
@@ -1057,15 +1058,59 @@ private[metallurgy] enum OutputBoundary:
   case ProductionEnd(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
   case ChildStart(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
   case ChildEnd(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
+  case EvidenceBoundaryAfterChild(
+      roleId: String,
+      occurrence: ChildOccurrenceSelector,
+      followingRoleId: String,
+      followingOccurrence: ChildOccurrenceSelector,
+      expectedDelimiters: Vector[String],
+      policy: PositionProvenancePolicy,
+      fallbackToFollowingChildStart: Boolean = false
+  )
   case Advance(boundary: OutputBoundary, boundaryCount: Int)
 private[metallurgy] enum OutputRangeDeclaration:
   case CompilerPosition
   case CompilerPositionWithPolicy(policy: PositionProvenancePolicy)
   case BoundaryDerived(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
+private[metallurgy] final case class PsiOutputRoleId(value: String):
+  require(value.nonEmpty)
+private[metallurgy] object PsiOutputRoleId:
+  val PackageStatement  = PsiOutputRoleId("scala.package.statement")
+  val ImportStatement   = PsiOutputRoleId("scala.import.statement")
+  val ImportExpression  = PsiOutputRoleId("scala.import.expression")
+  val ImportSelectorSet = PsiOutputRoleId("scala.import.selector-set")
+  val ImportSelector    = PsiOutputRoleId("scala.import.selector")
+  val StableReference   = PsiOutputRoleId("scala.reference.stable")
+  val SimpleType        = PsiOutputRoleId("scala.type.simple")
+  val ParameterizedType = PsiOutputRoleId("scala.type.parameterized")
+  val TypeArguments     = PsiOutputRoleId("scala.type.arguments")
+  val IntegerLiteral    = PsiOutputRoleId("scala.literal.integer")
+private[metallurgy] object ImportPersistenceSurfaces:
+  val StatementStub         = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportStmtStub"
+  val ExpressionStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportExprStub"
+  val SelectorSetStub       = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportSelectorsStub"
+  val SelectorStub          = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportSelectorStub"
+  val StatementSerializer   =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScImportStmtElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScImportStmtStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val ExpressionSerializer  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScImportExprElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScImportExprStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val SelectorSetSerializer =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScImportSelectorsElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScImportSelectorsStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val SelectorSerializer    =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScImportSelectorElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScImportSelectorStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val AliasedImportIndex    =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ALIASED_IMPORT_KEY"
+  val SelfNavigation        = "scala.psi.navigation.self"
+private[metallurgy] object PackagePersistenceSurfaces:
+  val Stub       = "org/jetbrains/plugins/scala/lang/psi/stubs/ScPackagingStub"
+  val Serializer =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScPackagingElementType$#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScPackagingStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val FqnIndex   = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#PACKAGE_FQN_KEY"
 private[metallurgy] final case class OutputCompositeDeclaration(
     id: String,
     parentId: Option[String],
     range: OutputRangeDeclaration,
+    outputRoleId: PsiOutputRoleId,
     targetSurfaceId: String,
     targetRequirement: TargetRequirement,
     accessors: Vector[AccessorObligation],
@@ -1103,7 +1148,8 @@ private[metallurgy] final case class Scala3PsiProduction(
     persistence: PersistenceObligations,
     navigation: Option[NavigationObligation] = None,
     outputTemplate: Option[LocalOutputCompositeTemplate] = None,
-    outputRealizations: Vector[OutputRealization] = Vector.empty
+    outputRealizations: Vector[OutputRealization] = Vector.empty,
+    outputRoleId: Option[PsiOutputRoleId] = None
 ):
   private def defaultOutputTemplate: LocalOutputCompositeTemplate = outputTemplate.getOrElse(
     LocalOutputCompositeTemplate(
@@ -1112,6 +1158,7 @@ private[metallurgy] final case class Scala3PsiProduction(
           "self",
           None,
           OutputRangeDeclaration.CompilerPosition,
+          outputRoleId.getOrElse(PsiOutputRoleId(targetSurfaceId)),
           targetSurfaceId,
           targetRequirement,
           accessors,
@@ -1137,6 +1184,324 @@ private[metallurgy] enum CatalogCapabilityFailure:
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty)
 
+  private val PackageSurface           =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
+  private val ImportStatementSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
+  private val ImportExpressionSurface  =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportExprImpl"
+  private val ImportSelectorsSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorsImpl"
+  private val ImportSelectorSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorImpl"
+  private val StableReferenceSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl"
+  private val SimpleTypeSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSimpleTypeElementImpl"
+  private val ParameterizedTypeSurface =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
+  private val TypeArgumentsSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeArgsImpl"
+
+  private def outputComposite(
+      id: String,
+      parentId: Option[String],
+      range: OutputRangeDeclaration,
+      role: PsiOutputRoleId,
+      surface: String,
+      accessors: Vector[AccessorObligation] = Vector.empty
+  ): OutputCompositeDeclaration =
+    val persistence = role match
+      case PsiOutputRoleId.PackageStatement  =>
+        PersistenceObligations.Required(
+          PackagePersistenceSurfaces.Stub,
+          PackagePersistenceSurfaces.Serializer,
+          Vector(PackagePersistenceSurfaces.FqnIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ImportStatement   =>
+        PersistenceObligations.Required(
+          ImportPersistenceSurfaces.StatementStub,
+          ImportPersistenceSurfaces.StatementSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ImportExpression  =>
+        PersistenceObligations.Required(
+          ImportPersistenceSurfaces.ExpressionStub,
+          ImportPersistenceSurfaces.ExpressionSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ImportSelectorSet =>
+        PersistenceObligations.Required(
+          ImportPersistenceSurfaces.SelectorSetStub,
+          ImportPersistenceSurfaces.SelectorSetSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ImportSelector    =>
+        PersistenceObligations.Required(
+          ImportPersistenceSurfaces.SelectorStub,
+          ImportPersistenceSurfaces.SelectorSerializer,
+          Vector(ImportPersistenceSurfaces.AliasedImportIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case _                                 => PersistenceObligations.NotApplicable
+    OutputCompositeDeclaration(
+      id,
+      parentId,
+      range,
+      role,
+      surface,
+      TargetRequirement.Native,
+      accessors,
+      persistence,
+      Some(NavigationObligation.Self)
+    )
+
+  private val ImportStatementAccessors   = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportOrExportStmt#importExprs()Lscala/collection/immutable/Seq;",
+      required = true
+    )
+  )
+  private val PackageAccessors           = Vector(
+    AccessorObligation(s"$PackageSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true)
+  )
+  private val ImportExpressionAccessors  = Vector(
+    AccessorObligation(s"$ImportExpressionSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(s"$ImportExpressionSurface#selectorSet()Lscala/Option;", required = true),
+    AccessorObligation(s"$ImportExpressionSurface#qualifier()Lscala/Option;", required = true)
+  )
+  private val ImportSelectorsAccessors   = Vector(
+    AccessorObligation(
+      s"$ImportSelectorsSurface#selectors()Lscala/collection/immutable/Seq;",
+      required = true
+    )
+  )
+  private val ImportSelectorAccessors    = Vector(
+    AccessorObligation(
+      s"$ImportSelectorSurface#parentImportExpression()Lorg/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportExpr;",
+      required = true
+    ),
+    AccessorObligation(s"$ImportSelectorSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(s"$ImportSelectorSurface#givenTypeElement()Lscala/Option;", required = true)
+  )
+  private val StableReferenceAccessors   = Vector(
+    AccessorObligation(s"$StableReferenceSurface#qualifier()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$StableReferenceSurface#nameId()Lcom/intellij/psi/PsiElement;",
+      required = true
+    )
+  )
+  private val ParameterizedTypeAccessors = Vector(
+    AccessorObligation(
+      s"$ParameterizedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(
+      s"$ParameterizedTypeSurface#typeArgList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeArgs;",
+      required = true
+    )
+  )
+  private val TypeArgumentsAccessors     = Vector(
+    AccessorObligation(s"$TypeArgumentsSurface#typeArgs()Lscala/collection/immutable/Seq;", required = true)
+  )
+
+  private def transparentTemplate(childRoles: String*): LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(Vector.empty, childRoles.map(_ -> None).toMap)
+
+  private def selectorTemplate(
+      range: OutputRangeDeclaration,
+      childRoles: String*
+  ): LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "selector",
+          None,
+          range,
+          PsiOutputRoleId.ImportSelector,
+          ImportSelectorSurface,
+          ImportSelectorAccessors
+        )
+      ),
+      childRoles.map(_ -> Some("selector")).toMap
+    )
+
+  private def namedSelectorTemplate: LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "selector",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.ImportSelector,
+          ImportSelectorSurface,
+          ImportSelectorAccessors
+        ),
+        outputComposite(
+          "reference",
+          Some("selector"),
+          OutputRangeDeclaration.BoundaryDerived(
+            OutputBoundary.ChildStart(
+              "imported",
+              ChildOccurrenceSelector.First,
+              PositionProvenancePolicy.SourceDerivedOnly
+            ),
+            OutputBoundary.ChildEnd(
+              "imported",
+              ChildOccurrenceSelector.First,
+              PositionProvenancePolicy.SourceDerivedOnly
+            )
+          ),
+          PsiOutputRoleId.StableReference,
+          StableReferenceSurface,
+          StableReferenceAccessors
+        )
+      ),
+      Map("imported" -> Some("reference"), "renamed" -> Some("selector"), "bound" -> Some("selector"))
+    )
+
+  private def selectorSetImportTemplate: LocalOutputCompositeTemplate =
+    val pathStart     = OutputBoundary.ChildStart(
+      "path",
+      ChildOccurrenceSelector.First,
+      PositionProvenancePolicy.SourceDerivedOnly
+    )
+    val selectorStart = OutputBoundary.EvidenceBoundaryAfterChild(
+      "path",
+      ChildOccurrenceSelector.First,
+      "selectors",
+      ChildOccurrenceSelector.First,
+      Vector("{", "given"),
+      PositionProvenancePolicy.SourceDerivedOnly,
+      fallbackToFollowingChildStart = true
+    )
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "statement",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.ImportStatement,
+          ImportStatementSurface,
+          ImportStatementAccessors
+        ),
+        outputComposite(
+          "expression",
+          Some("statement"),
+          OutputRangeDeclaration.BoundaryDerived(
+            pathStart,
+            OutputBoundary.ProductionEnd()
+          ),
+          PsiOutputRoleId.ImportExpression,
+          ImportExpressionSurface,
+          ImportExpressionAccessors
+        ),
+        outputComposite(
+          "selectors",
+          Some("expression"),
+          OutputRangeDeclaration.BoundaryDerived(
+            selectorStart,
+            OutputBoundary.ProductionEnd()
+          ),
+          PsiOutputRoleId.ImportSelectorSet,
+          ImportSelectorsSurface,
+          ImportSelectorsAccessors
+        )
+      ),
+      Map("path" -> Some("expression"), "selectors" -> Some("selectors"))
+    )
+
+  private def directImportTemplate(outerReference: Boolean): LocalOutputCompositeTemplate =
+    val pathStart = OutputBoundary.ChildStart(
+      "path",
+      ChildOccurrenceSelector.First,
+      PositionProvenancePolicy.SourceDerivedOnly
+    )
+
+    val selectorEnd     = OutputBoundary.ChildEnd(
+      "selectors",
+      ChildOccurrenceSelector.Last,
+      PositionProvenancePolicy.PositionedIncludingSynthetic
+    )
+    val expressionRange = OutputRangeDeclaration.BoundaryDerived(pathStart, selectorEnd)
+    val base            = Vector(
+      outputComposite(
+        "statement",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.ImportStatement,
+        ImportStatementSurface,
+        ImportStatementAccessors
+      ),
+      outputComposite(
+        "expression",
+        Some("statement"),
+        expressionRange,
+        PsiOutputRoleId.ImportExpression,
+        ImportExpressionSurface,
+        ImportExpressionAccessors
+      )
+    )
+    val composites      =
+      if outerReference then
+        base :+ outputComposite(
+          "reference",
+          Some("expression"),
+          expressionRange,
+          PsiOutputRoleId.StableReference,
+          StableReferenceSurface,
+          StableReferenceAccessors
+        )
+      else base
+    LocalOutputCompositeTemplate(
+      composites,
+      Map(
+        "path"      -> Some(if outerReference then "reference" else "expression"),
+        "selectors" -> Some(if outerReference then "reference" else "expression")
+      )
+    )
+
+  private def selectorOwnedImportTemplate: LocalOutputCompositeTemplate =
+    val selectorStart =
+      OutputBoundary.ChildStart("selectors", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly)
+    val selectorEnd   =
+      OutputBoundary.ChildEnd("selectors", ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
+    val range         = OutputRangeDeclaration.BoundaryDerived(selectorStart, selectorEnd)
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "statement",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.ImportStatement,
+          ImportStatementSurface,
+          ImportStatementAccessors
+        ),
+        outputComposite(
+          "expression",
+          Some("statement"),
+          range,
+          PsiOutputRoleId.ImportExpression,
+          ImportExpressionSurface,
+          ImportExpressionAccessors
+        ),
+        outputComposite(
+          "selectors",
+          Some("expression"),
+          range,
+          PsiOutputRoleId.ImportSelectorSet,
+          ImportSelectorsSurface,
+          ImportSelectorsAccessors
+        )
+      ),
+      Map("path" -> Some("expression"), "selectors" -> Some("selectors"))
+    )
+
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
       Scala3PsiProduction(
@@ -1161,7 +1526,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "package-reference",
             "pid",
             ChildCardinality.ExactlyOne,
-            "package-stable-reference"
+            "package-stable-reference",
+            Set("package-stable-identifier-reference")
           )
         ),
         terminals = Vector(
@@ -1174,20 +1540,1250 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         ),
         layouts = Vector(LayoutAlternative.None),
         recovery = RecoveryPolicy.Reject,
-        targetSurfaceId = "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl",
+        targetSurfaceId = PackageSurface,
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector(
-          AccessorObligation(
-            "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#reference()Lscala/Option;",
-            required = true
+        accessors = PackageAccessors,
+        persistence = PersistenceObligations.Required(
+          PackagePersistenceSurfaces.Stub,
+          PackagePersistenceSurfaces.Serializer,
+          Vector(PackagePersistenceSurfaces.FqnIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        ),
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.PackageStatement)
+      ),
+      Scala3PsiProduction(
+        id = "file-package-imports",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "PackageDef",
+          Vector(
+            CompilerFieldPattern("pid", CatalogValuePattern.Node),
+            CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
           ),
-          AccessorObligation(
-            "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#keyword()Lcom/intellij/psi/PsiElement;",
-            required = true
+          Vector(
+            CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable)
           )
         ),
+        dispositions = Vector(
+          FieldDisposition("pid", FieldDispositionKind.Child),
+          FieldDisposition("stats", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "package-reference",
+            "pid",
+            ChildCardinality.ExactlyOne,
+            "package-stable-reference",
+            Set("package-stable-identifier-reference")
+          ),
+          ChildDeclaration(
+            "imports",
+            "stats",
+            ChildCardinality.Grouped(1, None),
+            "import-statement"
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "whole-file",
+            TerminalIntervalSelector.WholeSource,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = PackageSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = PackageAccessors,
+        persistence = PersistenceObligations.Required(
+          PackagePersistenceSurfaces.Stub,
+          PackagePersistenceSurfaces.Serializer,
+          Vector(PackagePersistenceSurfaces.FqnIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        ),
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.PackageStatement)
+      ),
+      Scala3PsiProduction(
+        id = "file-imports",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "PackageDef",
+          Vector(
+            CompilerFieldPattern("pid", CatalogValuePattern.Node),
+            CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+          ),
+          Vector(CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.Synthetic))
+        ),
+        dispositions = Vector(
+          FieldDisposition("pid", FieldDispositionKind.Synthetic),
+          FieldDisposition("stats", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "imports",
+            "stats",
+            ChildCardinality.Grouped(1, None),
+            "import-statement"
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "whole-file",
+            TerminalIntervalSelector.WholeSource,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportStatementSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportStatementAccessors,
         persistence = PersistenceObligations.NotApplicable,
-        navigation = Some(NavigationObligation.Self)
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate("imports"))
+      ),
+      Scala3PsiProduction(
+        id = "import-statement",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Import",
+          Vector(
+            CompilerFieldPattern("expr", CatalogValuePattern.Node),
+            CompilerFieldPattern("selectors", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "PackageDef",
+                Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("expr", FieldDispositionKind.Child),
+          FieldDisposition("selectors", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "path",
+            "expr",
+            ChildCardinality.ExactlyOne,
+            "import-path-reference",
+            Set("import-path-identifier-reference", "import-expression-absent")
+          ),
+          ChildDeclaration(
+            "selectors",
+            "selectors",
+            ChildCardinality.Repeated(1, None),
+            "import-selector-direct",
+            Set("import-selector-braced")
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "statement-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportStatementSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportStatementAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRealizations = Vector(
+          OutputRealization(
+            "selector-owned",
+            Vector(
+              ChildOutcomeCondition(
+                "path",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-expression-absent")
+              ),
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-alias")
+              )
+            ),
+            selectorOwnedImportTemplate
+          ),
+          OutputRealization(
+            "plain",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("direct-plain")
+              )
+            ),
+            directImportTemplate(outerReference = true)
+          ),
+          OutputRealization(
+            "wildcard",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("direct-wildcard")
+              )
+            ),
+            directImportTemplate(outerReference = false)
+          ),
+          OutputRealization(
+            "given-direct",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("direct-given")
+              )
+            ),
+            selectorSetImportTemplate
+          ),
+          OutputRealization(
+            "named-selectors",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-named")
+              )
+            ),
+            selectorSetImportTemplate
+          ),
+          OutputRealization(
+            "given-selectors",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-alias")
+              )
+            ),
+            selectorSetImportTemplate
+          ),
+          OutputRealization(
+            "hidden-selectors",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-hidden")
+              )
+            ),
+            selectorSetImportTemplate
+          ),
+          OutputRealization(
+            "wildcard-selectors",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-wildcard")
+              )
+            ),
+            selectorSetImportTemplate
+          ),
+          OutputRealization(
+            "given-braced-selectors",
+            Vector(
+              ChildOutcomeCondition(
+                "selectors",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Realization("braced-given")
+              )
+            ),
+            selectorSetImportTemplate
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-expression-absent",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Thicket",
+          Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(InventoryKind.Node, "Import", Vector(CatalogPathSegment.NamedField("expr"))),
+              SourceClassification.Absent
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Synthetic)),
+        children = Vector.empty,
+        terminals = Vector.empty,
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportExpressionSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportExpressionAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "file-import-empty-package",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "PackageDef",
+                Vector(CatalogPathSegment.NamedField("pid"))
+              ),
+              SourceClassification.Synthetic
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.Synthetic)),
+        children = Vector.empty,
+        terminals = Vector.empty,
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportStatementSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-path-identifier-reference",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "Import",
+                Vector(CatalogPathSegment.NamedField("expr"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "identifier-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
+      ),
+      Scala3PsiProduction(
+        id = "import-path-reference",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Select",
+          Vector(
+            CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "Import",
+                Vector(CatalogPathSegment.NamedField("expr"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("qualifier", FieldDispositionKind.Child),
+          FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+        ),
+        children = Vector(
+          ChildDeclaration("qualifier", "qualifier", ChildCardinality.ExactlyOne, "import-path-identifier")
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "reference-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
+      ),
+      Scala3PsiProduction(
+        id = "import-path-identifier",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.ParentWithAncestor(
+                InventoryKind.Node,
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier")),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Import",
+                  Vector(CatalogPathSegment.NamedField("expr"))
+                )
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "identifier-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-direct",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "ImportSelector",
+          Vector(
+            CompilerFieldPattern("imported", CatalogValuePattern.Node),
+            CompilerFieldPattern("renamed", CatalogValuePattern.Node),
+            CompilerFieldPattern("bound", CatalogValuePattern.Node)
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "Import",
+                Vector(CatalogPathSegment.NamedField("selectors"), CatalogPathSegment.RepeatedElement)
+              ),
+              SourceClassification.Synthetic
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("imported", FieldDispositionKind.Child),
+          FieldDisposition("renamed", FieldDispositionKind.Child),
+          FieldDisposition("bound", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "imported",
+            "imported",
+            ChildCardinality.ExactlyOne,
+            "import-selector-name",
+            Set("import-selector-wildcard-name", "import-selector-empty-name")
+          ),
+          ChildDeclaration(
+            "renamed",
+            "renamed",
+            ChildCardinality.ExactlyOne,
+            "import-selector-name",
+            Set("import-selector-hidden-name", "import-selector-absent")
+          ),
+          ChildDeclaration(
+            "bound",
+            "bound",
+            ChildCardinality.ExactlyOne,
+            "import-selector-bound-type",
+            Set("import-selector-bound-applied-type", "import-selector-absent")
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "selector-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.Optional
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRealizations = Vector(
+          OutputRealization(
+            "direct-plain",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-name")
+              ),
+              ChildOutcomeCondition(
+                "renamed",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-absent")
+              ),
+              ChildOutcomeCondition(
+                "bound",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-absent")
+              )
+            ),
+            transparentTemplate("imported", "renamed", "bound")
+          ),
+          OutputRealization(
+            "direct-wildcard",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-wildcard-name")
+              )
+            ),
+            transparentTemplate("imported", "renamed", "bound")
+          ),
+          OutputRealization(
+            "direct-given",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-empty-name")
+              )
+            ),
+            selectorTemplate(
+              OutputRangeDeclaration.CompilerPositionWithPolicy(
+                PositionProvenancePolicy.PositionedIncludingSynthetic
+              ),
+              "imported",
+              "renamed",
+              "bound"
+            )
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-braced",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "ImportSelector",
+          Vector(
+            CompilerFieldPattern("imported", CatalogValuePattern.Node),
+            CompilerFieldPattern("renamed", CatalogValuePattern.Node),
+            CompilerFieldPattern("bound", CatalogValuePattern.Node)
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "Import",
+                Vector(CatalogPathSegment.NamedField("selectors"), CatalogPathSegment.RepeatedElement)
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("imported", FieldDispositionKind.Child),
+          FieldDisposition("renamed", FieldDispositionKind.Child),
+          FieldDisposition("bound", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "imported",
+            "imported",
+            ChildCardinality.ExactlyOne,
+            "import-selector-name",
+            Set("import-selector-wildcard-name", "import-selector-empty-name")
+          ),
+          ChildDeclaration(
+            "renamed",
+            "renamed",
+            ChildCardinality.ExactlyOne,
+            "import-selector-name",
+            Set("import-selector-hidden-name", "import-selector-absent")
+          ),
+          ChildDeclaration(
+            "bound",
+            "bound",
+            ChildCardinality.ExactlyOne,
+            "import-selector-bound-type",
+            Set("import-selector-bound-applied-type", "import-selector-absent")
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "selector-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          ),
+          TerminalDeclaration(
+            "scala3-alias-separator",
+            TerminalIntervalSelector.ChildGap("imported", "renamed"),
+            TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasAsTokenSurface, Some("as")),
+            OccurrenceCardinality.Optional
+          ),
+          TerminalDeclaration(
+            "scala2-alias-separator",
+            TerminalIntervalSelector.ChildGap("imported", "renamed"),
+            TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasArrowTokenSurface, Some("=>")),
+            OccurrenceCardinality.Optional
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRealizations = Vector(
+          OutputRealization(
+            "braced-named",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-name")
+              ),
+              ChildOutcomeCondition(
+                "renamed",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-absent")
+              )
+            ),
+            namedSelectorTemplate
+          ),
+          OutputRealization(
+            "braced-alias",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-name")
+              ),
+              ChildOutcomeCondition(
+                "renamed",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-name")
+              )
+            ),
+            namedSelectorTemplate
+          ),
+          OutputRealization(
+            "braced-hidden",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-name")
+              ),
+              ChildOutcomeCondition(
+                "renamed",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-hidden-name")
+              )
+            ),
+            namedSelectorTemplate
+          ),
+          OutputRealization(
+            "braced-wildcard",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-wildcard-name")
+              )
+            ),
+            selectorTemplate(OutputRangeDeclaration.CompilerPosition, "imported", "renamed", "bound")
+          ),
+          OutputRealization(
+            "braced-given",
+            Vector(
+              ChildOutcomeCondition(
+                "imported",
+                ChildOccurrenceSelector.First,
+                ChildOutcomeExpectation.Production("import-selector-empty-name")
+              )
+            ),
+            selectorTemplate(OutputRangeDeclaration.CompilerPosition, "imported", "renamed", "bound")
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-name",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("imported"))
+              ),
+              SourceClassification.SourceReachable
+            ),
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("renamed"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "name-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-hidden-name",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard))
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("renamed"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "hidden-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.ImportLegacyWildcardTokenSurface, Some("_")),
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-wildcard-name",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("imported"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "wildcard-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("*")),
+            OccurrenceCardinality.Optional
+          ),
+          TerminalDeclaration(
+            "legacy-wildcard-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.ImportLegacyWildcardTokenSurface, Some("_")),
+            OccurrenceCardinality.Optional
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-empty-name",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Empty)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("imported"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "given-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-bound-type",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("bound"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "type-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = SimpleTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "type",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.SimpleType,
+                SimpleTypeSurface
+              ),
+              outputComposite(
+                "reference",
+                Some("type"),
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.StableReference,
+                StableReferenceSurface,
+                StableReferenceAccessors
+              )
+            ),
+            Map.empty
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-bound-applied-type",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "AppliedTypeTree",
+          Vector(
+            CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+            CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern
+                .Parent(InventoryKind.Node, "ImportSelector", Vector(CatalogPathSegment.NamedField("bound"))),
+              SourceClassification.SourceReachable
+            ),
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "AppliedTypeTree",
+                Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("tpt", FieldDispositionKind.Child),
+          FieldDisposition("args", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "constructor",
+            "tpt",
+            ChildCardinality.ExactlyOne,
+            "import-selector-bound-applied-constructor"
+          ),
+          ChildDeclaration(
+            "arguments",
+            "args",
+            ChildCardinality.Repeated(1, None),
+            "import-selector-bound-applied-argument",
+            Set("import-selector-bound-applied-type")
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "type-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ParameterizedTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ParameterizedTypeAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "parameterized",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.ParameterizedType,
+                ParameterizedTypeSurface,
+                ParameterizedTypeAccessors
+              ),
+              outputComposite(
+                "arguments",
+                Some("parameterized"),
+                OutputRangeDeclaration.BoundaryDerived(
+                  OutputBoundary
+                    .ChildEnd("constructor", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+                  OutputBoundary.ProductionEnd()
+                ),
+                PsiOutputRoleId.TypeArguments,
+                TypeArgumentsSurface,
+                TypeArgumentsAccessors
+              )
+            ),
+            Map("constructor" -> Some("parameterized"), "arguments" -> Some("arguments"))
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-bound-applied-constructor",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern
+                .Parent(InventoryKind.Node, "AppliedTypeTree", Vector(CatalogPathSegment.NamedField("tpt"))),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "type-name",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = SimpleTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "type",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.SimpleType,
+                SimpleTypeSurface
+              ),
+              outputComposite(
+                "reference",
+                Some("type"),
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.StableReference,
+                StableReferenceSurface,
+                StableReferenceAccessors
+              )
+            ),
+            Map.empty
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-bound-applied-argument",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "AppliedTypeTree",
+                Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "type-name",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = SimpleTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "type",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.SimpleType,
+                SimpleTypeSurface
+              ),
+              outputComposite(
+                "reference",
+                Some("type"),
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.StableReference,
+                StableReferenceSurface,
+                StableReferenceAccessors
+              )
+            ),
+            Map.empty
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-absent",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Thicket",
+          Vector(
+            CompilerFieldPattern(
+              "trees",
+              CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("renamed"))
+              ),
+              SourceClassification.Absent
+            ),
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "ImportSelector",
+                Vector(CatalogPathSegment.NamedField("bound"))
+              ),
+              SourceClassification.Absent
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Synthetic)),
+        children = Vector.empty,
+        terminals = Vector.empty,
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ImportSelectorSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = ImportSelectorAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "package-stable-identifier-reference",
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(
+            CompilerFieldPattern(
+              "name",
+              CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
+            )
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.Parent(
+                InventoryKind.Node,
+                "PackageDef",
+                Vector(CatalogPathSegment.NamedField("pid"))
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "identifier-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
       ),
       Scala3PsiProduction(
         id = "package-stable-reference",
@@ -1233,18 +2829,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         recovery = RecoveryPolicy.Reject,
         targetSurfaceId = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl",
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector(
-          AccessorObligation(
-            "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#qualifier()Lscala/Option;",
-            required = true
-          ),
-          AccessorObligation(
-            "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#nameId()Lcom/intellij/psi/PsiElement;",
-            required = true
-          )
-        ),
+        accessors = StableReferenceAccessors,
         persistence = PersistenceObligations.NotApplicable,
-        navigation = Some(NavigationObligation.Self)
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
       ),
       Scala3PsiProduction(
         id = "package-stable-identifier",
@@ -1282,14 +2870,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         recovery = RecoveryPolicy.Reject,
         targetSurfaceId = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl",
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector(
-          AccessorObligation(
-            "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#nameId()Lcom/intellij/psi/PsiElement;",
-            required = true
-          )
-        ),
+        accessors = StableReferenceAccessors,
         persistence = PersistenceObligations.NotApplicable,
-        navigation = Some(NavigationObligation.Self)
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.StableReference)
       ),
       Scala3PsiProduction(
         id = "integer-literal-number",
@@ -1362,7 +2946,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           )
         ),
         persistence = PersistenceObligations.NotApplicable,
-        navigation = Some(NavigationObligation.Self)
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = Some(PsiOutputRoleId.IntegerLiteral)
       )
     )
   )
@@ -1482,7 +3067,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     val references        = catalog.productions
       .flatMap: production =>
         val terminals = production.terminals.collect:
-          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id
+          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) => id
         val outputs   = production.effectiveOutputRealizations
           .flatMap(_.template.composites)
           .flatMap: output =>
@@ -1633,12 +3218,30 @@ private[metallurgy] object CatalogShapeMatcher:
       context: Option[InventoryContext],
       sourceClassification: SourceClassification
   ): Vector[Scala3PsiProduction] =
-    catalog.productions.filter(p =>
+    val matched = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         p.pattern.occurrences.exists(occurrence =>
           contextMatches(occurrence.context, context) && occurrence.sourceClassification == sourceClassification
         )
     )
+    val scored  = matched.map: production =>
+      val specificity = production.pattern.fields
+        .zip(fields)
+        .count:
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.EmptyRepeated(_)),
+                InventoryFieldObservation(_, InventoryValueObservation.Repeated(Vector()), _)
+              ) =>
+            true
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.EmptyOptional(_)),
+                InventoryFieldObservation(_, InventoryValueObservation.Optional(None), _)
+              ) =>
+            true
+          case _ => false
+      production -> specificity
+    val highest = scored.map(_._2).maxOption.getOrElse(0)
+    scored.collect { case (production, score) if score == highest => production }
 
   def selectAggregated(
       catalog: Scala3PsiProductionCatalog,
@@ -1708,6 +3311,7 @@ private[metallurgy] enum CatalogValidationError:
   case ChildDeclarationForNonChildField(productionId: String, fieldName: String)
   case MissingTerminalDeclaration(productionId: String, fieldName: String)
   case UnknownTerminalField(productionId: String, fieldName: String)
+  case UnknownTerminalChildRole(productionId: String, roleId: String)
   case InvalidSurface(productionId: String, surfaceId: String, expectedKind: SurfaceFactKind)
   case InvalidSurfaceOwner(productionId: String, surfaceId: String, expectedOwner: String)
   case IncompleteSurfaceStatus(productionId: String, surfaceId: String, status: FactStatus)
@@ -1847,7 +3451,7 @@ private[metallurgy] object RuntimeRealizationSelector:
                   )
               declaration.roleId -> refs
             childOutcomes.flatMap(_._2).foreach(resolve)
-            val matches       = production.effectiveOutputRealizations.filter: realization =>
+            val matching      = production.effectiveOutputRealizations.filter: realization =>
               realization.conditions.forall: condition =>
                 val values = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
                 val child  = condition.occurrence match
@@ -1859,6 +3463,11 @@ private[metallurgy] object RuntimeRealizationSelector:
                     case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
                     case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.id == id)
                 )
+            val matches       = matching match
+              case Vector() => Vector.empty
+              case values   =>
+                val mostSpecific = values.map(_.conditions.size).max
+                values.filter(_.conditions.size == mostSpecific)
             matches match
               case Vector(realization) => resolved += key -> realization
               case Vector()            =>
@@ -2002,6 +3611,33 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                     "negative occurrence ordinal"
                   )
                 case _                                                 => ()
+            case OutputBoundary.EvidenceBoundaryAfterChild(
+                  role,
+                  selector,
+                  followingRole,
+                  followingSelector,
+                  expectedDelimiters,
+                  _,
+                  _
+                ) =>
+              if !childRoles(role) || !childRoles(followingRole) then
+                errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
+              Vector(selector, followingSelector).foreach:
+                case ChildOccurrenceSelector.Exact(index) if index < 0 =>
+                  errors += CatalogValidationError.InvalidOutputBoundary(
+                    p.id,
+                    output.id,
+                    boundary,
+                    "negative occurrence ordinal"
+                  )
+                case _                                                 => ()
+              if expectedDelimiters.isEmpty || expectedDelimiters.exists(_.isEmpty) then
+                errors += CatalogValidationError.InvalidOutputBoundary(
+                  p.id,
+                  output.id,
+                  boundary,
+                  "expected delimiters must be nonempty"
+                )
             case OutputBoundary.Advance(_, count) if count < 0 =>
               errors += CatalogValidationError.InvalidOutputBoundary(
                 p.id,
@@ -2100,6 +3736,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           val declared = p.terminals.exists(_.selector match
             case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource => true
             case TerminalIntervalSelector.FieldBounds(a, b)                                      => a == name || b == name
+            case _: TerminalIntervalSelector.ChildGap                                            => false
           )
           if !declared then errors += CatalogValidationError.MissingTerminalDeclaration(p.id, name)
       p.terminals.foreach(_.selector match
@@ -2107,12 +3744,16 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           Vector(a, b)
             .filterNot(names.contains)
             .foreach(n => errors += CatalogValidationError.UnknownTerminalField(p.id, n))
+        case TerminalIntervalSelector.ChildGap(a, b)    =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
         case _                                          => ()
       )
       p.terminals.foreach:
-        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) =>
+        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) =>
           requireSurface(p, id, SurfaceFactKind.Token)
-        case _                                                          => ()
+        case _                                                             => ()
       realizations
         .flatMap(_.template.composites)
         .foreach: output =>
@@ -2128,7 +3769,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
     errors ++= coverage
     val accounted                                                                                                     = catalog.productions
       .flatMap: p =>
-        val terminals = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id), _) => id }
+        val terminals = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) => id }
         val outputs   = p.effectiveOutputRealizations
           .flatMap(_.template.composites)
           .flatMap: output =>
@@ -2278,7 +3919,14 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case MultiplyConsumedChildReference(child: ProductionInstanceId, owners: Vector[ProductionInstanceId])
   case UnsupportedPositionedChildren(owner: ProductionInstanceId)
   case UnsupportedFieldDisposition(owner: ProductionInstanceId, fieldName: String)
-  case UnsupportedChildCardinality(productionId: String, roleId: String, cardinality: ChildCardinality)
+  case InvalidGroupedChildPosition(owner: ProductionInstanceId, roleId: String, child: ProductionInstanceId)
+  case GroupedChildOutputRootCount(
+      owner: ProductionInstanceId,
+      roleId: String,
+      child: ProductionInstanceId,
+      actual: Int
+  )
+  case IncompatibleGroupedOutputRoots(owner: ProductionInstanceId, roleId: String, roots: Vector[CompositeInstanceId])
   case UnsupportedTerminalSelector(productionId: String, terminalId: String, selector: TerminalIntervalSelector)
   case TerminalCardinalityMismatch(
       owner: ProductionInstanceId,
@@ -2604,6 +4252,8 @@ private[metallurgy] object WholeFileProductionPlanner:
       val incoming         = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Vector[ProductionInstanceId]]
       val compilerChildren = collection.mutable.LinkedHashMap
         .empty[ProductionInstanceId, Vector[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)]]
+      val groupedChildren  = collection.mutable.LinkedHashMap
+        .empty[(ProductionInstanceId, String), Vector[Vector[ProductionInstanceId]]]
       ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)
@@ -2615,18 +4265,6 @@ private[metallurgy] object WholeFileProductionPlanner:
               break(Left(WholeFilePlanningFailure.UnsupportedFieldDisposition(instance, fieldName)))
             case None            => ()
           production.children.foreach: declaration =>
-            declaration.cardinality match
-              case grouped: ChildCardinality.Grouped =>
-                break(
-                  Left(
-                    WholeFilePlanningFailure.UnsupportedChildCardinality(
-                      production.id,
-                      declaration.roleId,
-                      grouped
-                    )
-                  )
-                )
-              case _                                 => ()
             if instance.kind == InventoryKind.Positioned then
               break(Left(WholeFilePlanningFailure.UnsupportedPositionedChildren(instance)))
             val field = fields(instance).find(_.name == declaration.fieldName).toVector
@@ -2665,6 +4303,32 @@ private[metallurgy] object WholeFileProductionPlanner:
                 break(Left(WholeFilePlanningFailure.MultiplyConsumedChildReference(child, owners)))
               active += child
               plannedChildren += ((declaration.roleId, path, child))
+            declaration.cardinality match
+              case ChildCardinality.Grouped(_, _) =>
+                val groups  = Vector.newBuilder[Vector[ProductionInstanceId]]
+                var current = Vector.empty[ProductionInstanceId]
+                found.foreach: (child, _) =>
+                  val continues = position(child) match
+                    case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived)
+                        if point >= range.startOffset && point <= range.endOffset =>
+                      point == range.startOffset
+                    case _ =>
+                      break(
+                        Left(
+                          WholeFilePlanningFailure.InvalidGroupedChildPosition(
+                            instance,
+                            declaration.roleId,
+                            child
+                          )
+                        )
+                      )
+                  if current.nonEmpty && !continues then
+                    groups += current
+                    current = Vector.empty
+                  current :+= child
+                if current.nonEmpty then groups += current
+                groupedChildren += (instance -> declaration.roleId) -> groups.result()
+              case _                              => ()
           if production.layouts != Vector(LayoutAlternative.None) then
             break(Left(WholeFilePlanningFailure.UnsupportedLayout(instance, production.layouts)))
           if production.recovery != RecoveryPolicy.Reject then
@@ -2681,7 +4345,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             case ChildOccurrenceSelector.First        => values.headOption
             case ChildOccurrenceSelector.Last         => values.lastOption
             case ChildOccurrenceSelector.Exact(index) => values.lift(index)
-        val matches                                                                    = selected(instance).effectiveOutputRealizations.filter(realization =>
+        val matching                                                                   = selected(instance).effectiveOutputRealizations.filter(realization =>
           realization.conditions.forall(condition =>
             occurrence(condition).exists(child =>
               condition.expected match
@@ -2690,6 +4354,11 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
           )
         )
+        val matches                                                                    = matching match
+          case Vector() => Vector.empty
+          case values   =>
+            val mostSpecific = values.map(_.conditions.size).max
+            values.filter(_.conditions.size == mostSpecific)
         matches match
           case Vector(value) => resolvedRealizations += instance -> value
           case Vector()      =>
@@ -2705,12 +4374,37 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
 
-      val outputRoots        = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
-      val localOutputRoots   = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
-      val outputRows         = collection.mutable.Map
+      val outputRoots                                                   = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val localOutputRoots                                              = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
+      val outputRows                                                    = collection.mutable.Map
         .empty[ProductionInstanceId, Vector[(OutputCompositeDeclaration, CompositeInstanceId, PcSourceRange)]]
-      val evidenceBoundaries =
-        (evidence.atoms.map(_.start) ++ evidence.atoms.lastOption.map(_.end)).distinct.sorted
+      val mergedOutputRoots                                             = collection.mutable.Map.empty[CompositeInstanceId, CompositeInstanceId]
+      val outputRangeOverrides                                          = collection.mutable.Map.empty[CompositeInstanceId, PcSourceRange]
+      val declaredDelimiterCuts                                         = resolvedRealizations.valuesIterator
+        .flatMap(_.template.composites)
+        .flatMap(_.range match
+          case OutputRangeDeclaration.BoundaryDerived(
+                OutputBoundary.EvidenceBoundaryAfterChild(_, _, _, _, expected, _, _),
+                _
+              ) =>
+            expected.iterator.flatMap: delimiter =>
+              Iterator
+                .iterate(snapshot.sourceText.indexOf(delimiter))(offset =>
+                  snapshot.sourceText.indexOf(delimiter, offset + delimiter.length)
+                )
+                .takeWhile(_ >= 0)
+                .filter(offset =>
+                  !snapshot.comments
+                    .exists(comment => comment.range.startOffset <= offset && offset < comment.range.endOffset)
+                )
+                .flatMap(offset => Vector(offset, offset + delimiter.length))
+          case _ => Vector.empty
+        )
+        .toVector
+      val evidenceBoundaries                                            =
+        (evidence.atoms.map(_.start) ++ evidence.atoms.lastOption.map(_.end) ++ declaredDelimiterCuts).distinct.sorted
+      def canonicalOutput(id: CompositeInstanceId): CompositeInstanceId =
+        mergedOutputRoots.get(id).fold(id)(canonicalOutput)
       active.toVector.reverse.foreach: instance =>
         val template   = resolvedRealizations(instance).template
         def positionedRange(
@@ -2781,6 +4475,87 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
             positionedRange(child, policy, value, outputId).endOffset
+          case value @ OutputBoundary.EvidenceBoundaryAfterChild(
+                role,
+                selector,
+                followingRole,
+                followingSelector,
+                expectedDelimiters,
+                policy,
+                fallbackToFollowingChildStart
+              ) =>
+            val candidates                                             = compilerChildren(instance).collect { case (`role`, _, child) => child }
+            val selectedChild                                          = selector match
+              case ChildOccurrenceSelector.First          => candidates.headOption
+              case ChildOccurrenceSelector.Last           => candidates.lastOption
+              case ChildOccurrenceSelector.Exact(ordinal) => candidates.lift(ordinal)
+            val child                                                  = selectedChild.getOrElse(
+              break(
+                Left(
+                  WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                    instance,
+                    outputId,
+                    value,
+                    "child occurrence is missing"
+                  )
+                )
+              )
+            )
+            val end                                                    = positionedRange(child, policy, value, outputId).endOffset
+            def sourceStart(target: ProductionInstanceId): Option[Int] =
+              position(target) match
+                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                  Some(range.startOffset)
+                case _                                                                               =>
+                  compilerChildren
+                    .getOrElse(target, Vector.empty)
+                    .flatMap((_, _, child) => sourceStart(child))
+                    .minOption
+            val following                                              = compilerChildren(instance).collect { case (`followingRole`, _, candidate) => candidate }
+            val followingChild                                         = followingSelector match
+              case ChildOccurrenceSelector.First          => following.headOption
+              case ChildOccurrenceSelector.Last           => following.lastOption
+              case ChildOccurrenceSelector.Exact(ordinal) => following.lift(ordinal)
+            val followingStart                                         = followingChild
+              .flatMap(sourceStart)
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      value,
+                      "following child occurrence is missing"
+                    )
+                  )
+                )
+              )
+            val delimiter                                              = expectedDelimiters.iterator
+              .flatMap: expected =>
+                Iterator
+                  .iterate(snapshot.sourceText.indexOf(expected, end))(offset =>
+                    snapshot.sourceText.indexOf(expected, offset + expected.length)
+                  )
+                  .takeWhile(offset => offset >= 0 && offset + expected.length <= followingStart)
+                  .filter(offset =>
+                    !snapshot.comments
+                      .exists(comment => comment.range.startOffset <= offset && offset < comment.range.endOffset)
+                  )
+              .minOption
+            delimiter
+              .orElse(Option.when(fallbackToFollowingChildStart)(followingStart))
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      value,
+                      s"none of the expected delimiters occur before the following child: ${expectedDelimiters.mkString(", ")}"
+                    )
+                  )
+                )
+              )
           case value @ OutputBoundary.Advance(base, count)               =>
             val offset    = resolve(base, outputId)
             val index     = evidenceBoundaries.indexOf(offset)
@@ -2867,6 +4642,39 @@ private[metallurgy] object WholeFileProductionPlanner:
         outputRows.update(instance, ranges)
         val localRoots = ranges.collect { case (declaration, id, _) if declaration.parentId.isEmpty => id }
         localOutputRoots.update(instance, localRoots)
+        groupedChildren
+          .collect { case ((owner, role), groups) if owner == instance => role -> groups }
+          .foreach: (role, groups) =>
+            groups.foreach: group =>
+              val roots     = group.map: child =>
+                val values = outputRoots.getOrElse(child, Vector.empty)
+                if values.size != 1 then
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.GroupedChildOutputRootCount(instance, role, child, values.size)
+                    )
+                  )
+                values.head
+              val rows      = roots.map: root =>
+                outputRows(root.origin)
+                  .find(_._2 == root)
+                  .getOrElse(
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.GroupedChildOutputRootCount(instance, role, root.origin, 0)
+                      )
+                    )
+                  )
+              val contracts = rows.map: (declaration, _, _) =>
+                declaration.copy(id = "grouped-root", range = OutputRangeDeclaration.CompilerPosition)
+              if contracts.distinct.size != 1 then
+                break(Left(WholeFilePlanningFailure.IncompatibleGroupedOutputRoots(instance, role, roots)))
+              val canonical = roots.head
+              roots.tail.foreach(mergedOutputRoots.update(_, canonical))
+              outputRangeOverrides.update(
+                canonical,
+                PcSourceRange(rows.head._3.startOffset, rows.last._3.endOffset)
+              )
         val exported   = compilerChildren
           .getOrElse(instance, Vector.empty)
           .flatMap: (role, _, child) =>
@@ -2880,10 +4688,10 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             )
-            if mount.isEmpty then outputRoots.getOrElse(child, Vector.empty) else Vector.empty
-        outputRoots.update(instance, localRoots ++ exported)
+            if mount.isEmpty then outputRoots.getOrElse(child, Vector.empty).map(canonicalOutput) else Vector.empty
+        outputRoots.update(instance, (localRoots.map(canonicalOutput) ++ exported).distinct)
 
-      val composites                                            = active.toVector.flatMap: instance =>
+      val rawComposites                                         = active.toVector.flatMap: instance =>
         val production = selected(instance)
         val template   = resolvedRealizations(instance).template
         outputRows(instance).map: (declaration, id, range) =>
@@ -2904,7 +4712,8 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               ) match
-                case Some(parent) if parent == declaration.id => outputRoots(child).map(PlannedChild(role, path, _))
+                case Some(parent) if parent == declaration.id =>
+                  outputRoots(child).map(root => PlannedChild(role, path, canonicalOutput(root)))
                 case None                                     => Vector.empty
                 case _                                        => Vector.empty
           val children      = localChildren ++ mounted
@@ -2913,6 +4722,23 @@ private[metallurgy] object WholeFileProductionPlanner:
             val childRange = childRanges(child.child)
             (childRange.startOffset, childRange.endOffset, child.child.toString)
           PlannedComposite(id, production.id, range, normalized, production.dispositions)
+      val rawById                                               = rawComposites.map(value => value.instance -> value).toMap
+      val mergedSources                                         = mergedOutputRoots.toVector.groupMap(_._2)(_._1)
+      val composites                                            = rawComposites
+        .filterNot(value => mergedOutputRoots.contains(value.instance))
+        .map: composite =>
+          val sourceRoots = composite.instance +: mergedSources.getOrElse(composite.instance, Vector.empty)
+          val children    = sourceRoots
+            .flatMap(root => rawById(root).children)
+            .map(child => child.copy(child = canonicalOutput(child.child)))
+            .distinctBy(_.child)
+          composite.copy(
+            range = outputRangeOverrides.getOrElse(composite.instance, composite.range),
+            children = children.sortBy(child =>
+              val range = outputRangeOverrides.getOrElse(child.child, rawById(child.child).range)
+              (range.startOffset, range.endOffset, child.child.toString)
+            )
+          )
       val compositeRanges                                       = composites.map(value => value.instance -> value.range).toMap
       composites.foreach(parent =>
         parent.children.foreach: child =>
@@ -2932,6 +4758,61 @@ private[metallurgy] object WholeFileProductionPlanner:
       rejectOverlap(outputRoots(root))
       composites.foreach(parent => rejectOverlap(parent.children.map(_.child)))
 
+      def childGapIntervals(
+          instance: ProductionInstanceId,
+          startRole: String,
+          endRole: String
+      ): Vector[PcSourceRange] =
+        def ranges(role: String): Vector[PcSourceRange] =
+          compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collect:
+              case (`role`, _, child) => position(child)
+            .collect:
+              case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
+        (ranges(startRole), ranges(endRole)) match
+          case (Vector(start), Vector(end)) if start.endOffset <= end.startOffset =>
+            Vector(PcSourceRange(start.endOffset, end.startOffset))
+          case _                                                                  => Vector.empty
+
+      def textRanges(interval: PcSourceRange, expected: String): Vector[PcSourceRange] =
+        val found = Vector.newBuilder[PcSourceRange]
+        var from  = interval.startOffset
+        var next  = snapshot.sourceText.indexOf(expected, from)
+        while next >= 0 && next + expected.length <= interval.endOffset do
+          val range = PcSourceRange(next, next + expected.length)
+          if !snapshot.comments.exists(comment =>
+              comment.range.startOffset < range.endOffset && range.startOffset < comment.range.endOffset
+            )
+          then found += range
+          from = next + expected.length
+          next = snapshot.sourceText.indexOf(expected, from)
+        found.result()
+
+      val tokenCuts     = active.toVector.flatMap: instance =>
+        selected(instance).terminals.flatMap:
+          case TerminalDeclaration(
+                _,
+                TerminalIntervalSelector.ChildGap(startRole, endRole),
+                TerminalLeafTarget.Token(_, Some(expected)),
+                _
+              ) =>
+            childGapIntervals(instance, startRole, endRole)
+              .flatMap(textRanges(_, expected))
+              .flatMap(range => Vector(range.startOffset, range.endOffset))
+          case _ => Vector.empty
+      val planningAtoms = evidence.atoms
+        .flatMap: atom =>
+          val boundaries = (Vector(atom.start, atom.end) ++ evidenceBoundaries.filter(cut =>
+            atom.start < cut && cut < atom.end
+          ) ++ tokenCuts.filter(cut => atom.start < cut && cut < atom.end)).distinct.sorted
+          boundaries
+            .sliding(2)
+            .collect:
+              case Vector(start, end) => SourceAtom(0L, start, end, atom.claims, atom.comments)
+        .zipWithIndex
+        .map((atom, index) => atom.copy(id = index.toLong))
+
       val candidates                                                                            = collection.mutable.Map.empty[Long, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
       val resolvedTerminals                                                                     = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
       active.foreach: instance =>
@@ -2949,48 +4830,105 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource =>
-              val intervals = position(instance) match
+              val intervals   = position(instance) match
                 case _ if terminal.selector == TerminalIntervalSelector.WholeSource =>
                   Vector(PcSourceRange(0, snapshot.sourceLength))
                 case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                     if range.startOffset < range.endOffset =>
                   Vector(range)
                 case _                                                              => Vector.empty
-              if !accepts(terminal.cardinality, intervals.size) then
+              val atoms       = intervals.flatMap: interval =>
+                planningAtoms
+                  .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
+                  .filter(atom =>
+                    terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _))
+                  )
+                  .filter: atom =>
+                    terminal.target match
+                      case TerminalLeafTarget.Token(_, Some(expected)) =>
+                        snapshot.sourceText.substring(atom.start, atom.end) == expected
+                      case _                                           => true
+              val occurrences = terminal.target match
+                case _: TerminalLeafTarget.Token => atoms.size
+                case _                           => intervals.size
+              if !accepts(terminal.cardinality, occurrences) then
                 break(
                   Left(
                     WholeFilePlanningFailure.TerminalCardinalityMismatch(
                       instance,
                       terminal.id,
                       terminal.cardinality,
-                      intervals.size
+                      occurrences
                     )
                   )
                 )
-              intervals.foreach: interval =>
-                resolvedTerminals += instance -> terminal.id
-                evidence.atoms
+              if atoms.nonEmpty then resolvedTerminals += instance -> terminal.id
+              atoms.foreach: atom =>
+                val owner = localOutputRoots(instance)
+                  .map(canonicalOutput)
+                  .distinct
+                  .find: root =>
+                    val range = compositeRanges(root)
+                    range.startOffset <= atom.start && atom.end <= range.endOffset
+                  .map(PhysicalLeafOwner.Composite(_))
+                  .getOrElse(PhysicalLeafOwner.FileRoot)
+                val leaf  = PlannedPhysicalLeaf(
+                  atom.id,
+                  atom.start,
+                  atom.end,
+                  owner,
+                  instance,
+                  terminal.id,
+                  terminal.target
+                )
+                candidates.update(atom.id, candidates(atom.id) :+ leaf)
+            case TerminalIntervalSelector.ChildGap(startRole, endRole)                           =>
+              val intervals   = childGapIntervals(instance, startRole, endRole)
+              val atoms       = intervals.flatMap: interval =>
+                planningAtoms
                   .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
-                  .filter(atom =>
-                    terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _))
-                  )
-                  .foreach: atom =>
-                    val owner = localOutputRoots(instance)
-                      .find: root =>
-                        val range = outputRows(instance).find(_._2 == root).get._3
-                        range.startOffset <= atom.start && atom.end <= range.endOffset
-                      .map(PhysicalLeafOwner.Composite(_))
-                      .getOrElse(PhysicalLeafOwner.FileRoot)
-                    val leaf  = PlannedPhysicalLeaf(
-                      atom.id,
-                      atom.start,
-                      atom.end,
-                      owner,
+                  .filter(atom => atom.claims.exists(claims(instance, _)))
+                  .filter: atom =>
+                    terminal.target match
+                      case TerminalLeafTarget.Token(_, Some(expected)) =>
+                        snapshot.sourceText.substring(atom.start, atom.end) == expected
+                      case _                                           => true
+              val occurrences = terminal.target match
+                case _: TerminalLeafTarget.Token => atoms.size
+                case _                           => intervals.size
+              if !accepts(terminal.cardinality, occurrences) then
+                break(
+                  Left(
+                    WholeFilePlanningFailure.TerminalCardinalityMismatch(
                       instance,
                       terminal.id,
-                      terminal.target
+                      terminal.cardinality,
+                      occurrences
                     )
-                    candidates.update(atom.id, candidates(atom.id) :+ leaf)
+                  )
+                )
+              if atoms.nonEmpty then resolvedTerminals += instance -> terminal.id
+              atoms.foreach: atom =>
+                val owner = localOutputRoots(instance)
+                  .map(canonicalOutput)
+                  .distinct
+                  .find: root =>
+                    val range = compositeRanges(root)
+                    range.startOffset <= atom.start && atom.end <= range.endOffset
+                  .map(PhysicalLeafOwner.Composite(_))
+                  .getOrElse(PhysicalLeafOwner.FileRoot)
+                candidates.update(
+                  atom.id,
+                  candidates(atom.id) :+ PlannedPhysicalLeaf(
+                    atom.id,
+                    atom.start,
+                    atom.end,
+                    owner,
+                    instance,
+                    terminal.id,
+                    terminal.target
+                  )
+                )
             case other                                                                           =>
               break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
       def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
@@ -2999,7 +4937,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           .takeWhile(_.nonEmpty)
           .flatten
           .contains(ancestor)
-      val leaves                                                                                = evidence.atoms.map: atom =>
+      val leaves                                                                                = planningAtoms.map: atom =>
         val eligible = candidates(atom.id).filterNot(candidate =>
           candidate.target == TerminalLeafTarget.Parent && active.exists(descendant =>
             descendant != candidate.sourceOwner && isAncestor(candidate.sourceOwner, descendant) && atom.claims.exists(
@@ -3012,19 +4950,26 @@ private[metallurgy] object WholeFileProductionPlanner:
           case Vector()     =>
             break(Left(WholeFilePlanningFailure.UnownedSourceAtom(atom.id, atom.start, atom.end)))
           case conflicts    =>
-            val byOwner = conflicts.groupBy(_.sourceOwner)
-            val winner  =
-              if byOwner.values.exists(_.size != 1) then None
-              else
-                conflicts.filter(candidate =>
-                  conflicts.forall(other =>
-                    other == candidate ||
-                      (other.target == TerminalLeafTarget.Parent &&
-                        isAncestor(other.sourceOwner, candidate.sourceOwner))
-                  )
-                ) match
-                  case Vector(value) => Some(value)
-                  case _             => None
+            val winner =
+              conflicts.filter(candidate =>
+                candidate.target != TerminalLeafTarget.Parent && conflicts.forall(other =>
+                  other == candidate || other.target == TerminalLeafTarget.Parent
+                )
+              ) match
+                case Vector(value) => Some(value)
+                case _             =>
+                  val byOwner = conflicts.groupBy(_.sourceOwner)
+                  if byOwner.values.exists(_.size != 1) then None
+                  else
+                    conflicts.filter(candidate =>
+                      conflicts.forall(other =>
+                        other == candidate ||
+                          (other.target == TerminalLeafTarget.Parent &&
+                            isAncestor(other.sourceOwner, candidate.sourceOwner))
+                      )
+                    ) match
+                      case Vector(value) => Some(value)
+                      case _             => None
             winner.getOrElse(
               break(
                 Left(
@@ -3039,33 +4984,40 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
       val targets                                                                               = active.toVector.flatMap: instance =>
         val production = selected(instance)
-        val composites = outputRows(instance).map: (declaration, id, _) =>
-          val requirement = declaration.targetRequirement match
-            case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
-            case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
-            case TargetRequirement.NativeCandidate =>
-              break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
-          PlannedTargetAssertion(TargetAssertionOwner.Composite(id), declaration.targetSurfaceId, requirement)
+        val composites = outputRows(instance).collect:
+          case (declaration, id, _) if !mergedOutputRoots.contains(id) =>
+            val requirement = declaration.targetRequirement match
+              case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
+              case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
+              case TargetRequirement.NativeCandidate =>
+                break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
+            PlannedTargetAssertion(TargetAssertionOwner.Composite(id), declaration.outputRoleId.value, requirement)
         val terminals  = production.terminals.collect:
-          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId), _)
+          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _)
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
         composites ++ terminals
       val accessors                                                                             = active.toVector.flatMap(instance =>
-        outputRows(instance).flatMap: (declaration, id, _) =>
-          declaration.accessors.map(obligation =>
-            PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required)
-          )
+        outputRows(instance).flatMap:
+          case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
+          case (declaration, id, _)                         =>
+            declaration.accessors.map(obligation =>
+              PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required)
+            )
       )
       val stubs                                                                                 = active.toVector.flatMap: instance =>
-        outputRows(instance).flatMap: (declaration, id, _) =>
-          declaration.persistence match
-            case PersistenceObligations.NotApplicable                                   => Vector.empty
-            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-              Vector(PlannedStubAssertion(id, stub, serializer, indices, navigation))
+        outputRows(instance).flatMap:
+          case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
+          case (declaration, id, _)                         =>
+            declaration.persistence match
+              case PersistenceObligations.NotApplicable                                   => Vector.empty
+              case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+                Vector(PlannedStubAssertion(id, stub, serializer, indices, navigation))
       val navigation                                                                            = active.toVector.flatMap: instance =>
-        outputRows(instance).flatMap: (declaration, id, _) =>
-          declaration.navigation.map(PlannedNavigationAssertion(id, _))
+        outputRows(instance).flatMap:
+          case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
+          case (declaration, id, _)                         =>
+            declaration.navigation.map(PlannedNavigationAssertion(id, _))
       Right(
         WholeFileProductionPlan(
           snapshot.sourceUri,

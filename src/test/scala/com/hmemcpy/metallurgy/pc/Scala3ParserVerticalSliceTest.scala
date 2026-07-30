@@ -4,20 +4,25 @@ import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
   CatalogValidationError,
   CatalogShapeMatcher,
-  CatalogPathSegment,
   CatalogValuePattern,
   CompilerRuntimeInventory,
   FactStatus,
+  ImportPersistenceSurfaces,
+  NativePsiElementBindings,
+  PackagePersistenceSurfaces,
+  PersistenceObligations,
   PhysicalLeafOwner,
   InventoryFieldObservation,
-  InventoryKind,
-  InventoryAncestor,
   InventoryValueObservation,
   Scala3PsiProductionCatalog,
   Scala3PsiProductionCatalogValidator,
   Scala3PsiProductionCoverageReport,
   ScalaPsiSurfaceInventory,
+  ScalaPsiSurfaceRow,
+  SurfaceFactKind,
   SurfaceClassification,
+  TerminalDeclaration,
+  TerminalLeafTarget,
   ProvisionalSourceEvidencePlanner,
   PreparedProductionCatalog,
   WholeFileProductionPlanner
@@ -31,31 +36,104 @@ import java.nio.file.Path
 final class Scala3ParserVerticalSliceTest:
 
   @Test
+  def minimizedCommaImportLowersSiblingCompilerProductsIntoOneStatement(): Unit =
+    val bridge = openBridge()
+    try
+      val source     = "import a.b, c.d\n"
+      val snapshot   = parse(bridge, source, "file:///CommaImport.scala")
+      assertTrue(snapshot.diagnostics.isEmpty)
+      assertEquals(source, snapshot.sourceText)
+      assertEquals(
+        "685b6d2968cd76b304ee2dd83868d07a143f1fdc0f95f93638af15525ccd2ba4",
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
+      )
+      assertEquals(
+        Vector(
+          "PackageDef",
+          "Ident",
+          "Import",
+          "Ident",
+          "ImportSelector",
+          "Ident",
+          "Thicket",
+          "Import",
+          "Ident",
+          "ImportSelector",
+          "Ident"
+        ),
+        snapshot.nodes.map(_.production)
+      )
+      assertEquals(
+        Vector(
+          ParserNodePosition.Positioned(PcSourceRange(0, 10), 7, ParserPositionProvenance.SourceDerived),
+          ParserNodePosition.Positioned(PcSourceRange(12, 15), 12, ParserPositionProvenance.SourceDerived)
+        ),
+        snapshot.nodes.filter(_.production == "Import").map(_.position)
+      )
+      val evidence   = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+      val runtime    = CompilerRuntimeInventory.from(snapshot).toOption.get
+      val aggregate  = AggregatedCompilerProductionInventory.aggregate(Vector(runtime)).toOption.get
+      val surfaces   = withImportTokenSurfaces(ScalaPsiSurfaceInventory.installed().toOption.get)
+      val prepared   = PreparedProductionCatalog
+        .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+        .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+      val plan       = WholeFileProductionPlanner
+        .plan(snapshot, evidence, prepared)
+        .fold(error => throw new AssertionError(error.toString), identity)
+      val statements =
+        plan.composites.filter(_.productionId == "import-statement").filter(_.instance.localOutputId == "statement")
+      assertEquals(1, statements.size)
+      assertEquals(PcSourceRange(0, 15), statements.head.range)
+      assertEquals(2, statements.head.children.size)
+      assertEquals(
+        source,
+        plan.physicalLeafOwnership.sortBy(_.start).map(leaf => source.substring(leaf.start, leaf.end)).mkString
+      )
+    finally bridge.close()
+
+  @Test
   def minimizedImportFormsHaveExactCompilerShapes(): Unit =
     val bridge = openBridge()
     try
-      val forms = Vector(
+      val forms     = Vector(
         ("import a.b.c\n", Vector("c"), "262c1533c8ca5b09b137b7f5136d3fb2923a30856ab94b46189eec35032aa144"),
         ("import a.b.*\n", Vector("_"), "ccb4206d2afbb0c55c24beed219536e2129c2bf39d24c8ac7c72d5158c06a9ec"),
         ("import a.b.{c}\n", Vector("c"), "01bb164a10401a3e5c2f060b39982e89d97b75f16ddf71ffca4b8ced1915917d"),
-        ("import a.b.{c as d}\n", Vector("c", "d"), "95bfc676f47540630d89cad8b86f2666bce93fbd4934f5a54de3bce1a0b330a2"),
-        ("import a.b.{c => d}\n", Vector("c", "d"), "c8dc8a7d01b87991682707285a7e3ec76ecfaf9fb2721bdd2f27dfcad58f6ac6"),
+        (
+          "import a.b.{c /* as */ as d}\n",
+          Vector("c", "d"),
+          "5a23963f840d0d5ea665be4db02dbc32119e145e6b126f29ff5d666228353e5a"
+        ),
+        (
+          "import a.b.{c /* => */ => d}\n",
+          Vector("c", "d"),
+          "9da9e2b6eba42625c7d7f1b36e496d33e7bcdfedfe4baa8196c89bf6a8375dfc"
+        ),
         ("import a.b.given\n", Vector(""), "83ad88645218cd5ae17ec9e1555c55e2eeac71881005d03d4591a83773d25c76"),
         ("import a.b.given T\n", Vector("", "T"), "e925d7c12a5a58e8a147c9a6c5c7954b1de31fe7a3347f2514ff2f656079841b"),
         (
           "import a.b.{given, given T, *}\n",
           Vector("", "", "T", "_"),
           "b600221d01be377489fad79b19d6b773c39f0ff860112329a51a6c8e12b8b39f"
-        )
+        ),
+        ("import a.b._\n", Vector("_"), ""),
+        ("import a.b.{c as _}\n", Vector("c", "_"), ""),
+        ("import a.b.{c => _}\n", Vector("c", "_"), ""),
+        ("import java as j\n", Vector("java", "j"), ""),
+        ("import a.b.c as _\n", Vector("c", "_"), ""),
+        ("import a.b.given Ordering[Int]\n", Vector("", "Ordering", "Int"), ""),
+        ("import a.b.given F[G[Int]]\n", Vector("", "F", "G", "Int"), ""),
+        ("import a.b.given Either[Int, String]\n", Vector("", "Either", "Int", "String"), "")
       )
-      forms.zipWithIndex.foreach: (form, index) =>
+      val snapshots = forms.zipWithIndex.map: (form, index) =>
         val (source, names, fingerprint) = form
         val snapshot                     = parse(bridge, source, s"file:///ImportForm$index.scala")
-        assertTrue(snapshot.diagnostics.isEmpty)
+        assertTrue(snapshot.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
         assertEquals(source, snapshot.sourceText)
-        assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
+        if fingerprint.nonEmpty then assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
         assertEquals(
-          Vector("PackageDef", "Ident", "Import", "Select", "Ident"),
+          if index != 11 then Vector("PackageDef", "Ident", "Import", "Select", "Ident")
+          else Vector("PackageDef", "Ident", "Import", "Thicket", "ImportSelector"),
           snapshot.nodes.take(5).map(_.production)
         )
         assertEquals(
@@ -70,20 +148,46 @@ final class Scala3ParserVerticalSliceTest:
           statement.position
         )
         assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
+        snapshot
+      val comma     = parse(bridge, "import a.b, c.d\n", "file:///ImportFormComma.scala")
+      val runtimes  = (snapshots :+ comma).map(snapshot => CompilerRuntimeInventory.from(snapshot).toOption.get)
+      val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
+      val catalog   = Scala3PsiProductionCatalog(
+        Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
+          production.id.startsWith("file-import") || production.id.startsWith("import-")
+        )
+      )
+      val installed = ScalaPsiSurfaceInventory.installed().toOption.get
+      val surfaces  = withImportTokenSurfaces(installed)
+      val prepared  = PreparedProductionCatalog
+        .prepare(catalog, aggregate, surfaces)
+        .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+      snapshots.foreach: snapshot =>
+        val evidence = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+        val plan     = WholeFileProductionPlanner
+          .plan(snapshot, evidence, prepared)
+          .fold(error => throw new AssertionError(s"${snapshot.sourceUri}: $error"), identity)
+        assertEquals(
+          snapshot.sourceText,
+          plan.physicalLeafOwnership
+            .sortBy(_.start)
+            .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
+            .mkString
+        )
     finally bridge.close()
 
   @Test
   def minimizedFilePackageFamilyHasAnExactInventory(): Unit =
     val bridge = openBridge()
     try
-      val value     = parse(bridge, PackageSource, "file:///Scala3PackageFamily.scala")
-      val inventory = CompilerRuntimeInventory
+      val value                = parse(bridge, PackageSource, "file:///Scala3PackageFamily.scala")
+      val inventory            = CompilerRuntimeInventory
         .from(value)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
-      val aggregate = AggregatedCompilerProductionInventory
+      val aggregate            = AggregatedCompilerProductionInventory
         .aggregate(Vector(inventory))
         .fold(failure => throw new AssertionError(failure.toString), identity)
-      val evidence  = ProvisionalSourceEvidencePlanner
+      val evidence             = ProvisionalSourceEvidencePlanner
         .plan(value)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
       assertEquals(
@@ -124,16 +228,25 @@ final class Scala3ParserVerticalSliceTest:
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
       assertEquals("96d9782ed2920c73cbd6529a4c6ab804ba0b2e97ec8d61de1c67e10c402ef484", aggregate.fingerprint)
-      val surfaces  = ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
-      val catalog   = Scala3PsiProductionCatalog(
+      val identifierPackage    = parse(bridge, "package example\n", "file:///Scala3IdentifierPackageFamily.scala")
+      val identifierInventory  = CompilerRuntimeInventory
+        .from(identifierPackage)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val preparationAggregate = AggregatedCompilerProductionInventory
+        .aggregate(Vector(inventory, identifierInventory))
+        .fold(failure => throw new AssertionError(failure.toString), identity)
+      val surfaces             = withImportTokenSurfaces(
+        ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
+      )
+      val catalog              = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
-          production.id.startsWith("file-package") || production.id.startsWith("package-stable")
+          production.id == "file-package" || production.id.startsWith("package-stable")
         )
       )
-      val prepared  = PreparedProductionCatalog
-        .prepare(catalog, aggregate, surfaces)
+      val prepared             = PreparedProductionCatalog
+        .prepare(catalog, preparationAggregate, surfaces)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
-      val plan      = WholeFileProductionPlanner
+      val plan                 = WholeFileProductionPlanner
         .plan(value, evidence, prepared)
         .fold(failure => throw new AssertionError(failure.toString), identity)
       assertEquals(
@@ -152,7 +265,7 @@ final class Scala3ParserVerticalSliceTest:
           case PhysicalLeafOwner.Composite(owner) => owner.origin.valueId
           case PhysicalLeafOwner.FileRoot         => throw new AssertionError("package identifier leaf is file-owned")
       )
-      val trailing  = plan.physicalLeafOwnership.find(leaf => leaf.start == 22 && leaf.end == 23).get
+      val trailing             = plan.physicalLeafOwnership.find(leaf => leaf.start == 22 && leaf.end == 23).get
       assertEquals(PhysicalLeafOwner.FileRoot, trailing.owner)
       assertEquals("whole-file", trailing.terminalId)
       assertEquals(
@@ -253,7 +366,7 @@ final class Scala3ParserVerticalSliceTest:
         contexts.flatMap(context =>
           CatalogShapeMatcher.select(catalog, row.kind, row.prefix, row.observation, context, row.sourceClassification)
         )
-      assertTrue(selected(0).isEmpty)
+      assertEquals(Vector("file-package-imports"), selected(0).map(_.id))
       assertTrue(selected(6).isEmpty)
     finally bridge.close()
 
@@ -416,11 +529,12 @@ final class Scala3ParserVerticalSliceTest:
         number.occurrences
       )
       val aggregate                                                                                = firstAggregation.toOption.get
-      val surfaces                                                                                 = ScalaPsiSurfaceInventory
+      val installedSurfaces                                                                        = ScalaPsiSurfaceInventory
         .installed()
         .fold(message => throw new AssertionError(message), identity)
+      val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
       assertEquals("abd7b4fa78eb68661b6d46f5e74dededc2d1be5dbd31f78c8eca5fef3ffe3f26", aggregate.fingerprint)
-      assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", surfaces.fingerprint)
+      assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,
         aggregate,
@@ -430,24 +544,9 @@ final class Scala3ParserVerticalSliceTest:
         .flatMap(row =>
           row.occurrences.collect:
             case occurrence
-                if !(
-                  row.prefix == "Number" ||
-                    (row.prefix == "Select" && occurrence.context.exists(context =>
-                      context.ownerPrefix == "PackageDef" &&
-                        context.path == Vector(CatalogPathSegment.NamedField("pid"))
-                    )) ||
-                    (row.prefix == "Ident" && occurrence.context.exists(context =>
-                      context.ownerPrefix == "Select" &&
-                        context.path == Vector(CatalogPathSegment.NamedField("qualifier")) &&
-                        context.ancestors.headOption.contains(
-                          InventoryAncestor(
-                            InventoryKind.Node,
-                            "PackageDef",
-                            Vector(CatalogPathSegment.NamedField("pid"))
-                          )
-                        )
-                    ))
-                ) =>
+                if CatalogShapeMatcher
+                  .selectAggregated(Scala3PsiProductionCatalog.Reviewed, row, occurrence)
+                  .isEmpty =>
               CatalogValidationError.UncoveredCompilerShape(
                 row.kind,
                 row.prefix,
@@ -459,15 +558,18 @@ final class Scala3ParserVerticalSliceTest:
       val actualUncovered                                                                          = catalogErrors.collect:
         case error: CatalogValidationError.UncoveredCompilerShape => error
       assertEquals(expectedUncovered, actualUncovered.toSet)
-      val accounted                                                                                = Set(
-        "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl",
-        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl",
-        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl",
-        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#reference()Lscala/Option;",
-        "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl#keyword()Lcom/intellij/psi/PsiElement;",
-        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#qualifier()Lscala/Option;",
-        "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl#nameId()Lcom/intellij/psi/PsiElement;"
-      )
+      val accounted                                                                                = Scala3PsiProductionCatalog.Reviewed.productions
+        .flatMap(_.effectiveOutputRealizations)
+        .flatMap(_.template.composites)
+        .flatMap: composite =>
+          val persistence = composite.persistence match
+            case PersistenceObligations.NotApplicable                                   => Vector.empty
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              Vector(stub, serializer, navigation) ++ indices
+          Vector(composite.targetSurfaceId) ++ composite.accessors.map(_.surfaceId) ++ persistence
+        .toSet ++ Scala3PsiProductionCatalog.Reviewed.productions.flatMap(_.terminals.collect {
+        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _) => surfaceId
+      })
       val expectedUnaccounted                                                                      = surfaces.rows
         .filter(row =>
           row.status == FactStatus.Available &&
@@ -485,7 +587,7 @@ final class Scala3ParserVerticalSliceTest:
         catalogErrors.exists(error =>
           !error.isInstanceOf[CatalogValidationError.UncoveredCompilerShape] &&
             !error.isInstanceOf[CatalogValidationError.UnaccountedSyntaxSurface] &&
-            error != CatalogValidationError.UnrepresentedCatalogProduction("file-package")
+            !error.isInstanceOf[CatalogValidationError.UnrepresentedCatalogProduction]
         )
       )
       val report                                                                                   = Scala3PsiProductionCoverageReport.markdown(
@@ -642,5 +744,46 @@ final class Scala3ParserVerticalSliceTest:
       |""".stripMargin
 
   private val PackageSource = "package example.syntax\n"
+
+  private def withImportTokenSurfaces(inventory: ScalaPsiSurfaceInventory): ScalaPsiSurfaceInventory =
+    val tokens = Vector(
+      NativePsiElementBindings.ImportWildcardTokenSurface,
+      NativePsiElementBindings.ImportLegacyWildcardTokenSurface,
+      NativePsiElementBindings.ImportAliasAsTokenSurface,
+      NativePsiElementBindings.ImportAliasArrowTokenSurface
+    )
+    inventory.copy(rows =
+      inventory.rows ++ tokens.map(id =>
+        ScalaPsiSurfaceRow(
+          id,
+          SurfaceFactKind.Token,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        )
+      ) ++ Vector(
+        ScalaPsiSurfaceRow(
+          ImportPersistenceSurfaces.AliasedImportIndex,
+          SurfaceFactKind.Index,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        ),
+        ScalaPsiSurfaceRow(
+          PackagePersistenceSurfaces.FqnIndex,
+          SurfaceFactKind.Index,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        ),
+        ScalaPsiSurfaceRow(
+          ImportPersistenceSurfaces.SelfNavigation,
+          SurfaceFactKind.Navigation,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        )
+      )
+    )
 
   private val ScalaVersion = "3.7.4"

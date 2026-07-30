@@ -103,111 +103,6 @@ private final class StructuralScala3PcBridge(
                     )
                   )
 
-  def compilerTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto] =
-    sourceTreeDto(snapshot, currency, "tpdTree")
-
-  def untypedTreeDto(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeDto] =
-    sourceTreeDto(snapshot, currency, "untpdTree")
-
-  private def sourceTreeDto(
-      snapshot: PcSnapshot,
-      currency: () => PcSnapshotCurrency,
-      treeAccessor: String
-  ): Option[CompilerTreeDto] =
-    // Production accepts only the document's verbatim text; compatibility-fixture wrapping cannot reach the producer.
-    if !snapshot.projection.isIdentity then None
-    else
-      require(
-        typedDocument.get().contains(TypedDocument(snapshot.fileUri, snapshot.documentVersion)),
-        "tree extraction requires a matching typed document"
-      )
-      val uri  = PcSourceUri.normalize(snapshot.fileUri)
-      val unit = mapValue(driverClass.getMethod("compilationUnits").invoke(driver), uri)
-      val root = unit.getClass.getMethod(treeAccessor).invoke(unit)
-      collectTreeHierarchy(root, currency).map(buildSourceDto)
-
-  private def buildSourceDto(entries: Vector[(AnyRef, Option[Long])]): CompilerTreeDto =
-    val treeToId                                                        =
-      val m = new java.util.IdentityHashMap[AnyRef, java.lang.Long]
-      entries.iterator.zipWithIndex.foreach { case ((tree, _), index) => m.put(tree, index.toLong) }
-      m
-    // A type-position child is a DefDef/ValDef `tpt`; tag it so the producer emits a type element, not a reference.
-    val roleById                                                        =
-      val acc = scala.collection.mutable.Map.empty[Long, CompilerNodeRole]
-      entries.iterator.foreach { case (tree, _) =>
-        val kind = tree.getClass.getSimpleName
-        if kind == "DefDef" || kind == "ValDef" then
-          Try(tree.getClass.getMethod("tpt").invoke(tree)).toOption.foreach: tpt =>
-            Option(treeToId.get(tpt)).foreach: tptId =>
-              val role = if kind == "DefDef" then CompilerNodeRole.ReturnType else CompilerNodeRole.ValueType
-              acc(tptId) = role
-      }
-      acc
-    val raw                                                             = entries.zipWithIndex.map:
-      case ((tree, parentId), index) =>
-        val span        = tree.getClass.getMethod("span").invoke(tree)
-        val exists      = spanExists(span)
-        val derived     = spanIsSourceDerived(span)
-        val start       = if exists then Try(spanStart(span)).getOrElse(-1) else -1
-        val end         = if exists then Try(spanEnd(span)).getOrElse(-1) else -1
-        val sourceClass = CompilerTreeDto.sourceClassOf(exists, derived, start, end)
-        val range       =
-          if sourceClass == CompilerSourceClass.PhysicalSource then Some(PcSourceRange(start, end)) else None
-        CompilerSourceNode(
-          index.toLong,
-          parentId,
-          tree.getClass.getSimpleName,
-          range,
-          sourceClass,
-          treeName(tree),
-          roleById.get(index.toLong)
-        )
-    // A physical node's immediate parent may be a synthetic (non-source-derived) wrapper that the DTO does not
-    // publish; reparent each physical node to its nearest physical ancestor so the producer's walk reaches it.
-    val byId                                                            = raw.map(n => n.id -> n).toMap
-    def nearestPhysicalAncestor(node: CompilerSourceNode): Option[Long] =
-      node.parentId.flatMap(byId.get) match
-        case Some(p) if p.sourceClass == CompilerSourceClass.PhysicalSource => Some(p.id)
-        case Some(p)                                                        => nearestPhysicalAncestor(p)
-        case None                                                           => None
-    val nodes                                                           = raw.map: n =>
-      if n.sourceClass == CompilerSourceClass.PhysicalSource then n.copy(parentId = nearestPhysicalAncestor(n))
-      else n
-    CompilerTreeDto(nodes)
-
-  def compilerTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction] =
-    compilerTreeDto(snapshot, currency).map(CompilerTreeExtraction(_, diagnostics(snapshot)))
-
-  def untypedTreeExtraction(snapshot: PcSnapshot, currency: () => PcSnapshotCurrency): Option[CompilerTreeExtraction] =
-    untypedTreeDto(snapshot, currency).map(CompilerTreeExtraction(_, diagnostics(snapshot)))
-
-  /** A hierarchical walk of the typed tree: each tree paired with its parent's id (the parent is the enclosing tree,
-    * never an intermediate collection). Emitted in pre-order so a node's index is its id and parent ids resolve against
-    * earlier entries.
-    */
-  private def collectTreeHierarchy(
-      root: AnyRef,
-      currency: () => PcSnapshotCurrency
-  ): Option[Vector[(AnyRef, Option[Long])]] =
-    val treeClass = Class.forName("dotty.tools.dotc.ast.Trees$Tree", true, classloader)
-    val seen      = new IdentityHashMap[AnyRef, java.lang.Boolean]()
-    val entries   = Vector.newBuilder[(AnyRef, Option[Long])]
-    var nextId    = 0L
-    var current   = true
-
-    def visit(value: AnyRef, parentId: Option[Long]): Unit =
-      if current && nextId % 32 == 0 then current = isCurrent(currency)
-      if current && treeClass.isInstance(value) && seen.put(value, java.lang.Boolean.TRUE) == null then
-        val id = nextId
-        nextId += 1
-        entries += value -> parentId
-        productValues(value).takeWhile(_ => current).foreach(visit(_, Some(id)))
-      else if current && isScalaIterable(value) then
-        iteratorValues(value).takeWhile(_ => current).foreach(visit(_, parentId))
-
-    visit(root, None)
-    Option.when(current && isCurrent(currency))(entries.result())
-
   def semanticdbOccurrences(bytes: Array[Byte], sourceText: String): Vector[PcSemanticdbOccurrence] =
     val moduleClass = Class.forName("dotty.tools.dotc.semanticdb.TextDocument$", true, classloader)
     val module      = moduleClass.getField("MODULE$").get(null)
@@ -449,13 +344,6 @@ private final class StructuralScala3PcBridge(
 
   private def productValues(value: AnyRef): Iterator[AnyRef] =
     Try(value.getClass.getMethod("productIterator").invoke(value)).toOption.iterator.flatMap(iteratorValues)
-
-  /** The compiler's declared/reference name for a tree (a def/val/param/ident name), if it has one. dotc stores it on
-    * the `name` field of Name-bearing trees (`ValDef`, `DefDef`, `Ident`, `Select`, `TypeDef`); `Name.toString` is the
-    * source spelling. Trees without a name (e.g. `Apply`, `Literal`) return None.
-    */
-  private def treeName(tree: AnyRef): Option[String] =
-    Try(tree.getClass.getMethod("name").invoke(tree)).toOption.map(_.toString).filter(_.nonEmpty)
 
   private def isScalaIterable(value: AnyRef): Boolean =
     value.getClass.getMethods.exists(method => method.getName == "iterator" && method.getParameterCount == 0)
@@ -741,9 +629,6 @@ private final class StructuralScala3PcBridge(
 
   private def spanExists(span: AnyRef): Boolean =
     spanBoolean(span, "exists$extension")
-
-  private def spanIsSourceDerived(span: AnyRef): Boolean =
-    spanBoolean(span, "isSourceDerived$extension")
 
   private def spanBoolean(span: AnyRef, methodName: String): Boolean =
     val module = Class.forName("dotty.tools.dotc.util.Spans$Span$", true, classloader).getField("MODULE$").get(null)
