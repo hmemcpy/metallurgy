@@ -125,6 +125,9 @@ work.
 An active module resolves its exact compiler artifacts and independently probes parser, semantic, completion, and
 best-effort TASTy capabilities. Artifact versions never select behavior.
 
+A compiler/host cell is admitted only when its discovered inventories and contracts are covered. Artifact acquisition
+and capability discovery alone do not admit unseen grammar or semantics.
+
 ### Syntax
 
 Preparing modules use a neutral non-Scala, non-stub-bearing language. Once exact parser capabilities are ready, one
@@ -143,13 +146,15 @@ verbatim source
 ```
 
 Typed trees never produce syntax. Parsing never waits for semantic work. No background operation replaces syntax.
-Unknown required compiler-valid productions fail closed to deterministic neutral PSI and a capability report rather
-than a bundled parse.
+Unknown required compiler-valid productions fail closed to deterministic neutral PSI rather than a bundled parse. The
+project/file capability report names the exact compiler artifact and host, missing parser capability or stable role,
+affected scope, retained operations, and evidence/remediation location.
 
 Metallurgy owns stable neutral grammar roles and PSI output-role contracts. Compiler production names and installed
 implementation classes are inventory evidence, not durable role identities. Parser products and output composites may
 lower one-to-many or many-to-one. Each output role independently binds to a capability-proven native implementation or
-a Metallurgy compatibility implementation; native and compatible roles may coexist in one file.
+a Metallurgy compatibility implementation satisfying the same observable role contract; native and compatible roles
+may coexist in one file without observable provider differences.
 
 ### Semantics
 
@@ -200,7 +205,13 @@ Best-effort TASTy is a cross-module semantic input. It never parses the current 
 - `doParseContents` returns `builder.getTreeBuilt.getFirstChildNode`. Returning the wrapper root hides top-level
   declarations from lexical resolution.
 - Composite PSI requires balanced `PsiBuilder` markers. A visually similar leaf is not an `Sc*` implementation.
-- Parser evidence must account for all source ranges, trivia, delimiters, and zero-width layout events before emission.
+- Parser evidence must account for all source ranges, trivia, delimiters, and zero-width layout events. Terminal and
+  wrapper output roles may refine provisional source atoms only through reviewed generic lexer-boundary-safe interval
+  contracts. A contract atomically replaces one identified half-open atom with a contiguous ordered partition that
+  exactly covers it without changing source order, text, or evidence claims; every new cut is proven safe by the closed
+  lexical contract used to build the lexer tape. Zero-width events retain distinct evidence identities even when they
+  share an offset. Unknown or unsafe boundaries and overlapping, multiply claimed, or unowned bytes or events fail
+  before lexer-tape construction, `PsiBuilder` creation, or physical emission.
 - AST completion precedes stub derivation. Identical input and schema must produce identical stub and index signatures.
 - IntelliJ `Logger.info` writes to `idea.log`, not the runIDE stdout redirect.
 

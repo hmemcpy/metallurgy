@@ -5,7 +5,7 @@ must not define another data flow or ownership model.
 
 ## 1. Product contract
 
-For every opted-in Scala 3 module, Metallurgy:
+For every opted-in Scala 3 module in an admitted compiler/host cell, Metallurgy:
 
 1. loads the module's exact Scala 3 compiler artifacts in isolation;
 2. parses each source file with that compiler's parser;
@@ -19,6 +19,9 @@ For every opted-in Scala 3 module, Metallurgy:
 The existing IntelliJ Scala 3 tests define the required PSI behavior for every compiler-valid fixture. Their Scala
 source, executable assertions, and expected results remain unchanged. Dotc defines language validity and semantic
 meaning for the exact Scala version under test.
+
+Opt-in outside an admitted cell retains explicit capability states and fail-closed behavior. It does not extend the
+support promise to uncovered grammar, output roles, semantic contracts, or host bindings.
 
 The central user-visible invariant is:
 
@@ -57,8 +60,9 @@ Compiler and host versions are artifact and diagnostic identities. They never se
 operations as executable capabilities.
 
 The baseline host is IntelliJ `261.26222.65` with Scala plugin `2026.1.20`; it is a development reference, not a
-semantic limit. Any published Scala 3 compiler is eligible when its artifacts can be acquired and its required parser
-and semantic capabilities are discovered.
+semantic limit. Any published Scala 3 compiler is eligible for admission. A compiler/host cell is admitted only when
+its discovered parser and semantic inventories, output-role contracts, and host bindings are covered; acquiring
+artifacts and discovering callable capabilities alone do not admit unseen grammar or semantics.
 
 ### 2.3 Capability states
 
@@ -187,8 +191,21 @@ parser evidence and accounts for:
 Every source interval has exactly one owner. Ownership cannot overlap. Reassembling the ordered leaves equals the
 original source byte for byte.
 
-Scanner replay may validate or enrich evidence, but it cannot choose the production hierarchy. A plan with an
-unaccounted or multiply owned interval is invalid.
+Terminal and wrapper output roles may refine provisional source atoms only through reviewed generic interval contracts
+declared in the production catalog. A contract identifies one provisional atom by stable identity and unchanged
+half-open interval in the source-evidence coordinate system, identifies the stable terminal or wrapper output role
+requesting refinement, and declares an ordered replacement partition. Replacement intervals are non-empty,
+contiguous, contained by and exactly cover the original atom in source order, and retain its evidence claims until
+final ownership validation. A new cut must already be an evidence boundary or be proven safe by the same closed
+lexical contract used to build the immutable lexer tape; matching source text alone is not proof. Applying a contract
+atomically withdraws the original atom and installs its partition without changing source text or order.
+
+Zero-width events are assigned by stable evidence identity, not offset alone, so co-located events remain distinct.
+Final validation assigns exactly one owner to every source byte and zero-width event. An unknown atom, role, or event;
+an unsafe boundary; a non-contiguous or incomplete partition; or overlapping, multiply claimed, or unowned evidence
+invalidates the whole-file plan before lexer-tape construction, `PsiBuilder` creation, or physical emission.
+
+Scanner replay may validate or enrich evidence, but it cannot choose the production hierarchy.
 
 ### 3.5 Production catalog
 
@@ -288,11 +305,12 @@ The same contract applies to cold parse, warm parse, closed files, copies, edits
 Invalid intermediate edits retain the exact source, parser diagnostics, and a structurally safe recovery tree described
 by the catalog. Recovery cannot claim that invalid code is compiler-valid.
 
-An unknown required production in compiler-valid source fails closed:
+An unknown required production, output role, or binding in compiler-valid source fails closed:
 
 - the file uses deterministic neutral file-scoped PSI;
-- no partial Scala tree or stub is published;
-- a project-level capability report names the missing production and exact compiler identity;
+- no partial Scala tree, stub, or index is published;
+- a project/file capability report names the exact compiler artifact and host, missing parser capability or stable
+  role, affected scope, retained operations, and evidence/remediation location;
 - no bundled Scala parse is substituted.
 
 This state is a compatibility failure to implement, not a reason to hide diagnostics or manufacture semantic results.

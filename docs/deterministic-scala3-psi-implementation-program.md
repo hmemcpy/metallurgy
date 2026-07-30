@@ -3,10 +3,11 @@
 ## Destination
 
 Metallurgy synchronously produces one complete, source-compatible Scala PSI tree from the exact Scala 3 compiler
-parser for every active Scala 3 file. The compiler exclusively supplies Scala 3 types, symbols, resolve, completion,
-navigation, and language diagnostics. Every compiler-valid copied IntelliJ Scala 3 test retains its source,
-assertions, and expected output unchanged. Broken upstream modules preserve correct downstream highlighting through
-capability-discovered best-effort TASTy.
+parser for every active Scala 3 file in an admitted compiler/host cell. The compiler exclusively supplies Scala 3
+types, symbols, resolve, completion, navigation, and language diagnostics. Every compiler-valid copied IntelliJ Scala
+3 test retains its source, assertions, and expected output unchanged. Broken upstream modules preserve correct
+downstream highlighting through capability-discovered best-effort TASTy. Active files outside an admitted cell fail
+closed; opt-in does not extend the support promise to arbitrary unseen future grammar.
 
 The implementation does not retain a compatibility rollout. New components may be exercised directly before they are
 registered, but each active ownership boundary changes atomically and deletes the implementation it replaces.
@@ -16,7 +17,12 @@ registered, but each active ownership boundary changes atomically and deletes th
 1. The exact compiler parser is the syntax authority. Typed trees are semantic evidence, never syntax input.
 2. One synchronous walk produces one whole-file AST. Background work may publish semantics but never change syntax
    shape.
-3. Source text, tokens, trivia, indentation, and recovery structure are lossless and deterministically owned.
+3. Source text, tokens, trivia, indentation, and recovery structure are lossless and deterministically owned. Terminal
+   and wrapper output roles may refine provisional source atoms only through reviewed generic lexer-boundary-safe
+   interval contracts. Each contract atomically replaces one identified atom with an ordered exact partition without
+   changing source order, text, or evidence claims; co-located zero-width events retain distinct evidence identities.
+   Unknown or unsafe boundaries and overlapping, multiply claimed, or unowned bytes or events fail before physical
+   emission.
 4. A typed production catalog accounts for every compiler production, source range, public Scala PSI accessor, stub,
    and index obligation.
 5. Unknown required compiler-valid syntax fails closed to neutral file-scoped PSI and a project capability report. It
@@ -36,7 +42,8 @@ registered, but each active ownership boundary changes atomically and deletes th
 12. Each output role independently binds to a capability-proven native implementation or a Metallurgy compatibility
     implementation. Native and compatible roles may coexist in one file without observable contract differences.
 13. A newly published compiler with covered inventories and semantic contracts admits without production-code
-    changes. Novel drift identifies bridge, role, or compatibility work and never selects behavior by version.
+    changes. Novel drift identifies bridge, role, or compatibility work and never selects behavior by version. The
+    declared support promise covers admitted compiler/host cells, not arbitrary unseen future grammar.
 
 ## Dependency graph
 
@@ -225,6 +232,14 @@ Create a plan-backed leaf stream from verbatim source and positioned parser evid
 
 Scanner replay may compare or enrich evidence but cannot decide the production tree. Any source interval with no unique
 owner is a planning failure.
+
+Each reviewed generic refinement contract identifies one provisional atom and stable terminal or wrapper output role,
+then atomically replaces the atom with contiguous, ordered, non-empty half-open intervals that exactly partition its
+range and retain its evidence claims. New cuts must already be evidence boundaries or be proven safe by the closed
+lexical contract used to build the immutable lexer tape; source-text matching alone is insufficient. Zero-width events
+are assigned by stable evidence identity rather than offset. Unknown atoms, roles, or events; unsafe boundaries;
+incomplete partitions; and overlapping, multiply claimed, or unowned evidence fail before lexer-tape construction,
+`PsiBuilder` creation, or physical emission.
 
 **Gate:** reconstruction equals the original source byte for byte, ownership is non-overlapping and complete, and
 layout-sensitive fixtures are deterministic.
@@ -439,7 +454,8 @@ Completion requires all of the following:
 - Cats Effect and FS2 pass build-produced best-effort TASTy break-repair;
 - resource budgets, clean restart, packaging, formatting, and fatal-warning checks pass.
 - preparing, unsupported syntax/output roles, unavailable or stale semantics, and asymmetric best-effort capabilities
-  expose deterministic project/file capability UX.
+  expose deterministic project/file capability UX naming the exact compiler artifact and host, missing capability or
+  stable role, affected scope, retained operations, and evidence/remediation location.
 
 The IntelliJ Scala plugin and Scala compiler repositories are never built by these lanes.
 
