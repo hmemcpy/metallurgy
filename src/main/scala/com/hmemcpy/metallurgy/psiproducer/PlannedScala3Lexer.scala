@@ -36,6 +36,8 @@ private[psiproducer] final class PlannedScala3Lexer private (
 
 private[psiproducer] enum LexerPlanFailure:
   case InvalidTargetRange(start: Int, end: Int, sourceLength: Int)
+  case LexicalContractMismatch
+  case UnsafeTargetBoundary(start: Int, end: Int)
   case DuplicateTargetStart(start: Int)
   case OverlappingTargetRanges(firstStart: Int, firstEnd: Int, secondStart: Int, secondEnd: Int)
   case UnsupportedTargetSurface(surfaceId: String)
@@ -51,6 +53,8 @@ private object PlannedScala3Lexer:
       plan: WholeFileProductionPlan,
       bindings: NativePsiElementBindings
   ): Either[LexerPlanFailure, PlannedScala3Lexer] =
+    val lexical = ClosedSourceLexicalContract.from(source)
+    if lexical != plan.lexicalContract then return Left(LexerPlanFailure.LexicalContractMismatch)
     val targets = plan.physicalLeafOwnership.foldLeft[
       Either[LexerPlanFailure, Vector[((Int, Int), IElementType)]]
     ](Right(Vector.empty)):
@@ -58,6 +62,8 @@ private object PlannedScala3Lexer:
       case (Right(result), PlannedPhysicalLeaf(_, start, end, _, _, _, TerminalLeafTarget.Token(surface, _))) =>
         if start < 0 || start >= end || end > source.length then
           Left(LexerPlanFailure.InvalidTargetRange(start, end, source.length))
+        else if !lexical.boundaries(start) || !lexical.boundaries(end) then
+          Left(LexerPlanFailure.UnsafeTargetBoundary(start, end))
         else
           bindings.elementTypes
             .get(surface)
@@ -81,90 +87,49 @@ private object PlannedScala3Lexer:
             case Some(failure) => Left(failure)
             case None          =>
               val byStart = ordered.map { case ((start, end), elementType) => start -> (end -> elementType) }.toMap
-              Right(new PlannedScala3Lexer(Some(Compiled(source, tokens(source, 0, source.length, byStart)))))
+              Right(new PlannedScala3Lexer(Some(Compiled(source, tokens(source, lexical, byStart)))))
 
   private def closedTokens(startOffset: Int, endOffset: Int): Vector[Token] =
     if startOffset < endOffset then Vector(Token(startOffset, endOffset, TokenType.BAD_CHARACTER)) else Vector.empty
 
   private def tokens(
-      source: CharSequence,
-      startOffset: Int,
-      endOffset: Int,
+      source: String,
+      lexical: ClosedSourceLexicalContract,
       targetsByStart: Map[Int, (Int, IElementType)]
   ): Vector[Token] =
-    val result                                         = Vector.newBuilder[Token]
-    var offset                                         = startOffset
-    def add(end: Int, elementType: IElementType): Unit =
-      result += Token(offset, end, elementType)
-      offset = end
-    while offset < endOffset do
-      val current = source.charAt(offset)
-      targetsByStart.get(offset) match
-        case Some((end, elementType)) => add(end, elementType)
+    val result = Vector.newBuilder[Token]
+    var index  = 0
+    while index < lexical.atoms.size do
+      val atom = lexical.atoms(index)
+      targetsByStart.get(atom.start) match
+        case Some((end, elementType)) =>
+          result += Token(atom.start, end, elementType)
+          index += 1
+          while index < lexical.atoms.size && lexical.atoms(index).end <= end do index += 1
         case None                     =>
-          if Character.isWhitespace(current) then
-            var end = offset + 1
-            while end < endOffset && Character.isWhitespace(source.charAt(end)) do end += 1
-            add(end, TokenType.WHITE_SPACE)
-          else if current == '/' && offset + 1 < endOffset && source.charAt(offset + 1) == '/' then
-            var end = offset + 2
-            while end < endOffset && source.charAt(end) != '\r' && source.charAt(end) != '\n' do end += 1
-            add(end, ScalaTokenTypes.tLINE_COMMENT)
-          else if current == '/' && offset + 1 < endOffset && source.charAt(offset + 1) == '*' then
-            var end   = offset + 2
-            var depth = 1
-            while end < endOffset && depth > 0 do
-              if end + 1 < endOffset && source.charAt(end) == '/' && source.charAt(end + 1) == '*' then
-                depth += 1
-                end += 2
-              else if end + 1 < endOffset && source.charAt(end) == '*' && source.charAt(end + 1) == '/' then
-                depth -= 1
-                end += 2
-              else end += Character.charCount(Character.codePointAt(source, end))
-            add(end, ScalaTokenTypes.tBLOCK_COMMENT)
-          else if current == '`' then
-            var end = offset + 1
-            while end < endOffset && source.charAt(end) != '`' do
-              end += Character.charCount(Character.codePointAt(source, end))
-            if end < endOffset then end += 1
-            add(end, ScalaTokenTypes.tIDENTIFIER)
-          else
-            val currentCodePoint = Character.codePointAt(source, offset)
-            if Character.isUnicodeIdentifierStart(currentCodePoint) || current == '_' then
-              var end         = offset + Character.charCount(currentCodePoint)
-              while end < endOffset && Character.isUnicodeIdentifierPart(Character.codePointAt(source, end)) do
-                end += Character.charCount(Character.codePointAt(source, end))
-              if source.charAt(end - 1) == '_' then
-                while end < endOffset && isOperatorPart(source, end) do
-                  end += Character.charCount(Character.codePointAt(source, end))
-              val text        = source.subSequence(offset, end).toString
-              val elementType = text match
+          val elementType = atom.kind match
+            case ClosedSourceLexicalKind.Whitespace         => TokenType.WHITE_SPACE
+            case ClosedSourceLexicalKind.LineComment        => ScalaTokenTypes.tLINE_COMMENT
+            case ClosedSourceLexicalKind.BlockComment       => ScalaTokenTypes.tBLOCK_COMMENT
+            case ClosedSourceLexicalKind.QuotedIdentifier   => ScalaTokenTypes.tIDENTIFIER
+            case ClosedSourceLexicalKind.Literal            => ScalaTokenTypes.tIDENTIFIER
+            case ClosedSourceLexicalKind.Number             => ScalaTokenTypes.tIDENTIFIER
+            case ClosedSourceLexicalKind.Identifier         =>
+              source.substring(atom.start, atom.end) match
                 case "package" => ScalaTokenTypes.kPACKAGE
                 case "import"  => ScalaTokenTypes.kIMPORT
                 case "given"   => ScalaTokenType.GivenKeyword
                 case _         => ScalaTokenTypes.tIDENTIFIER
-              add(end, elementType)
-            else
-              current match
-                case '.' => add(offset + 1, ScalaTokenTypes.tDOT)
-                case ',' => add(offset + 1, ScalaTokenTypes.tCOMMA)
-                case '{' => add(offset + 1, ScalaTokenTypes.tLBRACE)
-                case '}' => add(offset + 1, ScalaTokenTypes.tRBRACE)
-                case '[' => add(offset + 1, ScalaTokenTypes.tLSQBRACKET)
-                case ']' => add(offset + 1, ScalaTokenTypes.tRSQBRACKET)
-                case ';' => add(offset + 1, ScalaTokenTypes.tSEMICOLON)
-                case _   =>
-                  var end = offset + Character.charCount(currentCodePoint)
-                  while end < endOffset && isOperatorPart(source, end) do
-                    end += Character.charCount(Character.codePointAt(source, end))
-                  add(end, ScalaTokenTypes.tIDENTIFIER)
+            case ClosedSourceLexicalKind.OperatorIdentifier => ScalaTokenTypes.tIDENTIFIER
+            case ClosedSourceLexicalKind.Dot                => ScalaTokenTypes.tDOT
+            case ClosedSourceLexicalKind.Comma              => ScalaTokenTypes.tCOMMA
+            case ClosedSourceLexicalKind.LeftBrace          => ScalaTokenTypes.tLBRACE
+            case ClosedSourceLexicalKind.RightBrace         => ScalaTokenTypes.tRBRACE
+            case ClosedSourceLexicalKind.LeftBracket        => ScalaTokenTypes.tLSQBRACKET
+            case ClosedSourceLexicalKind.RightBracket       => ScalaTokenTypes.tRSQBRACKET
+            case ClosedSourceLexicalKind.LeftParenthesis    => ScalaTokenTypes.tLPARENTHESIS
+            case ClosedSourceLexicalKind.RightParenthesis   => ScalaTokenTypes.tRPARENTHESIS
+            case ClosedSourceLexicalKind.Semicolon          => ScalaTokenTypes.tSEMICOLON
+          result += Token(atom.start, atom.end, elementType)
+          index += 1
     result.result()
-
-  private def isOperatorPart(source: CharSequence, offset: Int): Boolean =
-    val codePoint = Character.codePointAt(source, offset)
-    val value     = source.charAt(offset)
-    !Character.isWhitespace(codePoint) && !Character.isUnicodeIdentifierPart(codePoint) && value != '`' &&
-    value != '.' && value != ',' && value != '{' && value != '}' && value != '[' && value != ']' && value != ';' &&
-    !(value == '/' && offset + 1 < source.length && (source.charAt(offset + 1) == '/' || source.charAt(
-      offset + 1
-    ) == '*'))

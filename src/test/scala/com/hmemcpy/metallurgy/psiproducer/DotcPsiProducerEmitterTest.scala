@@ -129,15 +129,24 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     assertEquals(0, surfaceBuilder.getCurrentOffset)
 
   def testOneTerminalTargetContractBindsEveryValidatedOccurrence(): Unit =
-    val source   = "**"
+    val source   = "*,*"
     val base     = emitterPlan(source, 1)
     val origin   = base.composites.head.instance.origin
     val terminal = "wildcards"
     val target   = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("*"))
     val plan     = base.copy(
       physicalLeafOwnership = Vector(
-        PlannedPhysicalLeaf(1L, 0, 1, PhysicalLeafOwner.FileRoot, origin, terminal, target),
-        PlannedPhysicalLeaf(2L, 1, 2, PhysicalLeafOwner.FileRoot, origin, terminal, target)
+        PlannedPhysicalLeaf(atom(1), 0, 1, PhysicalLeafOwner.FileRoot, origin, terminal, target),
+        PlannedPhysicalLeaf(
+          atom(2),
+          1,
+          2,
+          PhysicalLeafOwner.FileRoot,
+          origin,
+          "source",
+          TerminalLeafTarget.Parent
+        ),
+        PlannedPhysicalLeaf(atom(3), 2, 3, PhysicalLeafOwner.FileRoot, origin, terminal, target)
       ),
       targetAssertions = base.targetAssertions :+ PlannedTargetAssertion(
         TargetAssertionOwner.Terminal(origin, terminal),
@@ -203,9 +212,17 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     val origin     = base.composites.head.instance.origin
     val plan       = base.copy(physicalLeafOwnership =
       Vector(
-        PlannedPhysicalLeaf(1L, 0, arrowStart, PhysicalLeafOwner.FileRoot, origin, "source", TerminalLeafTarget.Parent),
         PlannedPhysicalLeaf(
-          2L,
+          atom(1),
+          0,
+          arrowStart,
+          PhysicalLeafOwner.FileRoot,
+          origin,
+          "source",
+          TerminalLeafTarget.Parent
+        ),
+        PlannedPhysicalLeaf(
+          atom(2),
           arrowStart,
           arrowStart + 2,
           PhysicalLeafOwner.FileRoot,
@@ -214,7 +231,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
           TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasArrowTokenSurface, Some("=>"))
         ),
         PlannedPhysicalLeaf(
-          3L,
+          atom(3),
           arrowStart + 2,
           source.length,
           PhysicalLeafOwner.FileRoot,
@@ -262,7 +279,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     assertEquals(
       Some(LexerPlanFailure.DuplicateTargetStart(0)),
       PlannedScala3Lexer
-        .compile(source, base.copy(physicalLeafOwnership = Vector(leaf, leaf.copy(atomId = 2L))), nativeBindings)
+        .compile(source, base.copy(physicalLeafOwnership = Vector(leaf, leaf.copy(atomId = atom(2)))), nativeBindings)
         .left
         .toOption
     )
@@ -277,15 +294,39 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
         .left
         .toOption
     )
-    val overlapSource = "xy"
-    val overlapBase   = emitterPlan(overlapSource, 1)
-    val first         = overlapBase.physicalLeafOwnership.head.copy(
-      end = 2,
+    assertEquals(
+      Some(LexerPlanFailure.LexicalContractMismatch),
+      PlannedScala3Lexer
+        .compile(
+          source,
+          base.copy(lexicalContract = ClosedSourceLexicalContract.from(source + " ")),
+          nativeBindings
+        )
+        .left
+        .toOption
+    )
+    val unsafeSource  = "ab"
+    val unsafeBase    = emitterPlan(unsafeSource, 1)
+    val unsafeLeaf    = unsafeBase.physicalLeafOwnership.head.copy(
+      end = 1,
       target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface)
     )
-    val second        = first.copy(atomId = 2L, start = 1)
     assertEquals(
-      Some(LexerPlanFailure.OverlappingTargetRanges(0, 2, 1, 2)),
+      Some(LexerPlanFailure.UnsafeTargetBoundary(0, 1)),
+      PlannedScala3Lexer
+        .compile(unsafeSource, unsafeBase.copy(physicalLeafOwnership = Vector(unsafeLeaf)), nativeBindings)
+        .left
+        .toOption
+    )
+    val overlapSource = "x y"
+    val overlapBase   = emitterPlan(overlapSource, 1)
+    val first         = overlapBase.physicalLeafOwnership.head.copy(
+      end = 3,
+      target = TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface)
+    )
+    val second        = first.copy(atomId = atom(2), start = 2)
+    assertEquals(
+      Some(LexerPlanFailure.OverlappingTargetRanges(0, 3, 2, 3)),
       PlannedScala3Lexer
         .compile(overlapSource, overlapBase.copy(physicalLeafOwnership = Vector(first, second)), nativeBindings)
         .left
@@ -301,7 +342,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     val forest   = base.copy(
       physicalLeafOwnership = Vector(
         PlannedPhysicalLeaf(
-          1L,
+          atom(1),
           0,
           1,
           PhysicalLeafOwner.FileRoot,
@@ -310,7 +351,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
           TerminalLeafTarget.Parent
         ),
         PlannedPhysicalLeaf(
-          2L,
+          atom(2),
           1,
           2,
           PhysicalLeafOwner.FileRoot,
@@ -403,9 +444,10 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ParserSourceUri.from("file:///EmitterCase.scala").toOption.get,
       ParserSyntaxSnapshot.digest(source),
       "test",
+      ClosedSourceLexicalContract.from(source),
       Vector(
         PlannedPhysicalLeaf(
-          1L,
+          atom(1),
           0,
           source.length,
           PhysicalLeafOwner.Composite(ids.last),
@@ -414,6 +456,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
           TerminalLeafTarget.Parent
         )
       ),
+      Vector.empty,
       Vector.empty,
       composites,
       ids.map(id =>
@@ -427,3 +470,5 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       Vector.empty,
       Vector.empty
     )
+
+  private def atom(id: Long): SourceAtomId = SourceAtomId(id, 0)

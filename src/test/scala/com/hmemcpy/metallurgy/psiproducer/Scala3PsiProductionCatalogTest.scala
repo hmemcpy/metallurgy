@@ -1209,7 +1209,7 @@ final class Scala3PsiProductionCatalogTest:
     val leaf      = first.physicalLeafOwnership.head
     val child     = first.composites(1).instance
     assertEquals(
-      (0L, 0, 1, PhysicalLeafOwner.Composite(child), "contents"),
+      (SourceAtomId(0, 0), 0, 1, PhysicalLeafOwner.Composite(child), "contents"),
       (leaf.atomId, leaf.start, leaf.end, leaf.owner, leaf.terminalId)
     )
     assertEquals("x", value.sourceText.substring(leaf.start, leaf.end))
@@ -1243,6 +1243,14 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(Vector(inner.instance), outer.children.map(_.child))
     assertEquals("Child", wrapped.composites.find(_.instance == inner.children.head.child).get.productionId)
     assertEquals(3, wrapped.targetAssertions.count(_.owner.isInstanceOf[TargetAssertionOwner.Composite]))
+    assertEquals(
+      value.sourceText,
+      wrapped.physicalLeafOwnership
+        .sortBy(_.start)
+        .map(leaf => value.sourceText.substring(leaf.start, leaf.end))
+        .mkString
+    )
+    assertEquals(evidence.structural.map(_.id), wrapped.structuralEvidenceOwnership.map(_.eventId))
 
     val transparentRoot    =
       root.copy(outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map("child" -> None))))
@@ -1252,6 +1260,14 @@ final class Scala3PsiProductionCatalogTest:
       .fold(error => throw new AssertionError(error.toString), identity)
     assertEquals(Vector("Child"), transparent.composites.map(_.productionId))
     assertEquals(1, transparent.targetAssertions.count(_.owner.isInstanceOf[TargetAssertionOwner.Composite]))
+    assertEquals(
+      value.sourceText,
+      transparent.physicalLeafOwnership
+        .sortBy(_.start)
+        .map(leaf => value.sourceText.substring(leaf.start, leaf.end))
+        .mkString
+    )
+    assertEquals(evidence.structural.map(_.id), transparent.structuralEvidenceOwnership.map(_.eventId))
 
   @Test def emptyTransparentTemplatesValidateMountsAndAdvanceOverflowFailsClosed(): Unit =
     val value     = snapshot("/empty-template", 1, Vector.empty)
@@ -1347,7 +1363,7 @@ final class Scala3PsiProductionCatalogTest:
     val unowned = base.copy(productions =
       base.productions.map(p => if p.id == child.id then p.copy(terminals = Vector.empty) else p)
     )
-    assertEquals(WholeFilePlanningFailure.UnownedSourceAtom(0, 0, 1), failure(unowned))
+    assertEquals(WholeFilePlanningFailure.UnownedSourceAtom(SourceAtomId(0, 0), 0, 1), failure(unowned))
 
     val parentFallback     = base.copy(productions =
       base.productions.map(p =>
@@ -1408,7 +1424,7 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
     assertEquals(
-      WholeFilePlanningFailure.UnownedSourceAtom(0, 0, 1),
+      WholeFilePlanningFailure.UnownedSourceAtom(SourceAtomId(0, 0), 0, 1),
       planned(
         trailingValue,
         ProvisionalSourceEvidencePlanner.plan(trailingValue).toOption.get,
@@ -1440,7 +1456,8 @@ final class Scala3PsiProductionCatalogTest:
               "whole-source",
               TerminalIntervalSelector.WholeSource,
               TerminalLeafTarget.Parent,
-              OccurrenceCardinality.ExactlyOne
+              OccurrenceCardinality.ExactlyOne,
+              ownsStructuralEvidence = Some(true)
             )
           )
         )
@@ -1681,7 +1698,8 @@ final class Scala3PsiProductionCatalogTest:
               "optional-token",
               TerminalIntervalSelector.WholeProduction,
               TerminalLeafTarget.Token("token.optional"),
-              OccurrenceCardinality.Optional
+              OccurrenceCardinality.Optional,
+              ownsStructuralEvidence = Some(true)
             )
           )
         )
@@ -1707,6 +1725,24 @@ final class Scala3PsiProductionCatalogTest:
       .fold(failure => throw new AssertionError(failure.toString), identity)
     assertFalse(plan.targetAssertions.exists(_.surfaceId == "token.optional"))
     assertFalse(plan.physicalLeafOwnership.exists(_.terminalId == "optional-token"))
+
+    val unownedCatalog = catalog.copy(productions =
+      catalog.productions.map(production =>
+        production.copy(terminals = production.terminals.map(_.copy(ownsStructuralEvidence = Some(false))))
+      )
+    )
+    assertEquals(
+      WholeFilePlanningFailure.FinalSourceEvidenceFailures(
+        Vector(FinalSourceEvidenceFailure.UnownedEvent(SourceEvidenceEventId.Node(2)))
+      ),
+      planned(
+        value,
+        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+        unownedCatalog,
+        this.aggregate(Vector(compiler)),
+        surface
+      ).left.toOption.get
+    )
 
   @Test def evidenceFingerprintMismatchFailsBeforeCatalogMatching(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)

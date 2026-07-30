@@ -1022,8 +1022,11 @@ private[metallurgy] final case class TerminalDeclaration(
     id: String,
     selector: TerminalIntervalSelector,
     target: TerminalLeafTarget,
-    cardinality: OccurrenceCardinality
-)
+    cardinality: OccurrenceCardinality,
+    outputRoleId: PsiOutputRoleId = PsiOutputRoleId.SourceTerminal,
+    ownsStructuralEvidence: Option[Boolean] = None
+):
+  val claimsStructuralEvidence: Boolean = ownsStructuralEvidence.getOrElse(target == TerminalLeafTarget.Parent)
 private[metallurgy] enum LayoutAlternative:
   case None
   case Braced(openPath: Vector[String], closePath: Vector[String])
@@ -1075,6 +1078,7 @@ private[metallurgy] enum OutputRangeDeclaration:
 private[metallurgy] final case class PsiOutputRoleId(value: String):
   require(value.nonEmpty)
 private[metallurgy] object PsiOutputRoleId:
+  val SourceTerminal    = PsiOutputRoleId("scala.source.terminal")
   val PackageStatement  = PsiOutputRoleId("scala.package.statement")
   val ImportStatement   = PsiOutputRoleId("scala.import.statement")
   val ImportExpression  = PsiOutputRoleId("scala.import.expression")
@@ -1115,7 +1119,8 @@ private[metallurgy] final case class OutputCompositeDeclaration(
     targetRequirement: TargetRequirement,
     accessors: Vector[AccessorObligation],
     persistence: PersistenceObligations,
-    navigation: Option[NavigationObligation]
+    navigation: Option[NavigationObligation],
+    ownsStructuralEvidence: Boolean = false
 )
 private[metallurgy] final case class LocalOutputCompositeTemplate(
     composites: Vector[OutputCompositeDeclaration],
@@ -3067,7 +3072,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     val references        = catalog.productions
       .flatMap: production =>
         val terminals = production.terminals.collect:
-          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) => id
+          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, _, _) => id
         val outputs   = production.effectiveOutputRealizations
           .flatMap(_.template.composites)
           .flatMap: output =>
@@ -3751,9 +3756,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case _                                          => ()
       )
       p.terminals.foreach:
-        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) =>
+        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, _, _) =>
           requireSurface(p, id, SurfaceFactKind.Token)
-        case _                                                             => ()
+        case _                                                                   => ()
       realizations
         .flatMap(_.template.composites)
         .foreach: output =>
@@ -3769,7 +3774,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
     errors ++= coverage
     val accounted                                                                                                     = catalog.productions
       .flatMap: p =>
-        val terminals = p.terminals.collect { case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _) => id }
+        val terminals = p.terminals.collect {
+          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, _, _) => id
+        }
         val outputs   = p.effectiveOutputRealizations
           .flatMap(_.template.composites)
           .flatMap: output =>
@@ -3880,6 +3887,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
 private[metallurgy] enum WholeFilePlanningFailure:
   case InventoryFailures(failures: Vector[InventoryFailure])
   case SourceEvidenceFailures(failures: Vector[SourceEvidenceFailure])
+  case SourceAtomRefinementFailures(failures: Vector[SourceAtomRefinementFailure])
+  case FinalSourceEvidenceFailures(failures: Vector[FinalSourceEvidenceFailure])
   case SourceEvidencePlanMismatch
   case EvidenceFingerprintMismatch(snapshot: String, evidence: String)
   case CatalogInventoryIdentityMismatch(runtime: CompilerRuntimeIdentity, catalog: CompilerRuntimeIdentity)
@@ -3934,9 +3943,9 @@ private[metallurgy] enum WholeFilePlanningFailure:
       expected: OccurrenceCardinality,
       actual: Int
   )
-  case UnownedSourceAtom(atomId: Long, start: Int, end: Int)
+  case UnownedSourceAtom(atomId: SourceAtomId, start: Int, end: Int)
   case ConflictingSourceAtomOwners(
-      atomId: Long,
+      atomId: SourceAtomId,
       start: Int,
       end: Int,
       owners: Vector[(ProductionInstanceId, String)]
@@ -4003,7 +4012,7 @@ private[metallurgy] enum PhysicalLeafOwner:
   case Composite(instance: CompositeInstanceId)
   case FileRoot
 private[metallurgy] final case class PlannedPhysicalLeaf(
-    atomId: Long,
+    atomId: SourceAtomId,
     start: Int,
     end: Int,
     owner: PhysicalLeafOwner,
@@ -4055,11 +4064,17 @@ private[metallurgy] final case class PlannedVirtualLayout(
     anchor: Int,
     ordinalAtAnchor: Int
 )
+private[metallurgy] final case class PlannedStructuralEvidenceOwnership(
+    eventId: SourceEvidenceEventId,
+    owner: SourceEvidenceOwner
+)
 private[metallurgy] final case class WholeFileProductionPlan(
     sourceUri: ParserSourceUri,
     sourceDigest: String,
     parserEvidenceFingerprint: String,
+    lexicalContract: ClosedSourceLexicalContract,
     physicalLeafOwnership: Vector[PlannedPhysicalLeaf],
+    structuralEvidenceOwnership: Vector[PlannedStructuralEvidenceOwnership],
     virtualLayout: Vector[PlannedVirtualLayout],
     composites: Vector[PlannedComposite],
     targetAssertions: Vector[PlannedTargetAssertion],
@@ -4380,29 +4395,10 @@ private[metallurgy] object WholeFileProductionPlanner:
         .empty[ProductionInstanceId, Vector[(OutputCompositeDeclaration, CompositeInstanceId, PcSourceRange)]]
       val mergedOutputRoots                                             = collection.mutable.Map.empty[CompositeInstanceId, CompositeInstanceId]
       val outputRangeOverrides                                          = collection.mutable.Map.empty[CompositeInstanceId, PcSourceRange]
-      val declaredDelimiterCuts                                         = resolvedRealizations.valuesIterator
-        .flatMap(_.template.composites)
-        .flatMap(_.range match
-          case OutputRangeDeclaration.BoundaryDerived(
-                OutputBoundary.EvidenceBoundaryAfterChild(_, _, _, _, expected, _, _),
-                _
-              ) =>
-            expected.iterator.flatMap: delimiter =>
-              Iterator
-                .iterate(snapshot.sourceText.indexOf(delimiter))(offset =>
-                  snapshot.sourceText.indexOf(delimiter, offset + delimiter.length)
-                )
-                .takeWhile(_ >= 0)
-                .filter(offset =>
-                  !snapshot.comments
-                    .exists(comment => comment.range.startOffset <= offset && offset < comment.range.endOffset)
-                )
-                .flatMap(offset => Vector(offset, offset + delimiter.length))
-          case _ => Vector.empty
-        )
-        .toVector
       val evidenceBoundaries                                            =
-        (evidence.atoms.map(_.start) ++ evidence.atoms.lastOption.map(_.end) ++ declaredDelimiterCuts).distinct.sorted
+        (evidence.atoms.flatMap(atom =>
+          Vector(atom.start, atom.end)
+        ) ++ evidence.lexicalContract.boundaries).distinct.sorted
       def canonicalOutput(id: CompositeInstanceId): CompositeInstanceId =
         mergedOutputRoots.get(id).fold(id)(canonicalOutput)
       active.toVector.reverse.foreach: instance =>
@@ -4532,15 +4528,10 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             val delimiter                                              = expectedDelimiters.iterator
               .flatMap: expected =>
-                Iterator
-                  .iterate(snapshot.sourceText.indexOf(expected, end))(offset =>
-                    snapshot.sourceText.indexOf(expected, offset + expected.length)
-                  )
-                  .takeWhile(offset => offset >= 0 && offset + expected.length <= followingStart)
-                  .filter(offset =>
-                    !snapshot.comments
-                      .exists(comment => comment.range.startOffset <= offset && offset < comment.range.endOffset)
-                  )
+                evidence.lexicalContract.atoms.iterator
+                  .filter(atom => end <= atom.start && atom.end <= followingStart)
+                  .filter(atom => snapshot.sourceText.substring(atom.start, atom.end) == expected)
+                  .map(_.start)
               .minOption
             delimiter
               .orElse(Option.when(fallbackToFollowingChildStart)(followingStart))
@@ -4775,162 +4766,146 @@ private[metallurgy] object WholeFileProductionPlanner:
             Vector(PcSourceRange(start.endOffset, end.startOffset))
           case _                                                                  => Vector.empty
 
-      def textRanges(interval: PcSourceRange, expected: String): Vector[PcSourceRange] =
-        val found = Vector.newBuilder[PcSourceRange]
-        var from  = interval.startOffset
-        var next  = snapshot.sourceText.indexOf(expected, from)
-        while next >= 0 && next + expected.length <= interval.endOffset do
-          val range = PcSourceRange(next, next + expected.length)
-          if !snapshot.comments.exists(comment =>
-              comment.range.startOffset < range.endOffset && range.startOffset < comment.range.endOffset
+      def terminalIntervals(
+          instance: ProductionInstanceId,
+          production: Scala3PsiProduction,
+          terminal: TerminalDeclaration
+      ): Vector[PcSourceRange] = terminal.selector match
+        case TerminalIntervalSelector.WholeSource if instance != root =>
+          break(
+            Left(
+              WholeFilePlanningFailure.UnsupportedTerminalSelector(
+                production.id,
+                terminal.id,
+                terminal.selector
+              )
             )
-          then found += range
-          from = next + expected.length
-          next = snapshot.sourceText.indexOf(expected, from)
-        found.result()
+          )
+        case TerminalIntervalSelector.WholeSource                     =>
+          Vector(PcSourceRange(0, snapshot.sourceLength))
+        case TerminalIntervalSelector.WholeProduction                 =>
+          position(instance) match
+            case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
+                if range.startOffset < range.endOffset =>
+              Vector(range)
+            case _ => Vector.empty
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)    =>
+          childGapIntervals(instance, startRole, endRole)
+        case other                                                    =>
+          break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
-      val tokenCuts     = active.toVector.flatMap: instance =>
-        selected(instance).terminals.flatMap:
-          case TerminalDeclaration(
-                _,
-                TerminalIntervalSelector.ChildGap(startRole, endRole),
-                TerminalLeafTarget.Token(_, Some(expected)),
-                _
-              ) =>
-            childGapIntervals(instance, startRole, endRole)
-              .flatMap(textRanges(_, expected))
-              .flatMap(range => Vector(range.startOffset, range.endOffset))
-          case _ => Vector.empty
-      val planningAtoms = evidence.atoms
-        .flatMap: atom =>
-          val boundaries = (Vector(atom.start, atom.end) ++ evidenceBoundaries.filter(cut =>
-            atom.start < cut && cut < atom.end
-          ) ++ tokenCuts.filter(cut => atom.start < cut && cut < atom.end)).distinct.sorted
-          boundaries
-            .sliding(2)
-            .collect:
-              case Vector(start, end) => SourceAtom(0L, start, end, atom.claims, atom.comments)
-        .zipWithIndex
-        .map((atom, index) => atom.copy(id = index.toLong))
+      def terminalTokenRanges(
+          instance: ProductionInstanceId,
+          terminal: TerminalDeclaration,
+          intervals: Vector[PcSourceRange]
+      ): Vector[PcSourceRange] = terminal.target match
+        case TerminalLeafTarget.Token(_, Some(expected)) =>
+          intervals.flatMap: interval =>
+            evidence.lexicalContract.atoms
+              .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
+              .filter(atom => snapshot.sourceText.substring(atom.start, atom.end) == expected)
+              .filter(atom =>
+                evidence.atoms.exists(sourceAtom =>
+                  sourceAtom.start <= atom.start && atom.end <= sourceAtom.end && sourceAtom.claims.exists(
+                    claims(instance, _)
+                  )
+                )
+              )
+              .map(atom => PcSourceRange(atom.start, atom.end))
+        case _                                           => Vector.empty
 
-      val candidates                                                                            = collection.mutable.Map.empty[Long, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
+      val knownEvidenceRoles  = (
+        outputRows.valuesIterator.flatten.map(_._1.outputRoleId) ++
+          active.iterator.flatMap(instance => selected(instance).terminals.map(_.outputRoleId))
+      ).toSet
+      val requestedBoundaries = Vector.newBuilder[(PsiOutputRoleId, Int)]
+      outputRows.valuesIterator.flatten.foreach: (declaration, _, range) =>
+        requestedBoundaries += declaration.outputRoleId -> range.startOffset
+        requestedBoundaries += declaration.outputRoleId -> range.endOffset
+      active.foreach: instance =>
+        val production = selected(instance)
+        production.terminals.foreach: terminal =>
+          val intervals = terminalIntervals(instance, production, terminal)
+          val ranges    = terminal.target match
+            case _: TerminalLeafTarget.Token => terminalTokenRanges(instance, terminal, intervals)
+            case _                           => intervals
+          ranges.foreach: range =>
+            requestedBoundaries += terminal.outputRoleId -> range.startOffset
+            requestedBoundaries += terminal.outputRoleId -> range.endOffset
+
+      val refinements     = requestedBoundaries
+        .result()
+        .flatMap: (role, offset) =>
+          evidence.atoms.find(atom => atom.start < offset && offset < atom.end).map(atom => (atom, role, offset))
+        .groupMap((atom, role, _) => atom -> role)(_._3)
+        .toVector
+        .sortBy((key, _) => (key._1.id.toString, key._2.value))
+        .map: entry =>
+          val ((atom, role), cuts) = entry
+          val boundaries           = (Vector(atom.start, atom.end) ++ cuts).distinct.sorted
+          SourceAtomRefinement(
+            SourceAtomReference(atom.id, atom.start, atom.end),
+            role,
+            boundaries.sliding(2).collect { case Vector(start, end) => PcSourceRange(start, end) }.toVector
+          )
+      val refinedEvidence = SourceEvidenceRefinementPlanner
+        .refine(evidence, knownEvidenceRoles, refinements)
+        .fold(
+          failures => break(Left(WholeFilePlanningFailure.SourceAtomRefinementFailures(failures))),
+          identity
+        )
+      val planningAtoms   = refinedEvidence.atoms
+
+      val candidates                                                                            =
+        collection.mutable.Map.empty[SourceAtomId, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
       val resolvedTerminals                                                                     = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
       active.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
-          terminal.selector match
-            case TerminalIntervalSelector.WholeSource if instance != root                        =>
-              break(
-                Left(
-                  WholeFilePlanningFailure.UnsupportedTerminalSelector(
-                    production.id,
-                    terminal.id,
-                    terminal.selector
-                  )
-                )
-              )
-            case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource =>
-              val intervals   = position(instance) match
-                case _ if terminal.selector == TerminalIntervalSelector.WholeSource =>
-                  Vector(PcSourceRange(0, snapshot.sourceLength))
-                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
-                    if range.startOffset < range.endOffset =>
-                  Vector(range)
-                case _                                                              => Vector.empty
-              val atoms       = intervals.flatMap: interval =>
-                planningAtoms
-                  .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
-                  .filter(atom =>
-                    terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _))
-                  )
-                  .filter: atom =>
-                    terminal.target match
-                      case TerminalLeafTarget.Token(_, Some(expected)) =>
-                        snapshot.sourceText.substring(atom.start, atom.end) == expected
-                      case _                                           => true
-              val occurrences = terminal.target match
-                case _: TerminalLeafTarget.Token => atoms.size
-                case _                           => intervals.size
-              if !accepts(terminal.cardinality, occurrences) then
-                break(
-                  Left(
-                    WholeFilePlanningFailure.TerminalCardinalityMismatch(
-                      instance,
-                      terminal.id,
-                      terminal.cardinality,
-                      occurrences
-                    )
-                  )
-                )
-              if atoms.nonEmpty then resolvedTerminals += instance -> terminal.id
-              atoms.foreach: atom =>
-                val owner = localOutputRoots(instance)
-                  .map(canonicalOutput)
-                  .distinct
-                  .find: root =>
-                    val range = compositeRanges(root)
-                    range.startOffset <= atom.start && atom.end <= range.endOffset
-                  .map(PhysicalLeafOwner.Composite(_))
-                  .getOrElse(PhysicalLeafOwner.FileRoot)
-                val leaf  = PlannedPhysicalLeaf(
-                  atom.id,
-                  atom.start,
-                  atom.end,
-                  owner,
+          val intervals   = terminalIntervals(instance, production, terminal)
+          val tokenRanges = terminalTokenRanges(instance, terminal, intervals).toSet
+          val atoms       = intervals.flatMap: interval =>
+            planningAtoms
+              .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
+              .filter(atom => terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)))
+              .filter: atom =>
+                terminal.target match
+                  case TerminalLeafTarget.Token(_, Some(_)) => tokenRanges(PcSourceRange(atom.start, atom.end))
+                  case _                                    => true
+          val occurrences = terminal.target match
+            case _: TerminalLeafTarget.Token => atoms.size
+            case _                           => intervals.size
+          if !accepts(terminal.cardinality, occurrences) then
+            break(
+              Left(
+                WholeFilePlanningFailure.TerminalCardinalityMismatch(
                   instance,
                   terminal.id,
-                  terminal.target
+                  terminal.cardinality,
+                  occurrences
                 )
-                candidates.update(atom.id, candidates(atom.id) :+ leaf)
-            case TerminalIntervalSelector.ChildGap(startRole, endRole)                           =>
-              val intervals   = childGapIntervals(instance, startRole, endRole)
-              val atoms       = intervals.flatMap: interval =>
-                planningAtoms
-                  .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
-                  .filter(atom => atom.claims.exists(claims(instance, _)))
-                  .filter: atom =>
-                    terminal.target match
-                      case TerminalLeafTarget.Token(_, Some(expected)) =>
-                        snapshot.sourceText.substring(atom.start, atom.end) == expected
-                      case _                                           => true
-              val occurrences = terminal.target match
-                case _: TerminalLeafTarget.Token => atoms.size
-                case _                           => intervals.size
-              if !accepts(terminal.cardinality, occurrences) then
-                break(
-                  Left(
-                    WholeFilePlanningFailure.TerminalCardinalityMismatch(
-                      instance,
-                      terminal.id,
-                      terminal.cardinality,
-                      occurrences
-                    )
-                  )
-                )
-              if atoms.nonEmpty then resolvedTerminals += instance -> terminal.id
-              atoms.foreach: atom =>
-                val owner = localOutputRoots(instance)
-                  .map(canonicalOutput)
-                  .distinct
-                  .find: root =>
-                    val range = compositeRanges(root)
-                    range.startOffset <= atom.start && atom.end <= range.endOffset
-                  .map(PhysicalLeafOwner.Composite(_))
-                  .getOrElse(PhysicalLeafOwner.FileRoot)
-                candidates.update(
-                  atom.id,
-                  candidates(atom.id) :+ PlannedPhysicalLeaf(
-                    atom.id,
-                    atom.start,
-                    atom.end,
-                    owner,
-                    instance,
-                    terminal.id,
-                    terminal.target
-                  )
-                )
-            case other                                                                           =>
-              break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
+              )
+            )
+          if atoms.nonEmpty then resolvedTerminals += instance -> terminal.id
+          atoms.foreach: atom =>
+            val owner = localOutputRoots(instance)
+              .map(canonicalOutput)
+              .distinct
+              .find: root =>
+                val range = compositeRanges(root)
+                range.startOffset <= atom.start && atom.end <= range.endOffset
+              .map(PhysicalLeafOwner.Composite(_))
+              .getOrElse(PhysicalLeafOwner.FileRoot)
+            val leaf  = PlannedPhysicalLeaf(
+              atom.id,
+              atom.start,
+              atom.end,
+              owner,
+              instance,
+              terminal.id,
+              terminal.target
+            )
+            candidates.update(atom.id, candidates(atom.id) :+ leaf)
       def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
         Iterator
           .iterate(Vector(descendant))(_.flatMap(incoming.getOrElse(_, Vector.empty)))
@@ -4982,6 +4957,50 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             )
+      val atomOwnership                                                                         = leaves.map: leaf =>
+        val role = selected(leaf.sourceOwner).terminals
+          .find(_.id == leaf.terminalId)
+          .get
+          .outputRoleId
+        SourceAtomOwnership(
+          SourceAtomReference(leaf.atomId, leaf.start, leaf.end),
+          SourceEvidenceOwner(role, s"${leaf.sourceOwner}:${leaf.terminalId}")
+        )
+      val eventOwnership                                                                        = refinedEvidence.structural.flatMap: event =>
+        val sources    = active.toVector.filter(instance => claims(instance, event.claim))
+        val candidates = active.toVector.flatMap: instance =>
+          val ownsClaim =
+            if sources.isEmpty then instance == root
+            else sources.forall(source => source == instance || isAncestor(instance, source))
+          if !ownsClaim then Vector.empty
+          else
+            val terminals = selected(instance).terminals.collect:
+              case terminal
+                  if terminal.claimsStructuralEvidence &&
+                    (sources.contains(instance) || terminal.target == TerminalLeafTarget.Parent) =>
+                instance -> SourceEventOwnership(
+                  event.id,
+                  SourceEvidenceOwner(terminal.outputRoleId, s"$instance:${terminal.id}")
+                )
+            val wrappers  = outputRows
+              .getOrElse(instance, Vector.empty)
+              .collect:
+                case (declaration, composite, _) if declaration.ownsStructuralEvidence =>
+                  instance -> SourceEventOwnership(
+                    event.id,
+                    SourceEvidenceOwner(declaration.outputRoleId, s"$composite")
+                  )
+            terminals ++ wrappers
+        candidates.collect:
+          case (instance, ownership)
+              if !candidates.exists((other, _) => other != instance && isAncestor(instance, other)) =>
+            ownership
+      val finalEvidence                                                                         = FinalSourceEvidencePlanner
+        .plan(refinedEvidence, knownEvidenceRoles, atomOwnership, eventOwnership)
+        .fold(
+          failures => break(Left(WholeFilePlanningFailure.FinalSourceEvidenceFailures(failures))),
+          identity
+        )
       val targets                                                                               = active.toVector.flatMap: instance =>
         val production = selected(instance)
         val composites = outputRows(instance).collect:
@@ -4993,7 +5012,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
             PlannedTargetAssertion(TargetAssertionOwner.Composite(id), declaration.outputRoleId.value, requirement)
         val terminals  = production.terminals.collect:
-          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _)
+          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _)
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
         composites ++ terminals
@@ -5023,7 +5042,11 @@ private[metallurgy] object WholeFileProductionPlanner:
           snapshot.sourceUri,
           snapshot.sourceDigest,
           evidence.parserEvidenceFingerprint,
+          finalEvidence.evidence.lexicalContract,
           leaves,
+          finalEvidence.eventOwnership.map(ownership =>
+            PlannedStructuralEvidenceOwnership(ownership.eventId, ownership.owner)
+          ),
           Vector.empty,
           composites,
           targets,

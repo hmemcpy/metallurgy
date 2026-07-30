@@ -65,7 +65,7 @@ final class SourceEvidencePlannerTest:
         .fold(failures => throw new AssertionError(failures.toString), identity)
     assertEquals(first, second)
     assertEquals(source, first.reconstruct(source))
-    assertEquals(first.atoms.indices.map(_.toLong).toVector, first.atoms.map(_.id))
+    assertEquals(first.atoms.indices.map(index => SourceAtomId(index.toLong, 0)).toVector, first.atoms.map(_.id))
     assertEquals(0, first.atoms.head.start)
     assertEquals(source.length, first.atoms.last.end)
     assertTrue(first.atoms.sliding(2).forall { case Vector(left, right) => left.end == right.start; case _ => true })
@@ -75,7 +75,13 @@ final class SourceEvidencePlannerTest:
     assertTrue(first.atoms.exists(_.claims.contains(SourceClaim.Diagnostic(0))))
     assertTrue(first.atoms.exists(_.comments.nonEmpty))
     assertTrue(
-      first.structural.contains(StructuralSourceEvidence(SourceClaim.Diagnostic(1), ParserNodePosition.Absent))
+      first.structural.contains(
+        StructuralSourceEvidence(
+          SourceEvidenceEventId.Diagnostic(1),
+          SourceClaim.Diagnostic(1),
+          ParserNodePosition.Absent
+        )
+      )
     )
 
   @Test
@@ -103,6 +109,172 @@ final class SourceEvidencePlannerTest:
     assertTrue(plan.atoms.forall(_.claims.isEmpty))
 
   @Test
+  def genericRefinementPreservesClaimsAndReconstructsDelimitersCommentsAndTrailingTrivia(): Unit =
+    val source    = "left, /* c */ right\n"
+    val comment   = ParserComment(PcSourceRange(6, 13), "/* c */", ParserCommentKind.Block)
+    val evidence  = planned(fixture(source, Vector(node(1, 0, source.length, 0)), comments = Vector(comment)))
+    val role      = PsiOutputRoleId("test.wrapper")
+    val contracts = evidence.atoms.map: original =>
+      SourceAtomRefinement(
+        SourceAtomReference(original.id, original.start, original.end),
+        role,
+        evidence.lexicalContract.atoms
+          .filter(atom => original.start <= atom.start && atom.end <= original.end)
+          .map(atom => PcSourceRange(atom.start, atom.end))
+      )
+    val first     = SourceEvidenceRefinementPlanner.refine(evidence, Set(role), contracts).toOption.get
+    val second    = SourceEvidenceRefinementPlanner.refine(evidence, Set(role), contracts).toOption.get
+    val originals = evidence.atoms.map(atom => atom.id.provisionalId -> atom).toMap
+
+    assertEquals(first, second)
+    assertEquals(source, first.reconstruct(source))
+    assertEquals(evidence.lexicalContract.atoms.size, first.atoms.size)
+    assertTrue(first.atoms.forall(atom => atom.claims == originals(atom.id.provisionalId).claims))
+    assertTrue(first.atoms.forall(atom => atom.comments == originals(atom.id.provisionalId).comments))
+    assertTrue(first.atoms.exists(_.comments == Vector(comment)))
+    assertTrue(first.atoms.sliding(2).forall { case Vector(left, right) => left.end == right.start; case _ => true })
+
+  @Test
+  def closedLexicalContractKeepsTokenInteriorsOpaqueAndSeparatesDelimiters(): Unit =
+    val source   = "(\"a,b\", `c d`, '\\u0041', 1.25e-2)"
+    val contract = ClosedSourceLexicalContract.from(source)
+    val atoms    = contract.atoms.map(atom => source.substring(atom.start, atom.end) -> atom.kind)
+
+    assertEquals(source, contract.reconstruct(source))
+    assertEquals(
+      Vector(
+        "("         -> ClosedSourceLexicalKind.LeftParenthesis,
+        "\"a,b\""   -> ClosedSourceLexicalKind.Literal,
+        ","         -> ClosedSourceLexicalKind.Comma,
+        " "         -> ClosedSourceLexicalKind.Whitespace,
+        "`c d`"     -> ClosedSourceLexicalKind.QuotedIdentifier,
+        ","         -> ClosedSourceLexicalKind.Comma,
+        " "         -> ClosedSourceLexicalKind.Whitespace,
+        "'\\u0041'" -> ClosedSourceLexicalKind.Literal,
+        ","         -> ClosedSourceLexicalKind.Comma,
+        " "         -> ClosedSourceLexicalKind.Whitespace,
+        "1.25e-2"   -> ClosedSourceLexicalKind.Number,
+        ")"         -> ClosedSourceLexicalKind.RightParenthesis
+      ),
+      atoms
+    )
+    assertTrue(!contract.boundaries(source.indexOf("a,b") + 1))
+    assertTrue(!contract.boundaries(source.indexOf("c d") + 1))
+    assertTrue(!contract.boundaries(source.indexOf("1.25") + 2))
+
+  @Test
+  def refinementRejectsUnknownIdentityRoleUnsafeCutsAndEveryMalformedPartitionAtomically(): Unit =
+    val source                                              = "classy"
+    val evidence                                            = planned(fixture(source, Vector(node(1, 0, source.length, 0))))
+    val atom                                                = evidence.atoms.head
+    val reference                                           = SourceAtomReference(atom.id, atom.start, atom.end)
+    val role                                                = PsiOutputRoleId("test.terminal")
+    def failures(refinements: Vector[SourceAtomRefinement]) =
+      SourceEvidenceRefinementPlanner.refine(evidence, Set(role), refinements).left.toOption.get
+    def contract(
+        replacement: Vector[PcSourceRange],
+        atomReference: SourceAtomReference = reference,
+        requestingRole: PsiOutputRoleId = role
+    ) = SourceAtomRefinement(atomReference, requestingRole, replacement)
+
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 6)), reference.copy(id = SourceAtomId(99, 0)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.UnknownAtom])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 5)), reference.copy(end = 5))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.AtomRangeChanged])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 6)), requestingRole = PsiOutputRoleId("test.unknown"))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.UnknownRole])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector.empty))).exists(_.isInstanceOf[SourceAtomRefinementFailure.EmptyReplacement])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 0), PcSourceRange(0, 6)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.EmptyReplacementInterval])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 5)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.IncompletePartition])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 2), PcSourceRange(3, 6)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.NonContiguousPartition])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 4), PcSourceRange(2, 6)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.OverlappingPartition])
+    )
+    assertTrue(
+      failures(Vector(contract(Vector(PcSourceRange(0, 2), PcSourceRange(2, 4), PcSourceRange(4, 6)))))
+        .exists(_.isInstanceOf[SourceAtomRefinementFailure.UnsafeBoundary])
+    )
+    assertTrue(
+      failures(
+        Vector(
+          contract(Vector(PcSourceRange(0, 6))),
+          contract(Vector(PcSourceRange(0, 6)), requestingRole = PsiOutputRoleId("test.other"))
+        )
+      ).exists(_.isInstanceOf[SourceAtomRefinementFailure.OverlappingRefinements])
+    )
+
+  @Test
+  def finalOwnershipKeepsColocatedEventsDistinctAndRejectsUnknownMultipleAndUnownedEvidence(): Unit =
+    val source   = "x"
+    val snapshot = fixture(
+      source,
+      Vector(
+        node(1, 0, 1, 0),
+        node(2, 0, 0, 0),
+        node(3, 0, 0, 0)
+      )
+    )
+    val refined  = SourceEvidenceRefinementPlanner.refine(planned(snapshot), Set.empty, Vector.empty).toOption.get
+    val atom     = refined.atoms.head
+    val atomRef  = SourceAtomReference(atom.id, atom.start, atom.end)
+    val role     = PsiOutputRoleId("test.owner")
+    val owner    = SourceEvidenceOwner(role, "owner")
+    val events   = refined.structural.map(_.id)
+    val atoms    = Vector(SourceAtomOwnership(atomRef, owner))
+    val assigned = events.map(SourceEventOwnership(_, owner))
+    val first    = FinalSourceEvidencePlanner.plan(refined, Set(role), atoms, assigned).toOption.get
+    val second   = FinalSourceEvidencePlanner.plan(refined, Set(role), atoms, assigned).toOption.get
+
+    assertEquals(Vector(SourceEvidenceEventId.Node(2), SourceEvidenceEventId.Node(3)), events)
+    assertEquals(first, second)
+    assertEquals(source, first.reconstruct(source))
+
+    def failures(
+        atomOwnership: Vector[SourceAtomOwnership],
+        eventOwnership: Vector[SourceEventOwnership],
+        roles: Set[PsiOutputRoleId] = Set(role)
+    ) = FinalSourceEvidencePlanner.plan(refined, roles, atomOwnership, eventOwnership).left.toOption.get
+
+    assertTrue(
+      failures(atoms, assigned.map(_.copy(owner = owner.copy(role = PsiOutputRoleId("test.unknown")))))
+        .exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnknownRole])
+    )
+    assertTrue(
+      failures(atoms :+ SourceAtomOwnership(atomRef.copy(id = SourceAtomId(99, 0)), owner), assigned)
+        .exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnknownAtom])
+    )
+    assertTrue(
+      failures(atoms, assigned :+ SourceEventOwnership(SourceEvidenceEventId.Node(99), owner))
+        .exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnknownEvent])
+    )
+    assertTrue(
+      failures(atoms :+ atoms.head, assigned).exists(_.isInstanceOf[FinalSourceEvidenceFailure.MultiplyOwnedAtom])
+    )
+    assertTrue(
+      failures(atoms, assigned :+ assigned.head).exists(_.isInstanceOf[FinalSourceEvidenceFailure.MultiplyOwnedEvent])
+    )
+    assertTrue(failures(Vector.empty, assigned).exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnownedAtom]))
+    assertTrue(failures(atoms, assigned.tail).exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnownedEvent]))
+
+  @Test
   def malformedSnapshotsReturnStructuredFailures(): Unit =
     val source    = "/*x*/"
     val malformed = fixture(
@@ -124,6 +296,11 @@ final class SourceEvidencePlannerTest:
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.InvalidPoint]))
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.CommentMismatch]))
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.OverlappingComments]))
+
+  private def planned(snapshot: ParserSyntaxSnapshot): ProvisionalSourceEvidencePlan =
+    ProvisionalSourceEvidencePlanner
+      .plan(snapshot)
+      .fold(failures => throw new AssertionError(failures.toString), identity)
 
   private def node(id: Long, start: Int, end: Int, point: Int): ParserSyntaxNode =
     ParserSyntaxNode(

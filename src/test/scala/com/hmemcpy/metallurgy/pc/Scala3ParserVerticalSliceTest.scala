@@ -89,6 +89,11 @@ final class Scala3ParserVerticalSliceTest:
         source,
         plan.physicalLeafOwnership.sortBy(_.start).map(leaf => source.substring(leaf.start, leaf.end)).mkString
       )
+      assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+      assertEquals(
+        plan.structuralEvidenceOwnership.map(_.eventId).distinct,
+        plan.structuralEvidenceOwnership.map(_.eventId)
+      )
     finally bridge.close()
 
   @Test
@@ -163,8 +168,8 @@ final class Scala3ParserVerticalSliceTest:
         .prepare(catalog, aggregate, surfaces)
         .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
       snapshots.foreach: snapshot =>
-        val evidence = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
-        val plan     = WholeFileProductionPlanner
+        val evidence  = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+        val plan      = WholeFileProductionPlanner
           .plan(snapshot, evidence, prepared)
           .fold(error => throw new AssertionError(s"${snapshot.sourceUri}: $error"), identity)
         assertEquals(
@@ -174,6 +179,21 @@ final class Scala3ParserVerticalSliceTest:
             .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
             .mkString
         )
+        assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+        val tokenText = plan.physicalLeafOwnership.collect:
+          case leaf @ com.hmemcpy.metallurgy.psiproducer.PlannedPhysicalLeaf(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                TerminalLeafTarget.Token(_, Some(expected))
+              ) =>
+            snapshot.sourceText.substring(leaf.start, leaf.end) -> expected
+        assertTrue(tokenText.forall((actual, expected) => actual == expected))
+        if snapshot.sourceText.contains("/* as */") then assertEquals(Vector("as" -> "as"), tokenText)
+        if snapshot.sourceText.contains("/* => */") then assertEquals(Vector("=>" -> "=>"), tokenText)
     finally bridge.close()
 
   @Test
@@ -568,7 +588,7 @@ final class Scala3ParserVerticalSliceTest:
               Vector(stub, serializer, navigation) ++ indices
           Vector(composite.targetSurfaceId) ++ composite.accessors.map(_.surfaceId) ++ persistence
         .toSet ++ Scala3PsiProductionCatalog.Reviewed.productions.flatMap(_.terminals.collect {
-        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _) => surfaceId
+        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _) => surfaceId
       })
       val expectedUnaccounted                                                                      = surfaces.rows
         .filter(row =>
