@@ -11,8 +11,6 @@ final class MetallurgyStatusBarWidgetFactory extends StatusBarWidgetFactory:
 
   override def getDisplayName: String = "Metallurgy"
 
-  override def isAvailable(project: Project): Boolean = project.isOpen
-
   override def createWidget(project: Project): StatusBarWidget =
     MetallurgyStatusBarWidget(project)
 

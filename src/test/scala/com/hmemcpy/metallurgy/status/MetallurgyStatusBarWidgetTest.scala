@@ -8,6 +8,7 @@ import com.hmemcpy.metallurgy.pc.{
   Scala3ParserLoaderIdentity
 }
 import com.hmemcpy.metallurgy.psiproducer.*
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.{StatusBar, StatusBarWidget}
@@ -18,6 +19,22 @@ import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import scala.collection.mutable.ArrayBuffer
 
 final class MetallurgyStatusBarWidgetTest extends BasePlatformTestCase:
+
+  def testFactoryAvailabilityDoesNotDependOnProjectOpenState(): Unit =
+    val earlyProject =
+      Proxy
+        .newProxyInstance(
+          classOf[Project].getClassLoader,
+          Array(classOf[Project]),
+          new InvocationHandler:
+            override def invoke(_proxy: Any, method: Method, _arguments: Array[AnyRef]): AnyRef =
+              if method.getName == "isOpen" then Boolean.box(false)
+              else throw new AssertionError(s"Unexpected project access: ${method.getName}")
+        )
+        .asInstanceOf[Project]
+
+    assertFalse(earlyProject.isOpen)
+    assertTrue(new MetallurgyStatusBarWidgetFactory().isAvailable(earlyProject))
 
   def testFactoryKeepsTheWidgetAvailableAndEnabledByDefault(): Unit =
     val factory = new MetallurgyStatusBarWidgetFactory
