@@ -1,6 +1,7 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.*
+import com.hmemcpy.metallurgy.status.{MetallurgyStatus, MetallurgyStatusListener}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.{Document, RangeMarker}
@@ -32,10 +33,36 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
     val activation  = new PlatformRecordingActivation(getProject)
     val catalogs    = new RecordingCatalogPreparer(NativeScala3PsiCatalogPreparer)
     val lifecycle   = lifecycleFor(preparer, Vector(first, second), activation, catalogs)
+    val statuses    = ArrayBuffer.empty[MetallurgyStatus]
+    getProject.getMessageBus
+      .connect(getTestRootDisposable)
+      .subscribe(
+        MetallurgyStatus.Topic,
+        new MetallurgyStatusListener:
+          override def statusChanged(status: MetallurgyStatus): Unit = statuses += status
+      )
 
     try
-      val epoch = lifecycle.prepare(getModule)
+      val epoch            = lifecycle.prepare(getModule)
       assertEquals(ParserPreparationState.Preparing(epoch), lifecycle.stateFor(getModule))
+      val preparing        = statuses.last.asInstanceOf[MetallurgyStatus.SyntaxCapability].report
+      assertEquals(Scala3SyntaxCapabilityState.Preparing, preparing.state)
+      assertEquals(Scala3SyntaxCapabilityOperation.PrepareExactParser, preparing.scope.operation)
+      assertEquals(getModule.getName, preparing.scope.moduleName)
+      assertEquals(None, preparing.scope.file)
+      assertEquals(Scala3SyntaxCapabilityRequirement.Capability("exact-parser-preparation"), preparing.requirement)
+      assertEquals(Scala3SyntaxCapabilityEvidenceState.Collecting, preparing.evidence.state)
+      assertEquals(Scala3SyntaxCapabilityRemediationState.AwaitingPreparation, preparing.remediation)
+      assertEquals(None, preparing.sourceDigest)
+      assertEquals(epoch, preparing.preparationEpoch)
+      assertEquals(Scala3SyntaxCapabilityService.RetainedOperations, preparing.retainedOperations)
+      assertTrue(preparing.compilerIdentity.isEmpty)
+      assertTrue(preparing.hostIdentity.ideBuild.nonEmpty)
+      assertEquals("org.intellij.scala", preparing.hostIdentity.scalaPluginId)
+      assertTrue(preparing.hostIdentity.scalaPluginVersion.nonEmpty)
+      val publicationCount = statuses.size
+      Scala3SyntaxCapabilityService.get(getProject).publishPreparing(getModule, epoch)
+      assertEquals("identical preparation reports must deduplicate", publicationCount, statuses.size)
 
       val bridge = new TestParserBridge
       preparer.complete(0, bridge)
@@ -65,6 +92,10 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
         prepared.catalog.productions
           .find(_.id == "integer-literal-number")
           .exists(_.targetRequirement == TargetRequirement.Native)
+      )
+      assertTrue(statuses.exists:
+        case MetallurgyStatus.SyntaxCapabilityResolved(report) => report.preparationEpoch == epoch
+        case _                                                 => false
       )
     finally lifecycle.dispose()
 
@@ -100,18 +131,42 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       )
     )
     val lifecycle  = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
+    val statuses   = ArrayBuffer.empty[MetallurgyStatus]
+    getProject.getMessageBus
+      .connect(getTestRootDisposable)
+      .subscribe(
+        MetallurgyStatus.Topic,
+        new MetallurgyStatusListener:
+          override def statusChanged(status: MetallurgyStatus): Unit = statuses += status
+      )
 
     try
-      val _           = lifecycle.prepare(getModule)
-      val bridge      = new TestParserBridge
+      val _                = lifecycle.prepare(getModule)
+      val bridge           = new TestParserBridge
       preparer.complete(0, bridge)
       await(lifecycle)(_.isInstanceOf[ParserPreparationState.Unavailable])
-      val unavailable = lifecycle.stateFor(getModule).asInstanceOf[ParserPreparationState.Unavailable]
+      val unavailable      = lifecycle.stateFor(getModule).asInstanceOf[ParserPreparationState.Unavailable]
       assertTrue(unavailable.detail.contains("output roles have no element-type binding"))
       assertTrue(unavailable.detail.contains(target))
       assertTrue(bridge.closed)
       assertTrue(lifecycle.parserFor(getModule).isEmpty)
       assertEquals(0, activation.batchCount)
+      val report           = statuses
+        .collect:
+          case MetallurgyStatus.SyntaxCapability(value) if value.compilerIdentity.contains(bridge.identity) => value
+        .last
+      assertEquals(Scala3SyntaxCapabilityState.Unavailable, report.state)
+      assertEquals(Scala3SyntaxCapabilityOperation.BindPsiRoles, report.scope.operation)
+      assertEquals(Scala3SyntaxCapabilityStage.PsiRoleBinding, report.evidence.stage)
+      assertEquals(Scala3SyntaxCapabilityRequirement.Capability("psi-role-binding"), report.requirement)
+      assertEquals(Scala3SyntaxCapabilityRemediationState.ImplementationRequired, report.remediation)
+      assertEquals(Some(bridge.identity), report.compilerIdentity)
+      assertEquals(Some(bridge.identity.coordinate), report.compilerCoordinate)
+      assertEquals(None, report.sourceDigest)
+      assertEquals(unavailable.currentEpoch, report.preparationEpoch)
+      val publicationCount = statuses.size
+      Scala3SyntaxCapabilityService.get(getProject).resolve(getModule, unavailable.currentEpoch)
+      assertEquals("stale preparation resolution must not clear a binding failure", publicationCount, statuses.size)
     finally lifecycle.dispose()
 
   def testCapabilityProvenCompatibleTargetBindsItsElementType(): Unit =
@@ -169,10 +224,33 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
     val activation = new ControlledActivation
     val catalogs   = new RecordingCatalogPreparer(_ => Right(Scala3PsiProductionCatalog.Reviewed))
     val lifecycle  = lifecycleFor(preparer, Vector(file), activation, catalogs)
+    val statuses   = ArrayBuffer.empty[MetallurgyStatus]
+    getProject.getMessageBus
+      .connect(getTestRootDisposable)
+      .subscribe(
+        MetallurgyStatus.Topic,
+        new MetallurgyStatusListener:
+          override def statusChanged(status: MetallurgyStatus): Unit = statuses += status
+      )
 
     try
       val staleEpoch   = lifecycle.prepare(getModule)
       val currentEpoch = lifecycle.prepare(getModule)
+      val service      = Scala3SyntaxCapabilityService.get(getProject)
+      val currentCount = statuses.size
+      service.discardBefore(getModule, staleEpoch)
+      service.publishPreparing(getModule, currentEpoch)
+      service.publishUnavailable(
+        getModule,
+        staleEpoch,
+        Scala3SyntaxCapabilityOperation.PrepareExactParser,
+        Scala3SyntaxCapabilityStage.Preparation,
+        Scala3SyntaxCapabilityRequirement.Capability("exact-parser-preparation"),
+        "stale failure",
+        None,
+        Scala3SyntaxCapabilityRemediationState.Retryable
+      )
+      assertEquals("stale discard and publication must preserve the current report", currentCount, statuses.size)
       val staleBridge  = new TestParserBridge
       preparer.complete(0, staleBridge)
       awaitCondition("stale bridge closure", staleBridge.closed)

@@ -38,40 +38,49 @@ private final class MetallurgyStatusBarWidget(project: Project)
     connection.subscribe(MetallurgyStatus.Topic, this)
 
   override def getText: String = currentStatus match
-    case MetallurgyStatus.Enabled                       => "Metallurgy: enabled"
-    case MetallurgyStatus.Resolving(_)                  => "Metallurgy: resolving…"
-    case MetallurgyStatus.Resolved(_, tpe)              => s"Metallurgy: ${abbreviate(tpe)}"
-    case MetallurgyStatus.NoType(_)                     => "Metallurgy: no type"
-    case MetallurgyStatus.Unavailable(_)                => "Metallurgy: unavailable"
-    case MetallurgyStatus.Failed(_, _)                  => "Metallurgy: error"
-    case MetallurgyStatus.SyntaxUnavailable(_, _, _, _) => "Metallurgy: syntax unavailable"
-    case MetallurgyStatus.SyntaxAvailable(_)            => "Metallurgy: syntax ready"
+    case MetallurgyStatus.Enabled                     => "Metallurgy: enabled"
+    case MetallurgyStatus.Resolving(_)                => "Metallurgy: resolving…"
+    case MetallurgyStatus.Resolved(_, tpe)            => s"Metallurgy: ${abbreviate(tpe)}"
+    case MetallurgyStatus.NoType(_)                   => "Metallurgy: no type"
+    case MetallurgyStatus.Unavailable(_)              => "Metallurgy: unavailable"
+    case MetallurgyStatus.Failed(_, _)                => "Metallurgy: error"
+    case MetallurgyStatus.SyntaxCapability(_)         => "Metallurgy: syntax unavailable"
+    case MetallurgyStatus.SyntaxCapabilityResolved(_) => "Metallurgy: syntax ready"
 
   override def getTooltipText: String = currentStatus match
-    case MetallurgyStatus.Enabled                                          =>
+    case MetallurgyStatus.Enabled                          =>
       "Metallurgy is enabled, but has not written a compiler type in this session."
-    case MetallurgyStatus.Resolving(moduleName)                            =>
+    case MetallurgyStatus.Resolving(moduleName)            =>
       s"Metallurgy is resolving a compiler type in $moduleName."
-    case MetallurgyStatus.Resolved(moduleName, tpe)                        =>
+    case MetallurgyStatus.Resolved(moduleName, tpe)        =>
       s"Last compiler type written by Metallurgy in $moduleName: $tpe"
-    case MetallurgyStatus.NoType(moduleName)                               =>
+    case MetallurgyStatus.NoType(moduleName)               =>
       s"The Metallurgy presentation compiler returned no type in $moduleName."
-    case MetallurgyStatus.Unavailable(moduleName)                          =>
+    case MetallurgyStatus.Unavailable(moduleName)          =>
       s"No Metallurgy presentation compiler session is available for $moduleName."
-    case MetallurgyStatus.Failed(moduleName, detail)                       =>
+    case MetallurgyStatus.Failed(moduleName, detail)       =>
       s"Metallurgy failed to resolve a compiler type in $moduleName: $detail"
-    case MetallurgyStatus.SyntaxUnavailable(file, stage, detail, compiler) =>
-      val identity = compiler.fold("")(value => s" using $value")
-      s"Metallurgy cannot represent exact Scala syntax for ${file.getPresentableUrl} at $stage$identity: $detail"
-    case MetallurgyStatus.SyntaxAvailable(file)                            =>
-      s"Metallurgy exact Scala syntax is ready for ${file.getPresentableUrl}."
+    case MetallurgyStatus.SyntaxCapability(report)         =>
+      val target   = report.scope.file.fold(report.scope.moduleName)(_.getPresentableUrl)
+      val identity = report.compilerIdentity
+        .map(_.toString)
+        .orElse(
+          report.compilerCoordinate.map(coordinate =>
+            s"${coordinate.organization}:${coordinate.artifact}:${coordinate.version}"
+          )
+        )
+        .fold("")(value => s" using $value")
+      s"Metallurgy cannot represent exact Scala syntax for $target at ${report.evidence.stage}$identity: ${report.evidence.detail}"
+    case MetallurgyStatus.SyntaxCapabilityResolved(report) =>
+      val target = report.scope.file.fold(report.scope.moduleName)(_.getPresentableUrl)
+      s"Metallurgy exact Scala syntax capability is ready for $target."
 
   override def getAlignment: Float = 0.5f
 
   override def statusChanged(newStatus: MetallurgyStatus): Unit =
     newStatus match
-      case _: MetallurgyStatus.SyntaxUnavailable | _: MetallurgyStatus.SyntaxAvailable => ()
-      case semantic                                                                    => semanticStatus = semantic
+      case _: MetallurgyStatus.SyntaxCapability | _: MetallurgyStatus.SyntaxCapabilityResolved => ()
+      case semantic                                                                            => semanticStatus = semantic
     statusBar.foreach(_.updateWidget(ID()))
 
   override def dispose(): Unit =
@@ -82,4 +91,9 @@ private final class MetallurgyStatusBarWidget(project: Project)
     if tpe.length <= MaxLength then tpe else s"${tpe.take(MaxLength - 1)}…"
 
   private def currentStatus: MetallurgyStatus =
-    Scala3SyntaxCapabilityService.get(project).currentFailures.headOption.getOrElse(semanticStatus)
+    Scala3SyntaxCapabilityService
+      .get(project)
+      .currentFailures
+      .headOption
+      .map(MetallurgyStatus.SyntaxCapability.apply)
+      .getOrElse(semanticStatus)

@@ -63,8 +63,11 @@ final class Scala3DotcFileElementType
     val preparationEpoch                                                                        = module
       .map(value => lifecycle.stateFor(value).currentEpoch)
       .getOrElse(ParserPreparationEpoch.Disposed)
+    val capabilityService                                                                       = Scala3SyntaxCapabilityService
+      .get(psi.getProject)
+    val priorFailure                                                                            = sourceFile.flatMap(file => capabilityService.failureFor(file, digest))
     def failure(stage: Scala3SyntaxCapabilityStage, detail: Any): Scala3SyntaxCapabilityFailure =
-      Scala3SyntaxCapabilityFailure(digest, stage, detail.toString, preparationEpoch, None)
+      Scala3SyntaxCapabilityFailure.from(digest, stage, detail, preparationEpoch, None)
     val planned                                                                                 = for
       active         <- module.toRight(failure(Scala3SyntaxCapabilityStage.Module, "source module is unavailable"))
       prepared       <- lifecycle
@@ -84,10 +87,10 @@ final class Scala3DotcFileElementType
                           .left
                           .map(failure(Scala3SyntaxCapabilityStage.Parser, _))
       snapshotFailure = (stage: Scala3SyntaxCapabilityStage, detail: Any) =>
-                          Scala3SyntaxCapabilityFailure(
+                          Scala3SyntaxCapabilityFailure.from(
                             digest,
                             stage,
-                            detail.toString,
+                            detail,
                             preparationEpoch,
                             Some(snapshot.compilerIdentity)
                           )
@@ -125,7 +128,7 @@ final class Scala3DotcFileElementType
         .parseResult(this, builder, plan, bindings)
         .left
         .map(detail =>
-          Scala3SyntaxCapabilityFailure(
+          Scala3SyntaxCapabilityFailure.from(
             digest,
             Scala3SyntaxCapabilityStage.Emitter,
             detail,
@@ -137,13 +140,11 @@ final class Scala3DotcFileElementType
       case Right(_)     =>
         sourceFile.foreach(file =>
           planned.foreach((_, _, _, compilerIdentity) =>
-            Scala3SyntaxCapabilityService
-              .get(psi.getProject)
-              .resolve(file, digest, preparationEpoch, compilerIdentity)
+            priorFailure.foreach(capabilityService.resolve(file, _, compilerIdentity))
           )
         )
       case Left(reason) =>
-        sourceFile.foreach(file => Scala3SyntaxCapabilityService.get(psi.getProject).publish(file, module, reason))
+        sourceFile.foreach(file => capabilityService.publish(file, module, reason))
         DotcPsiProducer.emitClosedFile(this, builder)
     builder.getTreeBuilt.getFirstChildNode
 

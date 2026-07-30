@@ -82,7 +82,9 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           val epoch = ParserPreparationEpoch(nextEpoch.incrementAndGet())
           entries.put(module, ParserPreparationEntry(ParserPreparationState.Preparing(epoch), None))
           Some(epoch)
-    start.foreach(startPreparation(module, _))
+    start.foreach: epoch =>
+      Scala3SyntaxCapabilityService.get(project).publishPreparing(module, epoch)
+      startPreparation(module, epoch)
     start.get
 
   def prepare(module: Module): ParserPreparationEpoch =
@@ -97,7 +99,9 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           ParserPreparationState.Preparing(epoch)
       entries.put(module, ParserPreparationEntry(state, None))
       epoch -> previous
-    Scala3SyntaxCapabilityService.get(project).discard(module)
+    Scala3SyntaxCapabilityService.get(project).discardBefore(module, epoch)
+    if stateFor(module) == ParserPreparationState.Preparing(epoch) then
+      Scala3SyntaxCapabilityService.get(project).publishPreparing(module, epoch)
     previous match
       case Some(ParserPreparationEntry(ParserPreparationState.Ready(_), retired))  =>
         queuePendingTransition(module, retired)
@@ -113,7 +117,7 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
     val close   = trackedCloseOnce(module, retired)
     try
       val files = fileCollector.filesFor(module)
-      Scala3SyntaxCapabilityService.get(project).discard(files)
+      Scala3SyntaxCapabilityService.get(project).discard(module)
       activation.queue(
         files,
         () => stateFor(module) == ParserPreparationState.Inactive,
@@ -154,7 +158,9 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           return
     val continue = () =>
       close()
-      beginPreparationAfterNeutral(module).foreach(startPreparation(module, _))
+      beginPreparationAfterNeutral(module).foreach: epoch =>
+        Scala3SyntaxCapabilityService.get(project).publishPreparing(module, epoch)
+        startPreparation(module, epoch)
     try
       activation.queue(
         files,
@@ -206,6 +212,20 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           Some(current)
         case _                                                                                => None
     if epoch.nonEmpty then log.warn(s"Exact Scala 3 parser unavailable for ${module.getName}: $message")
+    epoch.foreach(value =>
+      Scala3SyntaxCapabilityService
+        .get(project)
+        .publishUnavailable(
+          module,
+          value,
+          Scala3SyntaxCapabilityOperation.ActivateParser,
+          Scala3SyntaxCapabilityStage.Activation,
+          Scala3SyntaxCapabilityRequirement.Capability("parser-neutralization"),
+          message,
+          None,
+          Scala3SyntaxCapabilityRemediationState.Retryable
+        )
+    )
 
   def stateFor(module: Module): ParserPreparationState = synchronized:
     if disposed then ParserPreparationState.Disposed
@@ -280,10 +300,50 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
             val prepared =
               try
                 for
-                  catalog   <- catalogPreparer.prepare(project)
-                  installed <- ScalaPsiSurfaceInventory.installed()
-                  bindings  <- NativePsiElementBindings.probe(project)
-                  bound     <- bindings.bind(catalog)
+                  catalog   <- catalogPreparer
+                                 .prepare(project)
+                                 .left
+                                 .map(message =>
+                                   ParserPreparationCapabilityFailure(
+                                     Scala3SyntaxCapabilityStage.Catalog,
+                                     Scala3SyntaxCapabilityRequirement.Capability("production-catalog"),
+                                     message,
+                                     Scala3SyntaxCapabilityRemediationState.ImplementationRequired
+                                   )
+                                 )
+                  installed <- ScalaPsiSurfaceInventory
+                                 .installed()
+                                 .left
+                                 .map(message =>
+                                   ParserPreparationCapabilityFailure(
+                                     Scala3SyntaxCapabilityStage.HostInventory,
+                                     Scala3SyntaxCapabilityRequirement.Capability("scala-plugin-host-inventory"),
+                                     message,
+                                     Scala3SyntaxCapabilityRemediationState.Retryable
+                                   )
+                                 )
+                  bindings  <- NativePsiElementBindings
+                                 .probe(project)
+                                 .left
+                                 .map(message =>
+                                   ParserPreparationCapabilityFailure(
+                                     Scala3SyntaxCapabilityStage.PsiRoleBinding,
+                                     Scala3SyntaxCapabilityRequirement.Capability("psi-role-probe"),
+                                     message,
+                                     Scala3SyntaxCapabilityRemediationState.Retryable
+                                   )
+                                 )
+                  bound     <- bindings
+                                 .bind(catalog)
+                                 .left
+                                 .map(message =>
+                                   ParserPreparationCapabilityFailure(
+                                     Scala3SyntaxCapabilityStage.PsiRoleBinding,
+                                     Scala3SyntaxCapabilityRequirement.Capability("psi-role-binding"),
+                                     message,
+                                     Scala3SyntaxCapabilityRemediationState.ImplementationRequired
+                                   )
+                                 )
                   surfaces   = installed.withCatalogCapabilities(catalog)
                 yield PreparedScala3Parser(
                   bridge,
@@ -303,18 +363,40 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
                   publishUnavailable(module, epoch, failureMessage(error))
                   return
             prepared match
-              case Left(message)   =>
+              case Left(failure)   =>
                 bridge.close()
-                publishUnavailable(module, epoch, message)
+                publishUnavailable(
+                  module,
+                  epoch,
+                  failure.detail,
+                  failure.stage,
+                  Scala3SyntaxCapabilityOperation.BindPsiRoles,
+                  failure.requirement,
+                  Some(bridge.identity),
+                  failure.remediation
+                )
               case Right(prepared) => publishActivating(module, epoch, prepared)
 
-  private def cancelPreparation(module: Module, epoch: ParserPreparationEpoch): Unit = synchronized:
-    Option(entries.get(module)) match
-      case Some(ParserPreparationEntry(ParserPreparationState.Preparing(current), None)) if current == epoch =>
-        val _ = entries.remove(module)
-      case _                                                                                                 => ()
+  private def cancelPreparation(module: Module, epoch: ParserPreparationEpoch): Unit =
+    val cancelled = synchronized:
+      Option(entries.get(module)) match
+        case Some(ParserPreparationEntry(ParserPreparationState.Preparing(current), None)) if current == epoch =>
+          val _ = entries.remove(module)
+          true
+        case _                                                                                                 => false
+    if cancelled then Scala3SyntaxCapabilityService.get(project).resolve(module, epoch)
 
-  private def publishUnavailable(module: Module, epoch: ParserPreparationEpoch, message: String): Unit =
+  private def publishUnavailable(
+      module: Module,
+      epoch: ParserPreparationEpoch,
+      message: String,
+      stage: Scala3SyntaxCapabilityStage = Scala3SyntaxCapabilityStage.Preparation,
+      operation: Scala3SyntaxCapabilityOperation = Scala3SyntaxCapabilityOperation.PrepareExactParser,
+      requirement: Scala3SyntaxCapabilityRequirement =
+        Scala3SyntaxCapabilityRequirement.Capability("exact-parser-preparation"),
+      compilerIdentity: Option[com.hmemcpy.metallurgy.pc.Scala3ParserCompilerIdentity] = None,
+      remediation: Scala3SyntaxCapabilityRemediationState = Scala3SyntaxCapabilityRemediationState.Retryable
+  ): Unit =
     val published = synchronized:
       Option(entries.get(module)) match
         case Some(ParserPreparationEntry(ParserPreparationState.Preparing(current), None)) if current == epoch =>
@@ -324,7 +406,20 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           )
           true
         case _                                                                                                 => false
-    if published then log.warn(s"Exact Scala 3 parser unavailable for ${module.getName}: $message")
+    if published then
+      Scala3SyntaxCapabilityService
+        .get(project)
+        .publishUnavailable(
+          module,
+          epoch,
+          operation,
+          stage,
+          requirement,
+          message,
+          compilerIdentity,
+          remediation
+        )
+      log.warn(s"Exact Scala 3 parser unavailable for ${module.getName}: $message")
 
   private def publishActivating(
       module: Module,
@@ -342,6 +437,7 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
         case _                                                                                                 => false
     if !published then prepared.bridge.close()
     else
+      Scala3SyntaxCapabilityService.get(project).resolve(module, epoch)
       val files =
         try fileCollector.filesFor(module)
         catch
@@ -395,7 +491,20 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
           bridge
         case _                                                                                                    => None
     retired.foreach(_.bridge.close())
-    if retired.nonEmpty then log.warn(s"Exact Scala 3 parser activation failed for ${module.getName}: $message")
+    if retired.nonEmpty then
+      Scala3SyntaxCapabilityService
+        .get(project)
+        .publishUnavailable(
+          module,
+          epoch,
+          Scala3SyntaxCapabilityOperation.ActivateParser,
+          Scala3SyntaxCapabilityStage.Activation,
+          Scala3SyntaxCapabilityRequirement.Capability("parser-activation"),
+          message,
+          retired.map(_.bridge.identity),
+          Scala3SyntaxCapabilityRemediationState.Retryable
+        )
+      log.warn(s"Exact Scala 3 parser activation failed for ${module.getName}: $message")
 
   private def isActivating(module: Module, epoch: ParserPreparationEpoch): Boolean = synchronized:
     Option(entries.get(module)).exists:
@@ -407,11 +516,14 @@ final class Scala3ParserPreparationLifecycle private[psiproducer] (
       ParserPreparationEntry(ParserPreparationState.Preparing(epoch), None)
     )
 
-  private def publishReady(module: Module, epoch: ParserPreparationEpoch): Unit = synchronized:
-    Option(entries.get(module)) match
-      case Some(ParserPreparationEntry(ParserPreparationState.Activating(current), bridge)) if current == epoch =>
-        val _ = entries.put(module, ParserPreparationEntry(ParserPreparationState.Ready(epoch), bridge))
-      case _                                                                                                    => ()
+  private def publishReady(module: Module, epoch: ParserPreparationEpoch): Unit =
+    val published = synchronized:
+      Option(entries.get(module)) match
+        case Some(ParserPreparationEntry(ParserPreparationState.Activating(current), bridge)) if current == epoch =>
+          val _ = entries.put(module, ParserPreparationEntry(ParserPreparationState.Ready(epoch), bridge))
+          true
+        case _                                                                                                    => false
+    if published then Scala3SyntaxCapabilityService.get(project).resolve(module, epoch)
 
   private def failureMessage(error: Throwable): String =
     val cause = Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq.lastOption.getOrElse(error)
@@ -497,6 +609,13 @@ private[metallurgy] enum ParserPreparationState:
 private final case class ParserPreparationEntry(
     state: ParserPreparationState,
     prepared: Option[PreparedScala3Parser]
+)
+
+private final case class ParserPreparationCapabilityFailure(
+    stage: Scala3SyntaxCapabilityStage,
+    requirement: Scala3SyntaxCapabilityRequirement,
+    detail: String,
+    remediation: Scala3SyntaxCapabilityRemediationState
 )
 
 private[metallurgy] final case class PreparedScala3Parser(

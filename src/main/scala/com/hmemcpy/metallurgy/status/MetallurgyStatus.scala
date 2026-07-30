@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.status
 
+import com.hmemcpy.metallurgy.psiproducer.Scala3SyntaxCapabilityReport
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
 
 private[metallurgy] enum MetallurgyStatus:
@@ -11,8 +11,8 @@ private[metallurgy] enum MetallurgyStatus:
   case NoType(moduleName: String)
   case Unavailable(moduleName: String)
   case Failed(moduleName: String, detail: String)
-  case SyntaxUnavailable(file: VirtualFile, stage: String, detail: String, compiler: Option[String])
-  case SyntaxAvailable(file: VirtualFile)
+  case SyntaxCapability(report: Scala3SyntaxCapabilityReport)
+  case SyntaxCapabilityResolved(report: Scala3SyntaxCapabilityReport)
 
 private[metallurgy] trait MetallurgyStatusListener:
   def statusChanged(status: MetallurgyStatus): Unit
