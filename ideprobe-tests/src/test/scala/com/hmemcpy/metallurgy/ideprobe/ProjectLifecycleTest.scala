@@ -46,7 +46,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       probe.preconfigureJdk()
       record(timeline, "jdk-preconfigured", "ProjectJdkTable initialized")
 
-      val openedProject = probe.openProject(intelliJ.workspace.resolve("build.sbt"), WaitLogic.none)
+      val openedProject = probe.openProject(intelliJ.workspace, WaitLogic.none)
       record(timeline, "project-opened", openedProject.toString)
       val project = ProjectRef.Default
 
