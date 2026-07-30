@@ -8,9 +8,13 @@ import org.virtuslab.ideprobe.protocol.FileRef
 
 object MetallurgyStatusEndpoint {
   val Status = Request[FileRef, Map[String, String]]("metallurgy/status")
+  val ReplaceWithSupportedSyntax =
+    Request[FileRef, Map[String, String]]("metallurgy/replace-with-supported-syntax")
 }
 
 final class MetallurgyStatusContributor extends ProbeHandlerContributor {
   override def registerHandlers(handler: ProbeHandler): ProbeHandler =
-    handler.on(MetallurgyStatusEndpoint.Status)(MetallurgyStatus.inspect)
+    handler
+      .on(MetallurgyStatusEndpoint.Status)(MetallurgyStatus.inspect)
+      .on(MetallurgyStatusEndpoint.ReplaceWithSupportedSyntax)(MetallurgyStatus.replaceWithSupportedSyntax)
 }

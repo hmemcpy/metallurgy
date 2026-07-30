@@ -17,6 +17,8 @@ import pureconfig.generic.auto._
 
 final class ProjectLifecycleTest extends IdeProbeFixture {
   private val StatusEndpoint = Request[FileRef, Map[String, String]]("metallurgy/status")
+  private val ReplaceWithSupportedSyntaxEndpoint =
+    Request[FileRef, Map[String, String]]("metallurgy/replace-with-supported-syntax")
 
   @Test
   def opensImportsIndexesAndHighlightsWithoutInternalErrors(): Unit = {
@@ -90,12 +92,66 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
         status("compatibleIntegerLiteral.probe").startsWith("Right(Vector(")
       )
       record(timeline, "metallurgy-parser-ready", formatMap(status).trim)
+      assertEquals("true", status("syntaxWidget.present"))
+      assertEquals("true", status("syntaxWidget.componentVisible"))
+      assertEquals("true", status("syntaxWidget.componentShowing"))
+      record(timeline, "syntax-capability-widget-visible", s"text=${status("syntaxWidget.text")}")
 
+      val originalSource = Files.readString(repoRoot.resolve("dogfood/src/main/scala/dogfood/showcase/TransparentInline.scala"))
+      assertEquals(originalSource, Files.readString(target))
       val infos = probe.highlightInfos(target, project)
       write(artifacts.resolve("highlights.txt"), infos.mkString("\n") + "\n")
       val errors = infos.filter(_.severity == HighlightInfo.Severity.Error)
       assertTrue(s"expected no ERROR highlights on TransparentInline.scala, got: $errors", errors.isEmpty)
       record(timeline, "highlighting-finished", s"highlights=${infos.size}")
+      assertEquals("unsupported source changed while failing closed", originalSource, Files.readString(target))
+
+      val unavailableStatus = await(2.minutes, 250.millis, "visible syntax capability finding") {
+        val current = probe.send(StatusEndpoint, fileRef)
+        Option.when(
+          current("syntaxWidget.text").startsWith("Metallurgy: syntax unavailable") &&
+            occurrences(current("syntaxWidget.tooltip"), s"file=$target") == 1
+        )(current)
+      }
+      write(artifacts.resolve("syntax-capability-unavailable.txt"), formatMap(unavailableStatus))
+      val unavailableTooltip = unavailableStatus("syntaxWidget.tooltip")
+      assertEquals("true", unavailableStatus("syntaxWidget.componentShowing"))
+      assertTrue(unavailableTooltip.contains("<b>State:</b> Unavailable"))
+      assertTrue(unavailableTooltip.contains("operation=ProduceWholeFilePsi"))
+      assertTrue(unavailableTooltip.contains("grammar-role=&lt;unidentified&gt;"))
+      assertTrue(unavailableTooltip.contains("org.scala-lang:scala3-compiler_3:3.7.4"))
+      assertTrue(
+        unavailableTooltip.contains("IDE build=IC-261.26222.65; Scala plugin=org.intellij.scala:2026.1.20")
+      )
+      assertTrue(unavailableTooltip.contains("ReadVerbatimSource, EditVerbatimSource"))
+      assertTrue(unavailableTooltip.contains("state=Recorded; stage=AggregateInventory"))
+      assertTrue(unavailableTooltip.contains("<b>Remediation and retry:</b> ImplementationRequired"))
+      record(timeline, "syntax-capability-finding-visible", s"text=${unavailableStatus("syntaxWidget.text")}")
+
+      val repeatedInfos = probe.highlightInfos(target, project)
+      val repeatedErrors = repeatedInfos.filter(_.severity == HighlightInfo.Severity.Error)
+      assertTrue(s"repeated highlighting produced ERROR findings: $repeatedErrors", repeatedErrors.isEmpty)
+      val deduplicatedStatus = await(2.minutes, 250.millis, "deduplicated syntax capability finding") {
+        val current = probe.send(StatusEndpoint, fileRef)
+        Option.when(occurrences(current("syntaxWidget.tooltip"), s"file=$target") == 1)(current)
+      }
+      write(artifacts.resolve("syntax-capability-deduplicated.txt"), formatMap(deduplicatedStatus))
+      record(timeline, "syntax-capability-finding-deduplicated", s"text=${deduplicatedStatus("syntaxWidget.text")}")
+
+      val _ = probe.send(ReplaceWithSupportedSyntaxEndpoint, fileRef)
+      val resolvedInfos = probe.highlightInfos(target, project)
+      write(artifacts.resolve("resolved-highlights.txt"), resolvedInfos.mkString("\n") + "\n")
+      val resolvedErrors = resolvedInfos.filter(_.severity == HighlightInfo.Severity.Error)
+      assertTrue(s"resolved supported source has ERROR highlights: $resolvedErrors", resolvedErrors.isEmpty)
+      val resolvedStatus = await(2.minutes, 250.millis, "cleared syntax capability finding") {
+        val current = probe.send(StatusEndpoint, fileRef)
+        Option.when(occurrences(current("syntaxWidget.tooltip"), s"file=$target") == 0)(current)
+      }
+      write(artifacts.resolve("syntax-capability-resolved.txt"), formatMap(resolvedStatus))
+      assertEquals("true", resolvedStatus("syntaxWidget.present"))
+      assertEquals("true", resolvedStatus("syntaxWidget.componentShowing"))
+      assertEquals("package dogfood.showcase\n\nimport scala.collection.*\n", Files.readString(target))
+      record(timeline, "syntax-capability-finding-cleared", s"text=${resolvedStatus("syntaxWidget.text")}")
 
       val messages = probe.messages()
       write(artifacts.resolve("ide-messages.txt"), messages.mkString("\n\n") + "\n")
@@ -198,6 +254,9 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
 
   private def formatMap(values: Map[String, String]): String =
     values.toVector.sortBy(_._1).map { case (key, value) => s"$key=$value" }.mkString("\n") + "\n"
+
+  private def occurrences(value: String, needle: String): Int =
+    value.sliding(needle.length).count(_ == needle)
 
   private def recreateDirectory(path: Path): Unit = {
     if (Files.exists(path)) {
