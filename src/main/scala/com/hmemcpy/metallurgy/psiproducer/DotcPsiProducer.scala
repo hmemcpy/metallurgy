@@ -25,7 +25,12 @@ private[metallurgy] object DotcPsiProducer:
     validate(builder, plan, bindings) match
       case None         =>
         val targets  = plan.targetAssertions.collect:
-          case PlannedTargetAssertion(TargetAssertionOwner.Composite(owner), surfaceId, _) => owner -> surfaceId
+          case PlannedTargetAssertion(
+                TargetAssertionOwner.Composite(owner),
+                PlannedTargetIdentity.OutputRole(outputRoleId),
+                _
+              ) =>
+            owner -> outputRoleId
         val remaps   = plan.physicalLeafOwnership.collect:
           case PlannedPhysicalLeaf(_, start, _, _, _, _, TerminalLeafTarget.Token(surfaceId, _)) =>
             start -> bindings.elementTypes(surfaceId)
@@ -51,7 +56,7 @@ private[metallurgy] object DotcPsiProducer:
   private[psiproducer] def emit(
       composite: PlannedComposite,
       byId: Map[CompositeInstanceId, PlannedComposite],
-      targets: Map[CompositeInstanceId, String],
+      targets: Map[CompositeInstanceId, PsiOutputRoleId],
       bindings: NativePsiElementBindings,
       builder: PsiBuilder,
       tokenRemaps: Map[Int, IElementType] = Map.empty
@@ -64,9 +69,7 @@ private[metallurgy] object DotcPsiProducer:
           val (from, to) = range(current)
           advanceTo(from, builder, tokenRemaps)
           val marker     = builder.mark()
-          pending.addFirst(
-            EmitEvent.Exit(marker, to, bindings.outputRoles(PsiOutputRoleId(targets(current.instance))))
-          )
+          pending.addFirst(EmitEvent.Exit(marker, to, bindings.outputRoles(targets(current.instance))))
           current.children.reverseIterator
             .flatMap(child => byId.get(child.child))
             .foreach(child => pending.addFirst(EmitEvent.Enter(child)))
@@ -79,12 +82,12 @@ private[metallurgy] object DotcPsiProducer:
       plan: WholeFileProductionPlan,
       bindings: NativePsiElementBindings
   ): Option[String] =
-    val source                                          = builder.getOriginalText
-    val length                                          = source.length
-    val leaves                                          = plan.physicalLeafOwnership.sortBy(_.start)
-    val ids                                             = plan.composites.map(_.instance)
-    val composite                                       = ids.toSet
-    val targets                                         = plan.targetAssertions.collect {
+    val source                                                          = builder.getOriginalText
+    val length                                                          = source.length
+    val leaves                                                          = plan.physicalLeafOwnership.sortBy(_.start)
+    val ids                                                             = plan.composites.map(_.instance)
+    val composite                                                       = ids.toSet
+    val targets                                                         = plan.targetAssertions.collect {
       case value @ PlannedTargetAssertion(
             TargetAssertionOwner.Composite(_),
             _,
@@ -92,35 +95,44 @@ private[metallurgy] object DotcPsiProducer:
           ) =>
         value
     }
-    val targetOwners                                    = targets.map(_.owner).collect { case TargetAssertionOwner.Composite(owner) => owner }.toSet
-    val terminalTargets                                 = plan.targetAssertions.collect:
+    val targetOwners                                                    = targets.map(_.owner).collect { case TargetAssertionOwner.Composite(owner) => owner }.toSet
+    val terminalTargets                                                 = plan.targetAssertions.collect:
       case value @ PlannedTargetAssertion(TargetAssertionOwner.Terminal(_, _), _, _) => value
-    val tokenLeaves                                     = leaves.collect:
+    val tokenLeaves                                                     = leaves.collect:
       case leaf @ PlannedPhysicalLeaf(_, _, _, _, _, _, _: TerminalLeafTarget.Token) => leaf
-    val targetRoles                                     = targets
-      .map(value =>
-        value.owner.asInstanceOf[TargetAssertionOwner.Composite].instance -> PsiOutputRoleId(value.surfaceId)
-      )
+    val targetRoles                                                     = targets
+      .collect:
+        case PlannedTargetAssertion(
+              TargetAssertionOwner.Composite(instance),
+              PlannedTargetIdentity.OutputRole(outputRoleId),
+              _
+            ) =>
+          instance -> outputRoleId
       .toMap
-    def tokenSurface(leaf: PlannedPhysicalLeaf): String = leaf.target match
+    def tokenSurface(leaf: PlannedPhysicalLeaf): String                 = leaf.target match
       case TerminalLeafTarget.Token(id, _) => id
       case _                               => ""
-    val terminalTargetMismatch                          =
-      terminalTargets.exists(value => value.kind != TargetAssertionKind.Token) ||
+    def terminalSurface(target: PlannedTargetAssertion): Option[String] = target.targetIdentity match
+      case PlannedTargetIdentity.TokenRole(_, targetSurfaceId) => Some(targetSurfaceId)
+      case _                                                   => None
+    val terminalTargetMismatch                                          =
+      terminalTargets.exists(value => value.kind != TargetAssertionKind.Token || terminalSurface(value).isEmpty) ||
         terminalTargets.groupBy(_.owner).values.exists(_.size != 1) ||
         tokenLeaves.exists(leaf =>
           terminalTargets.count(target =>
             target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
-              target.surfaceId == tokenSurface(leaf) && target.kind == TargetAssertionKind.Token
+              terminalSurface(target).contains(tokenSurface(leaf)) && target.kind == TargetAssertionKind.Token
           ) != 1
         ) ||
         terminalTargets.exists(target =>
-          !bindings.elementTypes.contains(target.surfaceId) || !tokenLeaves.exists(leaf =>
-            target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
-              target.surfaceId == tokenSurface(leaf)
+          terminalSurface(target).forall(surfaceId =>
+            !bindings.elementTypes.contains(surfaceId) || !tokenLeaves.exists(leaf =>
+              target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
+                surfaceId == tokenSurface(leaf)
+            )
           )
         )
-    val outputContractMismatch                          = plan.composites.exists: value =>
+    val outputContractMismatch                                          = plan.composites.exists: value =>
       targetRoles.get(value.instance).flatMap(bindings.outputContracts.get) match
         case None           => true
         case Some(contract) =>
@@ -136,12 +148,12 @@ private[metallurgy] object DotcPsiProducer:
               Some(PlannedStubAssertion(value.instance, surface, serializer, indices, navigation))
           val navigation        = plan.navigationAssertions.find(_.owner == value.instance).map(_.obligation)
           accessors != expectedAccessors || stub != expectedStub || navigation != contract.navigation
-    val edges                                           = plan.composites.flatMap(parent => parent.children.map(child => parent.instance -> child.child))
-    val children                                        = edges.groupMap(_._1)(_._2)
-    val parents                                         = edges.groupMap(_._2)(_._1)
-    val roots                                           = ids.filterNot(parents.contains)
-    val ranges                                          = plan.composites.map(value => value.instance -> range(value)).toMap
-    val boundaries                                      = (Vector(0, length) ++ plan.composites.flatMap(value =>
+    val edges                                                           = plan.composites.flatMap(parent => parent.children.map(child => parent.instance -> child.child))
+    val children                                                        = edges.groupMap(_._1)(_._2)
+    val parents                                                         = edges.groupMap(_._2)(_._1)
+    val roots                                                           = ids.filterNot(parents.contains)
+    val ranges                                                          = plan.composites.map(value => value.instance -> range(value)).toMap
+    val boundaries                                                      = (Vector(0, length) ++ plan.composites.flatMap(value =>
       val (from, to) = range(value)
       Vector(from, to)
     )).toSet
@@ -181,8 +193,9 @@ private[metallurgy] object DotcPsiProducer:
     else if targetOwners != composite || targets.groupBy(_.owner).exists(_._2.size != 1) ||
       targets.size != plan.composites.size ||
       targets.exists(value =>
-        value.kind != TargetAssertionKind.NativeComposite && value.kind != TargetAssertionKind.CompatibleComposite
-      ) || targets.exists(value => !bindings.outputRoles.contains(PsiOutputRoleId(value.surfaceId)))
+        (value.kind != TargetAssertionKind.NativeComposite && value.kind != TargetAssertionKind.CompatibleComposite) ||
+          !value.targetIdentity.isInstanceOf[PlannedTargetIdentity.OutputRole]
+      ) || targetRoles.values.exists(value => !bindings.outputRoles.contains(value))
     then Some("composite target is not exactly one supported bound composite")
     else if leaves.exists:
         case PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.Composite(owner), _, _, _) => !composite(owner)

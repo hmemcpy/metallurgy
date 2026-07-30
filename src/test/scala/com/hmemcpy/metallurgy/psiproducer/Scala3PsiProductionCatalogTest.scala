@@ -7,6 +7,11 @@ import org.junit.Test
 import org.jetbrains.org.objectweb.asm.Opcodes
 
 final class Scala3PsiProductionCatalogTest:
+  private val TransparentRootGrammarRole = GrammarRoleId("test.grammar.transparent-root")
+  private val SharedProductGrammarRole   = GrammarRoleId("test.grammar.shared-product")
+  private val StructuralEventGrammarRole = GrammarRoleId("test.grammar.structural-event")
+  private val SharedOutputRole           = PsiOutputRoleId("test.output.shared-composite")
+
   @Test def surfaceInventoryUsesStructuralAncestryAndConservativeAccessors(): Unit =
     val root      = InstalledScalaPluginClass(
       "org/jetbrains/plugins/scala/lang/psi/api/ScalaPsiElement",
@@ -427,6 +432,247 @@ final class Scala3PsiProductionCatalogTest:
     val errors   = result.left.toOption.get.asInstanceOf[WholeFilePlanningFailure.InvalidCatalog].errors
     assertTrue(errors.exists(_.isInstanceOf[CatalogValidationError.UncoveredCompilerShape]))
 
+  @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
+    val catalog  = Scala3PsiProductionCatalog.Reviewed
+    val expected = Map(
+      GrammarRoleId.CompilationUnit    -> Set("file-package", "file-package-imports", "file-imports"),
+      GrammarRoleId.PackageReference   -> Set("file-import-empty-package"),
+      GrammarRoleId.ImportStatement    -> Set("import-statement"),
+      GrammarRoleId.AbsentProduct      -> Set("import-expression-absent", "import-selector-absent"),
+      GrammarRoleId.StableReference    -> Set(
+        "import-path-identifier-reference",
+        "import-path-reference",
+        "import-path-identifier",
+        "package-stable-identifier-reference",
+        "package-stable-reference",
+        "package-stable-identifier"
+      ),
+      GrammarRoleId.ImportSelector     -> Set("import-selector-direct", "import-selector-braced"),
+      GrammarRoleId.ImportSelectorName -> Set(
+        "import-selector-name",
+        "import-selector-hidden-name",
+        "import-selector-wildcard-name",
+        "import-selector-empty-name"
+      ),
+      GrammarRoleId.SimpleType         -> Set(
+        "import-selector-bound-type",
+        "import-selector-bound-applied-constructor",
+        "import-selector-bound-applied-argument"
+      ),
+      GrammarRoleId.AppliedType        -> Set("import-selector-bound-applied-type"),
+      GrammarRoleId.IntegerLiteral     -> Set("integer-literal-number")
+    )
+    val actual   = catalog.productions.groupMap(_.grammarRoleId)(_.id).view.mapValues(_.toSet).toMap
+    assertEquals(expected, actual)
+    assertEquals(expected.keySet, catalog.stableRoles.grammarRoles)
+    assertTrue(
+      catalog.productions.forall(production =>
+        production.grammarRoleId.value != production.id &&
+          production.grammarRoleId.value != production.pattern.prefix
+      )
+    )
+
+    val composites = catalog.productions.flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
+    val terminals  = catalog.productions.flatMap(_.terminals)
+    val usedRoles  = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
+    assertEquals(catalog.stableRoles.outputRoles, usedRoles)
+    assertTrue(composites.forall(output => output.outputRoleId.value != output.targetSurfaceId))
+    assertTrue(terminals.forall(terminal => catalog.stableRoles.outputRoles(terminal.outputRoleId)))
+    assertTrue(
+      catalog.productions
+        .filter(production => production.outputTemplate.isEmpty && production.outputRealizations.isEmpty)
+        .forall(_.outputRoleId.nonEmpty)
+    )
+
+  @Test def roleValidationRejectsMissingUnknownAndEvidenceDerivedIdentities(): Unit =
+    val compiler = inventory(snapshot("/roles", 1, Vector.empty))
+    val base     = completeCatalog(compiler)
+    val root     = base.productions.find(_.id == "Root").get
+    def errors(
+        production: Scala3PsiProduction,
+        stableRoles: StableRoleInventory = base.stableRoles
+    ): Vector[CatalogValidationError] =
+      val catalog = base.copy(
+        productions = base.productions.map(value => if value.id == production.id then production else value),
+        stableRoles = stableRoles
+      )
+      Scala3PsiProductionCatalogValidator.validateExecutable(catalog, compiler, surfaces(catalog))
+
+    assertTrue(
+      errors(root.copy(outputRoleId = None)).contains(CatalogValidationError.MissingDefaultOutputRole(root.id))
+    )
+
+    val unknownGrammar  = GrammarRoleId("test.grammar.unknown")
+    assertTrue(
+      errors(root.copy(grammarRoleId = unknownGrammar))
+        .contains(CatalogValidationError.UnknownGrammarRole(root.id, unknownGrammar))
+    )
+    val evidenceGrammar = GrammarRoleId(root.pattern.prefix)
+    val evidenceErrors  = errors(root.copy(grammarRoleId = evidenceGrammar))
+    assertTrue(
+      evidenceErrors.contains(
+        CatalogValidationError.CompilerDerivedGrammarRole(root.id, evidenceGrammar, root.pattern.prefix)
+      )
+    )
+    assertTrue(
+      evidenceErrors.contains(CatalogValidationError.CatalogAlternativeDerivedGrammarRole(root.id, evidenceGrammar))
+    )
+
+    val unknownOutput = PsiOutputRoleId("test.output.unknown")
+    assertTrue(
+      errors(root.copy(outputRoleId = Some(unknownOutput)))
+        .contains(CatalogValidationError.UnknownOutputRole(root.id, "self", unknownOutput))
+    )
+    val hostOutput    = PsiOutputRoleId(root.targetSurfaceId)
+    assertTrue(
+      errors(
+        root.copy(outputRoleId = Some(hostOutput)),
+        base.stableRoles.copy(outputRoles = base.stableRoles.outputRoles + hostOutput)
+      ).contains(CatalogValidationError.HostDerivedOutputRole(root.id, "self", hostOutput, root.targetSurfaceId))
+    )
+
+    val child                   = base.productions.find(_.id == "Child").get
+    val childTerminal           = child.terminals.head
+    val otherAlternativeGrammar = GrammarRoleId(child.id)
+    assertTrue(
+      errors(
+        root.copy(grammarRoleId = otherAlternativeGrammar),
+        base.stableRoles.copy(grammarRoles = base.stableRoles.grammarRoles + otherAlternativeGrammar)
+      ).contains(CatalogValidationError.CatalogAlternativeDerivedGrammarRole(root.id, otherAlternativeGrammar))
+    )
+    val otherCompilerGrammar    = GrammarRoleId(child.pattern.prefix)
+    assertTrue(
+      errors(
+        root.copy(grammarRoleId = otherCompilerGrammar),
+        base.stableRoles.copy(grammarRoles = base.stableRoles.grammarRoles + otherCompilerGrammar)
+      ).contains(
+        CatalogValidationError.CompilerDerivedGrammarRole(root.id, otherCompilerGrammar, child.pattern.prefix)
+      )
+    )
+    assertTrue(
+      errors(child.copy(terminals = Vector(childTerminal.copy(outputRoleId = unknownOutput))))
+        .contains(CatalogValidationError.UnknownOutputRole(child.id, childTerminal.id, unknownOutput))
+    )
+    val otherHostOutput         = PsiOutputRoleId(child.targetSurfaceId)
+    assertTrue(
+      errors(
+        root.copy(outputRoleId = Some(otherHostOutput)),
+        base.stableRoles.copy(outputRoles = base.stableRoles.outputRoles + otherHostOutput)
+      ).contains(CatalogValidationError.HostDerivedOutputRole(root.id, "self", otherHostOutput, child.targetSurfaceId))
+    )
+    val installedHostSurface    = "test.host.installed-unreferenced"
+    val installedHostRole       = PsiOutputRoleId(installedHostSurface)
+    val installedHostProduction = root.copy(outputRoleId = Some(installedHostRole))
+    val installedHostCatalog    = base.copy(
+      productions = base.productions.updated(0, installedHostProduction),
+      stableRoles = base.stableRoles.copy(outputRoles = base.stableRoles.outputRoles + installedHostRole)
+    )
+    val installedHostSurfaces   = surfaces(installedHostCatalog).copy(rows =
+      surfaces(installedHostCatalog).rows :+
+        ScalaPsiSurfaceRow(
+          installedHostSurface,
+          SurfaceFactKind.Element,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        )
+    )
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validateExecutable(installedHostCatalog, compiler, installedHostSurfaces)
+        .contains(
+          CatalogValidationError.HostDerivedOutputRole(
+            root.id,
+            "self",
+            installedHostRole,
+            installedHostSurface
+          )
+        )
+    )
+    val tokenSurface            = "test.host.token"
+    val tokenHostRole           = PsiOutputRoleId(tokenSurface)
+    val hostTerminal            = childTerminal.copy(
+      target = TerminalLeafTarget.Token(tokenSurface),
+      outputRoleId = tokenHostRole
+    )
+    assertTrue(
+      errors(
+        child.copy(terminals = Vector(hostTerminal)),
+        base.stableRoles.copy(outputRoles = base.stableRoles.outputRoles + tokenHostRole)
+      ).contains(CatalogValidationError.HostDerivedOutputRole(child.id, childTerminal.id, tokenHostRole, tokenSurface))
+    )
+
+    val extraGrammar    = GrammarRoleId("test.grammar.unreferenced")
+    val extraOutput     = PsiOutputRoleId("test.output.unreferenced")
+    val expandedRoles   = base.stableRoles.copy(
+      grammarRoles = base.stableRoles.grammarRoles + extraGrammar,
+      outputRoles = base.stableRoles.outputRoles + extraOutput
+    )
+    val inventoryErrors = Scala3PsiProductionCatalogValidator.validate(
+      base.copy(stableRoles = expandedRoles),
+      compiler,
+      surfaces(base)
+    )
+    assertTrue(inventoryErrors.contains(CatalogValidationError.UnreferencedGrammarRole(extraGrammar)))
+    assertTrue(inventoryErrors.contains(CatalogValidationError.UnreferencedOutputRole(extraOutput)))
+
+    val tokenCatalog  = base.copy(productions = base.productions.map:
+      case production if production.id == child.id =>
+        production.copy(terminals = Vector(childTerminal.copy(target = TerminalLeafTarget.Token(tokenSurface))))
+      case production                              => production
+    )
+    val tokenSurfaces = surfaces(tokenCatalog).copy(rows =
+      surfaces(tokenCatalog).rows :+
+        ScalaPsiSurfaceRow(
+          tokenSurface,
+          SurfaceFactKind.Token,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.Derived
+        )
+    )
+    val tokenReport   = Scala3PsiProductionCoverageReport.markdown(
+      tokenCatalog,
+      aggregate(Vector(compiler)),
+      tokenSurfaces
+    )
+    assertTrue(tokenReport.contains(s"${child.id}:terminal:${childTerminal.id}->$tokenSurface"))
+    assertTrue(tokenReport.contains(s"host-targets=element.Child,$tokenSurface"))
+
+    val grammarFailure     = Scala3SyntaxCapabilityFailure.from(
+      "digest",
+      Scala3SyntaxCapabilityStage.Catalog,
+      Vector(CatalogValidationError.UnknownGrammarRole(root.id, unknownGrammar)),
+      ParserPreparationEpoch(1),
+      None
+    )
+    assertEquals(
+      Scala3SyntaxCapabilityRequirement.GrammarRole(Some(unknownGrammar.value)),
+      grammarFailure.requirement
+    )
+    val outputFailure      = Scala3SyntaxCapabilityFailure.from(
+      "digest",
+      Scala3SyntaxCapabilityStage.Catalog,
+      Vector(CatalogValidationError.UnknownOutputRole(root.id, "self", unknownOutput)),
+      ParserPreparationEpoch(1),
+      None
+    )
+    assertEquals(
+      Scala3SyntaxCapabilityRequirement.OutputRole(Some(unknownOutput.value)),
+      outputFailure.requirement
+    )
+    val unaccountedFailure = Scala3SyntaxCapabilityFailure.from(
+      "digest",
+      Scala3SyntaxCapabilityStage.Catalog,
+      Vector(CatalogValidationError.UnaccountedSyntaxSurface(tokenSurface)),
+      ParserPreparationEpoch(1),
+      None
+    )
+    assertEquals(
+      Scala3SyntaxCapabilityRequirement.OutputRole(None),
+      unaccountedFailure.requirement
+    )
+
   @Test def executableValidationDoesNotRequireAPartialCatalogToOwnUnrelatedInstalledSyntaxSurfaces(): Unit =
     val compiler         = inventory(snapshot("/one", 1, Vector.empty))
     val catalog          = completeCatalog(compiler)
@@ -450,7 +696,8 @@ final class Scala3PsiProductionCatalogTest:
     val unusedCompiler   = inventory(unusedValue)
     val baseCatalog      = completeCatalog(baseCompiler)
     val unusedProduction = completeCatalog(unusedCompiler).productions.find(_.id == "Unused").get
-    val catalog          = baseCatalog.copy(productions = baseCatalog.productions :+ unusedProduction)
+    val productions      = baseCatalog.productions :+ unusedProduction
+    val catalog          = baseCatalog.copy(productions = productions, stableRoles = focusedRoleInventory(productions))
     val surface          = surfaces(catalog)
     val prepared         = PreparedProductionCatalog
       .prepare(catalog, aggregate(Vector(baseCompiler, unusedCompiler)), surface)
@@ -482,13 +729,99 @@ final class Scala3PsiProductionCatalogTest:
       value.copy(nodes = value.nodes.updated(1, value.nodes(1).copy(production = "Alternative")))
     )
     val base        = completeCatalog(runtime)
-    val catalog     = base.copy(productions =
-      base.productions :+ completeCatalog(alternative).productions.find(_.id == "Alternative").get
-    )
+    val productions = base.productions :+ completeCatalog(alternative).productions.find(_.id == "Alternative").get
+    val catalog     = base.copy(productions = productions, stableRoles = focusedRoleInventory(productions))
     val compiler    = aggregate(Vector(runtime, alternative))
     val prepared    = PreparedProductionCatalog.prepareRuntimeSubset(catalog, runtime, compiler, surfaces(catalog))
     assertTrue(prepared.left.toOption.toString, prepared.isRight)
     assertEquals(catalog.productions.map(_.id), prepared.toOption.get.catalog.productions.map(_.id))
+
+  @Test def coveredFutureCompilerIdentityPreparesWhileNovelShapeAndRoleDriftRemainVisible(): Unit =
+    val current        = snapshot("/current", 1, Vector.empty)
+    val currentRuntime = inventory(current)
+    val catalog        = completeCatalog(currentRuntime)
+    val future         = current.copy(compilerIdentity =
+      current.compilerIdentity.copy(coordinate = current.compilerIdentity.coordinate.copy(version = "99.0.0"))
+    )
+    val futureRuntime  = inventory(future)
+    val futureCompiler = aggregate(Vector(futureRuntime))
+    assertTrue(
+      PreparedProductionCatalog.prepare(catalog, futureCompiler, surfaces(catalog)).isRight
+    )
+
+    val report = Scala3PsiProductionCoverageReport.markdown(catalog, futureCompiler, surfaces(catalog))
+    assertTrue(report.contains("org:compiler:99.0.0"))
+    assertTrue(report.contains("grammar-role=test.grammar.Root"))
+    assertTrue(report.contains("catalog-alternative=Root"))
+
+    val novel         = future.copy(nodes = future.nodes.updated(1, future.nodes(1).copy(production = "FutureNovelShape")))
+    val shapeFailures = PreparedProductionCatalog
+      .prepare(catalog, aggregate(Vector(inventory(novel))), surfaces(catalog))
+      .left
+      .toOption
+      .get
+    assertTrue(
+      shapeFailures.exists:
+        case CatalogValidationError.UncoveredCompilerShape(_, "FutureNovelShape", _, _) => true
+        case _                                                                          => false
+    )
+
+    val compilerDerivedRole     = GrammarRoleId("FutureNovelShape")
+    val compilerDerivedCatalog  = catalog.copy(
+      productions = catalog.productions.updated(
+        0,
+        catalog.productions.head.copy(grammarRoleId = compilerDerivedRole)
+      ),
+      stableRoles = catalog.stableRoles.copy(grammarRoles = catalog.stableRoles.grammarRoles + compilerDerivedRole)
+    )
+    val compilerDerivedFailures = PreparedProductionCatalog
+      .prepare(compilerDerivedCatalog, aggregate(Vector(inventory(novel))), surfaces(compilerDerivedCatalog))
+      .left
+      .toOption
+      .get
+    assertTrue(
+      compilerDerivedFailures.contains(
+        CatalogValidationError.CompilerDerivedGrammarRole(
+          compilerDerivedCatalog.productions.head.id,
+          compilerDerivedRole,
+          "FutureNovelShape"
+        )
+      )
+    )
+
+    val unknownRole  = GrammarRoleId("test.grammar.future-novel")
+    val roleCatalog  = catalog.copy(productions =
+      catalog.productions.updated(
+        0,
+        catalog.productions.head.copy(grammarRoleId = unknownRole)
+      )
+    )
+    val roleFailures = PreparedProductionCatalog
+      .prepare(roleCatalog, futureCompiler, surfaces(roleCatalog))
+      .left
+      .toOption
+      .get
+    assertTrue(
+      roleFailures.contains(CatalogValidationError.UnknownGrammarRole(roleCatalog.productions.head.id, unknownRole))
+    )
+
+    val unknownOutput  = PsiOutputRoleId("test.output.future-novel")
+    val outputCatalog  = catalog.copy(productions =
+      catalog.productions.updated(
+        0,
+        catalog.productions.head.copy(outputRoleId = Some(unknownOutput))
+      )
+    )
+    val outputFailures = PreparedProductionCatalog
+      .prepare(outputCatalog, futureCompiler, surfaces(outputCatalog))
+      .left
+      .toOption
+      .get
+    assertTrue(
+      outputFailures.contains(
+        CatalogValidationError.UnknownOutputRole(outputCatalog.productions.head.id, "self", unknownOutput)
+      )
+    )
 
   @Test def runtimePreparationUsesDirectNodeOwnersAndRetainedPositionedOrigins(): Unit =
     val inherited = ProductionInstanceId(
@@ -756,7 +1089,7 @@ final class Scala3PsiProductionCatalogTest:
     assertTrue(
       Scala3PsiProductionCatalogValidator
         .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
-        .contains(CatalogValidationError.UnrepresentedCatalogProduction("stale"))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction("stale", stale.grammarRoleId))
     )
 
   @Test def aggregatedValidationPreservesContextAndSourceClassificationAssociations(): Unit =
@@ -788,7 +1121,7 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
     val production    = base.copy(pattern = pattern)
-    val catalog       = Scala3PsiProductionCatalog(Vector(production))
+    val catalog       = Scala3PsiProductionCatalog(Vector(production), focusedRoleInventory(Vector(production)))
     assertFalse(
       Scala3PsiProductionCatalogValidator
         .validate(catalog, paired, surfaces(catalog))
@@ -825,7 +1158,7 @@ final class Scala3PsiProductionCatalogTest:
     assertTrue(
       Scala3PsiProductionCatalogValidator
         .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
-        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id, root.grammarRoleId))
     )
 
   @Test def aggregatedValidationRejectsWildcardOccurrenceAlternatives(): Unit =
@@ -842,7 +1175,7 @@ final class Scala3PsiProductionCatalogTest:
     assertTrue(
       Scala3PsiProductionCatalogValidator
         .validate(catalog, aggregate(Vector(compiler)), surfaces(catalog))
-        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id))
+        .contains(CatalogValidationError.UnrepresentedCatalogProduction(root.id, root.grammarRoleId))
     )
 
   @Test def aggregateGeneratedNamesRemainCoveredByTheCanonicalNamePattern(): Unit =
@@ -870,7 +1203,7 @@ final class Scala3PsiProductionCatalogTest:
         )
       )
     )
-    val catalog    = Scala3PsiProductionCatalog(Vector(production))
+    val catalog    = Scala3PsiProductionCatalog(Vector(production), focusedRoleInventory(Vector(production)))
     assertFalse(
       Scala3PsiProductionCatalogValidator
         .validate(catalog, aggregate, surfaces(catalog))
@@ -921,13 +1254,15 @@ final class Scala3PsiProductionCatalogTest:
           "duplicate",
           TerminalIntervalSelector.WholeProduction,
           TerminalLeafTarget.Parent,
-          OccurrenceCardinality.Repeated(-1, None)
+          OccurrenceCardinality.Repeated(-1, None),
+          PsiOutputRoleId.SourceTerminal
         )
       ) :+ TerminalDeclaration(
         "gap",
         TerminalIntervalSelector.ChildGap("duplicate", "absent"),
         TerminalLeafTarget.Parent,
-        OccurrenceCardinality.Optional
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal
       ),
       layouts = Vector.empty,
       recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector.empty),
@@ -1058,7 +1393,8 @@ final class Scala3PsiProductionCatalogTest:
           "token",
           TerminalIntervalSelector.WholeProduction,
           TerminalLeafTarget.Token("token.surface"),
-          OccurrenceCardinality.ExactlyOne
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
         )
       ),
       persistence = PersistenceObligations.Required(
@@ -1157,28 +1493,145 @@ final class Scala3PsiProductionCatalogTest:
     )
     assertTrue(
       kindErrors.contains(
-        CatalogValidationError.InvalidSurface(claimedRoot.id, "helper.surface", SurfaceFactKind.Element)
+        CatalogValidationError.InvalidSurface(
+          claimedRoot.id,
+          claimedRoot.outputRoleId.get,
+          "helper.surface",
+          SurfaceFactKind.Element
+        )
       )
     )
     assertTrue(
       kindErrors.contains(
-        CatalogValidationError.InvalidSurface(claimedRoot.id, "method.surface", SurfaceFactKind.PublicAccessor)
+        CatalogValidationError.InvalidSurface(
+          claimedRoot.id,
+          claimedRoot.outputRoleId.get,
+          "method.surface",
+          SurfaceFactKind.PublicAccessor
+        )
       )
     )
 
   @Test def coverageReportRendersCapabilityProbedCompatibleTargets(): Unit =
-    val runtime = inventory(snapshot("/report", 1, Vector.empty))
-    val base    = completeCatalog(runtime)
-    val target  = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
-    val catalog = base.copy(productions =
+    val runtime  = inventory(snapshot("/report", 1, Vector.empty))
+    val base     = completeCatalog(runtime)
+    val target   = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
+    val catalog  = base.copy(productions =
       base.productions.head.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible) +:
         base.productions.tail
     )
-    val report  = Scala3PsiProductionCoverageReport.markdown(catalog, aggregate(Vector(runtime)), surfaces(base))
+    val compiler = aggregate(Vector(runtime))
+    val surface  = surfaces(base)
+    val report   = Scala3PsiProductionCoverageReport.markdown(catalog, compiler, surface)
     assertTrue(
       report,
       report.contains(s"`Element:$target` — **Available:catalog-referenced:${catalog.productions.head.id}**")
     )
+    assertTrue(report.contains("grammar-role=test.grammar.Root"))
+    assertTrue(report.contains("output-roles=test.output.Root"))
+    assertTrue(report.contains("catalog-alternative=Root"))
+    assertTrue(report.contains("compiler-shape=Node.Root"))
+    assertTrue(report.contains(s"host-targets=$target"))
+    assertTrue(report.contains("providers=Compatible"))
+    assertEquals(
+      report,
+      Scala3PsiProductionCoverageReport.markdown(
+        catalog.copy(productions = catalog.productions.reverse),
+        aggregate(Vector(runtime.copy(shapes = runtime.shapes.reverse, nodes = runtime.nodes.reverse))),
+        surface.copy(rows = surface.rows.reverse)
+      )
+    )
+
+  @Test def sharedTransparentLoweringMergesTwoProductsAndCoLocatedEventsIntoOneClosedRole(): Unit =
+    val value             = sharedLoweringSnapshot
+    val runtime           = inventory(value)
+    val catalog           = sharedLoweringCatalog
+    val evidence          = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val compiler          = aggregate(Vector(runtime))
+    val surface           = sharedLoweringSurfaces
+    val first             = planned(value, evidence, catalog, compiler, surface)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val reorderedRuntime  = runtime.copy(shapes = runtime.shapes.reverse, nodes = runtime.nodes.reverse)
+    val reorderedCompiler = aggregate(Vector(reorderedRuntime))
+    val second            = planned(
+      value,
+      evidence,
+      catalog.copy(productions = catalog.productions.reverse),
+      reorderedCompiler,
+      surface.copy(rows = surface.rows.reverse)
+    ).fold(failure => throw new AssertionError(failure.toString), identity)
+    assertArrayEquals(compiler.canonicalBytes, reorderedCompiler.canonicalBytes)
+    assertEquals(first, second)
+    assertEquals(
+      Set(SharedProductGrammarRole),
+      catalog.productions
+        .filter(production => Set("ExactLeft", "ExactRight")(production.pattern.prefix))
+        .map(_.grammarRoleId)
+        .toSet
+    )
+    assertTrue(catalog.productions.find(_.id == "exact-root").get.effectiveOutputTemplate.composites.isEmpty)
+
+    assertEquals(value.sourceText, first.lexicalContract.reconstruct(value.sourceText))
+    assertEquals(
+      value.sourceText,
+      first.physicalLeafOwnership
+        .sortBy(leaf => (leaf.start, leaf.end))
+        .map(leaf => value.sourceText.substring(leaf.start, leaf.end))
+        .mkString
+    )
+    assertEquals(Vector((0, 1), (1, 2)), first.physicalLeafOwnership.map(leaf => leaf.start -> leaf.end))
+    assertEquals(evidence.atoms.map(_.id), first.physicalLeafOwnership.map(_.atomId))
+    assertEquals(first.physicalLeafOwnership.size, first.physicalLeafOwnership.map(_.atomId).distinct.size)
+    assertEquals(Vector(2L, 3L), first.physicalLeafOwnership.map(_.sourceOwner.valueId))
+    assertEquals(1, first.composites.size)
+    assertEquals(PcSourceRange(0, 2), first.composites.head.range)
+    assertEquals("exact-left-product", first.composites.head.productionId)
+    assertTrue(first.composites.head.children.isEmpty)
+    assertTrue(
+      first.physicalLeafOwnership.forall(_.owner == PhysicalLeafOwner.Composite(first.composites.head.instance))
+    )
+
+    val coLocatedEvents = evidence.structural.collect:
+      case event @ StructuralSourceEvidence(
+            SourceEvidenceEventId.Positioned(id @ (10L | 11L)),
+            _,
+            ParserNodePosition.Positioned(PcSourceRange(1, 1), 1, ParserPositionProvenance.SourceDerived)
+          ) =>
+        id -> event.id
+    assertEquals(Vector(10L, 11L), coLocatedEvents.map(_._1).sorted)
+    assertEquals(2, coLocatedEvents.map(_._2).distinct.size)
+    assertEquals(coLocatedEvents.map(_._2).toSet, first.structuralEvidenceOwnership.map(_.eventId).toSet)
+    assertEquals(
+      first.structuralEvidenceOwnership.size,
+      first.structuralEvidenceOwnership.map(_.eventId).distinct.size
+    )
+    assertTrue(first.structuralEvidenceOwnership.forall(_.owner.role == SharedOutputRole))
+
+    assertEquals(
+      Vector(PlannedTargetIdentity.OutputRole(SharedOutputRole)),
+      first.targetAssertions.map(_.targetIdentity)
+    )
+    assertEquals(
+      Vector(PlannedAccessorAssertion(first.composites.head.instance, "test.host.shared.accessor", required = true)),
+      first.accessorAssertions
+    )
+    assertEquals(
+      Vector(
+        PlannedStubAssertion(
+          first.composites.head.instance,
+          "test.host.shared.stub",
+          "test.host.shared.serializer",
+          Vector("test.host.shared.index"),
+          "test.host.shared.stub-navigation"
+        )
+      ),
+      first.stubAssertions
+    )
+    assertEquals(
+      Vector(PlannedNavigationAssertion(first.composites.head.instance, NavigationObligation.Self)),
+      first.navigationAssertions
+    )
+    assertTrue(first.virtualLayout.isEmpty)
 
   @Test def wholeFilePlanningCompilesAClosedTypedPlanDeterministically(): Unit =
     val value     = snapshot("/one", 1, Vector.empty)
@@ -1202,7 +1655,14 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(value.sourceDigest, first.sourceDigest)
     assertEquals(evidence.parserEvidenceFingerprint, first.parserEvidenceFingerprint)
     assertEquals(Vector("Root", "Child"), first.composites.map(_.productionId))
-    assertEquals(Vector("element.Root", "element.Child"), first.targetAssertions.map(_.surfaceId))
+    assertEquals(
+      Vector(PsiOutputRoleId("test.output.Root"), PsiOutputRoleId("test.output.Child")),
+      first.targetAssertions.collect:
+        case PlannedTargetAssertion(_, PlannedTargetIdentity.OutputRole(outputRoleId), _) => outputRoleId
+    )
+    assertTrue(
+      first.targetAssertions.forall(_.targetIdentity.isInstanceOf[PlannedTargetIdentity.OutputRole])
+    )
     assertEquals(Vector.empty, first.virtualLayout)
     assertEquals(Vector.empty, first.accessorAssertions)
     assertEquals(Vector.empty, first.stubAssertions)
@@ -1374,7 +1834,8 @@ final class Scala3PsiProductionCatalogTest:
                 "contents",
                 TerminalIntervalSelector.WholeProduction,
                 TerminalLeafTarget.Parent,
-                OccurrenceCardinality.ExactlyOne
+                OccurrenceCardinality.ExactlyOne,
+                PsiOutputRoleId.SourceTerminal
               )
             )
           )
@@ -1457,6 +1918,7 @@ final class Scala3PsiProductionCatalogTest:
               TerminalIntervalSelector.WholeSource,
               TerminalLeafTarget.Parent,
               OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal,
               ownsStructuralEvidence = Some(true)
             )
           )
@@ -1686,7 +2148,8 @@ final class Scala3PsiProductionCatalogTest:
               "root-contents",
               TerminalIntervalSelector.WholeProduction,
               TerminalLeafTarget.Parent,
-              OccurrenceCardinality.ExactlyOne
+              OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal
             )
           )
         )
@@ -1699,6 +2162,7 @@ final class Scala3PsiProductionCatalogTest:
               TerminalIntervalSelector.WholeProduction,
               TerminalLeafTarget.Token("token.optional"),
               OccurrenceCardinality.Optional,
+              PsiOutputRoleId.SourceTerminal,
               ownsStructuralEvidence = Some(true)
             )
           )
@@ -1723,7 +2187,12 @@ final class Scala3PsiProductionCatalogTest:
       surface
     )
       .fold(failure => throw new AssertionError(failure.toString), identity)
-    assertFalse(plan.targetAssertions.exists(_.surfaceId == "token.optional"))
+    assertFalse(
+      plan.targetAssertions.exists(_.targetIdentity match
+        case PlannedTargetIdentity.TokenRole(_, "token.optional") => true
+        case _                                                    => false
+      )
+    )
     assertFalse(plan.physicalLeafOwnership.exists(_.terminalId == "optional-token"))
 
     val unownedCatalog = catalog.copy(productions =
@@ -1835,65 +2304,79 @@ final class Scala3PsiProductionCatalogTest:
     CompilerRuntimeInventory.from(value).left.toOption.get
 
   private def completeCatalog(compiler: CompilerRuntimeInventory): Scala3PsiProductionCatalog =
-    Scala3PsiProductionCatalog(
-      compiler.shapes.map: shape =>
-        def referencedProduction(value: InventoryValueObservation): Option[String] = value match
-          case InventoryValueObservation.Node(_, prefix)       => Some(prefix)
-          case InventoryValueObservation.Positioned(_, prefix) => Some(prefix)
-          case InventoryValueObservation.Optional(value)       => value.flatMap(referencedProduction)
-          case InventoryValueObservation.Repeated(values)      => values.flatMap(referencedProduction).headOption
-          case InventoryValueObservation.Product(_, fields)    =>
-            fields.flatMap(field => referencedProduction(field.value)).headOption
-          case _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName |
-              _: InventoryValueObservation.Scalar | _: InventoryValueObservation.Unsupported =>
-            None
-        val childField                                                             = shape.patternFields.headOption.map(_.name)
-        val childProduction                                                        = shape.observation.flatMap(field => referencedProduction(field.value)).headOption
-        Scala3PsiProduction(
+    val productions = compiler.shapes.map: shape =>
+      def referencedProduction(value: InventoryValueObservation): Option[String] = value match
+        case InventoryValueObservation.Node(_, prefix)       => Some(prefix)
+        case InventoryValueObservation.Positioned(_, prefix) => Some(prefix)
+        case InventoryValueObservation.Optional(value)       => value.flatMap(referencedProduction)
+        case InventoryValueObservation.Repeated(values)      => values.flatMap(referencedProduction).headOption
+        case InventoryValueObservation.Product(_, fields)    =>
+          fields.flatMap(field => referencedProduction(field.value)).headOption
+        case _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName |
+            _: InventoryValueObservation.Scalar | _: InventoryValueObservation.Unsupported =>
+          None
+      val childField                                                             = shape.patternFields.headOption.map(_.name)
+      val childProduction                                                        = shape.observation.flatMap(field => referencedProduction(field.value)).headOption
+      Scala3PsiProduction(
+        id = shape.prefix,
+        grammarRoleId = GrammarRoleId(s"test.grammar.${shape.prefix}"),
+        pattern = CompilerProductionPattern(
+          shape.kind,
           shape.prefix,
-          CompilerProductionPattern(
-            shape.kind,
-            shape.prefix,
-            shape.patternFields,
-            (if shape.contexts.isEmpty then Vector(ContextPattern.Root)
-             else
-               shape.contexts.map(context =>
-                 context.ancestors.headOption match
-                   case Some(ancestor) =>
-                     ContextPattern.ParentWithAncestor(
-                       context.ownerKind,
-                       context.ownerPrefix,
-                       context.path,
-                       ancestor
-                     )
-                   case None           => ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path)
-               )
-            )
-              .map(CompilerProductionContextPattern(_, shape.sourceClassification))
-          ),
-          childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
-          childField.toVector.flatMap(field =>
-            childProduction.map(production =>
-              ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), production)
-            )
-          ),
+          shape.patternFields,
+          (if shape.contexts.isEmpty then Vector(ContextPattern.Root)
+           else
+             shape.contexts.map(context =>
+               context.ancestors.headOption match
+                 case Some(ancestor) =>
+                   ContextPattern.ParentWithAncestor(
+                     context.ownerKind,
+                     context.ownerPrefix,
+                     context.path,
+                     ancestor
+                   )
+                 case None           => ContextPattern.Parent(context.ownerKind, context.ownerPrefix, context.path)
+             )
+          )
+            .map(CompilerProductionContextPattern(_, shape.sourceClassification))
+        ),
+        dispositions = childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
+        children = childField.toVector.flatMap(field =>
+          childProduction.map(production =>
+            ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), production)
+          )
+        ),
+        terminals =
           if childField.isEmpty then
             Vector(
               TerminalDeclaration(
                 "contents",
                 TerminalIntervalSelector.WholeProduction,
                 TerminalLeafTarget.Parent,
-                OccurrenceCardinality.ExactlyOne
+                OccurrenceCardinality.ExactlyOne,
+                PsiOutputRoleId.SourceTerminal
               )
             )
           else Vector.empty,
-          Vector(LayoutAlternative.None),
-          RecoveryPolicy.Reject,
-          s"element.${shape.prefix}",
-          TargetRequirement.Compatible,
-          Vector.empty,
-          PersistenceObligations.NotApplicable
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = s"element.${shape.prefix}",
+        targetRequirement = TargetRequirement.Compatible,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        outputRoleId = Some(PsiOutputRoleId(s"test.output.${shape.prefix}"))
+      )
+    Scala3PsiProductionCatalog(productions, focusedRoleInventory(productions))
+
+  private def focusedRoleInventory(productions: Vector[Scala3PsiProduction]): StableRoleInventory =
+    StableRoleInventory(
+      productions.map(_.grammarRoleId).toSet,
+      productions
+        .flatMap(production =>
+          production.terminals.map(_.outputRoleId) ++
+            production.effectiveOutputRealizations.flatMap(_.template.composites.map(_.outputRoleId))
         )
+        .toSet
     )
 
   private def surfaces(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =
@@ -1909,6 +2392,203 @@ final class Scala3PsiProductionCatalogTest:
           )
         )
         .distinct
+    )
+
+  private def sharedLoweringSnapshot: ParserSyntaxSnapshot =
+    val base                                                                         = snapshot("/shared-lowering", 1, Vector.empty)
+    val root                                                                         = ParserSyntaxNode(
+      1,
+      "ExactRoot",
+      Vector(
+        ParserSyntaxField(
+          "products",
+          ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(2), ParserFieldValue.Node(3)))
+        )
+      ),
+      ParserNodePosition.Positioned(PcSourceRange(0, 2), 0, ParserPositionProvenance.SourceDerived),
+      Vector.empty
+    )
+    def product(id: Long, production: String, start: Int, eventId: Long, index: Int) =
+      ParserSyntaxNode(
+        id,
+        production,
+        Vector(ParserSyntaxField("event", ParserFieldValue.Positioned(eventId))),
+        ParserNodePosition.Positioned(
+          PcSourceRange(start, start + 1),
+          start,
+          ParserPositionProvenance.SourceDerived
+        ),
+        Vector(
+          ParserNodeOccurrence(
+            1,
+            Vector(ParserFieldPathSegment.NamedField("products"), ParserFieldPathSegment.RepeatedIndex(index))
+          )
+        )
+      )
+    def event(id: Long, owner: Long)                                                 = ParserPositionedSyntax(
+      id,
+      "ExactEvent",
+      Vector.empty,
+      ParserNodePosition.Positioned(PcSourceRange(1, 1), 1, ParserPositionProvenance.SourceDerived),
+      Vector(ParserPositionedOccurrence(owner, Vector(ParserFieldPathSegment.NamedField("event"))))
+    )
+    val source                                                                       = "xy"
+    base.copy(
+      sourceText = source,
+      sourceDigest = ParserSyntaxSnapshot.digest(source),
+      sourceLength = source.length,
+      nodes = Vector(root, product(2, "ExactLeft", 0, 10, 0), product(3, "ExactRight", 1, 11, 1)),
+      positioned = Vector(event(10, 2), event(11, 3))
+    )
+
+  private def sharedLoweringCatalog: Scala3PsiProductionCatalog =
+    val sourceReachable                     = SourceClassification.SourceReachable
+    val rootPattern                         = CompilerProductionPattern(
+      InventoryKind.Node,
+      "ExactRoot",
+      Vector(CompilerFieldPattern("products", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      Vector(CompilerProductionContextPattern(ContextPattern.Root, sourceReachable))
+    )
+    def childPattern(prefix: String)        = CompilerProductionPattern(
+      InventoryKind.Node,
+      prefix,
+      Vector(CompilerFieldPattern("event", CatalogValuePattern.Positioned)),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "ExactRoot",
+            Vector(CatalogPathSegment.NamedField("products"), CatalogPathSegment.RepeatedElement)
+          ),
+          sourceReachable
+        )
+      )
+    )
+    val eventPattern                        = CompilerProductionPattern(
+      InventoryKind.Positioned,
+      "ExactEvent",
+      Vector.empty,
+      Vector("ExactLeft", "ExactRight").map(owner =>
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            owner,
+            Vector(CatalogPathSegment.NamedField("event"))
+          ),
+          sourceReachable
+        )
+      )
+    )
+    val transparent                         = LocalOutputCompositeTemplate(Vector.empty, Map("products" -> None))
+    val eventTransparent                    = LocalOutputCompositeTemplate(Vector.empty, Map.empty)
+    val root                                = Scala3PsiProduction(
+      id = "exact-root",
+      grammarRoleId = TransparentRootGrammarRole,
+      pattern = rootPattern,
+      dispositions = Vector(FieldDisposition("products", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "products",
+          "products",
+          ChildCardinality.Grouped(2, Some(2)),
+          "exact-left-product",
+          Set("exact-right-product")
+        )
+      ),
+      terminals = Vector.empty,
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = "test.host.transparent.root",
+      targetRequirement = TargetRequirement.Compatible,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      outputTemplate = Some(transparent),
+      outputRoleId = None
+    )
+    def product(id: String, prefix: String) = Scala3PsiProduction(
+      id = id,
+      grammarRoleId = SharedProductGrammarRole,
+      pattern = childPattern(prefix),
+      dispositions = Vector(FieldDisposition("event", FieldDispositionKind.Child)),
+      children = Vector(ChildDeclaration("event", "event", ChildCardinality.ExactlyOne, "exact-event")),
+      terminals = Vector(
+        TerminalDeclaration(
+          "source",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          SharedOutputRole
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = "test.host.shared.element",
+      targetRequirement = TargetRequirement.Compatible,
+      accessors = Vector(AccessorObligation("test.host.shared.accessor", required = true)),
+      persistence = PersistenceObligations.Required(
+        "test.host.shared.stub",
+        "test.host.shared.serializer",
+        Vector("test.host.shared.index"),
+        "test.host.shared.stub-navigation"
+      ),
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = Some(SharedOutputRole)
+    )
+    val positioned                          = Scala3PsiProduction(
+      id = "exact-event",
+      grammarRoleId = StructuralEventGrammarRole,
+      pattern = eventPattern,
+      dispositions = Vector.empty,
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "event",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.Optional,
+          SharedOutputRole,
+          ownsStructuralEvidence = Some(true)
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = "test.host.transparent.event",
+      targetRequirement = TargetRequirement.Compatible,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      outputTemplate = Some(eventTransparent),
+      outputRoleId = None
+    )
+    Scala3PsiProductionCatalog(
+      Vector(
+        root,
+        product("exact-left-product", "ExactLeft"),
+        product("exact-right-product", "ExactRight"),
+        positioned
+      ),
+      StableRoleInventory(
+        Set(TransparentRootGrammarRole, SharedProductGrammarRole, StructuralEventGrammarRole),
+        Set(SharedOutputRole)
+      )
+    )
+
+  private def sharedLoweringSurfaces: ScalaPsiSurfaceInventory =
+    def row(id: String, kind: SurfaceFactKind) = ScalaPsiSurfaceRow(
+      id,
+      kind,
+      None,
+      FactStatus.Available,
+      SurfaceClassification.Derived
+    )
+    ScalaPsiSurfaceInventory(
+      Vector(
+        row("test.host.shared.element", SurfaceFactKind.Element),
+        row("test.host.shared.accessor", SurfaceFactKind.PublicAccessor),
+        row("test.host.shared.stub", SurfaceFactKind.Stub),
+        row("test.host.shared.serializer", SurfaceFactKind.Serializer),
+        row("test.host.shared.index", SurfaceFactKind.Index),
+        row("test.host.shared.stub-navigation", SurfaceFactKind.Navigation)
+      )
     )
 
   private def node(id: Long, value: ParserFieldValue) = ParserSyntaxNode(

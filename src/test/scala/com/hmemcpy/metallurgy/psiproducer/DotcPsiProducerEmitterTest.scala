@@ -14,32 +14,39 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
 
   private val packagingSurface =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
-  private val packagingRole    = PsiOutputRoleId.PackageStatement.value
+  private val packagingRole    = PsiOutputRoleId.PackageStatement
 
   override def getTestDataPath: String = "src/test/testdata"
 
   def testRejectsUnsupportedPlanFeaturesBeforeOpeningMarkers(): Unit =
-    val source           = "x"
-    val base             = emitterPlan(source, 2)
-    val unsupportedField = base.copy(composites =
+    val source            = "x"
+    val base              = emitterPlan(source, 2)
+    val unsupportedField  = base.copy(composites =
       base.composites.updated(
         0,
         base.composites.head
           .copy(fieldDispositions = Vector(FieldDisposition("value", FieldDispositionKind.Unsupported)))
       )
     )
-    val unsupportedToken = base.copy(physicalLeafOwnership =
+    val unsupportedToken  = base.copy(physicalLeafOwnership =
       base.physicalLeafOwnership.map(
         _.copy(target = TerminalLeafTarget.Token(packagingSurface))
       )
     )
-    val unknownOwner     = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 999L, None), "missing")
-    val malformedStub    = base.copy(stubAssertions =
+    val unknownOwner      = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 999L, None), "missing")
+    val malformedStub     = base.copy(stubAssertions =
       Vector(
         PlannedStubAssertion(unknownOwner, "stub", "serializer", Vector("index"), "navigation")
       )
     )
-    Vector(unsupportedField, unsupportedToken, malformedStub).foreach: plan =>
+    val hostDerivedTarget = base.copy(targetAssertions =
+      base.targetAssertions.map(assertion =>
+        assertion.copy(targetIdentity =
+          PlannedTargetIdentity.TokenRole(PsiOutputRoleId.SourceTerminal, packagingSurface)
+        )
+      )
+    )
+    Vector(unsupportedField, unsupportedToken, malformedStub, hostDerivedTarget).foreach: plan =>
       val builder = recordingEmitterBuilder(source)
       assertFalse(
         DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, nativeBindings)
@@ -48,7 +55,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
 
     val unboundRole = base.copy(targetAssertions =
       base.targetAssertions.map(
-        _.copy(surfaceId = "scala.output.unbound")
+        _.copy(targetIdentity = PlannedTargetIdentity.OutputRole(PsiOutputRoleId("scala.output.unbound")))
       )
     )
     val roleBuilder = recordingEmitterBuilder(source)
@@ -69,7 +76,12 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     val builder = recordingEmitterBuilder(source)
     val plan    = emitterPlan(source, 10000)
     val targets = plan.targetAssertions.collect:
-      case PlannedTargetAssertion(TargetAssertionOwner.Composite(owner), surfaceId, _) => owner -> surfaceId
+      case PlannedTargetAssertion(
+            TargetAssertionOwner.Composite(owner),
+            PlannedTargetIdentity.OutputRole(outputRoleId),
+            _
+          ) =>
+        owner -> outputRoleId
     DotcPsiProducer.emit(
       plan.composites.head,
       plan.composites.map(value => value.instance -> value).toMap,
@@ -94,7 +106,10 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ),
       targetAssertions = base.targetAssertions :+ PlannedTargetAssertion(
         TargetAssertionOwner.Terminal(origin, terminal),
-        NativePsiElementBindings.ImportWildcardTokenSurface,
+        PlannedTargetIdentity.TokenRole(
+          PsiOutputRoleId.SourceTerminal,
+          NativePsiElementBindings.ImportWildcardTokenSurface
+        ),
         TargetAssertionKind.Token
       )
     )
@@ -119,7 +134,12 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ),
       targetAssertions = malformed.targetAssertions.map:
         case assertion @ PlannedTargetAssertion(TargetAssertionOwner.Terminal(_, _), _, _) =>
-          assertion.copy(surfaceId = NativePsiElementBindings.ImportAliasAsTokenSurface)
+          assertion.copy(targetIdentity =
+            PlannedTargetIdentity.TokenRole(
+              PsiOutputRoleId.SourceTerminal,
+              NativePsiElementBindings.ImportAliasAsTokenSurface
+            )
+          )
         case assertion                                                                     => assertion
     )
     val surfaceBuilder    = recordingEmitterBuilder(source)
@@ -127,6 +147,22 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, surfaceBuilder, mismatchedSurface, nativeBindings)
     )
     assertEquals(0, surfaceBuilder.getCurrentOffset)
+
+    val outputRoleTarget  = malformed.copy(targetAssertions = malformed.targetAssertions.map:
+      case assertion @ PlannedTargetAssertion(TargetAssertionOwner.Terminal(_, _), _, _) =>
+        assertion.copy(targetIdentity = PlannedTargetIdentity.OutputRole(PsiOutputRoleId.SourceTerminal))
+      case assertion                                                                     => assertion
+    )
+    val outputRoleBuilder = recordingEmitterBuilder(source)
+    assertFalse(
+      DotcPsiProducer.parse(
+        Scala3DotcParserDefinition.FileNodeType,
+        outputRoleBuilder,
+        outputRoleTarget,
+        nativeBindings
+      )
+    )
+    assertEquals(0, outputRoleBuilder.getCurrentOffset)
 
   def testOneTerminalTargetContractBindsEveryValidatedOccurrence(): Unit =
     val source   = "*,*"
@@ -150,7 +186,10 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ),
       targetAssertions = base.targetAssertions :+ PlannedTargetAssertion(
         TargetAssertionOwner.Terminal(origin, terminal),
-        NativePsiElementBindings.ImportWildcardTokenSurface,
+        PlannedTargetIdentity.TokenRole(
+          PsiOutputRoleId.SourceTerminal,
+          NativePsiElementBindings.ImportWildcardTokenSurface
+        ),
         TargetAssertionKind.Token
       )
     )
@@ -165,10 +204,12 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
 
   def testNativeBindingsRejectAnOutputRoleBoundToAnotherHostSurface(): Unit =
     val catalog = Scala3PsiProductionCatalog(
-      Scala3PsiProductionCatalog.Reviewed.productions.map:
+      Scala3PsiProductionCatalog.Reviewed.productions.map {
         case production if production.id == "file-package" =>
           production.copy(outputRoleId = Some(PsiOutputRoleId.ImportSelector))
         case production                                    => production
+      },
+      StableRoleInventory.Reviewed
     )
     assertTrue(nativeBindings.validate(catalog).isLeft)
 
@@ -364,7 +405,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       targetAssertions = Vector(first.instance, second.instance).map(id =>
         PlannedTargetAssertion(
           TargetAssertionOwner.Composite(id),
-          packagingRole,
+          PlannedTargetIdentity.OutputRole(packagingRole),
           TargetAssertionKind.NativeComposite
         )
       )
@@ -462,7 +503,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ids.map(id =>
         PlannedTargetAssertion(
           TargetAssertionOwner.Composite(id),
-          packagingRole,
+          PlannedTargetIdentity.OutputRole(packagingRole),
           TargetAssertionKind.NativeComposite
         )
       ),

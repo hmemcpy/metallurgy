@@ -7,6 +7,7 @@ import com.hmemcpy.metallurgy.psiproducer.{
   CatalogValuePattern,
   CompilerRuntimeInventory,
   FactStatus,
+  GrammarRoleId,
   ImportPersistenceSurfaces,
   NativePsiElementBindings,
   PackagePersistenceSurfaces,
@@ -19,6 +20,7 @@ import com.hmemcpy.metallurgy.psiproducer.{
   Scala3PsiProductionCoverageReport,
   ScalaPsiSurfaceInventory,
   ScalaPsiSurfaceRow,
+  StableRoleInventory,
   SurfaceFactKind,
   SurfaceClassification,
   TerminalDeclaration,
@@ -160,7 +162,8 @@ final class Scala3ParserVerticalSliceTest:
       val catalog   = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-import") || production.id.startsWith("import-")
-        )
+        ),
+        StableRoleInventory.Reviewed
       )
       val installed = ScalaPsiSurfaceInventory.installed().toOption.get
       val surfaces  = withImportTokenSurfaces(installed)
@@ -261,7 +264,8 @@ final class Scala3ParserVerticalSliceTest:
       val catalog              = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id == "file-package" || production.id.startsWith("package-stable")
-        )
+        ),
+        StableRoleInventory.Reviewed
       )
       val prepared             = PreparedProductionCatalog
         .prepare(catalog, preparationAggregate, surfaces)
@@ -378,7 +382,8 @@ final class Scala3ParserVerticalSliceTest:
       val catalog                = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-package") || production.id.startsWith("package-stable")
-        )
+        ),
+        StableRoleInventory.Reviewed
       )
       def selected(nodeId: Long) =
         val row      = inventory.shapes.find(_.id == nodeId).get
@@ -601,7 +606,14 @@ final class Scala3ParserVerticalSliceTest:
       val actualUnaccounted                                                                        = catalogErrors.collect:
         case error: CatalogValidationError.UnaccountedSyntaxSurface => error
       assertEquals(expectedUnaccounted, actualUnaccounted.toSet)
-      assertTrue(catalogErrors.contains(CatalogValidationError.UnrepresentedCatalogProduction("file-package")))
+      assertTrue(
+        catalogErrors.contains(
+          CatalogValidationError.UnrepresentedCatalogProduction(
+            "file-package",
+            GrammarRoleId.CompilationUnit
+          )
+        )
+      )
       assertFalse(
         catalogErrors.toString,
         catalogErrors.exists(error =>
@@ -621,9 +633,14 @@ final class Scala3ParserVerticalSliceTest:
       )
       assertTrue(report, report.contains("### `Node.Number`"))
       assertTrue(report, report.contains("- Validation: **incomplete**"))
-      assertTrue(report, report.contains("**shape-mapped:NativeCandidate:integer-literal-number**"))
+      assertTrue(report, report.contains("grammar-role=scala.literal.integer"))
+      assertTrue(report, report.contains("catalog-alternative=integer-literal-number"))
+      assertTrue(report, report.contains("output-roles=scala.literal.integer,scala.source.terminal"))
+      assertTrue(report, report.contains("providers=NativeCandidate"))
+      assertTrue(report, report.contains("missing-boundary=compatibility-binding"))
       assertTrue(report, report.contains("### `Node.PackageDef`"))
-      assertTrue(report, report.contains("**unmapped:SourceReachable**"))
+      assertTrue(report, report.contains("compiler-context=root:SourceReachable"))
+      assertTrue(report, report.contains("missing-boundary=bridge-normalization-or-neutral-grammar-role"))
       assertTrue(
         report,
         report.contains(

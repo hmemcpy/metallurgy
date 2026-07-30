@@ -995,6 +995,19 @@ private[metallurgy] object ScalaPsiSurfaceInventory:
 private[metallurgy] enum FieldDispositionKind:
   case Child, TerminalOrLayout, SemanticOnly, RecoveryOnly, Synthetic, Unsupported
 private[metallurgy] final case class FieldDisposition(fieldName: String, kind: FieldDispositionKind)
+private[metallurgy] final case class GrammarRoleId(value: String):
+  require(value.nonEmpty)
+private[metallurgy] object GrammarRoleId:
+  val CompilationUnit    = GrammarRoleId("scala.compilation-unit")
+  val PackageReference   = GrammarRoleId("scala.package.reference")
+  val ImportStatement    = GrammarRoleId("scala.import.statement")
+  val AbsentProduct      = GrammarRoleId("scala.absent-product")
+  val StableReference    = GrammarRoleId("scala.reference.stable")
+  val ImportSelector     = GrammarRoleId("scala.import.selector")
+  val ImportSelectorName = GrammarRoleId("scala.import.selector-name")
+  val SimpleType         = GrammarRoleId("scala.type.simple")
+  val AppliedType        = GrammarRoleId("scala.type.applied")
+  val IntegerLiteral     = GrammarRoleId("scala.literal.integer")
 private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
   case Repeated(minimum: Int, maximum: Option[Int])
@@ -1023,7 +1036,7 @@ private[metallurgy] final case class TerminalDeclaration(
     selector: TerminalIntervalSelector,
     target: TerminalLeafTarget,
     cardinality: OccurrenceCardinality,
-    outputRoleId: PsiOutputRoleId = PsiOutputRoleId.SourceTerminal,
+    outputRoleId: PsiOutputRoleId,
     ownsStructuralEvidence: Option[Boolean] = None
 ):
   val claimsStructuralEvidence: Boolean = ownsStructuralEvidence.getOrElse(target == TerminalLeafTarget.Parent)
@@ -1089,6 +1102,40 @@ private[metallurgy] object PsiOutputRoleId:
   val ParameterizedType = PsiOutputRoleId("scala.type.parameterized")
   val TypeArguments     = PsiOutputRoleId("scala.type.arguments")
   val IntegerLiteral    = PsiOutputRoleId("scala.literal.integer")
+private[metallurgy] final case class StableRoleInventory(
+    grammarRoles: Set[GrammarRoleId],
+    outputRoles: Set[PsiOutputRoleId]
+)
+private[metallurgy] object StableRoleInventory:
+  val Empty = StableRoleInventory(Set.empty, Set.empty)
+
+  val Reviewed = StableRoleInventory(
+    Set(
+      GrammarRoleId.CompilationUnit,
+      GrammarRoleId.PackageReference,
+      GrammarRoleId.ImportStatement,
+      GrammarRoleId.AbsentProduct,
+      GrammarRoleId.StableReference,
+      GrammarRoleId.ImportSelector,
+      GrammarRoleId.ImportSelectorName,
+      GrammarRoleId.SimpleType,
+      GrammarRoleId.AppliedType,
+      GrammarRoleId.IntegerLiteral
+    ),
+    Set(
+      PsiOutputRoleId.SourceTerminal,
+      PsiOutputRoleId.PackageStatement,
+      PsiOutputRoleId.ImportStatement,
+      PsiOutputRoleId.ImportExpression,
+      PsiOutputRoleId.ImportSelectorSet,
+      PsiOutputRoleId.ImportSelector,
+      PsiOutputRoleId.StableReference,
+      PsiOutputRoleId.SimpleType,
+      PsiOutputRoleId.ParameterizedType,
+      PsiOutputRoleId.TypeArguments,
+      PsiOutputRoleId.IntegerLiteral
+    )
+  )
 private[metallurgy] object ImportPersistenceSurfaces:
   val StatementStub         = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportStmtStub"
   val ExpressionStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScImportExprStub"
@@ -1141,6 +1188,7 @@ private[metallurgy] final case class OutputRealization(
 )
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
+    grammarRoleId: GrammarRoleId,
     pattern: CompilerProductionPattern,
     dispositions: Vector[FieldDisposition],
     children: Vector[ChildDeclaration],
@@ -1154,31 +1202,36 @@ private[metallurgy] final case class Scala3PsiProduction(
     navigation: Option[NavigationObligation] = None,
     outputTemplate: Option[LocalOutputCompositeTemplate] = None,
     outputRealizations: Vector[OutputRealization] = Vector.empty,
-    outputRoleId: Option[PsiOutputRoleId] = None
+    outputRoleId: Option[PsiOutputRoleId]
 ):
-  private def defaultOutputTemplate: LocalOutputCompositeTemplate = outputTemplate.getOrElse(
-    LocalOutputCompositeTemplate(
-      Vector(
-        OutputCompositeDeclaration(
-          "self",
-          None,
-          OutputRangeDeclaration.CompilerPosition,
-          outputRoleId.getOrElse(PsiOutputRoleId(targetSurfaceId)),
-          targetSurfaceId,
-          targetRequirement,
-          accessors,
-          persistence,
-          navigation
-        )
-      ),
-      children.map(child => child.roleId -> Some("self")).toMap
+  private def defaultOutputTemplate: Option[LocalOutputCompositeTemplate] = outputTemplate.orElse(
+    outputRoleId.map(role =>
+      LocalOutputCompositeTemplate(
+        Vector(
+          OutputCompositeDeclaration(
+            "self",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            role,
+            targetSurfaceId,
+            targetRequirement,
+            accessors,
+            persistence,
+            navigation
+          )
+        ),
+        children.map(child => child.roleId -> Some("self")).toMap
+      )
     )
   )
-  def effectiveOutputRealizations: Vector[OutputRealization]      =
+  def effectiveOutputRealizations: Vector[OutputRealization]              =
     if outputRealizations.nonEmpty then outputRealizations
-    else Vector(OutputRealization("self", Vector.empty, defaultOutputTemplate))
-  def effectiveOutputTemplate: LocalOutputCompositeTemplate       = effectiveOutputRealizations.head.template
-private[metallurgy] final case class Scala3PsiProductionCatalog(productions: Vector[Scala3PsiProduction])
+    else defaultOutputTemplate.toVector.map(OutputRealization("self", Vector.empty, _))
+  def effectiveOutputTemplate: LocalOutputCompositeTemplate               = effectiveOutputRealizations.head.template
+private[metallurgy] final case class Scala3PsiProductionCatalog(
+    productions: Vector[Scala3PsiProduction],
+    stableRoles: StableRoleInventory
+)
 private[metallurgy] enum CatalogCapabilityFailure:
   case MissingProduction(id: String)
   case InvalidTargetRequirement(id: String, requirement: TargetRequirement)
@@ -1187,7 +1240,7 @@ private[metallurgy] enum CatalogCapabilityFailure:
       compatible: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]]
   )
 private[metallurgy] object Scala3PsiProductionCatalog:
-  val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty)
+  val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty, StableRoleInventory.Empty)
 
   private val PackageSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
@@ -1511,6 +1564,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     Vector(
       Scala3PsiProduction(
         id = "file-package",
+        grammarRoleId = GrammarRoleId.CompilationUnit,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "PackageDef",
@@ -1540,7 +1594,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "whole-file",
             TerminalIntervalSelector.WholeSource,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1559,6 +1614,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "file-package-imports",
+        grammarRoleId = GrammarRoleId.CompilationUnit,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "PackageDef",
@@ -1594,7 +1650,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "whole-file",
             TerminalIntervalSelector.WholeSource,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1613,6 +1670,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "file-imports",
+        grammarRoleId = GrammarRoleId.CompilationUnit,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "PackageDef",
@@ -1639,7 +1697,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "whole-file",
             TerminalIntervalSelector.WholeSource,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1649,10 +1708,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportStatementAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate("imports"))
       ),
       Scala3PsiProduction(
         id = "import-statement",
+        grammarRoleId = GrammarRoleId.ImportStatement,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Import",
@@ -1696,7 +1757,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "statement-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1706,6 +1768,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportStatementAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputRealizations = Vector(
           OutputRealization(
             "selector-owned",
@@ -1815,6 +1878,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-expression-absent",
+        grammarRoleId = GrammarRoleId.AbsentProduct,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Thicket",
@@ -1836,10 +1900,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportExpressionAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "file-import-empty-package",
+        grammarRoleId = GrammarRoleId.PackageReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -1870,10 +1936,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = Vector.empty,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "import-path-identifier-reference",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -1901,7 +1969,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "identifier-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1915,6 +1984,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-path-reference",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Select",
@@ -1948,7 +2018,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "reference-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -1962,6 +2033,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-path-identifier",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -1994,7 +2066,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "identifier-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2008,6 +2081,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-direct",
+        grammarRoleId = GrammarRoleId.ImportSelector,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "ImportSelector",
@@ -2060,7 +2134,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "selector-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.Optional
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2070,6 +2145,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputRealizations = Vector(
           OutputRealization(
             "direct-plain",
@@ -2125,6 +2201,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-braced",
+        grammarRoleId = GrammarRoleId.ImportSelector,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "ImportSelector",
@@ -2177,19 +2254,22 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "selector-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           ),
           TerminalDeclaration(
             "scala3-alias-separator",
             TerminalIntervalSelector.ChildGap("imported", "renamed"),
             TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasAsTokenSurface, Some("as")),
-            OccurrenceCardinality.Optional
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
           ),
           TerminalDeclaration(
             "scala2-alias-separator",
             TerminalIntervalSelector.ChildGap("imported", "renamed"),
             TerminalLeafTarget.Token(NativePsiElementBindings.ImportAliasArrowTokenSurface, Some("=>")),
-            OccurrenceCardinality.Optional
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2199,6 +2279,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputRealizations = Vector(
           OutputRealization(
             "braced-named",
@@ -2274,6 +2355,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-name",
+        grammarRoleId = GrammarRoleId.ImportSelectorName,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2309,7 +2391,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "name-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2319,10 +2402,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = StableReferenceAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "import-selector-hidden-name",
+        grammarRoleId = GrammarRoleId.ImportSelectorName,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2347,7 +2432,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "hidden-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Token(NativePsiElementBindings.ImportLegacyWildcardTokenSurface, Some("_")),
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2357,10 +2443,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "import-selector-wildcard-name",
+        grammarRoleId = GrammarRoleId.ImportSelectorName,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2388,13 +2476,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "wildcard-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Token(NativePsiElementBindings.ImportWildcardTokenSurface, Some("*")),
-            OccurrenceCardinality.Optional
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
           ),
           TerminalDeclaration(
             "legacy-wildcard-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Token(NativePsiElementBindings.ImportLegacyWildcardTokenSurface, Some("_")),
-            OccurrenceCardinality.Optional
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2404,10 +2494,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "import-selector-empty-name",
+        grammarRoleId = GrammarRoleId.ImportSelectorName,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2435,7 +2527,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "given-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2445,10 +2538,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "import-selector-bound-type",
+        grammarRoleId = GrammarRoleId.SimpleType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2476,7 +2571,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "type-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2486,6 +2582,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = Vector.empty,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(
           LocalOutputCompositeTemplate(
             Vector(
@@ -2511,6 +2608,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-bound-applied-type",
+        grammarRoleId = GrammarRoleId.AppliedType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "AppliedTypeTree",
@@ -2558,7 +2656,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "type-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2568,6 +2667,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ParameterizedTypeAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(
           LocalOutputCompositeTemplate(
             Vector(
@@ -2598,6 +2698,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-bound-applied-constructor",
+        grammarRoleId = GrammarRoleId.SimpleType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2617,7 +2718,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "type-name",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2627,6 +2729,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = Vector.empty,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(
           LocalOutputCompositeTemplate(
             Vector(
@@ -2652,6 +2755,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-bound-applied-argument",
+        grammarRoleId = GrammarRoleId.SimpleType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2674,7 +2778,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "type-name",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2684,6 +2789,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = Vector.empty,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(
           LocalOutputCompositeTemplate(
             Vector(
@@ -2709,6 +2815,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "import-selector-absent",
+        grammarRoleId = GrammarRoleId.AbsentProduct,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Thicket",
@@ -2747,10 +2854,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         accessors = ImportSelectorAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
         id = "package-stable-identifier-reference",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2778,7 +2887,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "identifier-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2792,6 +2902,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "package-stable-reference",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Select",
@@ -2827,7 +2938,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "reference-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2841,6 +2953,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "package-stable-identifier",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
@@ -2868,7 +2981,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "identifier-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2882,6 +2996,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Scala3PsiProduction(
         id = "integer-literal-number",
+        grammarRoleId = GrammarRoleId.IntegerLiteral,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Number",
@@ -2916,7 +3031,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "integer-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
           )
         ),
         layouts = Vector(LayoutAlternative.None),
@@ -2954,7 +3070,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         navigation = Some(NavigationObligation.Self),
         outputRoleId = Some(PsiOutputRoleId.IntegerLiteral)
       )
-    )
+    ),
+    StableRoleInventory.Reviewed
   )
 
   def withIntegerLiteralTarget(
@@ -3045,28 +3162,76 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       .sortBy(_._1)
       .foreach((name, count) => lines += s"- Outstanding `$name`: $count")
     lines += ""
+    lines += "## Stable role inventory"
+    lines += ""
+    lines += "### Grammar roles"
+    lines += ""
+    catalog.stableRoles.grammarRoles.toVector
+      .sortBy(_.value)
+      .foreach: role =>
+        val alternatives = catalog.productions.filter(_.grammarRoleId == role).map(_.id).distinct.sorted
+        val status       =
+          if alternatives.isEmpty then "unreferenced" else s"catalog-alternatives=${alternatives.mkString(",")}"
+        lines += s"- `${role.value}` — **$status**"
+    lines += ""
+    lines += "### Output roles"
+    lines += ""
+    catalog.stableRoles.outputRoles.toVector
+      .sortBy(_.value)
+      .foreach: role =>
+        val contracts = catalog.productions.flatMap: production =>
+          val terminals = production.terminals.collect:
+            case terminal if terminal.outputRoleId == role =>
+              val target = terminal.target match
+                case TerminalLeafTarget.Token(surfaceId, _) => s"->$surfaceId"
+                case _                                      => ""
+              s"${production.id}:terminal:${terminal.id}$target"
+          val outputs   = production.effectiveOutputRealizations.flatMap: realization =>
+            realization.template.composites.collect:
+              case output if output.outputRoleId == role =>
+                s"${production.id}:${realization.id}:${output.id}->${output.targetSurfaceId}"
+          terminals ++ outputs
+        val status    =
+          if contracts.isEmpty then "unreferenced" else s"contracts=${contracts.distinct.sorted.mkString(",")}"
+        lines += s"- `${role.value}` — **$status**"
+    lines += ""
     lines += "## Compiler productions"
     lines += ""
-    compiler.productions.foreach: row =>
-      val fields = row.fields.map(field => s"${field.name}:${render(field.value)}").mkString(", ")
-      lines += s"### `${row.kind}.${row.prefix}`"
-      lines += ""
-      lines += s"- Fields: `$fields`"
-      row.occurrences.foreach: occurrence =>
-        val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
-        val status   = selected match
-          case Vector(production) =>
-            val requirements = production.effectiveOutputRealizations
-              .flatMap(_.template.composites)
-              .map(_.targetRequirement.toString)
-              .distinct
-              .sorted
-            val rendered     = if requirements.isEmpty then "transparent" else requirements.mkString(",")
-            s"shape-mapped:$rendered:${production.id}"
-          case Vector()           => s"unmapped:${occurrence.sourceClassification}"
-          case productions        => s"ambiguous:${productions.map(_.id).sorted.mkString(",")}"
-        lines += s"- `${render(occurrence)}` — **$status**"
-      lines += ""
+    compiler.productions
+      .sortBy(row => (row.kind.toString, row.prefix, row.fields.map(_.toString).mkString("\u0000")))
+      .foreach: row =>
+        val fields = row.fields.map(field => s"${field.name}:${render(field.value)}").mkString(", ")
+        lines += s"### `${row.kind}.${row.prefix}`"
+        lines += ""
+        lines += s"- Fields: `$fields`"
+        row.occurrences
+          .sortBy(render)
+          .foreach: occurrence =>
+            val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
+            val status   = selected match
+              case Vector(production) =>
+                val outputs      = production.effectiveOutputRealizations.flatMap(_.template.composites)
+                val terminals    = production.terminals
+                val requirements = outputs
+                  .map(_.targetRequirement.toString)
+                  .distinct
+                  .sorted
+                val outputRoles  = (outputs.map(_.outputRoleId) ++ terminals.map(_.outputRoleId))
+                  .map(_.value)
+                  .distinct
+                  .sorted
+                val targets      = (outputs.map(_.targetSurfaceId) ++ terminals.collect:
+                  case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _) => surfaceId
+                ).distinct.sorted
+                val providers    = if requirements.isEmpty then "transparent" else requirements.mkString(",")
+                val boundary     = missingBoundary(production, validation)
+                s"mapped; grammar-role=${production.grammarRoleId.value}; catalog-alternative=${production.id}; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; output-roles=${renderList(outputRoles)}; host-targets=${renderList(targets)}; providers=$providers; missing-boundary=$boundary"
+              case Vector()           =>
+                s"unmapped; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; missing-boundary=bridge-normalization-or-neutral-grammar-role"
+              case productions        =>
+                s"ambiguous; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; catalog-alternatives=${productions.map(_.id).sorted.mkString(",")}; missing-boundary=neutral-grammar-role-selection"
+            lines += s"- `${render(occurrence)}` — **$status**"
+        lines += ""
     lines += "## Scala PSI surfaces"
     lines += ""
     val references        = catalog.productions
@@ -3087,24 +3252,66 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
       .view
       .mapValues(_.distinct.sorted)
       .toMap
-    effectiveSurfaces.rows.foreach: row =>
-      val status = references.get(row.id) match
-        case Some(productions) => s"catalog-referenced:${productions.mkString(",")}"
-        case None              => s"unmapped:${row.classification}"
-      lines += s"- `${row.kind}:${row.id}` — **${row.status}:$status**"
+    effectiveSurfaces.rows
+      .sortBy(row => (row.kind.toString, row.id))
+      .foreach: row =>
+        val status = references.get(row.id) match
+          case Some(productions)                                                  => s"catalog-referenced:${productions.mkString(",")}"
+          case None if row.classification == SurfaceClassification.SyntaxContract =>
+            s"unmapped:${row.classification}:missing-boundary=stable-output-role-or-compatibility-binding"
+          case None                                                               => s"unmapped:${row.classification}"
+        lines += s"- `${row.kind}:${row.id}` — **${row.status}:$status**"
     lines.result().mkString("\n") + "\n"
+
+  private def missingBoundary(
+      production: Scala3PsiProduction,
+      validation: Vector[CatalogValidationError]
+  ): String =
+    if validation.exists:
+        case CatalogValidationError.UnknownGrammarRole(id, _) if id == production.id                   => true
+        case CatalogValidationError.CatalogAlternativeDerivedGrammarRole(id, _) if id == production.id => true
+        case CatalogValidationError.CompilerDerivedGrammarRole(id, _, _) if id == production.id        => true
+        case _                                                                                         => false
+    then "neutral-grammar-role"
+    else if validation.exists:
+        case CatalogValidationError.MissingDefaultOutputRole(id) if id == production.id       => true
+        case CatalogValidationError.UnknownOutputRole(id, _, _) if id == production.id        => true
+        case CatalogValidationError.HostDerivedOutputRole(id, _, _, _) if id == production.id => true
+        case _                                                                                => false
+    then "stable-output-role"
+    else if production.effectiveOutputRealizations
+        .flatMap(_.template.composites)
+        .exists(
+          _.targetRequirement == TargetRequirement.NativeCandidate
+        ) || validation.exists:
+        case CatalogValidationError.InvalidSurface(id, _, _, _) if id == production.id          => true
+        case CatalogValidationError.InvalidSurfaceOwner(id, _, _, _) if id == production.id     => true
+        case CatalogValidationError.IncompleteSurfaceStatus(id, _, _, _) if id == production.id => true
+        case _                                                                                  => false
+    then "compatibility-binding"
+    else "none"
+
+  private def renderList(values: Vector[String]): String =
+    if values.isEmpty then "none" else values.mkString(",")
 
   private def render(occurrence: CompilerProductionContext): String =
     val context = occurrence.context match
       case None        => "root"
       case Some(value) =>
-        val path = value.path.map:
-          case CatalogPathSegment.NamedField(name)        => name
-          case CatalogPathSegment.Optional                => "?"
-          case CatalogPathSegment.RepeatedElement         => "*"
-          case CatalogPathSegment.NestedProduct(producer) => s"product($producer)"
-        s"${value.ownerKind}.${value.ownerPrefix}/${path.mkString("/")}"
+        val owner     = s"${value.ownerKind}.${value.ownerPrefix}/${renderPath(value.path)}"
+        val ancestors = value.ancestors
+          .map(ancestor => s"${ancestor.ownerKind}.${ancestor.ownerPrefix}/${renderPath(ancestor.path)}")
+          .mkString(">")
+        if ancestors.isEmpty then owner else s"$owner@[$ancestors]"
     s"$context:${occurrence.sourceClassification}"
+
+  private def renderPath(path: Vector[CatalogPathSegment]): String = path
+    .map:
+      case CatalogPathSegment.NamedField(name)        => name
+      case CatalogPathSegment.Optional                => "?"
+      case CatalogPathSegment.RepeatedElement         => "*"
+      case CatalogPathSegment.NestedProduct(producer) => s"product($producer)"
+    .mkString("/")
 
   private def render(pattern: CatalogValuePattern): String = pattern match
     case CatalogValuePattern.Node                     => "Node"
@@ -3263,6 +3470,10 @@ private[metallurgy] object CatalogShapeMatcher:
 
 private[metallurgy] enum CatalogValidationError:
   case DuplicateProductionId(id: String)
+  case UnknownGrammarRole(productionId: String, grammarRoleId: GrammarRoleId)
+  case CatalogAlternativeDerivedGrammarRole(productionId: String, grammarRoleId: GrammarRoleId)
+  case CompilerDerivedGrammarRole(productionId: String, grammarRoleId: GrammarRoleId, compilerPrefix: String)
+  case UnreferencedGrammarRole(grammarRoleId: GrammarRoleId)
   case EmptyOccurrencePatterns(productionId: String)
   case DuplicateOccurrencePattern(productionId: String, pattern: CompilerProductionContextPattern)
   case DuplicateChildRoleId(productionId: String, roleId: String)
@@ -3286,6 +3497,15 @@ private[metallurgy] enum CatalogValidationError:
   case DuplicateTerminalId(productionId: String, terminalId: String)
   case DuplicateAccessorObligation(productionId: String, surfaceId: String)
   case DuplicateOutputId(productionId: String, outputId: String)
+  case MissingDefaultOutputRole(productionId: String)
+  case UnknownOutputRole(productionId: String, outputId: String, outputRoleId: PsiOutputRoleId)
+  case HostDerivedOutputRole(
+      productionId: String,
+      outputId: String,
+      outputRoleId: PsiOutputRoleId,
+      targetSurfaceId: String
+  )
+  case UnreferencedOutputRole(outputRoleId: PsiOutputRoleId)
   case UnknownOutputParent(productionId: String, outputId: String, parentId: String)
   case CyclicOutputParent(productionId: String, outputId: String)
   case MissingChildMountRole(productionId: String, roleId: String)
@@ -3317,11 +3537,26 @@ private[metallurgy] enum CatalogValidationError:
   case MissingTerminalDeclaration(productionId: String, fieldName: String)
   case UnknownTerminalField(productionId: String, fieldName: String)
   case UnknownTerminalChildRole(productionId: String, roleId: String)
-  case InvalidSurface(productionId: String, surfaceId: String, expectedKind: SurfaceFactKind)
-  case InvalidSurfaceOwner(productionId: String, surfaceId: String, expectedOwner: String)
-  case IncompleteSurfaceStatus(productionId: String, surfaceId: String, status: FactStatus)
+  case InvalidSurface(
+      productionId: String,
+      outputRoleId: PsiOutputRoleId,
+      surfaceId: String,
+      expectedKind: SurfaceFactKind
+  )
+  case InvalidSurfaceOwner(
+      productionId: String,
+      outputRoleId: PsiOutputRoleId,
+      surfaceId: String,
+      expectedOwner: String
+  )
+  case IncompleteSurfaceStatus(
+      productionId: String,
+      outputRoleId: PsiOutputRoleId,
+      surfaceId: String,
+      status: FactStatus
+  )
   case UnaccountedSyntaxSurface(surfaceId: String)
-  case UnrepresentedCatalogProduction(productionId: String)
+  case UnrepresentedCatalogProduction(productionId: String, grammarRoleId: GrammarRoleId)
   case UncoveredCompilerShape(
       kind: InventoryKind,
       prefix: String,
@@ -3525,10 +3760,28 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       coverage: Vector[CatalogValidationError],
       includeUnaccountedSurfaces: Boolean
   ): Vector[CatalogValidationError] =
-    val effectiveSurfaces                                                                                             = surfaces.withCatalogCapabilities(catalog)
-    val errors                                                                                                        = Vector.newBuilder[CatalogValidationError]
+    val effectiveSurfaces      = surfaces.withCatalogCapabilities(catalog)
+    val errors                 = Vector.newBuilder[CatalogValidationError]
     duplicates(catalog.productions.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateProductionId(id))
-    val productionIds                                                                                                 = catalog.productions.map(_.id).toSet
+    val productionIds          = catalog.productions.map(_.id).toSet
+    val compilerPrefixes       = catalog.productions.map(_.pattern.prefix).toSet ++ coverage.collect:
+      case CatalogValidationError.UncoveredCompilerShape(_, prefix, _, _)    => prefix
+      case CatalogValidationError.AmbiguousCompilerShape(_, prefix, _, _, _) => prefix
+    val catalogHostSurfaceIds  = catalog.productions
+      .flatMap: production =>
+        val terminals = production.terminals.collect:
+          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _) => surfaceId
+        val outputs   = production.effectiveOutputRealizations
+          .flatMap(_.template.composites)
+          .flatMap: output =>
+            val persistence = output.persistence match
+              case PersistenceObligations.NotApplicable                                   => Vector.empty
+              case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+                Vector(stub, serializer, navigation) ++ indices
+            Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
+        outputs ++ terminals
+      .toSet
+    val hostIdentityIds        = catalogHostSurfaceIds ++ effectiveSurfaces.rows.map(_.id)
     duplicates(effectiveSurfaces.rows.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateSurfaceId(id))
     effectiveSurfaces.rows
       .filter(_.classification == SurfaceClassification.Unclassified)
@@ -3537,21 +3790,38 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       .filter(_.status != FactStatus.Available)
       .foreach: row =>
         errors += CatalogValidationError.UnresolvedSurface(row.id, row.status)
-    val surfaceMap                                                                                                    = effectiveSurfaces.rows.groupBy(_.id).collect { case (id, Vector(row)) => id -> row }
-    def requireSurface(p: Scala3PsiProduction, id: String, kind: SurfaceFactKind, owner: Option[String] = None): Unit =
+    val surfaceMap             = effectiveSurfaces.rows.groupBy(_.id).collect { case (id, Vector(row)) => id -> row }
+    def requireSurface(
+        p: Scala3PsiProduction,
+        outputRoleId: PsiOutputRoleId,
+        id: String,
+        kind: SurfaceFactKind,
+        owner: Option[String] = None
+    ): Unit =
       surfaceMap.get(id) match
-        case None                                                                 => errors += CatalogValidationError.InvalidSurface(p.id, id, kind)
-        case Some(row) if row.kind != kind                                        => errors += CatalogValidationError.InvalidSurface(p.id, id, kind)
+        case None                                                                 =>
+          errors += CatalogValidationError.InvalidSurface(p.id, outputRoleId, id, kind)
+        case Some(row) if row.kind != kind                                        =>
+          errors += CatalogValidationError.InvalidSurface(p.id, outputRoleId, id, kind)
         case Some(row) if owner.exists(expected => row.ownerId != Some(expected)) =>
-          errors += CatalogValidationError.InvalidSurfaceOwner(p.id, id, owner.get)
+          errors += CatalogValidationError.InvalidSurfaceOwner(p.id, outputRoleId, id, owner.get)
         case Some(row) if row.status != FactStatus.Available                      =>
-          errors += CatalogValidationError.IncompleteSurfaceStatus(p.id, id, row.status)
+          errors += CatalogValidationError.IncompleteSurfaceStatus(p.id, outputRoleId, id, row.status)
         case _                                                                    => ()
     catalog.productions.foreach: p =>
       val names        = p.pattern.fields.map(_.name)
       val childRoles   = p.children.map(_.roleId).toSet
       val realizations = p.effectiveOutputRealizations
-      if realizations.isEmpty then errors += CatalogValidationError.EmptyOutputRealizations(p.id)
+      if !catalog.stableRoles.grammarRoles(p.grammarRoleId) then
+        errors += CatalogValidationError.UnknownGrammarRole(p.id, p.grammarRoleId)
+      if productionIds(p.grammarRoleId.value) then
+        errors += CatalogValidationError.CatalogAlternativeDerivedGrammarRole(p.id, p.grammarRoleId)
+      if compilerPrefixes(p.grammarRoleId.value) then
+        errors += CatalogValidationError.CompilerDerivedGrammarRole(p.id, p.grammarRoleId, p.grammarRoleId.value)
+      if realizations.isEmpty then
+        if p.outputTemplate.isEmpty && p.outputRealizations.isEmpty && p.outputRoleId.isEmpty then
+          errors += CatalogValidationError.MissingDefaultOutputRole(p.id)
+        else errors += CatalogValidationError.EmptyOutputRealizations(p.id)
       duplicates(realizations.map(_.id)).foreach(id =>
         errors += CatalogValidationError.DuplicateOutputRealizationId(p.id, id)
       )
@@ -3588,6 +3858,15 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         val template                                             = realization.template; val outputIds = template.composites.map(_.id)
         duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))
         template.composites.foreach: output =>
+          if !catalog.stableRoles.outputRoles(output.outputRoleId) then
+            errors += CatalogValidationError.UnknownOutputRole(p.id, output.id, output.outputRoleId)
+          if hostIdentityIds(output.outputRoleId.value) then
+            errors += CatalogValidationError.HostDerivedOutputRole(
+              p.id,
+              output.id,
+              output.outputRoleId,
+              output.outputRoleId.value
+            )
           output.parentId
             .filterNot(outputIds.contains)
             .foreach(parent => errors += CatalogValidationError.UnknownOutputParent(p.id, output.id, parent))
@@ -3707,6 +3986,16 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       p.terminals
         .filter(terminal => !valid(terminal.cardinality))
         .foreach(terminal => errors += CatalogValidationError.InvalidTerminalCardinality(p.id, terminal.id))
+      p.terminals.foreach: terminal =>
+        if !catalog.stableRoles.outputRoles(terminal.outputRoleId) then
+          errors += CatalogValidationError.UnknownOutputRole(p.id, terminal.id, terminal.outputRoleId)
+        if hostIdentityIds(terminal.outputRoleId.value) then
+          errors += CatalogValidationError.HostDerivedOutputRole(
+            p.id,
+            terminal.id,
+            terminal.outputRoleId,
+            terminal.outputRoleId.value
+          )
       realizations
         .flatMap(_.template.composites)
         .foreach: output =>
@@ -3756,38 +4045,37 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case _                                          => ()
       )
       p.terminals.foreach:
-        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, _, _) =>
-          requireSurface(p, id, SurfaceFactKind.Token)
-        case _                                                                   => ()
+        case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, outputRoleId, _) =>
+          requireSurface(p, outputRoleId, id, SurfaceFactKind.Token)
+        case _                                                                              => ()
       realizations
         .flatMap(_.template.composites)
         .foreach: output =>
-          requireSurface(p, output.targetSurfaceId, SurfaceFactKind.Element)
-          output.accessors.foreach(a => requireSurface(p, a.surfaceId, a.surfaceKind))
+          requireSurface(p, output.outputRoleId, output.targetSurfaceId, SurfaceFactKind.Element)
+          output.accessors.foreach(a => requireSurface(p, output.outputRoleId, a.surfaceId, a.surfaceKind))
           output.persistence match
             case PersistenceObligations.NotApplicable                                   => ()
             case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-              requireSurface(p, stub, SurfaceFactKind.Stub)
-              requireSurface(p, serializer, SurfaceFactKind.Serializer)
-              indices.foreach(requireSurface(p, _, SurfaceFactKind.Index))
-              requireSurface(p, navigation, SurfaceFactKind.Navigation)
+              requireSurface(p, output.outputRoleId, stub, SurfaceFactKind.Stub)
+              requireSurface(p, output.outputRoleId, serializer, SurfaceFactKind.Serializer)
+              indices.foreach(requireSurface(p, output.outputRoleId, _, SurfaceFactKind.Index))
+              requireSurface(p, output.outputRoleId, navigation, SurfaceFactKind.Navigation)
     errors ++= coverage
-    val accounted                                                                                                     = catalog.productions
-      .flatMap: p =>
-        val terminals = p.terminals.collect {
-          case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, _, _) => id
-        }
-        val outputs   = p.effectiveOutputRealizations
-          .flatMap(_.template.composites)
-          .flatMap: output =>
-            val persistence = output.persistence match
-              case PersistenceObligations.NotApplicable                                   => Vector.empty
-              case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-                Vector(stub, serializer, navigation) ++ indices
-            Vector(output.targetSurfaceId) ++ output.accessors.map(_.surfaceId) ++ persistence
-        outputs ++ terminals
+    val referencedGrammarRoles = catalog.productions.map(_.grammarRoleId).toSet
+    val referencedOutputRoles  = catalog.productions
+      .flatMap(production =>
+        production.terminals.map(_.outputRoleId) ++
+          production.effectiveOutputRealizations.flatMap(_.template.composites.map(_.outputRoleId))
+      )
       .toSet
+    val accounted              = catalogHostSurfaceIds
     if includeUnaccountedSurfaces then
+      catalog.stableRoles.grammarRoles
+        .diff(referencedGrammarRoles)
+        .foreach(role => errors += CatalogValidationError.UnreferencedGrammarRole(role))
+      catalog.stableRoles.outputRoles
+        .diff(referencedOutputRoles)
+        .foreach(role => errors += CatalogValidationError.UnreferencedOutputRole(role))
       effectiveSurfaces.rows
         .filter(r =>
           r.status == FactStatus.Available && r.classification == SurfaceClassification.SyntaxContract && !accounted(
@@ -3841,7 +4129,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 )
             )
           ) =>
-        CatalogValidationError.UnrepresentedCatalogProduction(production.id)
+        CatalogValidationError.UnrepresentedCatalogProduction(production.id, production.grammarRoleId)
     uncovered ++ unrepresented
 
   private def coverageError(
@@ -3952,7 +4240,11 @@ private[metallurgy] enum WholeFilePlanningFailure:
   )
   case UnsupportedLayout(owner: ProductionInstanceId, alternatives: Vector[LayoutAlternative])
   case UnsupportedRecovery(owner: ProductionInstanceId, policy: RecoveryPolicy)
-  case UnprobedNativeCandidate(owner: ProductionInstanceId, productionId: String)
+  case UnprobedNativeCandidate(
+      owner: ProductionInstanceId,
+      productionId: String,
+      outputRoleId: PsiOutputRoleId
+  )
   case UnassignedDiagnostic(index: Int)
   case OverlappingOutputForest(left: CompositeInstanceId, right: CompositeInstanceId)
   case OutputBoundaryResolutionFailed(
@@ -4038,9 +4330,12 @@ private[metallurgy] enum TargetAssertionOwner:
 private[metallurgy] enum TargetAssertionKind:
   case NativeComposite, CompatibleComposite
   case Token
+private[metallurgy] enum PlannedTargetIdentity:
+  case OutputRole(outputRoleId: PsiOutputRoleId)
+  case TokenRole(outputRoleId: PsiOutputRoleId, targetSurfaceId: String)
 private[metallurgy] final case class PlannedTargetAssertion(
     owner: TargetAssertionOwner,
-    surfaceId: String,
+    targetIdentity: PlannedTargetIdentity,
     kind: TargetAssertionKind
 )
 private[metallurgy] final case class PlannedAccessorAssertion(
@@ -5009,12 +5304,28 @@ private[metallurgy] object WholeFileProductionPlanner:
               case TargetRequirement.Native          => TargetAssertionKind.NativeComposite
               case TargetRequirement.Compatible      => TargetAssertionKind.CompatibleComposite
               case TargetRequirement.NativeCandidate =>
-                break(Left(WholeFilePlanningFailure.UnprobedNativeCandidate(instance, production.id)))
-            PlannedTargetAssertion(TargetAssertionOwner.Composite(id), declaration.outputRoleId.value, requirement)
+                break(
+                  Left(
+                    WholeFilePlanningFailure.UnprobedNativeCandidate(
+                      instance,
+                      production.id,
+                      declaration.outputRoleId
+                    )
+                  )
+                )
+            PlannedTargetAssertion(
+              TargetAssertionOwner.Composite(id),
+              PlannedTargetIdentity.OutputRole(declaration.outputRoleId),
+              requirement
+            )
         val terminals  = production.terminals.collect:
-          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _)
+          case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _, outputRoleId, _)
               if resolvedTerminals(instance -> id) =>
-            PlannedTargetAssertion(TargetAssertionOwner.Terminal(instance, id), surfaceId, TargetAssertionKind.Token)
+            PlannedTargetAssertion(
+              TargetAssertionOwner.Terminal(instance, id),
+              PlannedTargetIdentity.TokenRole(outputRoleId, surfaceId),
+              TargetAssertionKind.Token
+            )
         composites ++ terminals
       val accessors                                                                             = active.toVector.flatMap(instance =>
         outputRows(instance).flatMap:

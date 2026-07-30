@@ -105,19 +105,63 @@ private[metallurgy] object Scala3SyntaxCapabilityFailure:
       stage: Scala3SyntaxCapabilityStage,
       detail: Any
   ): Scala3SyntaxCapabilityRequirement = detail match
-    case _: WholeFilePlanningFailure.UnknownOutputRealization =>
+    case WholeFilePlanningFailure.UnprobedNativeCandidate(_, _, outputRoleId) =>
+      Scala3SyntaxCapabilityRequirement.OutputRole(Some(outputRoleId.value))
+    case WholeFilePlanningFailure.InvalidCatalog(errors)                      =>
+      catalogRequirement(errors).getOrElse(stageRequirement(stage))
+    case _: WholeFilePlanningFailure.UnknownOutputRealization                 =>
       Scala3SyntaxCapabilityRequirement.OutputRole(None)
-    case _                                                    =>
-      stage match
-        case Scala3SyntaxCapabilityStage.RuntimeInventory | Scala3SyntaxCapabilityStage.AggregateInventory |
-            Scala3SyntaxCapabilityStage.Catalog | Scala3SyntaxCapabilityStage.Planner =>
-          Scala3SyntaxCapabilityRequirement.GrammarRole(None)
-        case Scala3SyntaxCapabilityStage.Lexer | Scala3SyntaxCapabilityStage.Emitter =>
-          Scala3SyntaxCapabilityRequirement.OutputRole(None)
-        case Scala3SyntaxCapabilityStage.PsiRoleBinding                              =>
-          Scala3SyntaxCapabilityRequirement.Capability("psi-role-binding")
-        case _                                                                       =>
-          Scala3SyntaxCapabilityRequirement.Capability(s"exact-syntax-${stage.toString.toLowerCase}")
+    case errors: Vector[?]                                                    =>
+      catalogRequirement(errors.collect { case error: CatalogValidationError => error })
+        .getOrElse(stageRequirement(stage))
+    case _                                                                    => stageRequirement(stage)
+
+  private def catalogRequirement(
+      errors: Vector[CatalogValidationError]
+  ): Option[Scala3SyntaxCapabilityRequirement] =
+    errors
+      .collectFirst:
+        case CatalogValidationError.UnknownGrammarRole(_, role)                   =>
+          Scala3SyntaxCapabilityRequirement.GrammarRole(Some(role.value))
+        case CatalogValidationError.CatalogAlternativeDerivedGrammarRole(_, role) =>
+          Scala3SyntaxCapabilityRequirement.GrammarRole(Some(role.value))
+        case CatalogValidationError.CompilerDerivedGrammarRole(_, role, _)        =>
+          Scala3SyntaxCapabilityRequirement.GrammarRole(Some(role.value))
+        case CatalogValidationError.UnreferencedGrammarRole(role)                 =>
+          Scala3SyntaxCapabilityRequirement.GrammarRole(Some(role.value))
+        case CatalogValidationError.UnrepresentedCatalogProduction(_, role)       =>
+          Scala3SyntaxCapabilityRequirement.GrammarRole(Some(role.value))
+      .orElse(
+        errors.collectFirst:
+          case CatalogValidationError.MissingDefaultOutputRole(_)            =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(None)
+          case CatalogValidationError.UnknownOutputRole(_, _, role)          =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.HostDerivedOutputRole(_, _, role, _)   =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.UnreferencedOutputRole(role)           =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.InvalidSurface(_, role, _, _)          =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.InvalidSurfaceOwner(_, role, _, _)     =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.IncompleteSurfaceStatus(_, role, _, _) =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(Some(role.value))
+          case CatalogValidationError.UnaccountedSyntaxSurface(_)            =>
+            Scala3SyntaxCapabilityRequirement.OutputRole(None)
+      )
+
+  private def stageRequirement(stage: Scala3SyntaxCapabilityStage): Scala3SyntaxCapabilityRequirement =
+    stage match
+      case Scala3SyntaxCapabilityStage.RuntimeInventory | Scala3SyntaxCapabilityStage.AggregateInventory |
+          Scala3SyntaxCapabilityStage.Catalog | Scala3SyntaxCapabilityStage.Planner =>
+        Scala3SyntaxCapabilityRequirement.GrammarRole(None)
+      case Scala3SyntaxCapabilityStage.Lexer | Scala3SyntaxCapabilityStage.Emitter =>
+        Scala3SyntaxCapabilityRequirement.OutputRole(None)
+      case Scala3SyntaxCapabilityStage.PsiRoleBinding                              =>
+        Scala3SyntaxCapabilityRequirement.Capability("psi-role-binding")
+      case _                                                                       =>
+        Scala3SyntaxCapabilityRequirement.Capability(s"exact-syntax-${stage.toString.toLowerCase}")
 
 @Service(Array(Service.Level.PROJECT))
 private[metallurgy] final class Scala3SyntaxCapabilityService(project: Project):
