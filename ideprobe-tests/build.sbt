@@ -34,9 +34,20 @@ lazy val probe261 =
     .settings(
       Compile / unmanagedJars ++= {
         val home = file(sys.env.getOrElse("METALLURGY_INTELLIJ_HOME", sys.error("METALLURGY_INTELLIJ_HOME is required")))
-        intellijClasspath(home).map(Attributed.blank)
+        val compilerShared = home / "custom-plugins" / "Scala" / "lib" / "compiler-shared.jar"
+        val scala3Library  = home / "custom-plugins" / "Scala" / "lib" / "scala3-library_3.jar"
+        if (!compilerShared.isFile)
+          sys.error(s"Pinned Scala compiler event API is absent from $compilerShared")
+        if (!scala3Library.isFile)
+          sys.error(s"Pinned Scala compiler event API dependency is absent from $scala3Library")
+        (intellijClasspath(home) ++ Seq(compilerShared, scala3Library)).map(Attributed.blank)
       },
-      libraryDependencies += "org.virtuslab.ideprobe" %% "probe-plugin" % ideProbeVersion
+      scalacOptions += "-Ytasty-reader",
+      libraryDependencies ++= Seq(
+        "org.virtuslab.ideprobe" %% "probe-plugin"   % ideProbeVersion,
+        "junit"                  %  "junit"          % "4.13.2" % Test,
+        "com.github.sbt"         %  "junit-interface" % "0.13.3" % Test
+      )
     )
 
 lazy val root =
@@ -68,6 +79,11 @@ lazy val root =
           IO.unzip(nested, staging / "plugin")
         } finally driver.close()
 
+        val scalaLibrary = staging / "plugin" / "ideprobe" / "lib" / "scala-library.jar"
+        if (!scalaLibrary.isFile)
+          sys.error("bundled ide-probe Scala library is absent")
+        IO.delete(scalaLibrary)
+
         val pluginJar  = staging / "plugin" / "ideprobe" / "lib" / "probe-plugin.jar"
         val jarContent = staging / "probe-plugin"
         IO.unzip(pluginJar, jarContent)
@@ -79,10 +95,13 @@ lazy val root =
         val extensionBoundary  = "    </extensions>\n\n</idea-plugin>"
         if (!originalDescriptor.contains(extensionBoundary))
           sys.error("ide-probe plugin descriptor has an unsupported extension layout")
-        val descriptor         = originalDescriptor.replace(
-          extensionBoundary,
-          s"$registration\n$extensionBoundary"
-        )
+        val optionalScalaDependency =
+          """    <depends optional="true" config-file="scala-plugin.xml">org.intellij.scala</depends>"""
+        if (!originalDescriptor.contains(optionalScalaDependency))
+          sys.error("ide-probe optional Scala plugin dependency is absent")
+        val descriptor              = originalDescriptor
+          .replace(optionalScalaDependency, "    <depends>org.intellij.scala</depends>")
+          .replace(extensionBoundary, s"$registration\n$extensionBoundary")
         IO.write(pluginXml, descriptor)
         IO.delete(pluginJar)
         zipDirectory(jarContent, pluginJar)

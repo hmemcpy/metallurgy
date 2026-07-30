@@ -3,6 +3,7 @@ package com.hmemcpy.metallurgy.ideprobe
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardCopyOption}
 import java.time.Instant
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
@@ -19,6 +20,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
   private val StatusEndpoint = Request[FileRef, Map[String, String]]("metallurgy/status")
   private val ReplaceWithSupportedSyntaxEndpoint =
     Request[FileRef, Map[String, String]]("metallurgy/replace-with-supported-syntax")
+  private val PollDelay = new CountDownLatch(1)
 
   @Test
   def opensImportsIndexesAndHighlightsWithoutInternalErrors(): Unit = {
@@ -138,11 +140,57 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       write(artifacts.resolve("syntax-capability-deduplicated.txt"), formatMap(deduplicatedStatus))
       record(timeline, "syntax-capability-finding-deduplicated", s"text=${deduplicatedStatus("syntaxWidget.text")}")
 
-      val _ = probe.send(ReplaceWithSupportedSyntaxEndpoint, fileRef)
+      val compilerEvent = probe.send(ReplaceWithSupportedSyntaxEndpoint, fileRef)
+      write(artifacts.resolve("compiler-event-quiescence.txt"), formatMap(compilerEvent))
+      assertEquals("true", compilerEvent("compilerEvent.subscribedBeforeEdit"))
+      assertEquals("<none>", compilerEvent("compilerEvent.compilationUnit"))
+      assertEquals(target.toString, compilerEvent("compilerEvent.documentPath"))
+      assertEquals(target.toString, compilerEvent("compilerEvent.matchedSource"))
+      assertTrue(
+        compilerEvent("compilerEvent.correlation"),
+        compilerEvent("compilerEvent.correlation").contains("startAndFinish=true")
+      )
+      assertTrue(
+        compilerEvent("compilerEvent.correlation"),
+        compilerEvent("compilerEvent.correlation").contains("documentGeneration=true")
+      )
+      assertTrue(
+        compilerEvent("compilerEvent.correlation"),
+        compilerEvent("compilerEvent.correlation").contains("finishedSource=true")
+      )
+      record(
+        timeline,
+        "scala-compiler-event-subscribed-before-edit",
+        s"subscribedAt=${compilerEvent("compilerEvent.subscribedAt")} " +
+          s"editStartedAt=${compilerEvent("compilerEvent.editStartedAt")}"
+      )
+      record(
+        timeline,
+        "scala-compilation-started-after-edit",
+        s"at=${compilerEvent("compilerEvent.compilationStartedAt")} id=${compilerEvent("compilerEvent.compilationId")}"
+      )
+      record(
+        timeline,
+        "scala-compilation-finished-matched",
+        s"at=${compilerEvent("compilerEvent.compilationFinishedAt")} " +
+          s"documentVersion=${compilerEvent("compilerEvent.documentVersion")} " +
+          s"matchedSource=${compilerEvent("compilerEvent.matchedSource")} " +
+          s"sourceCount=${compilerEvent("compilerEvent.sourceCount")}"
+      )
+      record(timeline, "scala-compilation-correlation-proven", compilerEvent("compilerEvent.correlation"))
       val resolvedInfos = probe.highlightInfos(target, project)
       write(artifacts.resolve("resolved-highlights.txt"), resolvedInfos.mkString("\n") + "\n")
       val resolvedErrors = resolvedInfos.filter(_.severity == HighlightInfo.Severity.Error)
       assertTrue(s"resolved supported source has ERROR highlights: $resolvedErrors", resolvedErrors.isEmpty)
+      probe.await(
+        WaitLogic.emptyBackgroundTasks(
+          basicCheckFrequency = 100.millis,
+          ensurePeriod = 3.seconds,
+          ensureFrequency = 50.millis,
+          atMost = 2.minutes
+        )
+      )
+      record(timeline, "all-background-tasks-stably-empty", "ensurePeriod=3 seconds")
       val resolvedStatus = await(2.minutes, 250.millis, "cleared syntax capability finding") {
         val current = probe.send(StatusEndpoint, fileRef)
         Option.when(occurrences(current("syntaxWidget.tooltip"), s"file=$target") == 0)(current)
@@ -240,7 +288,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
     val deadline = atMost.fromNow
     var result = attempt
     while (result.isEmpty && deadline.hasTimeLeft()) {
-      Thread.sleep(interval.toMillis)
+      val _ = PollDelay.await(interval.toNanos, TimeUnit.NANOSECONDS)
       result = attempt
     }
     result.getOrElse(throw new AssertionError(s"Timed out waiting for $description after $atMost"))
