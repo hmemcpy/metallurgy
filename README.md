@@ -1,81 +1,43 @@
 # Metallurgy
 
-Metallurgy is an IntelliJ plugin for Scala 3 projects. It reads Scala 3 files with the same compiler version used by
-the project. IntelliJ remains the editor, project importer, build and test runner, and debugger.
+Metallurgy is an experimental IntelliJ plugin for Scala 3. Its goal is for IntelliJ to understand a project through
+the same dotc compiler version that builds it.
 
-> **Pre-alpha:** Metallurgy is under active development and is not ready for normal daily use. Only a limited part of
-> Scala 3 syntax works today.
+Metallurgy generates IntelliJ PSI based on dotc trees. PSI is IntelliJ's internal model of source code. IntelliJ uses
+that model to power features such as navigation, completion, refactoring, and error reporting.
 
-## What works today
+## Why
 
-Metallurgy currently supports:
+Scala 3 changes quickly. When an IDE reads and understands Scala code separately from the compiler, the two can
+disagree about valid syntax, types, or the meaning of code.
 
-- package declarations, including nested and chained packages, braces, indentation, and `end` markers;
-- imports and exports with deep paths, named selectors, aliases, wildcards, and `given` selectors;
-- several typed `given` selectors, including full type names, wildcards with type limits, unions, and intersections.
+Metallurgy aims to make the project's compiler the single source of truth. It keeps IntelliJ's editor, project model,
+debugger, refactoring UI, and plugin ecosystem. It runs inside IntelliJ rather than replacing IntelliJ with a
+Language Server Protocol (LSP) client.
 
-For these forms, Metallurgy builds real PSI, IntelliJ's internal model of a source file. IntelliJ can save them in its
-project lookup data, copy and edit them, and rebuild the same model after a file or project is reopened.
+The idea of running the Scala compiler directly inside IntelliJ comes from
+[Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SlPDmwhxeok&t=3931s), *The best Scala IDE
+inside your favourite Scala IDE*.
 
-Detailed progress is tracked in [Epic #85](https://github.com/hmemcpy/metallurgy/issues/85).
+## Project status
 
-## What is not ready
+> **Pre-alpha and work in progress.** Language coverage and editor feature coverage are incomplete. Metallurgy is not
+> ready for normal daily use, and no normal user release exists.
 
-Most Scala 3 source files need syntax that Metallurgy does not support yet. This includes:
+## Compatibility
 
-- most declarations and templates, such as classes, objects, traits, methods, values, and type definitions;
-- expressions and control flow;
-- patterns and matches;
-- most type syntax outside the supported import and export selector forms;
-- complete compiler powered types, reference resolution, completion, navigation, and error reporting;
-- full behavior across modules when an upstream module has a broken build;
-- broad compatibility across Scala versions, IntelliJ versions, and real projects;
-- production performance and release packaging.
+| IntelliJ IDEA | Scala plugin | Scala | Status |
+|---|---|---|---|
+| IC 261.26222.65 | 2026.1.20 | 3.7.4 | WIP — current development baseline |
+| Other | Other | Other Scala 3 combinations | WIP — not yet verified |
+| Any | Any | Scala 2 | Out of scope |
 
-When a file uses unsupported syntax, it stays in a safe basic state. The status bar explains what is missing.
-Metallurgy does not build a misleading partial model or mix in IntelliJ's older Scala parser for the rest of the file.
+This table does not claim broad compatibility. It records the environment used for current development and the limits
+of what has been verified.
 
-The idea — running the Scala compiler directly inside IntelliJ, without LSP — comes from
-[Jędrzej Rochala's ScalaWAW #32 talk](https://www.youtube.com/watch?v=SlPDmwhxeok&t=3931s) (*The best Scala IDE
-inside your favourite Scala IDE*).
+## Learn more
 
-## Current development baseline
-
-The tested development baseline is:
-
-- IntelliJ IDEA Community **261.26222.65**;
-- Scala plugin **2026.1.20**;
-- Scala **3.7.4**.
-
-Support is not yet claimed for other combinations.
-
-## Install
-
-There is no normal user release yet. To build a development package from source:
-
-```sh
-sbt packageArtifactZip
-```
-
-Then `Settings | Plugins | Install plugin from disk…` → the zip in `target/`.
-
-## Develop
-
-```sh
-sbt compile
-sbt test
-sbt runIDE
-sbt fmt
-sbt check
-```
-
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`AGENTS.md`](./AGENTS.md).
-
-## Docs
-
+- [Contributing](CONTRIBUTING.md)
 - [Architecture and reference](docs/scala3-compiler-backend.md)
 - [Implementation program](docs/deterministic-scala3-psi-implementation-program.md)
-
-## License
-
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+- [Apache License 2.0](LICENSE)
