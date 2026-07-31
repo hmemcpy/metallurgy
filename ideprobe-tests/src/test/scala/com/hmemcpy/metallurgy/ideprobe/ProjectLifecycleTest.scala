@@ -143,6 +143,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       val compilerEvent = probe.send(ReplaceWithSupportedSyntaxEndpoint, fileRef)
       write(artifacts.resolve("compiler-event-quiescence.txt"), formatMap(compilerEvent))
       assertEquals("true", compilerEvent("compilerEvent.subscribedBeforeEdit"))
+      assertEquals("true", compilerEvent("compilerEvent.metallurgyBackendQuiesced"))
       assertEquals("<none>", compilerEvent("compilerEvent.compilationUnit"))
       assertEquals(target.toString, compilerEvent("compilerEvent.documentPath"))
       assertEquals(target.toString, compilerEvent("compilerEvent.matchedSource"))
@@ -177,6 +178,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
           s"matchedSource=${compilerEvent("compilerEvent.matchedSource")} " +
           s"sourceCount=${compilerEvent("compilerEvent.sourceCount")}"
       )
+      record(timeline, "metallurgy-compiler-backend-quiesced", s"documentVersion=${compilerEvent("compilerEvent.documentVersion")}")
       record(timeline, "scala-compilation-correlation-proven", compilerEvent("compilerEvent.correlation"))
       val resolvedInfos = probe.highlightInfos(target, project)
       write(artifacts.resolve("resolved-highlights.txt"), resolvedInfos.mkString("\n") + "\n")

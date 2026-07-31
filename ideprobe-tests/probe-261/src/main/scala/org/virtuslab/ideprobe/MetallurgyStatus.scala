@@ -3,6 +3,7 @@ package org.virtuslab.ideprobe
 import java.lang.reflect.Method
 import java.nio.file.Path
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
@@ -91,8 +92,29 @@ object MetallurgyStatus extends IntelliJApi {
       val editFinishedAt = Instant.now()
       completion.expect(generation)
       val evidence = completion.await(2, TimeUnit.MINUTES)
-      inspect(fileRef) ++ evidence.fields(subscribedAt, editStartedAt, editFinishedAt, project.getName)
+      awaitMetallurgyCompilerBackend(project, file.getVirtualFile, 2, TimeUnit.MINUTES)
+      inspect(fileRef) ++ evidence.fields(subscribedAt, editStartedAt, editFinishedAt, project.getName) +
+        ("compilerEvent.metallurgyBackendQuiesced" -> "true")
     } finally subscription.close()
+  }
+
+  private def awaitMetallurgyCompilerBackend(
+      project: Project,
+      file: com.intellij.openapi.vfs.VirtualFile,
+      timeout: Long,
+      unit: TimeUnit
+  ): Unit = {
+    val loader = Option(PluginManagerCore.getPlugin(PluginIdValue))
+      .map(_.getPluginClassLoader)
+      .getOrElse(error("Metallurgy plugin is not loaded"))
+    val managerClass = Class.forName("com.hmemcpy.metallurgy.pc.PcSessionManager", true, loader)
+    val manager = project.getService(managerClass.asInstanceOf[Class[AnyRef]])
+    val future = managerClass
+      .getMethod("prepareCompilerBackend", classOf[com.intellij.openapi.vfs.VirtualFile])
+      .invoke(manager, file)
+      .asInstanceOf[CompletableFuture[Option[AnyRef]]]
+    if (future.get(timeout, unit).isEmpty)
+      error(s"Metallurgy compiler backend did not publish ${file.getUrl}")
   }
 
   private def documentVersion(document: Document): Long = document match {
