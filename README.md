@@ -12,7 +12,7 @@ Metallurgy currently supports:
 
 - package declarations, including nested and chained packages, braces, indentation, and `end` markers;
 - imports and exports with deep paths, named selectors, aliases, wildcards, and `given` selectors;
-- qualified, wildcard-bounded, and infix `given` selector types in the forms covered by the current implementation.
+- several typed `given` selectors, including full type names, wildcards with type limits, unions, and intersections.
 
 For these forms, Metallurgy builds real PSI, IntelliJ's internal model of a source file. IntelliJ can save them in its
 project lookup data, copy and edit them, and rebuild the same model after a file or project is reopened.
