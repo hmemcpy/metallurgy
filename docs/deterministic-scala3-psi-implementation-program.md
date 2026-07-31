@@ -77,12 +77,13 @@ parser preparation epoch, and compiler identity when a required production is un
 
 The reviewed catalog currently owns file/package roots and the supported top-level import and export families:
 arbitrary finite stable `Select`/`Ident` paths, direct and braced selectors, aliases, wildcard, unbounded `given`, and
-bounded `given` with simple identifier-headed or recursive applied types, plus ordinary/operator/Unicode/quoted
-names. Imports and exports have independent statement grammar and output roles while sharing import-expression,
-selector, and stable-reference descendants. Their local output-composite forests own exact physical evidence and
-fulfill native accessors, navigation, stubs, serializers, the aliased-selector index, and the top-level export package
-index. Template, extension, local-block, and package-body statements and qualified, wildcard-bound, and infix
-bounded-given types remain unavailable and fail closed.
+bounded `given` with simple/applied, qualified, wildcard-bound, and infix/union/intersection types, plus
+ordinary/operator/Unicode/quoted names. Package clauses cover unbraced, chained, nested, sibling, braced, and
+colon-indented forms with matching package end markers and supported import/export children. Imports and exports have
+independent statement grammar and output roles while sharing import-expression, selector, and stable-reference
+descendants. Their local output-composite forests own exact physical evidence and fulfill native accessors, navigation,
+stubs, serializers, the aliased-selector index, and the top-level export package index. Template, extension,
+local-block, definitions/expressions/patterns, and unrelated type grammar remain unavailable and fail closed.
 Native bindings execute their public PSI and persistence contracts before activation. All other grammar families
 remain unavailable and therefore produce deterministic neutral file-scoped PSI.
 
