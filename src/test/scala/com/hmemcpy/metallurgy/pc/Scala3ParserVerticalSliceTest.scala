@@ -200,6 +200,272 @@ final class Scala3ParserVerticalSliceTest:
     finally bridge.close()
 
   @Test
+  def boundedGivenTypeFormsHaveExactCompilerShapes(): Unit =
+    val bridge = openBridge()
+    try
+      val forms                                                                            = Vector(
+        (
+          "import a.b.given scala.math.Ordering.Int\n",
+          "Select",
+          Vector("Select", "Select", "Select", "Ident"),
+          "00670f260ab45176568fa19a5ee0c88543d9528f7247cb5098960dd000e3a795"
+        ),
+        (
+          "import a.b.given scala.math.Ordering[Int]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Select", "Select", "Ident", "Ident"),
+          "7e0c093d85f13fc8bd51829458a6faf85326c4fe39c1d688def73efdb7265901"
+        ),
+        (
+          "import a.b.given F[?]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Thicket"),
+          "a654db8bba027cbe5bb169b38f1592ef571248b6c33fc4b0218bcc28f8dcce2f"
+        ),
+        (
+          "import a.b.given F[? <: U]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
+          "1d787674f1aa62fae2c576a56d9ff10853d4b8d4f62a8dee444290909e1055b3"
+        ),
+        (
+          "import a.b.given F[? >: L]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
+          "0b27c0de49784407b6fc93540ae665b139c65dafc8ed91c77dfdf0bc11ab9c97"
+        ),
+        (
+          "import a.b.given F[? >: L <: U]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Ident", "Thicket"),
+          "6a09584ee94391fee28545e08ed2a88895af9e0178c4cb744aa173870733bd53"
+        ),
+        (
+          "import a.b.given A | B & C <:< D\n",
+          "InfixOp",
+          Vector("InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "Ident"),
+          "15a3ce77875b601800d9c46d3c993cc02cc625a59f50db72c8b9c4e0b9723ddd"
+        ),
+        (
+          "import a.b.given A | B | C\n",
+          "InfixOp",
+          Vector("InfixOp", "InfixOp", "Ident", "Ident", "Ident", "Ident", "Ident"),
+          "f5866204df57cf31aaabdadd06ad49bc4d50189e27d6f3bc6d1a056fd2f51f14"
+        ),
+        (
+          "export a.b.given scala.math.Ordering.Int\n",
+          "Select",
+          Vector("Select", "Select", "Select", "Ident"),
+          "dcd7f340cdc898d4d02442a1dae6bc3c6a2ae54faab5633372ae877a36a94345"
+        ),
+        (
+          "export a.b.{given scala.math.Ordering[Int]}\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Select", "Select", "Ident", "Ident"),
+          "1c7bb8ebd7a1bf5090af181d2980fb6ee1af1305a8dcfd462289679f83237a7b"
+        ),
+        (
+          "export a.b.given F[?]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Thicket"),
+          "cb98be690b3071d0b2d436751e2b71c83032e0c96cbc59ea494dd49ef010b268"
+        ),
+        (
+          "export a.b.{given F[? <: U]}\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
+          "f8876d8746ffa807298e80aba00b18cf8c30b4ee4c070d025396a411506a7907"
+        ),
+        (
+          "export a.b.given F[? >: L]\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
+          "b10453241c54c134d8fa1f2d53662b6025740f297d7055661b7a8af7452c6619"
+        ),
+        (
+          "export a.b.{given F[? >: L <: U]}\n",
+          "AppliedTypeTree",
+          Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Ident", "Thicket"),
+          "a7aebdeee6e71b90df164c7415a6b40eae112e336a57d71e390fa33f236ce84d"
+        ),
+        (
+          "export a.b.given A | B & C <:< D\n",
+          "InfixOp",
+          Vector("InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "Ident"),
+          "b3883dda132dd5c2a82b61f2d171dca3bd4ed8361e48f184fd52815c5e7b94d6"
+        ),
+        (
+          "export a.b.given A | B | C\n",
+          "InfixOp",
+          Vector("InfixOp", "InfixOp", "Ident", "Ident", "Ident", "Ident", "Ident"),
+          "da041de9f3fae7be61ccab1bfdb2e9e1b32100bae1bf2805640a009c97684763"
+        )
+      )
+      def node(snapshot: ParserSyntaxSnapshot, id: Long): ParserSyntaxNode                 = snapshot.nodes.find(_.id == id).get
+      def references(value: ParserFieldValue): Vector[Long]                                = value match
+        case ParserFieldValue.Node(id)           => Vector(id)
+        case ParserFieldValue.Optional(value)    => value.toVector.flatMap(references)
+        case ParserFieldValue.Repeated(values)   => values.flatMap(references)
+        case ParserFieldValue.Product(_, fields) => fields.flatMap(field => references(field.value))
+        case _: ParserFieldValue.Positioned | _: ParserFieldValue.Name | _: ParserFieldValue.GeneratedName |
+            _: ParserFieldValue.Scalar | _: ParserFieldValue.Unsupported =>
+          Vector.empty
+      def boundId(snapshot: ParserSyntaxSnapshot): Long                                    =
+        snapshot.nodes
+          .find(_.production == "ImportSelector")
+          .get
+          .fields
+          .collectFirst { case ParserSyntaxField("bound", ParserFieldValue.Node(id), _) => id }
+          .get
+      def subtreeProductions(snapshot: ParserSyntaxSnapshot, rootId: Long): Vector[String] =
+        val pending = java.util.ArrayDeque[Long]()
+        pending.addFirst(rootId)
+        val seen    = collection.mutable.Set.empty[Long]
+        val result  = Vector.newBuilder[String]
+        while !pending.isEmpty do
+          val id = pending.removeFirst()
+          if !seen(id) then
+            seen += id
+            val current  = node(snapshot, id)
+            result += current.production
+            val children = current.fields.iterator.flatMap(field => references(field.value)).toVector
+            children.reverseIterator.foreach(pending.addFirst)
+        result.result()
+
+      val snapshots = forms.zipWithIndex.map: (form, index) =>
+        val (source, rootProduction, expectedSubtree, fingerprint) = form
+        val snapshot                                               = parse(bridge, source, s"file:///BoundedGivenType$index.scala")
+        assertEquals(source, snapshot.sourceText)
+        assertTrue(snapshot.diagnostics.isEmpty)
+        assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
+        val bound                                                  = node(snapshot, boundId(snapshot))
+        assertEquals(rootProduction, bound.production)
+        assertEquals(
+          expectedSubtree.groupMapReduce(identity)(_ => 1)(_ + _),
+          subtreeProductions(snapshot, bound.id).groupMapReduce(identity)(_ => 1)(_ + _)
+        )
+        val typeStart                                              = source.indexOf("given") + "given ".length
+        val typeEnd                                                = source.indexOf('}') match
+          case -1    => source.length - 1
+          case value => value
+        assertEquals(
+          PcSourceRange(typeStart, typeEnd),
+          bound.position.asInstanceOf[ParserNodePosition.Positioned].range
+        )
+        snapshot.nodes
+          .filter(_.production == "Select")
+          .foreach(node => assertEquals(Vector("qualifier", "name"), node.fields.map(_.name)))
+        snapshot.nodes
+          .filter(_.production == "AppliedTypeTree")
+          .foreach(node => assertEquals(Vector("tpt", "args"), node.fields.map(_.name)))
+        snapshot.nodes
+          .filter(_.production == "TypeBoundsTree")
+          .foreach(bounds =>
+            assertEquals(Vector("lo", "hi", "alias"), bounds.fields.map(_.name))
+            def child(field: String): ParserSyntaxNode =
+              val id =
+                bounds.fields.collectFirst { case ParserSyntaxField(`field`, ParserFieldValue.Node(id), _) => id }.get
+              node(snapshot, id)
+            val lower                                  = child("lo")
+            val upper                                  = child("hi")
+            assertEquals(if source.contains(">:") then "Ident" else "Thicket", lower.production)
+            assertEquals(if source.contains("<:") then "Ident" else "Thicket", upper.production)
+            assertEquals("Thicket", child("alias").production)
+            if source.contains(">:") then
+              val offset = source.indexOf("L")
+              assertEquals(
+                ParserNodePosition
+                  .Positioned(PcSourceRange(offset, offset + 1), offset, ParserPositionProvenance.SourceDerived),
+                lower.position
+              )
+            else assertEquals(ParserNodePosition.Absent, lower.position)
+            if source.contains("<:") then
+              val offset = source.indexOf("U")
+              assertEquals(
+                ParserNodePosition
+                  .Positioned(PcSourceRange(offset, offset + 1), offset, ParserPositionProvenance.SourceDerived),
+                upper.position
+              )
+            else assertEquals(ParserNodePosition.Absent, upper.position)
+            assertEquals(ParserNodePosition.Absent, child("alias").position)
+          )
+        snapshot.nodes
+          .filter(_.production == "InfixOp")
+          .foreach(node => assertEquals(Vector("left", "op", "right"), node.fields.map(_.name)))
+        val evidence                                               = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+        assertEquals(source, evidence.reconstruct(source))
+        assertFalse(evidence.atoms.exists(atom => atom.start == atom.end))
+        snapshot
+
+      val runtimes  = snapshots.map(CompilerRuntimeInventory.from(_).toOption.get)
+      val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
+      val surfaces  = withImportTokenSurfaces(ScalaPsiSurfaceInventory.installed().toOption.get)
+      snapshots
+        .zip(runtimes)
+        .foreach: (snapshot, runtime) =>
+          val prepared = PreparedProductionCatalog
+            .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+            .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+          val evidence = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+          val plan     = WholeFileProductionPlanner
+            .plan(snapshot, evidence, prepared)
+            .fold(error => throw new AssertionError(error.toString), identity)
+          assertEquals(
+            snapshot.sourceText,
+            plan.physicalLeafOwnership
+              .sortBy(leaf => (leaf.start, leaf.end))
+              .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
+              .mkString
+          )
+          assertFalse(plan.physicalLeafOwnership.exists(leaf => leaf.start == leaf.end))
+          assertEquals(
+            plan.physicalLeafOwnership.map(_.atomId).distinct,
+            plan.physicalLeafOwnership.map(_.atomId)
+          )
+          assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+          assertEquals(
+            plan.structuralEvidenceOwnership.map(_.eventId).distinct,
+            plan.structuralEvidenceOwnership.map(_.eventId)
+          )
+          val byId     = plan.composites.map(value => value.instance -> value).toMap
+          plan.composites.foreach: parent =>
+            parent.children.foreach: child =>
+              val range = byId(child.child).range
+              assertTrue(parent.range.startOffset <= range.startOffset)
+              assertTrue(range.endOffset <= parent.range.endOffset)
+          if node(snapshot, boundId(snapshot)).production == "Select"
+          then assertTrue(plan.composites.exists(_.productionId == "import-selector-given-bound-qualified-type"))
+          if snapshot.nodes.exists(_.production == "TypeBoundsTree") then
+            assertTrue(plan.composites.exists(_.productionId == "import-selector-given-bound-wildcard-type"))
+          if snapshot.nodes.exists(_.production == "InfixOp") then
+            assertEquals(
+              snapshot.nodes.count(_.production == "InfixOp"),
+              plan.composites.count(_.productionId == "import-selector-given-bound-infix-type")
+            )
+
+      val bareWildcard = Vector("import a.b.given ?\n", "export a.b.given ?\n").zipWithIndex.map: (source, index) =>
+        parse(bridge, source, s"file:///BareGivenWildcard$index.scala")
+      bareWildcard.foreach: snapshot =>
+        assertTrue(snapshot.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
+        val runtime  = CompilerRuntimeInventory.from(snapshot).toOption.get
+        val selected = runtime.shapes
+          .filter(_.prefix == "TypeBoundsTree")
+          .flatMap(row =>
+            row.contexts.flatMap(context =>
+              CatalogShapeMatcher.select(
+                Scala3PsiProductionCatalog.Reviewed,
+                row.kind,
+                row.prefix,
+                row.observation,
+                Some(context),
+                row.sourceClassification
+              )
+            )
+          )
+        assertTrue(selected.isEmpty)
+    finally bridge.close()
+
+  @Test
   def minimizedExportFormsHaveExactCompilerShapesAndClosedOutputForests(): Unit =
     val bridge = openBridge()
     try
@@ -1137,7 +1403,10 @@ final class Scala3ParserVerticalSliceTest:
       NativePsiElementBindings.ImportWildcardTokenSurface,
       NativePsiElementBindings.ImportLegacyWildcardTokenSurface,
       NativePsiElementBindings.ImportAliasAsTokenSurface,
-      NativePsiElementBindings.ImportAliasArrowTokenSurface
+      NativePsiElementBindings.ImportAliasArrowTokenSurface,
+      NativePsiElementBindings.WildcardQuestionTokenSurface,
+      NativePsiElementBindings.LowerTypeBoundTokenSurface,
+      NativePsiElementBindings.UpperTypeBoundTokenSurface
     )
     inventory.copy(rows =
       inventory.rows ++ tokens.map(id =>

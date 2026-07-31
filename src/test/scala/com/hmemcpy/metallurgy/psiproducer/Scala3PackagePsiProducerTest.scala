@@ -19,7 +19,12 @@ import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParameterizedTypeElement, ScSimpleTypeElement}
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScInfixTypeElement,
+  ScParameterizedTypeElement,
+  ScSimpleTypeElement,
+  ScWildcardTypeElement
+}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportSelector, ScImportStmt}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScTypeDefinition
@@ -39,6 +44,261 @@ import scala.jdk.CollectionConverters.*
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 
 final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
+
+  private def assertQualifiedWildcardAndInfixGivenSelectorsUseNativePhysicalPsi(): Unit =
+    val source            =
+      """import a.b.given scala.math.Ordering.Int
+        |import a.b.given scala.math.Ordering[Int]
+        |import a.b.given F[?]
+        |import a.b.given F[? <: U]
+        |import a.b.given F[? >: L]
+        |import a.b.{c, given F[? >: L <: U], given A | B & C <:< D}
+        |import a.b.given A | B | C
+        |export a.b.given scala.math.Ordering.Int
+        |export a.b.{given scala.math.Ordering[Int]}
+        |export a.b.given F[?]
+        |export a.b.{given F[? <: U]}
+        |export a.b.given F[? >: L]
+        |export a.b.{c, given F[? >: L <: U], given A | B & C <:< D}
+        |export a.b.given A | B | C
+        |""".stripMargin
+    val pending           = myFixture.addFileToProject("src/BoundedGivenTypeCase.scala", source)
+    val expectedTypeTexts = Vector(
+      "scala.math.Ordering.Int",
+      "scala.math.Ordering[Int]",
+      "F[?]",
+      "F[? <: U]",
+      "F[? >: L]",
+      "F[? >: L <: U]",
+      "A | B & C <:< D",
+      "A | B | C"
+    ).flatMap(value => Vector(value, value))
+    val bindings          = NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+    Vector(
+      PsiManager.getInstance(getProject).findFile(pending.getVirtualFile),
+      PsiManager.getInstance(getProject).findFile(pending.getVirtualFile).copy().asInstanceOf[com.intellij.psi.PsiFile]
+    ).foreach: file =>
+      assertEquals(source, file.getText)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      assertEquals(source, PsiTreeUtil.collectElements(file, _.getFirstChild == null).toVector.map(_.getText).mkString)
+      val selectors        = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportSelector]).asScala.toVector
+      val failure          = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertEquals(failure.toString, 18, selectors.size)
+      assertTrue(failure.toString, failure.isEmpty)
+      assertEquals(16, selectors.count(_.isGivenSelector))
+      assertEquals(expectedTypeTexts.sorted, selectors.flatMap(_.givenTypeElement).map(_.getText).sorted)
+      val qualified        = PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScSimpleTypeElement])
+        .asScala
+        .filter(_.getText == "scala.math.Ordering.Int")
+        .toVector
+      assertEquals(2, qualified.size)
+      qualified.foreach: value =>
+        val reference = value.reference.get
+        assertEquals("scala.math.Ordering.Int", reference.getText)
+        assertSame(value, reference.getParent)
+        val nested    = Iterator
+          .iterate(Option(reference))(_.flatMap(_.qualifier))
+          .takeWhile(_.nonEmpty)
+          .flatten
+          .toVector
+        assertEquals(
+          Vector("scala.math.Ordering.Int", "scala.math.Ordering", "scala.math", "scala"),
+          nested.map(_.getText)
+        )
+        nested
+          .sliding(2)
+          .foreach:
+            case Vector(parent, child) => assertSame(parent, child.getParent)
+            case _                     => ()
+      val parameterized    = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterizedTypeElement]).asScala.toVector
+      assertEquals(10, parameterized.size)
+      assertEquals(2, parameterized.count(_.typeElement.getText == "scala.math.Ordering"))
+      parameterized.foreach: value =>
+        assertSame(value, value.typeElement.getParent)
+        assertSame(value, value.typeArgList.getParent)
+        assertEquals(
+          value.typeArgList.typeArgs.toVector,
+          value.typeArgList.getChildren.collect {
+            case argument: org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement => argument
+          }.toVector
+        )
+      val wildcards        = PsiTreeUtil.findChildrenOfType(file, classOf[ScWildcardTypeElement]).asScala.toVector
+      assertEquals(8, wildcards.size)
+      assertEquals(
+        Vector("?", "? <: U", "? >: L", "? >: L <: U").flatMap(value => Vector(value, value)).sorted,
+        wildcards.map(_.getText).sorted
+      )
+      wildcards.foreach: value =>
+        val expectedLower = Option.when(value.getText.contains(">:"))("L")
+        val expectedUpper = Option.when(value.getText.contains("<:"))("U")
+        assertEquals(expectedLower, value.lowerTypeElement.map(_.getText))
+        assertEquals(expectedUpper, value.upperTypeElement.map(_.getText))
+        value.lowerTypeElement.foreach(bound => assertSame(value, bound.getParent))
+        value.upperTypeElement.foreach(bound => assertSame(value, bound.getParent))
+        val question      =
+          PsiTreeUtil.collectElements(value, element => element.getFirstChild == null && element.getText == "?")
+        assertEquals(1, question.length)
+        assertEquals(
+          bindings.elementTypes(NativePsiElementBindings.WildcardQuestionTokenSurface),
+          question.head.getNode.getElementType
+        )
+        Vector(
+          ">:" -> NativePsiElementBindings.LowerTypeBoundTokenSurface,
+          "<:" -> NativePsiElementBindings.UpperTypeBoundTokenSurface
+        )
+          .foreach: (text, surface) =>
+            val tokens =
+              PsiTreeUtil.collectElements(value, element => element.getFirstChild == null && element.getText == text)
+            assertEquals(if value.getText.contains(text) then 1 else 0, tokens.length)
+            tokens.foreach(token => assertEquals(bindings.elementTypes(surface), token.getNode.getElementType))
+      val infixTypes       = PsiTreeUtil.findChildrenOfType(file, classOf[ScInfixTypeElement]).asScala.toVector
+      val outerInfixTypes  = infixTypes.filter(_.getText == "A | B & C <:< D")
+      val associativeTypes = infixTypes.filter(_.getText == "A | B | C")
+      assertEquals(10, infixTypes.size)
+      assertEquals(2, outerInfixTypes.size)
+      outerInfixTypes.foreach: outer =>
+        assertEquals("A", outer.left.getText)
+        assertEquals("|", outer.operation.getText)
+        val intersection = outer.rightOption.get.asInstanceOf[ScInfixTypeElement]
+        assertEquals("B", intersection.left.getText)
+        assertEquals("&", intersection.operation.getText)
+        val evidence     = intersection.rightOption.get.asInstanceOf[ScInfixTypeElement]
+        assertEquals("C", evidence.left.getText)
+        assertEquals("<:<", evidence.operation.getText)
+        assertEquals("D", evidence.rightOption.get.getText)
+        Vector(outer, intersection, evidence).foreach: value =>
+          assertSame(value, value.left.getParent)
+          assertSame(value, value.operation.getParent)
+          assertSame(value, value.rightOption.get.getParent)
+      assertEquals(2, associativeTypes.size)
+      associativeTypes.foreach: outer =>
+        val left = outer.left.asInstanceOf[ScInfixTypeElement]
+        assertEquals("A | B", left.getText)
+        assertEquals("A", left.left.getText)
+        assertEquals("|", left.operation.getText)
+        assertEquals("B", left.rightOption.get.getText)
+        assertEquals("|", outer.operation.getText)
+        assertEquals("C", outer.rightOption.get.getText)
+        assertSame(outer, left.getParent)
+      val composites       =
+        PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector ++
+          PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector ++ selectors ++
+          PsiTreeUtil.findChildrenOfType(file, classOf[ScStableCodeReference]).asScala.toVector ++
+          PsiTreeUtil.findChildrenOfType(file, classOf[ScSimpleTypeElement]).asScala.toVector ++ parameterized ++
+          wildcards ++ infixTypes
+      composites.foreach: element =>
+        assertEquals(
+          element.getText,
+          source.substring(element.getTextRange.getStartOffset, element.getTextRange.getEndOffset)
+        )
+        assertSame(file, element.getContainingFile)
+        assertSame(getProject, element.getProject)
+        assertSame(element, element.getNode.getPsi)
+        assertSame(element, element.getNavigationElement)
+
+      val selectorStubs = file
+        .asInstanceOf[PsiFileImpl]
+        .calcStubTree
+        .getPlainList
+        .asScala
+        .collect { case value: ScImportSelectorStub => value }
+        .toVector
+      val givenStubs    = selectorStubs.filter(_.isGivenSelector)
+      assertEquals(expectedTypeTexts.sorted, givenStubs.flatMap(_.typeText).sorted)
+      val enumerator    = new TestStringEnumerator
+      givenStubs.foreach: stub =>
+        val sink   = new ByteArrayOutputStream
+        val output = new StubOutputStream(sink, enumerator)
+        ScalaElementType.IMPORT_SELECTOR.serialize(stub, output)
+        output.flush()
+        val copy   = ScalaElementType.IMPORT_SELECTOR.deserialize(
+          new StubInputStream(new ByteArrayInputStream(sink.toByteArray), enumerator),
+          new PsiFileStubImpl(null)
+        )
+        assertEquals(stub.typeText, copy.typeText)
+        assertEquals(stub.referenceText, copy.referenceText)
+        assertEquals(stub.isGivenSelector, copy.isGivenSelector)
+
+    val original = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    val prefix   = PsiTreeUtil
+      .findChildrenOfType(original, classOf[ScStableCodeReference])
+      .asScala
+      .find(_.getText == "scala.math")
+      .get
+    val pointer  = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(prefix)
+    val document = FileDocumentManager.getInstance.getDocument(pending.getVirtualFile)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.insertString(source.length, "\n")
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals("scala.math", pointer.getElement.getText)
+    assertSame(pointer.getElement, pointer.getElement.getNavigationElement)
+
+    val editPending  = myFixture.addFileToProject(
+      "src/BoundedGivenTypeEditCase.scala",
+      "import a.b.given scala.math.Ordering.Int\n"
+    )
+    val editDocument = FileDocumentManager.getInstance.getDocument(editPending.getVirtualFile)
+    Vector("F[scala.math.Ordering.Int]", "F[? >: L <: U]", "A | B", "T").foreach: replacement =>
+      WriteCommandAction.runWriteCommandAction(
+        getProject,
+        new Runnable:
+          override def run(): Unit =
+            val start = editDocument.getText.indexOf("given") + "given ".length
+            editDocument.replaceString(start, editDocument.getTextLength - 1, replacement)
+      )
+      PsiDocumentManager.getInstance(getProject).commitDocument(editDocument)
+      val reparsed = PsiManager.getInstance(getProject).findFile(editPending.getVirtualFile)
+      val selector = PsiTreeUtil.findChildOfType(reparsed, classOf[ScImportSelector])
+      assertEquals(replacement, selector.givenTypeElement.get.getText)
+      assertSame(selector, selector.givenTypeElement.get.getParent)
+      assertTrue(PsiTreeUtil.findChildrenOfType(reparsed, classOf[PsiErrorElement]).isEmpty)
+      assertTrue(
+        Scala3SyntaxCapabilityService
+          .get(getProject)
+          .failureFor(editPending.getVirtualFile, ParserSyntaxSnapshot.digest(editDocument.getText))
+          .isEmpty
+      )
+
+  private def assertDeepQualifiedAndInfixGivenSelectorsRemainStackSafe(): Unit =
+    val qualificationDepth = 512
+    val infixDepth         = 512
+    val qualified          = Vector.tabulate(qualificationDepth)(index => s"q$index").mkString(".") + ".T"
+    val infix              = Vector.tabulate(infixDepth + 1)(index => s"T$index").mkString(" | ")
+    val source             = s"import a.b.given $qualified\nexport a.b.given $infix\n"
+    val pending            = myFixture.addFileToProject("src/DeepBoundedGivenTypeCase.scala", source)
+    val file               = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertEquals(source, file.getText)
+    assertEquals(source, PsiTreeUtil.collectElements(file, _.getFirstChild == null).toVector.map(_.getText).mkString)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    assertEquals(
+      Vector(qualified, infix),
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScImportSelector])
+        .asScala
+        .toVector
+        .flatMap(_.givenTypeElement)
+        .map(_.getText)
+    )
+    assertEquals(
+      qualificationDepth + 1,
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScStableCodeReference])
+        .asScala
+        .count(reference => reference.getText.startsWith("q0"))
+    )
+    assertEquals(infixDepth, PsiTreeUtil.findChildrenOfType(file, classOf[ScInfixTypeElement]).size)
+    assertTrue(
+      Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+        .isEmpty
+    )
 
   def testExactAliasAndAppliedGivenImportsUseNativePhysicalPsi(): Unit =
     val source   =
@@ -133,6 +393,8 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
         .flatMap(_.importExprs)
         .map(_.getText)
     )
+    assertQualifiedWildcardAndInfixGivenSelectorsUseNativePhysicalPsi()
+    assertDeepQualifiedAndInfixGivenSelectorsRemainStackSafe()
 
   def testSyntaxCapabilityFailureLifecycleUsesExistingStatusTopic(): Unit =
     val pending        = myFixture.addFileToProject("src/CapabilityStatusCase.scala", "import a.b\n")
@@ -443,6 +705,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     )
 
     assertUnsupportedExportsFailClosedWithoutPartialPersistence()
+    assertUnsupportedGivenTypesFailClosedWithoutPartialPersistence()
     val document = FileDocumentManager.getInstance.getDocument(pending.getVirtualFile)
     WriteCommandAction.runWriteCommandAction(
       getProject,
@@ -647,7 +910,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       "extension (value: Int)\n  export scala.Predef.identity\n",
       "package bodycase { export scala.Predef.identity }\n",
       "package layoutcase:\n  export scala.Predef.identity\n",
-      "export scala.Predef.{given A & B}\n"
+      "export scala.Predef.{given (A, B)}\n"
     )
     sources.zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/UnsupportedExportCase$index.scala", source)
@@ -660,6 +923,32 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
         .get(getProject)
         .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
       assertTrue(failure.toString, failure.nonEmpty)
+
+  private def assertUnsupportedGivenTypesFailClosedWithoutPartialPersistence(): Unit =
+    val types   = Vector(
+      "?",
+      "(A, B)",
+      "A => B",
+      "A match { case _ => B }",
+      "A { type X }",
+      "A @ann",
+      "a.type",
+      "(x: A) => x.B",
+      "new A"
+    )
+    val sources = types.flatMap(bound => Vector(s"import a.b.given $bound\n", s"export a.b.{given $bound}\n"))
+    sources.zipWithIndex.foreach: (source, index) =>
+      val pending = myFixture.addFileToProject(s"src/UnsupportedGivenTypeCase$index.scala", source)
+      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      assertEquals(source, file.getText)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).isEmpty)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).isEmpty)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      assertTrue(file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
+      val failure = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertTrue(s"$source: $failure", failure.nonEmpty)
 
   def testReadyPhysicalPackageUsesNativePsiAndReparsesAndStubs(): Unit =
     val source     = "package example.syntax\n"

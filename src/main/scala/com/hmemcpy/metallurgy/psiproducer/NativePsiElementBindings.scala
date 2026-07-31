@@ -10,11 +10,16 @@ import com.intellij.psi.tree.IElementType
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.Scala3Language
-import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
+import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScParameterizedTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScInfixTypeElement,
+  ScParameterizedTypeElement,
+  ScSimpleTypeElement,
+  ScWildcardTypeElement
+}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
 import org.jetbrains.plugins.scala.lang.psi.stubs.{
@@ -106,6 +111,10 @@ private[metallurgy] object NativePsiElementBindings:
   val ImportAliasArrowTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasArrow"
   val TypeArgumentLeftTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLSQBRACKET"
   val TypeArgumentRightTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRSQBRACKET"
+  val WildcardQuestionTokenSurface     =
+    "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardTypeQuestionMark"
+  val LowerTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
+  val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
 
   def probe(project: Project): Either[String, NativePsiElementBindings] =
     if ApplicationManager.getApplication.isReadAccessAllowed then probeInReadAction(project)
@@ -127,6 +136,9 @@ private[metallurgy] object NativePsiElementBindings:
           |import alpha.beta.{Original as Renamed, given Bound, *}
           |import alpha.beta.{Original => Renamed}
           |import alpha.beta.given Ordering[Int]
+          |import alpha.beta.given alpha.gamma.Bound
+          |import alpha.beta.given alpha.gamma.Box[? >: Lower <: Upper]
+          |import alpha.beta.given Left | Middle & Right
           |import alpha.beta.`back-tick`
           |import alpha.beta._
           |export alpha.beta.{Original as Exported, given Bound, *}
@@ -166,6 +178,28 @@ private[metallurgy] object NativePsiElementBindings:
     val givenReference        = Option(givenType)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScStableCodeReference])))
       .orNull
+    val qualifiedType         = selectors
+      .flatMap(_.givenTypeElement)
+      .collectFirst { case value: ScSimpleTypeElement if value.getText == "alpha.gamma.Bound" => value }
+      .orNull
+    val qualifiedReference    = Option(qualifiedType).flatMap(_.reference).orNull
+    val qualifiedQualifier    = Option(qualifiedReference).flatMap(_.qualifier).orNull
+    val wildcardType          = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
+    val wildcardLower         = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
+    val wildcardUpper         = Option(wildcardType).flatMap(_.upperTypeElement).orNull
+    val wildcardQuestion      = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
+    val lowerBoundToken       = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
+    val upperBoundToken       = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
+    val infixType             = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScInfixTypeElement])
+      .asScala
+      .find(_.getText == "Left | Middle & Right")
+      .orNull
+    val nestedInfixType       =
+      Option(infixType).flatMap(_.rightOption).collect { case value: ScInfixTypeElement => value }.orNull
+    val infixLeft             = Option(infixType).map(_.left).orNull
+    val infixRight            = Option(infixType).flatMap(_.rightOption).orNull
+    val infixOperation        = Option(infixType).map(_.operation).orNull
     val integerLiteral        = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
     val manager               = PsiManager.getInstance(project)
     val persistenceFailure    = probePersistence(file).left.toOption
@@ -180,11 +214,22 @@ private[metallurgy] object NativePsiElementBindings:
         typeArguments,
         parameterizedBase,
         parameterizedArgs.headOption.orNull,
+        qualifiedType,
+        qualifiedReference,
+        qualifiedQualifier,
+        wildcardType,
+        wildcardLower,
+        wildcardUpper,
+        infixType,
+        nestedInfixType,
+        infixLeft,
+        infixRight,
+        infixOperation,
         integerLiteral
       ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors
     if packaging == null || reference == null || qualifier == null then Left("native package PSI probe is incomplete")
-    else if statements.size != 7 || expressions.size != 7 || selectorSets.size != 3 || selectors.size != 5 then
+    else if statements.size != 10 || expressions.size != 10 || selectorSets.size != 6 || selectors.size != 8 then
       Left("native import PSI probe is incomplete")
     else if exportStatements.size != 1 || exportExpressions.map(_.getText) !=
         Vector("alpha.beta.{Original as Exported, given Bound, *}") || exportSelectorSets.size != 1 ||
@@ -200,6 +245,9 @@ private[metallurgy] object NativePsiElementBindings:
         "alpha.beta.{Original as Renamed, given Bound, *}",
         "alpha.beta.{Original => Renamed}",
         "alpha.beta.given Ordering[Int]",
+        "alpha.beta.given alpha.gamma.Bound",
+        "alpha.beta.given alpha.gamma.Box[? >: Lower <: Upper]",
+        "alpha.beta.given Left | Middle & Right",
         "alpha.beta.`back-tick`",
         "alpha.beta._"
       ) || expressions.head.reference.forall(_.getText != "alpha.beta.Member") ||
@@ -209,8 +257,8 @@ private[metallurgy] object NativePsiElementBindings:
       expressions(1).wildcardElement.forall(_.getText != "*") || expressions(1).selectorSet.nonEmpty ||
       expressions(2).qualifier.forall(_.getText != "alpha.beta") || !expressions(2).hasWildcardSelector ||
       !expressions(2).hasGivenSelector || !expressions(4).hasGivenSelector ||
-      expressions(5).reference.forall(_.refName != "`back-tick`") ||
-      !expressions(6).hasWildcardSelector || expressions(6).wildcardElement.forall(_.getText != "_")
+      expressions(8).reference.forall(_.refName != "`back-tick`") ||
+      !expressions(9).hasWildcardSelector || expressions(9).wildcardElement.forall(_.getText != "_")
     then Left("native import expression accessors are inconsistent")
     else if aliasSelectors.size != 2 || aliasSelectors.exists(_.importedName != Some("Renamed")) ||
       aliasSelectors.exists(_.aliasName != Some("Renamed")) ||
@@ -238,6 +286,28 @@ private[metallurgy] object NativePsiElementBindings:
       parameterizedBase.getParent != parameterizedType || typeArguments.getParent != parameterizedType ||
       parameterizedArgs.exists(_.getParent != typeArguments)
     then Left("native parameterized given import type PSI is inconsistent")
+    else if qualifiedType == null || qualifiedReference == null || qualifiedQualifier == null ||
+      qualifiedReference.getText != "alpha.gamma.Bound" || qualifiedReference.refName != "Bound" ||
+      qualifiedQualifier.getText != "alpha.gamma" || qualifiedType.getParent == null ||
+      qualifiedReference.getParent != qualifiedType || qualifiedQualifier.getParent != qualifiedReference
+    then Left("native qualified given type PSI is inconsistent")
+    else if wildcardType == null || wildcardLower == null || wildcardUpper == null || wildcardQuestion == null ||
+      lowerBoundToken == null || upperBoundToken == null || wildcardType.getText != "? >: Lower <: Upper" ||
+      wildcardLower.getText != "Lower" || wildcardUpper.getText != "Upper" ||
+      wildcardLower.getParent != wildcardType || wildcardUpper.getParent != wildcardType ||
+      wildcardQuestion.getParent != wildcardType || lowerBoundToken.getParent != wildcardType ||
+      upperBoundToken.getParent != wildcardType ||
+      wildcardQuestion.getNode.getElementType != ScalaTokenType.WildcardTypeQuestionMark ||
+      lowerBoundToken.getNode.getElementType != ScalaTokenTypes.tLOWER_BOUND ||
+      upperBoundToken.getNode.getElementType != ScalaTokenTypes.tUPPER_BOUND
+    then Left("native wildcard given type PSI is inconsistent")
+    else if infixType == null || nestedInfixType == null || infixLeft == null || infixRight == null ||
+      infixOperation == null || infixLeft.getText != "Left" || infixOperation.getText != "|" ||
+      infixRight.getText != "Middle & Right" || nestedInfixType.left.getText != "Middle" ||
+      nestedInfixType.operation.getText != "&" || nestedInfixType.rightOption.forall(_.getText != "Right") ||
+      infixLeft.getParent != infixType || infixRight.getParent != infixType || infixOperation.getParent != infixType ||
+      nestedInfixType.getParent != infixType
+    then Left("native infix given type PSI is inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
     else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null then
@@ -287,7 +357,10 @@ private[metallurgy] object NativePsiElementBindings:
               (ImportAliasAsTokenSurface                                                       -> aliasAsElement.getNode.getElementType) +
               (ImportAliasArrowTokenSurface                                                    -> aliasArrowElement.getNode.getElementType) +
               (TypeArgumentLeftTokenSurface                                                    -> leftTypeBracket.getNode.getElementType) +
-              (TypeArgumentRightTokenSurface                                                   -> rightTypeBracket.getNode.getElementType),
+              (TypeArgumentRightTokenSurface                                                   -> rightTypeBracket.getNode.getElementType) +
+              (WildcardQuestionTokenSurface                                                    -> wildcardQuestion.getNode.getElementType) +
+              (LowerTypeBoundTokenSurface                                                      -> lowerBoundToken.getNode.getElementType) +
+              (UpperTypeBoundTokenSurface                                                      -> upperBoundToken.getNode.getElementType),
             Map(
               PsiOutputRoleId.PackageStatement  -> packaging.getNode.getElementType,
               PsiOutputRoleId.ImportStatement   -> statements.head.getNode.getElementType,
@@ -299,6 +372,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.SimpleType        -> givenType.getNode.getElementType,
               PsiOutputRoleId.ParameterizedType -> parameterizedType.getNode.getElementType,
               PsiOutputRoleId.TypeArguments     -> typeArguments.getNode.getElementType,
+              PsiOutputRoleId.WildcardType      -> wildcardType.getNode.getElementType,
+              PsiOutputRoleId.InfixType         -> infixType.getNode.getElementType,
               PsiOutputRoleId.IntegerLiteral    -> integerLiteral.getNode.getElementType
             ),
             Map(
@@ -312,6 +387,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.SimpleType        -> surfaceId(givenType.getClass),
               PsiOutputRoleId.ParameterizedType -> surfaceId(parameterizedType.getClass),
               PsiOutputRoleId.TypeArguments     -> surfaceId(typeArguments.getClass),
+              PsiOutputRoleId.WildcardType      -> surfaceId(wildcardType.getClass),
+              PsiOutputRoleId.InfixType         -> surfaceId(infixType.getClass),
               PsiOutputRoleId.IntegerLiteral    -> surfaceId(integerLiteral.getClass)
             ),
             Vector(
@@ -346,6 +423,30 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native Scala 2 import alias token")
+              ),
+              ScalaPsiSurfaceRow(
+                WildcardQuestionTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native wildcard type token")
+              ),
+              ScalaPsiSurfaceRow(
+                LowerTypeBoundTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native lower type-bound token")
+              ),
+              ScalaPsiSurfaceRow(
+                UpperTypeBoundTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native upper type-bound token")
               ),
               ScalaPsiSurfaceRow(
                 ImportPersistenceSurfaces.AliasedImportIndex,

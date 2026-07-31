@@ -175,6 +175,12 @@ private[metallurgy] enum ContextPattern:
   case Any
   case Root
   case Parent(ownerKind: InventoryKind, ownerPrefix: String, path: Vector[CatalogPathSegment])
+  case ParentUnderAnchor(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      anchor: InventoryAncestor
+  )
   case ParentWithAncestor(
       ownerKind: InventoryKind,
       ownerPrefix: String,
@@ -1075,6 +1081,8 @@ private[metallurgy] object GrammarRoleId:
   val ImportSelectorName = GrammarRoleId("scala.import.selector-name")
   val SimpleType         = GrammarRoleId("scala.type.simple")
   val AppliedType        = GrammarRoleId("scala.type.applied")
+  val WildcardType       = GrammarRoleId("scala.type.wildcard")
+  val InfixType          = GrammarRoleId("scala.type.infix")
   val IntegerLiteral     = GrammarRoleId("scala.literal.integer")
 private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
@@ -1170,6 +1178,8 @@ private[metallurgy] object PsiOutputRoleId:
   val SimpleType        = PsiOutputRoleId("scala.type.simple")
   val ParameterizedType = PsiOutputRoleId("scala.type.parameterized")
   val TypeArguments     = PsiOutputRoleId("scala.type.arguments")
+  val WildcardType      = PsiOutputRoleId("scala.type.wildcard")
+  val InfixType         = PsiOutputRoleId("scala.type.infix")
   val IntegerLiteral    = PsiOutputRoleId("scala.literal.integer")
 private[metallurgy] final case class StableRoleInventory(
     grammarRoles: Set[GrammarRoleId],
@@ -1190,6 +1200,8 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.ImportSelectorName,
       GrammarRoleId.SimpleType,
       GrammarRoleId.AppliedType,
+      GrammarRoleId.WildcardType,
+      GrammarRoleId.InfixType,
       GrammarRoleId.IntegerLiteral
     ),
     Set(
@@ -1204,6 +1216,8 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.SimpleType,
       PsiOutputRoleId.ParameterizedType,
       PsiOutputRoleId.TypeArguments,
+      PsiOutputRoleId.WildcardType,
+      PsiOutputRoleId.InfixType,
       PsiOutputRoleId.IntegerLiteral
     )
   )
@@ -1341,6 +1355,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
   private val TypeArgumentsSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeArgsImpl"
+  private val WildcardTypeSurface      =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScWildcardTypeElementImpl"
+  private val InfixTypeSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScInfixTypeElementImpl"
 
   private def outputComposite(
       id: String,
@@ -1348,7 +1366,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       range: OutputRangeDeclaration,
       role: PsiOutputRoleId,
       surface: String,
-      accessors: Vector[AccessorObligation] = Vector.empty
+      accessors: Vector[AccessorObligation]
   ): OutputCompositeDeclaration =
     val persistence = role match
       case PsiOutputRoleId.PackageStatement  =>
@@ -1454,6 +1472,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
+  private val SimpleTypeAccessors        = Vector(
+    AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true)
+  )
   private val ParameterizedTypeAccessors = Vector(
     AccessorObligation(
       s"$ParameterizedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
@@ -1467,6 +1488,135 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   private val TypeArgumentsAccessors     = Vector(
     AccessorObligation(s"$TypeArgumentsSurface#typeArgs()Lscala/collection/immutable/Seq;", required = true)
   )
+  private val WildcardTypeAccessors      = Vector(
+    AccessorObligation(s"$WildcardTypeSurface#lowerTypeElement()Lscala/Option;", required = true),
+    AccessorObligation(s"$WildcardTypeSurface#upperTypeElement()Lscala/Option;", required = true)
+  )
+  private val InfixTypeAccessors         = Vector(
+    AccessorObligation(
+      s"$InfixTypeSurface#left()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(s"$InfixTypeSurface#rightOption()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$InfixTypeSurface#operation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference;",
+      required = true
+    )
+  )
+
+  private val GivenSelectorBoundAnchor        = InventoryAncestor(
+    InventoryKind.Node,
+    "ImportSelector",
+    Vector(CatalogPathSegment.NamedField("bound"))
+  )
+  private val GivenTypeProductionIds          = Set(
+    "import-selector-bound-type",
+    "import-selector-bound-applied-type",
+    "import-selector-given-bound-qualified-type",
+    "import-selector-given-bound-wildcard-type",
+    "import-selector-given-bound-infix-type"
+  )
+  private val GivenTypeQualifierProductionIds = Set(
+    "import-selector-given-bound-qualifier-ident",
+    "import-selector-given-bound-qualifier-select"
+  )
+
+  private def givenTypeOccurrences: Vector[CompilerProductionContextPattern] =
+    val direct = CompilerProductionContextPattern(
+      ContextPattern.Parent(
+        InventoryKind.Node,
+        "ImportSelector",
+        Vector(CatalogPathSegment.NamedField("bound"))
+      ),
+      SourceClassification.SourceReachable
+    )
+    val nested = Vector(
+      "AppliedTypeTree" -> Vector(CatalogPathSegment.NamedField("tpt")),
+      "AppliedTypeTree" -> Vector(
+        CatalogPathSegment.NamedField("args"),
+        CatalogPathSegment.RepeatedElement
+      ),
+      "InfixOp"         -> Vector(CatalogPathSegment.NamedField("left")),
+      "InfixOp"         -> Vector(CatalogPathSegment.NamedField("right")),
+      "TypeBoundsTree"  -> Vector(CatalogPathSegment.NamedField("lo")),
+      "TypeBoundsTree"  -> Vector(CatalogPathSegment.NamedField("hi"))
+    ).map: (owner, path) =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentUnderAnchor(InventoryKind.Node, owner, path, GivenSelectorBoundAnchor),
+        SourceClassification.SourceReachable
+      )
+    direct +: nested
+
+  private def givenTypeQualifierOccurrence(owner: String): Vector[CompilerProductionContextPattern] =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.ParentUnderAnchor(
+          InventoryKind.Node,
+          owner,
+          Vector(CatalogPathSegment.NamedField("qualifier")),
+          GivenSelectorBoundAnchor
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
+
+  private def typeElementTemplate(
+      outputRole: PsiOutputRoleId,
+      surface: String,
+      accessors: Vector[AccessorObligation],
+      childRoles: String*
+  ): LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "type",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          outputRole,
+          surface,
+          accessors
+        )
+      ),
+      childRoles.map(_ -> Some("type")).toMap
+    )
+
+  private def qualifiedTypeTemplate: LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "type",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.SimpleType,
+          SimpleTypeSurface,
+          SimpleTypeAccessors
+        ),
+        outputComposite(
+          "reference",
+          Some("type"),
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.StableReference,
+          StableReferenceSurface,
+          StableReferenceAccessors
+        )
+      ),
+      Map("qualifier" -> Some("reference"))
+    )
+
+  private def stableReferenceTemplate(childRoles: String*): LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "reference",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.StableReference,
+          StableReferenceSurface,
+          StableReferenceAccessors
+        )
+      ),
+      childRoles.map(_ -> Some("reference")).toMap
+    )
 
   private def transparentTemplate(childRoles: String*): LocalOutputCompositeTemplate =
     LocalOutputCompositeTemplate(Vector.empty, childRoles.map(_ -> None).toMap)
@@ -2298,7 +2448,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "bound",
             ChildCardinality.ExactlyOne,
             "import-selector-bound-type",
-            Set("import-selector-bound-applied-type", "import-selector-absent")
+            (GivenTypeProductionIds - "import-selector-bound-type") + "import-selector-absent"
           )
         ),
         terminals = Vector(
@@ -2417,7 +2567,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "bound",
             ChildCardinality.ExactlyOne,
             "import-selector-bound-type",
-            Set("import-selector-bound-applied-type", "import-selector-absent")
+            (GivenTypeProductionIds - "import-selector-bound-type") + "import-selector-absent"
           )
         ),
         terminals = Vector(
@@ -2724,16 +2874,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
             )
           ),
-          Vector(
-            CompilerProductionContextPattern(
-              ContextPattern.Parent(
-                InventoryKind.Node,
-                "ImportSelector",
-                Vector(CatalogPathSegment.NamedField("bound"))
-              ),
-              SourceClassification.SourceReachable
-            )
-          )
+          givenTypeOccurrences
         ),
         dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
         children = Vector.empty,
@@ -2750,7 +2891,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         recovery = RecoveryPolicy.Reject,
         targetSurfaceId = SimpleTypeSurface,
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector.empty,
+        accessors = SimpleTypeAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
         outputRoleId = None,
@@ -2762,7 +2903,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 None,
                 OutputRangeDeclaration.CompilerPosition,
                 PsiOutputRoleId.SimpleType,
-                SimpleTypeSurface
+                SimpleTypeSurface,
+                SimpleTypeAccessors
               ),
               outputComposite(
                 "reference",
@@ -2787,21 +2929,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             CompilerFieldPattern("tpt", CatalogValuePattern.Node),
             CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
           ),
-          Vector(
-            CompilerProductionContextPattern(
-              ContextPattern
-                .Parent(InventoryKind.Node, "ImportSelector", Vector(CatalogPathSegment.NamedField("bound"))),
-              SourceClassification.SourceReachable
-            ),
-            CompilerProductionContextPattern(
-              ContextPattern.Parent(
-                InventoryKind.Node,
-                "AppliedTypeTree",
-                Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
-              ),
-              SourceClassification.SourceReachable
-            )
-          )
+          givenTypeOccurrences
         ),
         dispositions = Vector(
           FieldDisposition("tpt", FieldDispositionKind.Child),
@@ -2812,14 +2940,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "constructor",
             "tpt",
             ChildCardinality.ExactlyOne,
-            "import-selector-bound-applied-constructor"
+            "import-selector-bound-type",
+            GivenTypeProductionIds - "import-selector-bound-type"
           ),
           ChildDeclaration(
             "arguments",
             "args",
             ChildCardinality.Repeated(1, None),
-            "import-selector-bound-applied-argument",
-            Set("import-selector-bound-applied-type")
+            "import-selector-bound-type",
+            GivenTypeProductionIds - "import-selector-bound-type"
           )
         ),
         terminals = Vector(
@@ -2868,25 +2997,33 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         )
       ),
       Scala3PsiProduction(
-        id = "import-selector-bound-applied-constructor",
+        id = "import-selector-given-bound-qualified-type",
         grammarRoleId = GrammarRoleId.SimpleType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
-          "Ident",
-          Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+          "Select",
           Vector(
-            CompilerProductionContextPattern(
-              ContextPattern
-                .Parent(InventoryKind.Node, "AppliedTypeTree", Vector(CatalogPathSegment.NamedField("tpt"))),
-              SourceClassification.SourceReachable
-            )
+            CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+            CompilerFieldPattern("name", CatalogValuePattern.Name)
+          ),
+          givenTypeOccurrences
+        ),
+        dispositions = Vector(
+          FieldDisposition("qualifier", FieldDispositionKind.Child),
+          FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "qualifier",
+            "qualifier",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-qualifier-ident",
+            GivenTypeQualifierProductionIds - "import-selector-given-bound-qualifier-ident"
           )
         ),
-        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
-        children = Vector.empty,
         terminals = Vector(
           TerminalDeclaration(
-            "type-name",
+            "qualified-type-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
             OccurrenceCardinality.ExactlyOne,
@@ -2897,46 +3034,298 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         recovery = RecoveryPolicy.Reject,
         targetSurfaceId = SimpleTypeSurface,
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector.empty,
+        accessors = SimpleTypeAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
+        outputTemplate = Some(qualifiedTypeTemplate)
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-given-bound-qualifier-ident",
+        grammarRoleId = GrammarRoleId.StableReference,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Ident",
+          Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+          givenTypeQualifierOccurrence("Select")
+        ),
+        dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+        children = Vector.empty,
+        terminals = Vector(
+          TerminalDeclaration(
+            "reference-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
+        outputTemplate = Some(stableReferenceTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-given-bound-qualifier-select",
+        grammarRoleId = GrammarRoleId.StableReference,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Select",
+          Vector(
+            CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+            CompilerFieldPattern("name", CatalogValuePattern.Name)
+          ),
+          givenTypeQualifierOccurrence("Select")
+        ),
+        dispositions = Vector(
+          FieldDisposition("qualifier", FieldDispositionKind.Child),
+          FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "qualifier",
+            "qualifier",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-qualifier-ident",
+            GivenTypeQualifierProductionIds - "import-selector-given-bound-qualifier-ident"
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "reference-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = StableReferenceSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = StableReferenceAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
+        outputTemplate = Some(stableReferenceTemplate("qualifier"))
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-given-bound-wildcard-type",
+        grammarRoleId = GrammarRoleId.WildcardType,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "TypeBoundsTree",
+          Vector(
+            CompilerFieldPattern("lo", CatalogValuePattern.Node),
+            CompilerFieldPattern("hi", CatalogValuePattern.Node),
+            CompilerFieldPattern("alias", CatalogValuePattern.Node)
+          ),
+          Vector(
+            CompilerProductionContextPattern(
+              ContextPattern.ParentUnderAnchor(
+                InventoryKind.Node,
+                "AppliedTypeTree",
+                Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+                GivenSelectorBoundAnchor
+              ),
+              SourceClassification.SourceReachable
+            )
+          )
+        ),
+        dispositions = Vector(
+          FieldDisposition("lo", FieldDispositionKind.Child),
+          FieldDisposition("hi", FieldDispositionKind.Child),
+          FieldDisposition("alias", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "lower-bound",
+            "lo",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-absent",
+            GivenTypeProductionIds
+          ),
+          ChildDeclaration(
+            "upper-bound",
+            "hi",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-absent",
+            GivenTypeProductionIds
+          ),
+          ChildDeclaration(
+            "alias",
+            "alias",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-absent"
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "wildcard-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          ),
+          TerminalDeclaration(
+            "question-mark",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.WildcardQuestionTokenSurface, Some("?")),
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          ),
+          TerminalDeclaration(
+            "lower-bound-token",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.LowerTypeBoundTokenSurface, Some(">:")),
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
+          ),
+          TerminalDeclaration(
+            "upper-bound-token",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Token(NativePsiElementBindings.UpperTypeBoundTokenSurface, Some("<:")),
+            OccurrenceCardinality.Optional,
+            PsiOutputRoleId.SourceTerminal
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = WildcardTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = WildcardTypeAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
         outputRoleId = None,
         outputTemplate = Some(
-          LocalOutputCompositeTemplate(
-            Vector(
-              outputComposite(
-                "type",
-                None,
-                OutputRangeDeclaration.CompilerPosition,
-                PsiOutputRoleId.SimpleType,
-                SimpleTypeSurface
-              ),
-              outputComposite(
-                "reference",
-                Some("type"),
-                OutputRangeDeclaration.CompilerPosition,
-                PsiOutputRoleId.StableReference,
-                StableReferenceSurface,
-                StableReferenceAccessors
-              )
-            ),
-            Map.empty
+          typeElementTemplate(
+            PsiOutputRoleId.WildcardType,
+            WildcardTypeSurface,
+            WildcardTypeAccessors,
+            "lower-bound",
+            "upper-bound",
+            "alias"
           )
         )
       ),
       Scala3PsiProduction(
-        id = "import-selector-bound-applied-argument",
-        grammarRoleId = GrammarRoleId.SimpleType,
+        id = "import-selector-given-bound-absent",
+        grammarRoleId = GrammarRoleId.AbsentProduct,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "Thicket",
+          Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
+          Vector("lo", "hi", "alias").map: field =>
+            CompilerProductionContextPattern(
+              ContextPattern.ParentUnderAnchor(
+                InventoryKind.Node,
+                "TypeBoundsTree",
+                Vector(CatalogPathSegment.NamedField(field)),
+                GivenSelectorBoundAnchor
+              ),
+              SourceClassification.Absent
+            )
+        ),
+        dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Synthetic)),
+        children = Vector.empty,
+        terminals = Vector.empty,
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = WildcardTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = WildcardTypeAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
+        outputTemplate = Some(transparentTemplate())
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-given-bound-infix-type",
+        grammarRoleId = GrammarRoleId.InfixType,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Node,
+          "InfixOp",
+          Vector(
+            CompilerFieldPattern("left", CatalogValuePattern.Node),
+            CompilerFieldPattern("op", CatalogValuePattern.Node),
+            CompilerFieldPattern("right", CatalogValuePattern.Node)
+          ),
+          givenTypeOccurrences
+        ),
+        dispositions = Vector(
+          FieldDisposition("left", FieldDispositionKind.Child),
+          FieldDisposition("op", FieldDispositionKind.Child),
+          FieldDisposition("right", FieldDispositionKind.Child)
+        ),
+        children = Vector(
+          ChildDeclaration(
+            "left",
+            "left",
+            ChildCardinality.ExactlyOne,
+            "import-selector-bound-type",
+            GivenTypeProductionIds - "import-selector-bound-type"
+          ),
+          ChildDeclaration(
+            "operator",
+            "op",
+            ChildCardinality.ExactlyOne,
+            "import-selector-given-bound-infix-operator"
+          ),
+          ChildDeclaration(
+            "right",
+            "right",
+            ChildCardinality.ExactlyOne,
+            "import-selector-bound-type",
+            GivenTypeProductionIds - "import-selector-bound-type"
+          )
+        ),
+        terminals = Vector(
+          TerminalDeclaration(
+            "infix-type-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          )
+        ),
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = InfixTypeSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = InfixTypeAccessors,
+        persistence = PersistenceObligations.NotApplicable,
+        navigation = Some(NavigationObligation.Self),
+        outputRoleId = None,
+        outputTemplate = Some(
+          typeElementTemplate(
+            PsiOutputRoleId.InfixType,
+            InfixTypeSurface,
+            InfixTypeAccessors,
+            "left",
+            "operator",
+            "right"
+          )
+        )
+      ),
+      Scala3PsiProduction(
+        id = "import-selector-given-bound-infix-operator",
+        grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
           Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
           Vector(
             CompilerProductionContextPattern(
-              ContextPattern.Parent(
+              ContextPattern.ParentUnderAnchor(
                 InventoryKind.Node,
-                "AppliedTypeTree",
-                Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+                "InfixOp",
+                Vector(CatalogPathSegment.NamedField("op")),
+                GivenSelectorBoundAnchor
               ),
               SourceClassification.SourceReachable
             )
@@ -2946,7 +3335,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         children = Vector.empty,
         terminals = Vector(
           TerminalDeclaration(
-            "type-name",
+            "operator-text",
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
             OccurrenceCardinality.ExactlyOne,
@@ -2955,34 +3344,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         ),
         layouts = Vector(LayoutAlternative.None),
         recovery = RecoveryPolicy.Reject,
-        targetSurfaceId = SimpleTypeSurface,
+        targetSurfaceId = StableReferenceSurface,
         targetRequirement = TargetRequirement.Native,
-        accessors = Vector.empty,
+        accessors = StableReferenceAccessors,
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
         outputRoleId = None,
-        outputTemplate = Some(
-          LocalOutputCompositeTemplate(
-            Vector(
-              outputComposite(
-                "type",
-                None,
-                OutputRangeDeclaration.CompilerPosition,
-                PsiOutputRoleId.SimpleType,
-                SimpleTypeSurface
-              ),
-              outputComposite(
-                "reference",
-                Some("type"),
-                OutputRangeDeclaration.CompilerPosition,
-                PsiOutputRoleId.StableReference,
-                StableReferenceSurface,
-                StableReferenceAccessors
-              )
-            ),
-            Map.empty
-          )
-        )
+        outputTemplate = Some(stableReferenceTemplate())
       ),
       Scala3PsiProduction(
         id = "import-selector-absent",
@@ -3590,6 +3958,10 @@ private[metallurgy] object CatalogShapeMatcher:
     case ContextPattern.Root                                                                 => context.isEmpty
     case ContextPattern.Parent(kind, owner, p)                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
+    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                            =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
+      )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
@@ -3613,6 +3985,10 @@ private[metallurgy] object CatalogShapeMatcher:
     case ContextPattern.Root                                                                 => context.isEmpty
     case ContextPattern.Parent(kind, owner, p)                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
+    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                            =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
+      )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(

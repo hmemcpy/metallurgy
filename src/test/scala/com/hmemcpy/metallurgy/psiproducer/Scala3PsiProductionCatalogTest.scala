@@ -296,6 +296,117 @@ final class Scala3PsiProductionCatalogTest:
       assertFalse(CatalogShapeMatcher.contextMatches(anchored, candidate))
       assertFalse(CatalogShapeMatcher.aggregateContextMatches(anchored, candidate))
 
+  @Test def parentContextMatchesMixedTypeLineageOnlyUnderItsSelectorAnchor(): Unit =
+    val anchor     = InventoryAncestor(
+      InventoryKind.Node,
+      "ImportSelector",
+      Vector(CatalogPathSegment.NamedField("bound"))
+    )
+    val applied    = InventoryAncestor(
+      InventoryKind.Node,
+      "AppliedTypeTree",
+      Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    )
+    val infix      = InventoryAncestor(
+      InventoryKind.Node,
+      "InfixOp",
+      Vector(CatalogPathSegment.NamedField("right"))
+    )
+    val descendant = Some(
+      InventoryContext(
+        InventoryKind.Node,
+        "TypeBoundsTree",
+        Vector(CatalogPathSegment.NamedField("hi")),
+        Vector(infix, applied, anchor)
+      )
+    )
+    val deep       = Some(
+      InventoryContext(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("right")),
+        Vector.fill(10000)(infix) :+ applied :+ anchor
+      )
+    )
+    val parent     = ContextPattern.ParentUnderAnchor(
+      InventoryKind.Node,
+      "TypeBoundsTree",
+      Vector(CatalogPathSegment.NamedField("hi")),
+      anchor
+    )
+    assertTrue(CatalogShapeMatcher.contextMatches(parent, descendant))
+    assertTrue(CatalogShapeMatcher.aggregateContextMatches(parent, descendant))
+    val deepParent = ContextPattern.ParentUnderAnchor(
+      InventoryKind.Node,
+      "InfixOp",
+      Vector(CatalogPathSegment.NamedField("right")),
+      anchor
+    )
+    assertTrue(CatalogShapeMatcher.contextMatches(deepParent, deep))
+    assertTrue(CatalogShapeMatcher.aggregateContextMatches(deepParent, deep))
+    Vector(
+      None,
+      Some(
+        InventoryContext(
+          InventoryKind.Node,
+          "TypeBoundsTree",
+          Vector(CatalogPathSegment.NamedField("hi")),
+          Vector(infix, applied)
+        )
+      ),
+      Some(
+        InventoryContext(
+          InventoryKind.Node,
+          "TypeBoundsTree",
+          Vector(CatalogPathSegment.NamedField("lo")),
+          Vector(infix, applied, anchor)
+        )
+      )
+    ).foreach: context =>
+      assertFalse(CatalogShapeMatcher.contextMatches(parent, context))
+      assertFalse(CatalogShapeMatcher.aggregateContextMatches(parent, context))
+
+    val boundsFields                                        = Vector(
+      InventoryFieldObservation("lo", InventoryValueObservation.Node(1L, "Thicket")),
+      InventoryFieldObservation("hi", InventoryValueObservation.Node(2L, "Ident")),
+      InventoryFieldObservation("alias", InventoryValueObservation.Node(1L, "Thicket"))
+    )
+    def selected(context: InventoryContext): Vector[String] = CatalogShapeMatcher
+      .select(
+        Scala3PsiProductionCatalog.Reviewed,
+        InventoryKind.Node,
+        "TypeBoundsTree",
+        boundsFields,
+        Some(context),
+        SourceClassification.SourceReachable
+      )
+      .map(_.id)
+    assertEquals(
+      Vector("import-selector-given-bound-wildcard-type"),
+      selected(
+        InventoryContext(
+          InventoryKind.Node,
+          "AppliedTypeTree",
+          Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+          Vector(anchor)
+        )
+      )
+    )
+    Vector(
+      InventoryContext(InventoryKind.Node, "ImportSelector", Vector(CatalogPathSegment.NamedField("bound"))),
+      InventoryContext(
+        InventoryKind.Node,
+        "AppliedTypeTree",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+      ),
+      InventoryContext(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("right")),
+        Vector(anchor)
+      )
+    ).foreach(context => assertTrue(selected(context).isEmpty))
+
   @Test def inventoryLineageResolutionIsOrderedIterativeAndFailClosed(): Unit =
     val position                                                                        = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
     val child                                                                           = Vector(ParserFieldPathSegment.NamedField("child"))
@@ -537,14 +648,21 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.PackageReference   -> Set("file-import-empty-package"),
       GrammarRoleId.ImportStatement    -> Set("import-statement"),
       GrammarRoleId.ExportStatement    -> Set("export-statement"),
-      GrammarRoleId.AbsentProduct      -> Set("import-expression-absent", "import-selector-absent"),
+      GrammarRoleId.AbsentProduct      -> Set(
+        "import-expression-absent",
+        "import-selector-absent",
+        "import-selector-given-bound-absent"
+      ),
       GrammarRoleId.StableReference    -> Set(
         "import-path-identifier-reference",
         "import-path-reference",
         "import-path-identifier",
         "package-stable-identifier-reference",
         "package-stable-reference",
-        "package-stable-identifier"
+        "package-stable-identifier",
+        "import-selector-given-bound-qualifier-ident",
+        "import-selector-given-bound-qualifier-select",
+        "import-selector-given-bound-infix-operator"
       ),
       GrammarRoleId.ImportSelector     -> Set("import-selector-direct", "import-selector-braced"),
       GrammarRoleId.ImportSelectorName -> Set(
@@ -555,10 +673,11 @@ final class Scala3PsiProductionCatalogTest:
       ),
       GrammarRoleId.SimpleType         -> Set(
         "import-selector-bound-type",
-        "import-selector-bound-applied-constructor",
-        "import-selector-bound-applied-argument"
+        "import-selector-given-bound-qualified-type"
       ),
       GrammarRoleId.AppliedType        -> Set("import-selector-bound-applied-type"),
+      GrammarRoleId.WildcardType       -> Set("import-selector-given-bound-wildcard-type"),
+      GrammarRoleId.InfixType          -> Set("import-selector-given-bound-infix-type"),
       GrammarRoleId.IntegerLiteral     -> Set("integer-literal-number")
     )
     val actual   = catalog.productions.groupMap(_.grammarRoleId)(_.id).view.mapValues(_.toSet).toMap
