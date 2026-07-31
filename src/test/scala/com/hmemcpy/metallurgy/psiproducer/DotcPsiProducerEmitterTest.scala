@@ -238,6 +238,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     Vector(
       complete.copy(accessorAssertions = Vector.empty),
       complete.copy(accessorAssertions = complete.accessorAssertions :+ PlannedAccessorAssertion(owner, "extra", true)),
+      complete.copy(accessorAssertions = complete.accessorAssertions.map(_.copy(surfaceKind = SurfaceFactKind.Method))),
       complete.copy(stubAssertions = Vector.empty),
       complete.copy(stubAssertions = complete.stubAssertions.map(_.copy(serializerSurfaceId = "wrong"))),
       complete.copy(navigationAssertions = Vector.empty)

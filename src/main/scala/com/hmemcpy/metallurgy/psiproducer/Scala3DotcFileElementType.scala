@@ -157,4 +157,4 @@ final class Scala3DotcFileElementType
 private object Scala3DotcFileElementType:
   val ExternalId    = "metallurgy.scala3.file"
   val DebugName     = "METALLURGY_SCALA3_FILE"
-  val SchemaVersion = 2
+  val SchemaVersion = 3

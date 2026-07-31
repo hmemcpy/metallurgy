@@ -138,9 +138,10 @@ private[metallurgy] object DotcPsiProducer:
         case Some(contract) =>
           val accessors         = plan.accessorAssertions
             .filter(_.owner == value.instance)
-            .map(assertion => AccessorObligation(assertion.surfaceId, assertion.required))
-            .sortBy(obligation => (obligation.surfaceId, obligation.required))
-          val expectedAccessors = contract.accessors.sortBy(obligation => (obligation.surfaceId, obligation.required))
+            .map(assertion => AccessorObligation(assertion.surfaceId, assertion.required, assertion.surfaceKind))
+            .sortBy(obligation => (obligation.surfaceId, obligation.required, obligation.surfaceKind.ordinal))
+          val expectedAccessors = contract.accessors
+            .sortBy(obligation => (obligation.surfaceId, obligation.required, obligation.surfaceKind.ordinal))
           val stub              = plan.stubAssertions.find(_.owner == value.instance)
           val expectedStub      = contract.persistence match
             case PersistenceObligations.NotApplicable                                      => None

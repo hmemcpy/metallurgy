@@ -6,6 +6,7 @@ import com.hmemcpy.metallurgy.psiproducer.{
   CatalogShapeMatcher,
   CatalogValuePattern,
   CompilerRuntimeInventory,
+  ExportPersistenceSurfaces,
   FactStatus,
   GrammarRoleId,
   ImportPersistenceSurfaces,
@@ -102,7 +103,7 @@ final class Scala3ParserVerticalSliceTest:
   def minimizedImportFormsHaveExactCompilerShapes(): Unit =
     val bridge = openBridge()
     try
-      val forms     = Vector(
+      val forms         = Vector(
         ("import a.b.c\n", Vector("c"), "262c1533c8ca5b09b137b7f5136d3fb2923a30856ab94b46189eec35032aa144"),
         ("import a.b.*\n", Vector("_"), "ccb4206d2afbb0c55c24beed219536e2129c2bf39d24c8ac7c72d5158c06a9ec"),
         ("import a.b.{c}\n", Vector("c"), "01bb164a10401a3e5c2f060b39982e89d97b75f16ddf71ffca4b8ced1915917d"),
@@ -132,7 +133,7 @@ final class Scala3ParserVerticalSliceTest:
         ("import a.b.given F[G[Int]]\n", Vector("", "F", "G", "Int"), ""),
         ("import a.b.given Either[Int, String]\n", Vector("", "Either", "Int", "String"), "")
       )
-      val snapshots = forms.zipWithIndex.map: (form, index) =>
+      val snapshots     = forms.zipWithIndex.map: (form, index) =>
         val (source, names, fingerprint) = form
         val snapshot                     = parse(bridge, source, s"file:///ImportForm$index.scala")
         assertTrue(snapshot.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
@@ -156,47 +157,172 @@ final class Scala3ParserVerticalSliceTest:
         )
         assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
         snapshot
-      val comma     = parse(bridge, "import a.b, c.d\n", "file:///ImportFormComma.scala")
-      val runtimes  = (snapshots :+ comma).map(snapshot => CompilerRuntimeInventory.from(snapshot).toOption.get)
-      val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
-      val catalog   = Scala3PsiProductionCatalog(
-        Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
-          production.id.startsWith("file-import") || production.id.startsWith("import-")
-        ),
-        StableRoleInventory.Reviewed
+      val comma         = parse(bridge, "import a.b, c.d\n", "file:///ImportFormComma.scala")
+      val exportSibling = parse(bridge, "export a.b.c\n", "file:///ImportFormExportSibling.scala")
+      val runtimes      = (snapshots ++ Vector(comma, exportSibling)).map(snapshot =>
+        CompilerRuntimeInventory.from(snapshot).toOption.get
       )
-      val installed = ScalaPsiSurfaceInventory.installed().toOption.get
-      val surfaces  = withImportTokenSurfaces(installed)
-      val prepared  = PreparedProductionCatalog
-        .prepare(catalog, aggregate, surfaces)
-        .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
-      snapshots.foreach: snapshot =>
-        val evidence  = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
-        val plan      = WholeFileProductionPlanner
-          .plan(snapshot, evidence, prepared)
-          .fold(error => throw new AssertionError(s"${snapshot.sourceUri}: $error"), identity)
-        assertEquals(
-          snapshot.sourceText,
-          plan.physicalLeafOwnership
-            .sortBy(_.start)
-            .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
-            .mkString
-        )
-        assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
-        val tokenText = plan.physicalLeafOwnership.collect:
-          case leaf @ com.hmemcpy.metallurgy.psiproducer.PlannedPhysicalLeaf(
-                _,
-                _,
-                _,
-                _,
-                _,
-                _,
-                TerminalLeafTarget.Token(_, Some(expected))
-              ) =>
-            snapshot.sourceText.substring(leaf.start, leaf.end) -> expected
-        assertTrue(tokenText.forall((actual, expected) => actual == expected))
-        if snapshot.sourceText.contains("/* as */") then assertEquals(Vector("as" -> "as"), tokenText)
-        if snapshot.sourceText.contains("/* => */") then assertEquals(Vector("=>" -> "=>"), tokenText)
+      val aggregate     = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
+      val installed     = ScalaPsiSurfaceInventory.installed().toOption.get
+      val surfaces      = withImportTokenSurfaces(installed)
+      snapshots
+        .zip(runtimes)
+        .foreach: (snapshot, runtime) =>
+          val prepared  = PreparedProductionCatalog
+            .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+            .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+          val evidence  = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+          val plan      = WholeFileProductionPlanner
+            .plan(snapshot, evidence, prepared)
+            .fold(error => throw new AssertionError(s"${snapshot.sourceUri}: $error"), identity)
+          assertEquals(
+            snapshot.sourceText,
+            plan.physicalLeafOwnership
+              .sortBy(_.start)
+              .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
+              .mkString
+          )
+          assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+          val tokenText = plan.physicalLeafOwnership.collect:
+            case leaf @ com.hmemcpy.metallurgy.psiproducer.PlannedPhysicalLeaf(
+                  _,
+                  _,
+                  _,
+                  _,
+                  _,
+                  _,
+                  TerminalLeafTarget.Token(_, Some(expected))
+                ) =>
+              snapshot.sourceText.substring(leaf.start, leaf.end) -> expected
+          assertTrue(tokenText.forall((actual, expected) => actual == expected))
+          if snapshot.sourceText.contains("/* as */") then assertEquals(Vector("as" -> "as"), tokenText)
+          if snapshot.sourceText.contains("/* => */") then assertEquals(Vector("=>" -> "=>"), tokenText)
+    finally bridge.close()
+
+  @Test
+  def minimizedExportFormsHaveExactCompilerShapesAndClosedOutputForests(): Unit =
+    val bridge = openBridge()
+    try
+      val sources   = Vector(
+        "export scala.Predef.identity\n",
+        "package probe.deep\nexport scala.collection.immutable.List.apply\n",
+        "package probe.wildcard\nexport scala.Predef.*\n",
+        "package probe.braced\nexport scala.Predef.{assert, identity}\n",
+        "package probe.scala3alias\nexport scala.Predef.{identity as renamedIdentity}\n",
+        "package probe.legacyalias\nexport scala.Predef.{identity => renamedIdentity}\n",
+        "package probe.hiding\nexport scala.Predef.{assert as _, *}\n",
+        "package probe.unboundedgiven\nexport scala.math.Ordering.given\n",
+        "package probe.simplegiven\nexport scala.Predef.{given DummyImplicit}\n",
+        "package probe.appliedgiven\nimport scala.math.Ordering\nexport scala.math.Ordering.{given Ordering[Int]}\n",
+        """package probe.mixed
+          |import scala.math.Ordering
+          |export scala.Predef.identity
+          |import scala.collection.immutable.List
+          |export scala.Predef.assert
+          |export scala.math.Ordering.{given Ordering[Int]}
+          |""".stripMargin
+      )
+      val snapshots = sources.zipWithIndex.map: (source, index) =>
+        val snapshot = parse(bridge, source, s"file:///ExportForm$index.scala")
+        assertTrue(snapshot.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
+        assertEquals(source, snapshot.sourceText)
+        assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
+        val exports  = snapshot.nodes.filter(_.production == "Export")
+        assertEquals(if index == sources.size - 1 then 3 else 1, exports.size)
+        exports.foreach: statement =>
+          assertEquals(Vector("expr", "selectors"), statement.fields.map(_.name))
+          assertTrue(statement.position.isInstanceOf[ParserNodePosition.Positioned])
+        snapshot
+      val runtimes  = snapshots.map(CompilerRuntimeInventory.from(_).toOption.get)
+      val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
+      val surfaces  = withImportTokenSurfaces(ScalaPsiSurfaceInventory.installed().toOption.get)
+      snapshots
+        .zip(runtimes)
+        .foreach: (snapshot, runtime) =>
+          val prepared = PreparedProductionCatalog
+            .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+            .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+          val evidence = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+          val plan     = WholeFileProductionPlanner
+            .plan(snapshot, evidence, prepared)
+            .fold(error => throw new AssertionError(error.toString), identity)
+          val exports  = plan.composites
+            .filter(_.productionId == "export-statement")
+            .filter(_.instance.localOutputId == "statement")
+          assertEquals(snapshot.nodes.count(_.production == "Export"), exports.size)
+          assertEquals(
+            snapshot.sourceText,
+            plan.physicalLeafOwnership
+              .sortBy(leaf => (leaf.start, leaf.end))
+              .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
+              .mkString
+          )
+          assertFalse(plan.physicalLeafOwnership.exists(leaf => leaf.start == leaf.end))
+          assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+          assertEquals(
+            plan.structuralEvidenceOwnership.map(_.eventId).distinct,
+            plan.structuralEvidenceOwnership.map(_.eventId)
+          )
+      assertEquals(
+        Vector(
+          "2338e4efcfc827a797dd575e28052072aecdae948dbee6857923e990f9c577bb",
+          "79e73e7d082334a111ac145fb2bbb06cac3dc4c1c6da0d03f88d02f62f28d329",
+          "302769ac0ce1a0723ecef61bebee4fa04ac03b59113ba34fb303e05fc93cdb1d",
+          "261fd3405ba2558e532d3fc425289e7bce1407ea6e8c4a0a81efb1abbbbcc5c5",
+          "65d97a09104976d5b772df8b45de5dfe74208c27d7d8129e2d5cfa002a3bd4fc",
+          "0d48d0ad26d8b86262a4f0632fbe64ce6c52912790517b28e7cf8cc821705d95",
+          "98e5e5ea430a3c7ecdd55818b229d8b78eeb81815782f320d87c411f3774067c",
+          "ef342d4d893eeab5bfb03d80113226445605149acea525515acd2251a7d2a6c3",
+          "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
+          "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
+          "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
+          "39b5261875e03534e38f0eb974ddc74f732cfe745f85b4b45187480f7dcf8c08"
+        ),
+        snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
+      )
+
+      def selectedExportProductions(snapshot: ParserSyntaxSnapshot): Vector[String] =
+        val runtime = CompilerRuntimeInventory.from(snapshot).toOption.get
+        runtime.shapes
+          .filter(_.prefix == "Export")
+          .flatMap(row =>
+            row.contexts.flatMap(context =>
+              CatalogShapeMatcher.select(
+                Scala3PsiProductionCatalog.Reviewed,
+                row.kind,
+                row.prefix,
+                row.observation,
+                Some(context),
+                row.sourceClassification
+              )
+            )
+          )
+          .map(_.id)
+      val local                                                                     = parse(
+        bridge,
+        "def local =\n  export scala.Predef.identity\n",
+        "file:///InvalidLocalExport.scala"
+      )
+      assertFalse(local.nodes.exists(_.production == "Export"))
+      assertTrue(local.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
+      assertEquals(
+        local.sourceText,
+        ProvisionalSourceEvidencePlanner.plan(local).toOption.get.reconstruct(local.sourceText)
+      )
+      assertTrue(selectedExportProductions(local).isEmpty)
+
+      val packageWildcard = parse(
+        bridge,
+        "package probe.packagewildcard\nexport scala.collection.*\n",
+        "file:///SemanticallyInvalidPackageWildcardExport.scala"
+      )
+      assertTrue(packageWildcard.nodes.exists(_.production == "Export"))
+      assertTrue(packageWildcard.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
+      assertEquals(
+        packageWildcard.sourceText,
+        ProvisionalSourceEvidencePlanner.plan(packageWildcard).toOption.get.reconstruct(packageWildcard.sourceText)
+      )
+      assertEquals(Vector("export-statement"), selectedExportProductions(packageWildcard))
     finally bridge.close()
 
   @Test
@@ -328,7 +454,9 @@ final class Scala3ParserVerticalSliceTest:
         val indices   = snapshot.nodes.zipWithIndex.map((node, index) => node.id -> index).toMap
         val anchor    =
           if productionPrefix == "package-stable" then nodes(snapshot.rootNodeId) -> "pid"
-          else snapshot.nodes.find(_.production == "Import").get                  -> "expr"
+          else
+            val statement = if source.startsWith("export") then "Export" else "Import"
+            snapshot.nodes.find(_.production == statement).get -> "expr"
         val firstId   = anchor._1.fields.collectFirst {
           case ParserSyntaxField(field, ParserFieldValue.Node(id), _) if field == anchor._2 => id
         }.get
@@ -412,6 +540,13 @@ final class Scala3ParserVerticalSliceTest:
           depth,
           "import-path"
         )
+        if depth == 1024 then
+          assertPlan(
+            s"export ${segments.mkString(".")}.target\n",
+            s"file:///VeryDeepStableExportPath$depth.scala",
+            depth,
+            "import-path"
+          )
     finally bridge.close()
 
   @Test
@@ -606,7 +741,7 @@ final class Scala3ParserVerticalSliceTest:
         contexts.flatMap(context =>
           CatalogShapeMatcher.select(catalog, row.kind, row.prefix, row.observation, context, row.sourceClassification)
         )
-      assertEquals(Vector("file-package-imports"), selected(0).map(_.id))
+      assertEquals(Vector("file-package-top-statements"), selected(0).map(_.id))
       assertTrue(selected(6).isEmpty)
     finally bridge.close()
 
@@ -1016,6 +1151,13 @@ final class Scala3ParserVerticalSliceTest:
       ) ++ Vector(
         ScalaPsiSurfaceRow(
           ImportPersistenceSurfaces.AliasedImportIndex,
+          SurfaceFactKind.Index,
+          None,
+          FactStatus.Available,
+          SurfaceClassification.SyntaxContract
+        ),
+        ScalaPsiSurfaceRow(
+          ExportPersistenceSurfaces.TopLevelPackageIndex,
           SurfaceFactKind.Index,
           None,
           FactStatus.Available,

@@ -3,7 +3,7 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.intellij.lexer.LexerBase
 import com.intellij.psi.TokenType
 import com.intellij.psi.tree.IElementType
-import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
+import org.jetbrains.plugins.scala.lang.lexer.{ScalaKeywordTokenType, ScalaTokenTypes}
 
 private[psiproducer] final class PlannedScala3Lexer private (
     compiled: Option[PlannedScala3Lexer.Compiled]
@@ -45,6 +45,11 @@ private[psiproducer] enum LexerPlanFailure:
 private object PlannedScala3Lexer:
   private final case class Token(start: Int, end: Int, elementType: IElementType)
   private final case class Compiled(source: String, tokens: Vector[Token])
+
+  private val KeywordTypesByText = ScalaTokenTypes.KEYWORDS.getTypes.iterator
+    .collect:
+      case token: ScalaKeywordTokenType => token.keywordText -> token
+    .toMap
 
   def closed: PlannedScala3Lexer = new PlannedScala3Lexer(None)
 
@@ -115,11 +120,7 @@ private object PlannedScala3Lexer:
             case ClosedSourceLexicalKind.Literal            => ScalaTokenTypes.tIDENTIFIER
             case ClosedSourceLexicalKind.Number             => ScalaTokenTypes.tIDENTIFIER
             case ClosedSourceLexicalKind.Identifier         =>
-              source.substring(atom.start, atom.end) match
-                case "package" => ScalaTokenTypes.kPACKAGE
-                case "import"  => ScalaTokenTypes.kIMPORT
-                case "given"   => ScalaTokenType.GivenKeyword
-                case _         => ScalaTokenTypes.tIDENTIFIER
+              KeywordTypesByText.getOrElse(source.substring(atom.start, atom.end), ScalaTokenTypes.tIDENTIFIER)
             case ClosedSourceLexicalKind.OperatorIdentifier => ScalaTokenTypes.tIDENTIFIER
             case ClosedSourceLexicalKind.Dot                => ScalaTokenTypes.tDOT
             case ClosedSourceLexicalKind.Comma              => ScalaTokenTypes.tCOMMA

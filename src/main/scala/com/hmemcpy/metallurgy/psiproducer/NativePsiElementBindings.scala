@@ -15,9 +15,10 @@ import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScParameterizedTypeElement
-import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.ScImportStmt
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
 import org.jetbrains.plugins.scala.lang.psi.stubs.{
+  ScExportStmtStub,
   ScImportExprStub,
   ScImportSelectorStub,
   ScImportSelectorsStub,
@@ -128,6 +129,7 @@ private[metallurgy] object NativePsiElementBindings:
           |import alpha.beta.given Ordering[Int]
           |import alpha.beta.`back-tick`
           |import alpha.beta._
+          |export alpha.beta.{Original as Exported, given Bound, *}
           |val probe = 1
           |""".stripMargin
       )
@@ -138,6 +140,10 @@ private[metallurgy] object NativePsiElementBindings:
     val expressions           = statements.flatMap(_.importExprs)
     val selectorSets          = expressions.flatMap(_.selectorSet)
     val selectors             = selectorSets.flatMap(_.selectors)
+    val exportStatements      = PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector
+    val exportExpressions     = exportStatements.flatMap(_.importExprs)
+    val exportSelectorSets    = exportExpressions.flatMap(_.selectorSet)
+    val exportSelectors       = exportSelectorSets.flatMap(_.selectors)
     val aliasSelectors        = selectors.filter(_.isAliasedImport)
     val aliasAsElement        = aliasSelectors.headOption
       .flatMap(selector => leafAtText(selector, "as"))
@@ -162,7 +168,7 @@ private[metallurgy] object NativePsiElementBindings:
       .orNull
     val integerLiteral        = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
     val manager               = PsiManager.getInstance(project)
-    val persistenceFailure    = probeImportPersistence(file).left.toOption
+    val persistenceFailure    = probePersistence(file).left.toOption
     val candidates            =
       Vector(
         packaging,
@@ -175,10 +181,15 @@ private[metallurgy] object NativePsiElementBindings:
         parameterizedBase,
         parameterizedArgs.headOption.orNull,
         integerLiteral
-      ) ++ statements ++ expressions ++ selectorSets ++ selectors
+      ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+        exportSelectorSets ++ exportSelectors
     if packaging == null || reference == null || qualifier == null then Left("native package PSI probe is incomplete")
     else if statements.size != 7 || expressions.size != 7 || selectorSets.size != 3 || selectors.size != 5 then
       Left("native import PSI probe is incomplete")
+    else if exportStatements.size != 1 || exportExpressions.map(_.getText) !=
+        Vector("alpha.beta.{Original as Exported, given Bound, *}") || exportSelectorSets.size != 1 ||
+        exportSelectors.size != 3
+    then Left("native export PSI probe is incomplete")
     else if packaging.keyword == null || packaging.keyword.getText != "package" || reference.refName != "syntax" ||
       qualifier.refName != "example" || packaging.packageName != "example.syntax" || packaging.parentPackageName.nonEmpty ||
       reference.getText != "example.syntax" || qualifier.getText != "example"
@@ -207,6 +218,10 @@ private[metallurgy] object NativePsiElementBindings:
       givenSelector.flatMap(_.givenTypeElement).forall(_.getText != "Bound") ||
       wildcardSelector.flatMap(_.wildcardElement).forall(_.getText != "*")
     then Left("native import selector accessors are inconsistent")
+    else if !exportStatements.head.isTopLevel || exportStatements.head.topLevelQualifier != Some("example.syntax") ||
+      exportExpressions.head.getParent != exportStatements.head || exportSelectorSets.head.getParent != exportExpressions.head ||
+      exportSelectors.exists(_.getParent != exportSelectorSets.head)
+    then Left("native export PSI accessors are inconsistent")
     else if aliasAsElement == null || aliasAsElement.getText != "as" || aliasArrowElement == null ||
       aliasArrowElement.getText != "=>" || aliasAsElement.getNode.getElementType == aliasArrowElement.getNode.getElementType
     then Left("native import alias tokens are inconsistent")
@@ -225,7 +240,8 @@ private[metallurgy] object NativePsiElementBindings:
     then Left("native parameterized given import type PSI is inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
-    else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null then Left("native import selector index is unavailable")
+    else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null then
+      Left("native import or export index is unavailable")
     else if persistenceFailure.nonEmpty then Left(persistenceFailure.get)
     else if reference.getParent != packaging || qualifier.getParent != reference then
       Left("native package PSI direct parents are inconsistent")
@@ -275,6 +291,7 @@ private[metallurgy] object NativePsiElementBindings:
             Map(
               PsiOutputRoleId.PackageStatement  -> packaging.getNode.getElementType,
               PsiOutputRoleId.ImportStatement   -> statements.head.getNode.getElementType,
+              PsiOutputRoleId.ExportStatement   -> exportStatements.head.getNode.getElementType,
               PsiOutputRoleId.ImportExpression  -> expressions.head.getNode.getElementType,
               PsiOutputRoleId.ImportSelectorSet -> selectorSets.head.getNode.getElementType,
               PsiOutputRoleId.ImportSelector    -> selectors.head.getNode.getElementType,
@@ -287,6 +304,7 @@ private[metallurgy] object NativePsiElementBindings:
             Map(
               PsiOutputRoleId.PackageStatement  -> surfaceId(packaging.getClass),
               PsiOutputRoleId.ImportStatement   -> surfaceId(statements.head.getClass),
+              PsiOutputRoleId.ExportStatement   -> surfaceId(exportStatements.head.getClass),
               PsiOutputRoleId.ImportExpression  -> surfaceId(expressions.head.getClass),
               PsiOutputRoleId.ImportSelectorSet -> surfaceId(selectorSets.head.getClass),
               PsiOutputRoleId.ImportSelector    -> surfaceId(selectors.head.getClass),
@@ -338,6 +356,14 @@ private[metallurgy] object NativePsiElementBindings:
                 Vector("capability-probed native aliased import index")
               ),
               ScalaPsiSurfaceRow(
+                ExportPersistenceSurfaces.TopLevelPackageIndex,
+                SurfaceFactKind.Index,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native top-level export package index")
+              ),
+              ScalaPsiSurfaceRow(
                 PackagePersistenceSurfaces.FqnIndex,
                 SurfaceFactKind.Index,
                 None,
@@ -359,14 +385,18 @@ private[metallurgy] object NativePsiElementBindings:
 
   private def surfaceId(value: Class[?]): String = value.getName.replace('.', '/')
 
-  private def probeImportPersistence(file: com.intellij.psi.PsiFile): Either[String, Unit] =
+  private def probePersistence(file: com.intellij.psi.PsiFile): Either[String, Unit] =
     try
       val stubs                                               = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala
       val packaging                                           = stubs.collectFirst { case value: ScPackagingStub => value }
       val statement                                           = stubs.collectFirst { case value: ScImportStmtStub => value }
+      val exportStatement                                     = stubs.collectFirst { case value: ScExportStmtStub => value }
       val expression                                          = stubs.collectFirst { case value: ScImportExprStub if value.hasWildcardSelector => value }
       val selectorSet                                         = stubs.collectFirst { case value: ScImportSelectorsStub if value.hasWildcard => value }
       val selector                                            = stubs.collectFirst { case value: ScImportSelectorStub if value.isAliasedImport => value }
+      val exportSelector                                      = stubs.collectFirst {
+        case value: ScImportSelectorStub if value.isAliasedImport && value.aliasName.contains("Exported") => value
+      }
       val givenSelectorStub                                   = stubs.collectFirst {
         case value: ScImportSelectorStub if value.isGivenSelector && value.typeText.nonEmpty => value
       }
@@ -390,6 +420,7 @@ private[metallurgy] object NativePsiElementBindings:
         new StubInputStream(new ByteArrayInputStream(serialized), enumerator)
       val actualTypes                                         = packaging.exists(_.getElementType eq ScalaElementType.PACKAGING) &&
         statement.exists(_.getElementType eq ScalaElementType.ImportStatement) &&
+        exportStatement.exists(_.getElementType eq ScalaElementType.ExportStatement) &&
         expression.exists(_.getElementType eq ScalaElementType.IMPORT_EXPR) &&
         selectorSet.exists(_.getElementType eq ScalaElementType.IMPORT_SELECTORS) &&
         selector.exists(_.getElementType eq ScalaElementType.IMPORT_SELECTOR)
@@ -402,6 +433,12 @@ private[metallurgy] object NativePsiElementBindings:
       val statementCopy                                       = statement.map(stub =>
         ScalaElementType.ImportStatement.deserialize(
           input(bytes(ScalaElementType.ImportStatement.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
+      val exportStatementCopy                                 = exportStatement.map(stub =>
+        ScalaElementType.ExportStatement.deserialize(
+          input(bytes(ScalaElementType.ExportStatement.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
@@ -423,6 +460,12 @@ private[metallurgy] object NativePsiElementBindings:
           new PsiFileStubImpl(null)
         )
       )
+      val exportSelectorCopy                                  = exportSelector.map(stub =>
+        ScalaElementType.IMPORT_SELECTOR.deserialize(
+          input(bytes(ScalaElementType.IMPORT_SELECTOR.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
       val givenCopy                                           = givenSelectorStub.map(stub =>
         ScalaElementType.IMPORT_SELECTOR.deserialize(
           input(bytes(ScalaElementType.IMPORT_SELECTOR.serialize(stub, _))),
@@ -434,12 +477,18 @@ private[metallurgy] object NativePsiElementBindings:
         .exists((before, after) =>
           before.packageName == after.packageName && before.parentPackageName == after.parentPackageName &&
             before.isExplicit == after.isExplicit
-        ) && statement.zip(statementCopy).exists((before, after) => before.importText == after.importText) && expression
-        .zip(expressionCopy)
-        .exists((before, after) =>
-          before.referenceText == after.referenceText && before.hasWildcardSelector == after.hasWildcardSelector &&
-            before.hasGivenSelector == after.hasGivenSelector
-        ) && selectorSet.zip(selectorSetCopy).exists((before, after) => before.hasWildcard == after.hasWildcard) &&
+        ) && statement.zip(statementCopy).exists((before, after) => before.importText == after.importText) &&
+        exportStatement
+          .zip(exportStatementCopy)
+          .exists((before, after) =>
+            before.importText == after.importText && before.isTopLevel == after.isTopLevel &&
+              before.topLevelQualifier == after.topLevelQualifier
+          ) && expression
+          .zip(expressionCopy)
+          .exists((before, after) =>
+            before.referenceText == after.referenceText && before.hasWildcardSelector == after.hasWildcardSelector &&
+              before.hasGivenSelector == after.hasGivenSelector
+          ) && selectorSet.zip(selectorSetCopy).exists((before, after) => before.hasWildcard == after.hasWildcard) &&
         selector
           .zip(selectorCopy)
           .exists((before, after) =>
@@ -447,12 +496,17 @@ private[metallurgy] object NativePsiElementBindings:
               before.isGivenSelector == after.isGivenSelector && before.referenceText == after.referenceText &&
               before.importedName == after.importedName && before.aliasName == after.aliasName &&
               before.typeText == after.typeText
+          ) && exportSelector
+          .zip(exportSelectorCopy)
+          .exists((before, after) =>
+            before.isAliasedImport == after.isAliasedImport && before.referenceText == after.referenceText &&
+              before.importedName == after.importedName && before.aliasName == after.aliasName
           ) && givenSelectorStub
           .zip(givenCopy)
           .exists((before, after) =>
             before.isGivenSelector == after.isGivenSelector && before.typeText == after.typeText
           )
-      var aliasIndexed                                        = false
+      var importAliasIndexed                                  = false
       selectorCopy.foreach(stub =>
         ScalaElementType.IMPORT_SELECTOR.indexStub(
           stub,
@@ -460,7 +514,18 @@ private[metallurgy] object NativePsiElementBindings:
             override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
                 indexKey: StubIndexKey[K, Psi],
                 value: K
-            ): Unit = aliasIndexed ||= indexKey == ScalaIndexKeys.ALIASED_IMPORT_KEY && value == "Original"
+            ): Unit = importAliasIndexed ||= indexKey == ScalaIndexKeys.ALIASED_IMPORT_KEY && value == "Original"
+        )
+      )
+      var exportAliasIndexed                                  = false
+      exportSelectorCopy.foreach(stub =>
+        ScalaElementType.IMPORT_SELECTOR.indexStub(
+          stub,
+          new IndexSink:
+            override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
+                indexKey: StubIndexKey[K, Psi],
+                value: K
+            ): Unit = exportAliasIndexed ||= indexKey == ScalaIndexKeys.ALIASED_IMPORT_KEY && value == "Original"
         )
       )
       val packages                                            = Vector.newBuilder[String]
@@ -475,12 +540,26 @@ private[metallurgy] object NativePsiElementBindings:
               if indexKey == ScalaIndexKeys.PACKAGE_FQN_KEY then packages += value.toString
         )
       )
-      Either.cond(
-        actualTypes && serialized && aliasIndexed && packages.result() == Vector("example.syntax", "example"),
-        (),
-        "native package/import persistence contracts are inconsistent"
+      val exportPackages                                      = Vector.newBuilder[String]
+      exportStatementCopy.foreach(stub =>
+        ScalaElementType.ExportStatement.indexStub(
+          stub,
+          new IndexSink:
+            override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
+                indexKey: StubIndexKey[K, Psi],
+                value: K
+            ): Unit =
+              if indexKey == ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY then exportPackages += value.toString
+        )
       )
-    catch case NonFatal(error) => Left(s"native import persistence probe failed: ${error.getClass.getSimpleName}")
+      Either.cond(
+        actualTypes && serialized && importAliasIndexed && exportAliasIndexed &&
+          packages.result() == Vector("example.syntax", "example") &&
+          exportPackages.result() == Vector("example.syntax"),
+        (),
+        "native package/import/export persistence contracts are inconsistent"
+      )
+    catch case NonFatal(error) => Left(s"native persistence probe failed: ${error.getClass.getSimpleName}")
 
   private def leafAtText(
       selector: com.intellij.psi.PsiElement,

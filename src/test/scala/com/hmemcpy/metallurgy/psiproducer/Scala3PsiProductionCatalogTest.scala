@@ -533,9 +533,10 @@ final class Scala3PsiProductionCatalogTest:
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
-      GrammarRoleId.CompilationUnit    -> Set("file-package", "file-package-imports", "file-imports"),
+      GrammarRoleId.CompilationUnit    -> Set("file-package", "file-package-top-statements", "file-top-statements"),
       GrammarRoleId.PackageReference   -> Set("file-import-empty-package"),
       GrammarRoleId.ImportStatement    -> Set("import-statement"),
+      GrammarRoleId.ExportStatement    -> Set("export-statement"),
       GrammarRoleId.AbsentProduct      -> Set("import-expression-absent", "import-selector-absent"),
       GrammarRoleId.StableReference    -> Set(
         "import-path-identifier-reference",
@@ -580,6 +581,91 @@ final class Scala3PsiProductionCatalogTest:
       catalog.productions
         .filter(production => production.outputTemplate.isEmpty && production.outputRealizations.isEmpty)
         .forall(_.outputRoleId.nonEmpty)
+    )
+
+    val topStatementRoots =
+      catalog.productions.filter(production => Set("file-package-top-statements", "file-top-statements")(production.id))
+    assertEquals(2, topStatementRoots.size)
+    topStatementRoots.foreach: root =>
+      val statements      = root.children.find(_.fieldName == "stats").get
+      assertEquals(ChildCardinality.Grouped(1, None), statements.cardinality)
+      assertEquals(Set("import-statement", "export-statement"), statements.productionIds)
+      val headerSeparator = root.terminals.filter(_.id == "package-header-separator")
+      if root.id == "file-package-top-statements" then
+        assertEquals(
+          Vector(
+            TerminalDeclaration(
+              "package-header-separator",
+              TerminalIntervalSelector.ChildGap("package-reference", "top-statements"),
+              TerminalLeafTarget.Separator,
+              OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal
+            )
+          ),
+          headerSeparator
+        )
+      else assertTrue(headerSeparator.isEmpty)
+
+    val exportFields = Vector(
+      InventoryFieldObservation("expr", InventoryValueObservation.Node(1L, "Select")),
+      InventoryFieldObservation(
+        "selectors",
+        InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Node(2L, "ImportSelector")))
+      )
+    )
+    val topContext   = Some(
+      InventoryContext(
+        InventoryKind.Node,
+        "PackageDef",
+        Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+      )
+    )
+    assertEquals(
+      Vector("export-statement"),
+      CatalogShapeMatcher
+        .select(catalog, InventoryKind.Node, "Export", exportFields, topContext, SourceClassification.SourceReachable)
+        .map(_.id)
+    )
+    Vector(
+      None,
+      Some(
+        InventoryContext(
+          InventoryKind.Node,
+          "Template",
+          Vector(CatalogPathSegment.NamedField("preBody"), CatalogPathSegment.RepeatedElement)
+        )
+      ),
+      Some(
+        InventoryContext(
+          InventoryKind.Node,
+          "Block",
+          Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+        )
+      )
+    ).foreach: context =>
+      assertTrue(
+        CatalogShapeMatcher
+          .select(catalog, InventoryKind.Node, "Export", exportFields, context, SourceClassification.SourceReachable)
+          .isEmpty
+      )
+
+    val exportProduction = catalog.productions.find(_.id == "export-statement").get
+    assertEquals(
+      Set(
+        PsiOutputRoleId.ExportStatement,
+        PsiOutputRoleId.ImportExpression,
+        PsiOutputRoleId.ImportSelectorSet,
+        PsiOutputRoleId.StableReference
+      ),
+      exportProduction.effectiveOutputRealizations.flatMap(_.template.composites).map(_.outputRoleId).toSet
+    )
+    assertEquals(
+      Set("import-path-reference", "import-path-identifier-reference", "import-expression-absent"),
+      exportProduction.children.find(_.roleId == "path").get.productionIds
+    )
+    assertEquals(
+      Set("import-selector-direct", "import-selector-braced"),
+      exportProduction.children.find(_.roleId == "selectors").get.productionIds
     )
 
   @Test def roleValidationRejectsMissingUnknownAndEvidenceDerivedIdentities(): Unit =

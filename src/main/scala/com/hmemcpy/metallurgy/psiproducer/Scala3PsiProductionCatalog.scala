@@ -1068,6 +1068,7 @@ private[metallurgy] object GrammarRoleId:
   val CompilationUnit    = GrammarRoleId("scala.compilation-unit")
   val PackageReference   = GrammarRoleId("scala.package.reference")
   val ImportStatement    = GrammarRoleId("scala.import.statement")
+  val ExportStatement    = GrammarRoleId("scala.export.statement")
   val AbsentProduct      = GrammarRoleId("scala.absent-product")
   val StableReference    = GrammarRoleId("scala.reference.stable")
   val ImportSelector     = GrammarRoleId("scala.import.selector")
@@ -1161,6 +1162,7 @@ private[metallurgy] object PsiOutputRoleId:
   val SourceTerminal    = PsiOutputRoleId("scala.source.terminal")
   val PackageStatement  = PsiOutputRoleId("scala.package.statement")
   val ImportStatement   = PsiOutputRoleId("scala.import.statement")
+  val ExportStatement   = PsiOutputRoleId("scala.export.statement")
   val ImportExpression  = PsiOutputRoleId("scala.import.expression")
   val ImportSelectorSet = PsiOutputRoleId("scala.import.selector-set")
   val ImportSelector    = PsiOutputRoleId("scala.import.selector")
@@ -1181,6 +1183,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.CompilationUnit,
       GrammarRoleId.PackageReference,
       GrammarRoleId.ImportStatement,
+      GrammarRoleId.ExportStatement,
       GrammarRoleId.AbsentProduct,
       GrammarRoleId.StableReference,
       GrammarRoleId.ImportSelector,
@@ -1193,6 +1196,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.SourceTerminal,
       PsiOutputRoleId.PackageStatement,
       PsiOutputRoleId.ImportStatement,
+      PsiOutputRoleId.ExportStatement,
       PsiOutputRoleId.ImportExpression,
       PsiOutputRoleId.ImportSelectorSet,
       PsiOutputRoleId.ImportSelector,
@@ -1219,6 +1223,12 @@ private[metallurgy] object ImportPersistenceSurfaces:
   val AliasedImportIndex    =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ALIASED_IMPORT_KEY"
   val SelfNavigation        = "scala.psi.navigation.self"
+private[metallurgy] object ExportPersistenceSurfaces:
+  val StatementStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScExportStmtStub"
+  val StatementSerializer  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScExportStmtElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScExportStmtStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val TopLevelPackageIndex =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#TOP_LEVEL_EXPORT_BY_PKG_KEY"
 private[metallurgy] object PackagePersistenceSurfaces:
   val Stub       = "org/jetbrains/plugins/scala/lang/psi/stubs/ScPackagingStub"
   val Serializer =
@@ -1313,6 +1323,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
   private val ImportStatementSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
+  private val ExportStatementSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScExportStmtImpl"
+  private val ExportStatementApi       =
+    "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScExportStmt"
   private val ImportExpressionSurface  =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportExprImpl"
   private val ImportSelectorsSurface   =
@@ -1349,6 +1363,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           ImportPersistenceSurfaces.StatementStub,
           ImportPersistenceSurfaces.StatementSerializer,
           Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ExportStatement   =>
+        PersistenceObligations.Required(
+          ExportPersistenceSurfaces.StatementStub,
+          ExportPersistenceSurfaces.StatementSerializer,
+          Vector(ExportPersistenceSurfaces.TopLevelPackageIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
       case PsiOutputRoleId.ImportExpression  =>
@@ -1389,6 +1410,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportOrExportStmt#importExprs()Lscala/collection/immutable/Seq;",
       required = true
+    )
+  )
+  private val ExportStatementAccessors   = ImportStatementAccessors ++ Vector(
+    AccessorObligation(
+      s"$ExportStatementApi#isTopLevel()Z",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      s"$ExportStatementApi#topLevelQualifier()Lscala/Option;",
+      required = true,
+      SurfaceFactKind.Method
     )
   )
   private val PackageAccessors           = Vector(
@@ -1490,7 +1523,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Map("imported" -> Some("reference"), "renamed" -> Some("selector"), "bound" -> Some("selector"))
     )
 
-  private def selectorSetImportTemplate: LocalOutputCompositeTemplate =
+  private def selectorSetStatementTemplate(
+      statementRole: PsiOutputRoleId,
+      statementSurface: String,
+      statementAccessors: Vector[AccessorObligation]
+  ): LocalOutputCompositeTemplate =
     val pathStart     = OutputBoundary.ChildStart(
       "path",
       ChildOccurrenceSelector.First,
@@ -1511,9 +1548,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           "statement",
           None,
           OutputRangeDeclaration.CompilerPosition,
-          PsiOutputRoleId.ImportStatement,
-          ImportStatementSurface,
-          ImportStatementAccessors
+          statementRole,
+          statementSurface,
+          statementAccessors
         ),
         outputComposite(
           "expression",
@@ -1541,7 +1578,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Map("path" -> Some("expression"), "selectors" -> Some("selectors"))
     )
 
-  private def directImportTemplate(outerReference: Boolean): LocalOutputCompositeTemplate =
+  private def directStatementTemplate(
+      outerReference: Boolean,
+      statementRole: PsiOutputRoleId,
+      statementSurface: String,
+      statementAccessors: Vector[AccessorObligation]
+  ): LocalOutputCompositeTemplate =
     val pathStart = OutputBoundary.ChildStart(
       "path",
       ChildOccurrenceSelector.First,
@@ -1559,9 +1601,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "statement",
         None,
         OutputRangeDeclaration.CompilerPosition,
-        PsiOutputRoleId.ImportStatement,
-        ImportStatementSurface,
-        ImportStatementAccessors
+        statementRole,
+        statementSurface,
+        statementAccessors
       ),
       outputComposite(
         "expression",
@@ -1591,7 +1633,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       )
     )
 
-  private def selectorOwnedImportTemplate: LocalOutputCompositeTemplate =
+  private def selectorOwnedStatementTemplate(
+      statementRole: PsiOutputRoleId,
+      statementSurface: String,
+      statementAccessors: Vector[AccessorObligation]
+  ): LocalOutputCompositeTemplate =
     val selectorStart =
       OutputBoundary.ChildStart("selectors", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly)
     val selectorEnd   =
@@ -1603,9 +1649,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           "statement",
           None,
           OutputRangeDeclaration.CompilerPosition,
-          PsiOutputRoleId.ImportStatement,
-          ImportStatementSurface,
-          ImportStatementAccessors
+          statementRole,
+          statementSurface,
+          statementAccessors
         ),
         outputComposite(
           "expression",
@@ -1626,6 +1672,189 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       Map("path" -> Some("expression"), "selectors" -> Some("selectors"))
     )
+
+  private def statementProduction(
+      id: String,
+      compilerProduction: String,
+      grammarRole: GrammarRoleId,
+      outputRole: PsiOutputRoleId,
+      statementSurface: String,
+      statementAccessors: Vector[AccessorObligation]
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id = id,
+    grammarRoleId = grammarRole,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      compilerProduction,
+      Vector(
+        CompilerFieldPattern("expr", CatalogValuePattern.Node),
+        CompilerFieldPattern("selectors", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "PackageDef",
+            Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("expr", FieldDispositionKind.Child),
+      FieldDisposition("selectors", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "path",
+        "expr",
+        ChildCardinality.ExactlyOne,
+        "import-path-reference",
+        Set("import-path-identifier-reference", "import-expression-absent")
+      ),
+      ChildDeclaration(
+        "selectors",
+        "selectors",
+        ChildCardinality.Repeated(1, None),
+        "import-selector-direct",
+        Set("import-selector-braced")
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "statement-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = statementSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = statementAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRoleId = None,
+    outputRealizations = Vector(
+      OutputRealization(
+        "selector-owned",
+        Vector(
+          ChildOutcomeCondition(
+            "path",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production("import-expression-absent")
+          ),
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-alias")
+          )
+        ),
+        selectorOwnedStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "plain",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("direct-plain")
+          )
+        ),
+        directStatementTemplate(
+          outerReference = true,
+          outputRole,
+          statementSurface,
+          statementAccessors
+        )
+      ),
+      OutputRealization(
+        "wildcard",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("direct-wildcard")
+          )
+        ),
+        directStatementTemplate(
+          outerReference = false,
+          outputRole,
+          statementSurface,
+          statementAccessors
+        )
+      ),
+      OutputRealization(
+        "given-direct",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("direct-given")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "named-selectors",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-named")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "given-selectors",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-alias")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "hidden-selectors",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-hidden")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "wildcard-selectors",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-wildcard")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      ),
+      OutputRealization(
+        "given-braced-selectors",
+        Vector(
+          ChildOutcomeCondition(
+            "selectors",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("braced-given")
+          )
+        ),
+        selectorSetStatementTemplate(outputRole, statementSurface, statementAccessors)
+      )
+    )
+  )
 
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
@@ -1680,7 +1909,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         outputRoleId = Some(PsiOutputRoleId.PackageStatement)
       ),
       Scala3PsiProduction(
-        id = "file-package-imports",
+        id = "file-package-top-statements",
         grammarRoleId = GrammarRoleId.CompilationUnit,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
@@ -1706,10 +1935,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             Set("package-stable-identifier-reference")
           ),
           ChildDeclaration(
-            "imports",
+            "top-statements",
             "stats",
             ChildCardinality.Grouped(1, None),
-            "import-statement"
+            "import-statement",
+            Set("export-statement")
           )
         ),
         terminals = Vector(
@@ -1717,6 +1947,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "whole-file",
             TerminalIntervalSelector.WholeSource,
             TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          ),
+          TerminalDeclaration(
+            "package-header-separator",
+            TerminalIntervalSelector.ChildGap("package-reference", "top-statements"),
+            TerminalLeafTarget.Separator,
             OccurrenceCardinality.ExactlyOne,
             PsiOutputRoleId.SourceTerminal
           )
@@ -1736,7 +1973,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         outputRoleId = Some(PsiOutputRoleId.PackageStatement)
       ),
       Scala3PsiProduction(
-        id = "file-imports",
+        id = "file-top-statements",
         grammarRoleId = GrammarRoleId.CompilationUnit,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
@@ -1753,10 +1990,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         ),
         children = Vector(
           ChildDeclaration(
-            "imports",
+            "top-statements",
             "stats",
             ChildCardinality.Grouped(1, None),
-            "import-statement"
+            "import-statement",
+            Set("export-statement")
           )
         ),
         terminals = Vector(
@@ -1776,172 +2014,23 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         persistence = PersistenceObligations.NotApplicable,
         navigation = Some(NavigationObligation.Self),
         outputRoleId = None,
-        outputTemplate = Some(transparentTemplate("imports"))
+        outputTemplate = Some(transparentTemplate("top-statements"))
       ),
-      Scala3PsiProduction(
+      statementProduction(
         id = "import-statement",
-        grammarRoleId = GrammarRoleId.ImportStatement,
-        pattern = CompilerProductionPattern(
-          InventoryKind.Node,
-          "Import",
-          Vector(
-            CompilerFieldPattern("expr", CatalogValuePattern.Node),
-            CompilerFieldPattern("selectors", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
-          ),
-          Vector(
-            CompilerProductionContextPattern(
-              ContextPattern.Parent(
-                InventoryKind.Node,
-                "PackageDef",
-                Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
-              ),
-              SourceClassification.SourceReachable
-            )
-          )
-        ),
-        dispositions = Vector(
-          FieldDisposition("expr", FieldDispositionKind.Child),
-          FieldDisposition("selectors", FieldDispositionKind.Child)
-        ),
-        children = Vector(
-          ChildDeclaration(
-            "path",
-            "expr",
-            ChildCardinality.ExactlyOne,
-            "import-path-reference",
-            Set("import-path-identifier-reference", "import-expression-absent")
-          ),
-          ChildDeclaration(
-            "selectors",
-            "selectors",
-            ChildCardinality.Repeated(1, None),
-            "import-selector-direct",
-            Set("import-selector-braced")
-          )
-        ),
-        terminals = Vector(
-          TerminalDeclaration(
-            "statement-text",
-            TerminalIntervalSelector.WholeProduction,
-            TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne,
-            PsiOutputRoleId.SourceTerminal
-          )
-        ),
-        layouts = Vector(LayoutAlternative.None),
-        recovery = RecoveryPolicy.Reject,
-        targetSurfaceId = ImportStatementSurface,
-        targetRequirement = TargetRequirement.Native,
-        accessors = ImportStatementAccessors,
-        persistence = PersistenceObligations.NotApplicable,
-        navigation = Some(NavigationObligation.Self),
-        outputRoleId = None,
-        outputRealizations = Vector(
-          OutputRealization(
-            "selector-owned",
-            Vector(
-              ChildOutcomeCondition(
-                "path",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Production("import-expression-absent")
-              ),
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-alias")
-              )
-            ),
-            selectorOwnedImportTemplate
-          ),
-          OutputRealization(
-            "plain",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("direct-plain")
-              )
-            ),
-            directImportTemplate(outerReference = true)
-          ),
-          OutputRealization(
-            "wildcard",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("direct-wildcard")
-              )
-            ),
-            directImportTemplate(outerReference = false)
-          ),
-          OutputRealization(
-            "given-direct",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("direct-given")
-              )
-            ),
-            selectorSetImportTemplate
-          ),
-          OutputRealization(
-            "named-selectors",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-named")
-              )
-            ),
-            selectorSetImportTemplate
-          ),
-          OutputRealization(
-            "given-selectors",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-alias")
-              )
-            ),
-            selectorSetImportTemplate
-          ),
-          OutputRealization(
-            "hidden-selectors",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-hidden")
-              )
-            ),
-            selectorSetImportTemplate
-          ),
-          OutputRealization(
-            "wildcard-selectors",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-wildcard")
-              )
-            ),
-            selectorSetImportTemplate
-          ),
-          OutputRealization(
-            "given-braced-selectors",
-            Vector(
-              ChildOutcomeCondition(
-                "selectors",
-                ChildOccurrenceSelector.First,
-                ChildOutcomeExpectation.Realization("braced-given")
-              )
-            ),
-            selectorSetImportTemplate
-          )
-        )
+        compilerProduction = "Import",
+        grammarRole = GrammarRoleId.ImportStatement,
+        outputRole = PsiOutputRoleId.ImportStatement,
+        statementSurface = ImportStatementSurface,
+        statementAccessors = ImportStatementAccessors
+      ),
+      statementProduction(
+        id = "export-statement",
+        compilerProduction = "Export",
+        grammarRole = GrammarRoleId.ExportStatement,
+        outputRole = PsiOutputRoleId.ExportStatement,
+        statementSurface = ExportStatementSurface,
+        statementAccessors = ExportStatementAccessors
       ),
       Scala3PsiProduction(
         id = "import-expression-absent",
@@ -1950,12 +2039,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           InventoryKind.Node,
           "Thicket",
           Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
-              ContextPattern.Parent(InventoryKind.Node, "Import", Vector(CatalogPathSegment.NamedField("expr"))),
+              ContextPattern.Parent(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("expr"))),
               SourceClassification.Absent
             )
-          )
         ),
         dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Synthetic)),
         children = Vector.empty,
@@ -2018,16 +2106,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
             )
           ),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
               ContextPattern.Parent(
                 InventoryKind.Node,
-                "Import",
+                owner,
                 Vector(CatalogPathSegment.NamedField("expr"))
               ),
               SourceClassification.SourceReachable
             )
-          )
         ),
         dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
         children = Vector.empty,
@@ -2062,12 +2149,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
             )
           ),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
               ContextPattern.AnchorOrParentWithRepeatedAncestor(
                 InventoryAncestor(
                   InventoryKind.Node,
-                  "Import",
+                  owner,
                   Vector(CatalogPathSegment.NamedField("expr"))
                 ),
                 InventoryKind.Node,
@@ -2081,7 +2168,6 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               ),
               SourceClassification.SourceReachable
             )
-          )
         ),
         dispositions = Vector(
           FieldDisposition("qualifier", FieldDispositionKind.Child),
@@ -2126,7 +2212,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)
             )
           ),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
               ContextPattern.ParentWithRepeatedAncestor(
                 InventoryKind.Node,
@@ -2139,13 +2225,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 ),
                 InventoryAncestor(
                   InventoryKind.Node,
-                  "Import",
+                  owner,
                   Vector(CatalogPathSegment.NamedField("expr"))
                 )
               ),
               SourceClassification.SourceReachable
             )
-          )
         ),
         dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
         children = Vector.empty,
@@ -2178,16 +2263,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             CompilerFieldPattern("renamed", CatalogValuePattern.Node),
             CompilerFieldPattern("bound", CatalogValuePattern.Node)
           ),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
               ContextPattern.Parent(
                 InventoryKind.Node,
-                "Import",
+                owner,
                 Vector(CatalogPathSegment.NamedField("selectors"), CatalogPathSegment.RepeatedElement)
               ),
               SourceClassification.Synthetic
             )
-          )
         ),
         dispositions = Vector(
           FieldDisposition("imported", FieldDispositionKind.Child),
@@ -2298,16 +2382,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             CompilerFieldPattern("renamed", CatalogValuePattern.Node),
             CompilerFieldPattern("bound", CatalogValuePattern.Node)
           ),
-          Vector(
+          Vector("Import", "Export").map: owner =>
             CompilerProductionContextPattern(
               ContextPattern.Parent(
                 InventoryKind.Node,
-                "Import",
+                owner,
                 Vector(CatalogPathSegment.NamedField("selectors"), CatalogPathSegment.RepeatedElement)
               ),
               SourceClassification.SourceReachable
             )
-          )
         ),
         dispositions = Vector(
           FieldDisposition("imported", FieldDispositionKind.Child),
@@ -4352,6 +4435,12 @@ private[metallurgy] enum WholeFilePlanningFailure:
       expected: OccurrenceCardinality,
       actual: Int
   )
+  case TerminalLexicalContractMismatch(
+      owner: ProductionInstanceId,
+      terminalId: String,
+      target: TerminalLeafTarget,
+      kinds: Vector[ClosedSourceLexicalKind]
+  )
   case UnownedSourceAtom(atomId: SourceAtomId, start: Int, end: Int)
   case ConflictingSourceAtomOwners(
       atomId: SourceAtomId,
@@ -4462,7 +4551,8 @@ private[metallurgy] final case class PlannedTargetAssertion(
 private[metallurgy] final case class PlannedAccessorAssertion(
     owner: CompositeInstanceId,
     surfaceId: String,
-    required: Boolean
+    required: Boolean,
+    surfaceKind: SurfaceFactKind = SurfaceFactKind.PublicAccessor
 )
 private[metallurgy] final case class PlannedStubAssertion(
     owner: CompositeInstanceId,
@@ -5179,9 +5269,12 @@ private[metallurgy] object WholeFileProductionPlanner:
             .collect:
               case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
         (ranges(startRole), ranges(endRole)) match
-          case (Vector(start), Vector(end)) if start.endOffset <= end.startOffset =>
-            Vector(PcSourceRange(start.endOffset, end.startOffset))
-          case _                                                                  => Vector.empty
+          case (starts, ends) if starts.nonEmpty && ends.nonEmpty =>
+            val start = starts.maxBy(_.endOffset)
+            val end   = ends.minBy(_.startOffset)
+            if start.endOffset <= end.startOffset then Vector(PcSourceRange(start.endOffset, end.startOffset))
+            else Vector.empty
+          case _                                                  => Vector.empty
 
       def terminalIntervals(
           instance: ProductionInstanceId,
@@ -5230,6 +5323,32 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
               .map(atom => PcSourceRange(atom.start, atom.end))
         case _                                           => Vector.empty
+
+      def terminalLexicalKinds(intervals: Vector[PcSourceRange]): Vector[ClosedSourceLexicalKind] =
+        intervals.flatMap: interval =>
+          evidence.lexicalContract.atoms
+            .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
+            .map(_.kind)
+
+      def terminalLexicalContractSatisfied(
+          terminal: TerminalDeclaration,
+          intervals: Vector[PcSourceRange]
+      ): Boolean = terminal.target match
+        case TerminalLeafTarget.Trivia    =>
+          val kinds = terminalLexicalKinds(intervals)
+          kinds.nonEmpty && kinds.forall:
+            case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                ClosedSourceLexicalKind.BlockComment =>
+              true
+            case _ => false
+        case TerminalLeafTarget.Separator =>
+          val kinds = terminalLexicalKinds(intervals)
+          kinds.nonEmpty && kinds.forall:
+            case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                ClosedSourceLexicalKind.BlockComment | ClosedSourceLexicalKind.Semicolon =>
+              true
+            case _ => false
+        case _                            => true
 
       val knownEvidenceRoles  = (
         outputRows.valuesIterator.flatten.map(_._1.outputRoleId) ++
@@ -5338,6 +5457,17 @@ private[metallurgy] object WholeFileProductionPlanner:
         val production = selected(instance)
         production.terminals.foreach: terminal =>
           val intervals   = terminalIntervals(instance, production, terminal)
+          if !terminalLexicalContractSatisfied(terminal, intervals) then
+            break(
+              Left(
+                WholeFilePlanningFailure.TerminalLexicalContractMismatch(
+                  instance,
+                  terminal.id,
+                  terminal.target,
+                  terminalLexicalKinds(intervals)
+                )
+              )
+            )
           val tokenRanges = terminalTokenRanges(instance, terminal, intervals).toSet
           val atoms       = intervals.flatMap: interval =>
             val candidates = terminal.target match
@@ -5505,7 +5635,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
           case (declaration, id, _)                         =>
             declaration.accessors.map(obligation =>
-              PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required)
+              PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required, obligation.surfaceKind)
             )
       )
       val stubs                                                                                           = active.toVector.flatMap: instance =>
