@@ -644,7 +644,8 @@ final class Scala3PsiProductionCatalogTest:
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
-      GrammarRoleId.CompilationUnit    -> Set("file-package", "file-package-top-statements", "file-top-statements"),
+      GrammarRoleId.CompilationUnit    -> Set("file-top-statements"),
+      GrammarRoleId.PackageClause      -> Set("file-package", "file-package-top-statements"),
       GrammarRoleId.PackageReference   -> Set("file-import-empty-package"),
       GrammarRoleId.ImportStatement    -> Set("import-statement"),
       GrammarRoleId.ExportStatement    -> Set("export-statement"),
@@ -702,28 +703,19 @@ final class Scala3PsiProductionCatalogTest:
         .forall(_.outputRoleId.nonEmpty)
     )
 
-    val topStatementRoots =
-      catalog.productions.filter(production => Set("file-package-top-statements", "file-top-statements")(production.id))
-    assertEquals(2, topStatementRoots.size)
-    topStatementRoots.foreach: root =>
-      val statements      = root.children.find(_.fieldName == "stats").get
-      assertEquals(ChildCardinality.Grouped(1, None), statements.cardinality)
-      assertEquals(Set("import-statement", "export-statement"), statements.productionIds)
-      val headerSeparator = root.terminals.filter(_.id == "package-header-separator")
-      if root.id == "file-package-top-statements" then
-        assertEquals(
-          Vector(
-            TerminalDeclaration(
-              "package-header-separator",
-              TerminalIntervalSelector.ChildGap("package-reference", "top-statements"),
-              TerminalLeafTarget.Separator,
-              OccurrenceCardinality.ExactlyOne,
-              PsiOutputRoleId.SourceTerminal
-            )
-          ),
-          headerSeparator
-        )
-      else assertTrue(headerSeparator.isEmpty)
+    val packageBody       = catalog.productions.find(_.id == "file-package-top-statements").get
+    val packageStatements = packageBody.children.find(_.fieldName == "stats").get
+    assertEquals(ChildCardinality.Grouped(1, None), packageStatements.cardinality)
+    assertEquals(
+      Set("import-statement", "export-statement", "file-package", "file-package-top-statements"),
+      packageStatements.productionIds
+    )
+    assertEquals(Vector("package-text", "root-remainder", "end-keyword"), packageBody.terminals.map(_.id))
+    val syntheticRoot     = catalog.productions.find(_.id == "file-top-statements").get
+    val rootStatements    = syntheticRoot.children.find(_.fieldName == "stats").get
+    assertEquals(ChildCardinality.Grouped(1, None), rootStatements.cardinality)
+    assertEquals(packageStatements.productionIds, rootStatements.productionIds)
+    assertTrue(syntheticRoot.outputTemplate.exists(_.composites.isEmpty))
 
     val exportFields = Vector(
       InventoryFieldObservation("expr", InventoryValueObservation.Node(1L, "Select")),
@@ -1660,6 +1652,37 @@ final class Scala3PsiProductionCatalogTest:
           )
         )
     )
+    val packageRange      = OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
+      "missing-header",
+      Some("missing-body"),
+      ClosedSourceLexicalKind.LeftBrace,
+      ClosedSourceLexicalKind.RightBrace,
+      ClosedSourceLexicalKind.Colon
+    )
+    val packageErrors     = errors(
+      LocalOutputCompositeTemplate(Vector(self.copy(range = packageRange)), Map("child" -> Some("self")))
+    )
+    assertTrue(
+      packageErrors.contains(CatalogValidationError.UnknownOutputRangeChildRole(root.id, "self", "missing-header"))
+    )
+    assertTrue(
+      packageErrors.contains(CatalogValidationError.UnknownOutputRangeChildRole(root.id, "self", "missing-body"))
+    )
+    val unknownTerminal   = TerminalDeclaration(
+      "missing-output-terminal",
+      TerminalIntervalSelector.LocalOutput("missing-output"),
+      TerminalLeafTarget.Parent,
+      OccurrenceCardinality.Optional,
+      PsiOutputRoleId.SourceTerminal
+    )
+    val unknownOutput     = root.copy(terminals = Vector(unknownTerminal))
+    val unknownCatalog    =
+      base.copy(productions = base.productions.map(p => if p.id == root.id then unknownOutput else p))
+    assertTrue(
+      Scala3PsiProductionCatalogValidator
+        .validate(unknownCatalog, compiler, surfaces(unknownCatalog))
+        .contains(CatalogValidationError.UnknownTerminalOutput(root.id, unknownTerminal.id, "missing-output"))
+    )
     val siblingRoots      = Vector(self.copy(id = "left"), self.copy(id = "right"))
     assertTrue(
       errors(LocalOutputCompositeTemplate(siblingRoots, Map("child" -> Some("left"))))
@@ -2306,6 +2329,94 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
     assertTrue(failure(unsupported).isInstanceOf[WholeFilePlanningFailure.UnsupportedFieldDisposition])
+
+  @Test def wholeFilePlanningRejectsInactiveUnsupportedOrRecoveredCompilerDescendants(): Unit =
+    val value                                                                  = snapshot("/inactive-unsupported", 1, Vector.empty)
+    val compiler                                                               = inventory(value)
+    val base                                                                   = completeCatalog(compiler)
+    val inactiveChild                                                          = base.copy(productions = base.productions.map: production =>
+      if production.id == "Root" then
+        production.copy(
+          dispositions = Vector(FieldDisposition("children", FieldDispositionKind.SemanticOnly)),
+          children = Vector.empty,
+          terminals = Vector(
+            TerminalDeclaration(
+              "source",
+              TerminalIntervalSelector.WholeSource,
+              TerminalLeafTarget.Parent,
+              OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal
+            )
+          )
+        )
+      else production)
+    def failure(catalog: Scala3PsiProductionCatalog): WholeFilePlanningFailure =
+      planned(
+        value,
+        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+        catalog,
+        aggregate(Vector(compiler)),
+        surfaces(catalog)
+      ).left.toOption.get
+
+    val unsupported         = inactiveChild.copy(productions = inactiveChild.productions.map: production =>
+      if production.id == "Child" then
+        production.copy(
+          dispositions = Vector(FieldDisposition("inactive", FieldDispositionKind.Unsupported)),
+          pattern = production.pattern.copy(fields =
+            Vector(CompilerFieldPattern("inactive", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)))
+          )
+        )
+      else production)
+    val unsupportedValue    = value.copy(nodes =
+      value.nodes.updated(
+        1,
+        value
+          .nodes(1)
+          .copy(fields =
+            Vector(
+              ParserSyntaxField(
+                "inactive",
+                ParserFieldValue.Repeated(Vector.empty),
+                Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node))
+              )
+            )
+          )
+      )
+    )
+    val unsupportedCompiler = inventory(unsupportedValue)
+    assertEquals(
+      WholeFilePlanningFailure.UnsupportedFieldDisposition(
+        ProductionInstanceId(
+          InventoryKind.Node,
+          2,
+          Some(
+            ProductionOccurrenceId(
+              1,
+              Vector(ParserFieldPathSegment.NamedField("children"), ParserFieldPathSegment.RepeatedIndex(0))
+            )
+          )
+        ),
+        "inactive"
+      ),
+      planned(
+        unsupportedValue,
+        ProvisionalSourceEvidencePlanner.plan(unsupportedValue).toOption.get,
+        unsupported,
+        aggregate(Vector(unsupportedCompiler)),
+        surfaces(unsupported)
+      ).left.toOption.get
+    )
+
+    val recovered = inactiveChild.copy(productions = inactiveChild.productions.map: production =>
+      if production.id == "Child" then
+        production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("recovered")))
+      else production)
+    failure(recovered) match
+      case WholeFilePlanningFailure.UnsupportedRecovery(owner, _) =>
+        assertEquals(2, owner.valueId)
+        assertTrue(owner.occurrence.nonEmpty)
+      case other                                                  => fail(other.toString)
 
   @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
     val baseValue       = snapshot("/transparent-siblings", 1, Vector.empty)
@@ -3098,6 +3209,7 @@ final class Scala3PsiProductionCatalogTest:
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
+        ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available
       ),
       Scala3ParserCompilerIdentity(
@@ -3107,5 +3219,6 @@ final class Scala3PsiProductionCatalogTest:
           Scala3ParserArtifactIdentity("b.jar", path, 2, "b", 1)
         ),
         Scala3ParserLoaderIdentity(loader)
-      )
+      ),
+      Vector.empty
     )

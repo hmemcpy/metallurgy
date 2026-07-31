@@ -1072,6 +1072,7 @@ private[metallurgy] final case class GrammarRoleId(value: String):
   require(value.nonEmpty)
 private[metallurgy] object GrammarRoleId:
   val CompilationUnit    = GrammarRoleId("scala.compilation-unit")
+  val PackageClause      = GrammarRoleId("scala.package.clause")
   val PackageReference   = GrammarRoleId("scala.package.reference")
   val ImportStatement    = GrammarRoleId("scala.import.statement")
   val ExportStatement    = GrammarRoleId("scala.export.statement")
@@ -1100,6 +1101,9 @@ private[metallurgy] final case class ChildDeclaration(
 private[metallurgy] enum TerminalIntervalSelector:
   case FieldBounds(startField: String, endField: String)
   case ChildGap(startRole: String, endRole: String)
+  case CompilerEndMarkerKeyword
+  case LocalOutput(outputId: String)
+  case RootOutsideLocalOutput(outputId: String)
   case WholeProduction, WholeSource
 private[metallurgy] enum TerminalLeafTarget:
   case Token(surfaceId: String, expectedText: Option[String] = None)
@@ -1163,12 +1167,22 @@ private[metallurgy] enum OutputBoundary:
 private[metallurgy] enum OutputRangeDeclaration:
   case CompilerPosition
   case CompilerPositionWithPolicy(policy: PositionProvenancePolicy)
+  case CompilerPositionWithBodyLayoutOrEndMarker(
+      headerRole: String,
+      bodyRole: Option[String],
+      opening: ClosedSourceLexicalKind,
+      closing: ClosedSourceLexicalKind,
+      indentation: ClosedSourceLexicalKind
+  )
   case BoundaryDerived(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
+  case CompilerEndMarker
 private[metallurgy] final case class PsiOutputRoleId(value: String):
   require(value.nonEmpty)
 private[metallurgy] object PsiOutputRoleId:
   val SourceTerminal    = PsiOutputRoleId("scala.source.terminal")
   val PackageStatement  = PsiOutputRoleId("scala.package.statement")
+  val EndStatement      = PsiOutputRoleId("scala.end.statement")
+  val EndKeyword        = PsiOutputRoleId("scala.end.keyword")
   val ImportStatement   = PsiOutputRoleId("scala.import.statement")
   val ExportStatement   = PsiOutputRoleId("scala.export.statement")
   val ImportExpression  = PsiOutputRoleId("scala.import.expression")
@@ -1191,6 +1205,7 @@ private[metallurgy] object StableRoleInventory:
   val Reviewed = StableRoleInventory(
     Set(
       GrammarRoleId.CompilationUnit,
+      GrammarRoleId.PackageClause,
       GrammarRoleId.PackageReference,
       GrammarRoleId.ImportStatement,
       GrammarRoleId.ExportStatement,
@@ -1207,6 +1222,8 @@ private[metallurgy] object StableRoleInventory:
     Set(
       PsiOutputRoleId.SourceTerminal,
       PsiOutputRoleId.PackageStatement,
+      PsiOutputRoleId.EndStatement,
+      PsiOutputRoleId.EndKeyword,
       PsiOutputRoleId.ImportStatement,
       PsiOutputRoleId.ExportStatement,
       PsiOutputRoleId.ImportExpression,
@@ -1258,7 +1275,8 @@ private[metallurgy] final case class OutputCompositeDeclaration(
     accessors: Vector[AccessorObligation],
     persistence: PersistenceObligations,
     navigation: Option[NavigationObligation],
-    ownsStructuralEvidence: Boolean = false
+    ownsStructuralEvidence: Boolean = false,
+    requiresCompilerEndMarker: Boolean = false
 )
 private[metallurgy] final case class LocalOutputCompositeTemplate(
     composites: Vector[OutputCompositeDeclaration],
@@ -1335,6 +1353,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
 
   private val PackageSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
+  private val EndSurface               = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
   private val ImportStatementSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
   private val ExportStatementSurface   =
@@ -1444,7 +1463,42 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   )
   private val PackageAccessors           = Vector(
     AccessorObligation(s"$PackageSurface#reference()Lscala/Option;", required = true),
-    AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true)
+    AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(
+      s"$PackageSurface#parentPackageName()Ljava/lang/String;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(s"$PackageSurface#packageName()Ljava/lang/String;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#fullPackageName()Ljava/lang/String;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#isExplicit()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#findExplicitMarker()Lscala/Option;", required = true),
+    AccessorObligation(s"$PackageSurface#bodyText()Ljava/lang/String;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#packagings()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$PackageSurface#getImportStatements()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$PackageSurface#getExportStatements()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$PackageSurface#getLBrace()Lscala/Option;", required = true),
+    AccessorObligation(s"$PackageSurface#getRBrace()Lscala/Option;", required = true),
+    AccessorObligation(s"$PackageSurface#getColon()Lscala/Option;", required = true),
+    AccessorObligation(s"$PackageSurface#isEnclosedByBraces()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#isEnclosedByColon()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$PackageSurface#end()Lscala/Option;", required = true)
+  )
+  private val EndAccessors               = Vector(
+    AccessorObligation(s"$EndSurface#begin()Lscala/Option;", required = true),
+    AccessorObligation(s"$EndSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(s"$EndSurface#tag()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(s"$EndSurface#getName()Ljava/lang/String;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$EndSurface#getReference()Lcom/intellij/psi/PsiReference;", required = true),
+    AccessorObligation(s"$EndSurface#getElement()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(
+      s"$EndSurface#getRangeInElement()Lcom/intellij/openapi/util/TextRange;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(s"$EndSurface#resolve()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(s"$EndSurface#isSoft()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$EndSurface#getCanonicalText()Ljava/lang/String;", required = true, SurfaceFactKind.Method)
   )
   private val ImportExpressionAccessors  = Vector(
     AccessorObligation(s"$ImportExpressionSurface#reference()Lscala/Option;", required = true),
@@ -1620,6 +1674,38 @@ private[metallurgy] object Scala3PsiProductionCatalog:
 
   private def transparentTemplate(childRoles: String*): LocalOutputCompositeTemplate =
     LocalOutputCompositeTemplate(Vector.empty, childRoles.map(_ -> None).toMap)
+
+  private def packageTemplate(
+      childRoles: Vector[String],
+      bodyRole: Option[String]
+  ): LocalOutputCompositeTemplate =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "package",
+          None,
+          OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
+            "package-reference",
+            bodyRole,
+            ClosedSourceLexicalKind.LeftBrace,
+            ClosedSourceLexicalKind.RightBrace,
+            ClosedSourceLexicalKind.Colon
+          ),
+          PsiOutputRoleId.PackageStatement,
+          PackageSurface,
+          PackageAccessors
+        ),
+        outputComposite(
+          "end",
+          Some("package"),
+          OutputRangeDeclaration.CompilerEndMarker,
+          PsiOutputRoleId.EndStatement,
+          EndSurface,
+          EndAccessors
+        ).copy(requiresCompilerEndMarker = true)
+      ),
+      childRoles.map(_ -> Some("package")).toMap
+    )
 
   private def selectorTemplate(
       range: OutputRangeDeclaration,
@@ -2006,122 +2092,100 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
 
+  private def packageProduction(id: String, body: Boolean): Scala3PsiProduction =
+    val packageIds = Set("file-package", "file-package-top-statements")
+    val children   = Vector(
+      ChildDeclaration(
+        "package-reference",
+        "pid",
+        ChildCardinality.ExactlyOne,
+        "package-stable-reference",
+        Set("package-stable-identifier-reference")
+      )
+    ) ++ Option.when(body)(
+      ChildDeclaration(
+        "package-statements",
+        "stats",
+        ChildCardinality.Grouped(1, None),
+        "import-statement",
+        Set("export-statement") ++ packageIds
+      )
+    )
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.PackageClause,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "PackageDef",
+        Vector(
+          CompilerFieldPattern("pid", CatalogValuePattern.Node),
+          CompilerFieldPattern(
+            "stats",
+            if body then CatalogValuePattern.Repeated(CatalogValuePattern.Node)
+            else CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)
+          )
+        ),
+        Vector(
+          CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable),
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(
+              InventoryKind.Node,
+              "PackageDef",
+              Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+            ),
+            SourceClassification.SourceReachable
+          )
+        )
+      ),
+      dispositions = Vector(
+        FieldDisposition("pid", FieldDispositionKind.Child),
+        FieldDisposition("stats", if body then FieldDispositionKind.Child else FieldDispositionKind.SemanticOnly)
+      ),
+      children = children,
+      terminals = Vector(
+        TerminalDeclaration(
+          "package-text",
+          TerminalIntervalSelector.LocalOutput("package"),
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "root-remainder",
+          TerminalIntervalSelector.RootOutsideLocalOutput("package"),
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "end-keyword",
+          TerminalIntervalSelector.CompilerEndMarkerKeyword,
+          TerminalLeafTarget.Token(NativePsiElementBindings.EndKeywordTokenSurface, Some("end")),
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.EndKeyword
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = PackageSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = PackageAccessors,
+      persistence = PersistenceObligations.Required(
+        PackagePersistenceSurfaces.Stub,
+        PackagePersistenceSurfaces.Serializer,
+        Vector(PackagePersistenceSurfaces.FqnIndex),
+        ImportPersistenceSurfaces.SelfNavigation
+      ),
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(packageTemplate(children.map(_.roleId), Option.when(body)("package-statements"))),
+      outputRoleId = None
+    )
+
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
-      Scala3PsiProduction(
-        id = "file-package",
-        grammarRoleId = GrammarRoleId.CompilationUnit,
-        pattern = CompilerProductionPattern(
-          InventoryKind.Node,
-          "PackageDef",
-          Vector(
-            CompilerFieldPattern("pid", CatalogValuePattern.Node),
-            CompilerFieldPattern("stats", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))
-          ),
-          Vector(
-            CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable)
-          )
-        ),
-        dispositions = Vector(
-          FieldDisposition("pid", FieldDispositionKind.Child),
-          FieldDisposition("stats", FieldDispositionKind.SemanticOnly)
-        ),
-        children = Vector(
-          ChildDeclaration(
-            "package-reference",
-            "pid",
-            ChildCardinality.ExactlyOne,
-            "package-stable-reference",
-            Set("package-stable-identifier-reference")
-          )
-        ),
-        terminals = Vector(
-          TerminalDeclaration(
-            "whole-file",
-            TerminalIntervalSelector.WholeSource,
-            TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne,
-            PsiOutputRoleId.SourceTerminal
-          )
-        ),
-        layouts = Vector(LayoutAlternative.None),
-        recovery = RecoveryPolicy.Reject,
-        targetSurfaceId = PackageSurface,
-        targetRequirement = TargetRequirement.Native,
-        accessors = PackageAccessors,
-        persistence = PersistenceObligations.Required(
-          PackagePersistenceSurfaces.Stub,
-          PackagePersistenceSurfaces.Serializer,
-          Vector(PackagePersistenceSurfaces.FqnIndex),
-          ImportPersistenceSurfaces.SelfNavigation
-        ),
-        navigation = Some(NavigationObligation.Self),
-        outputRoleId = Some(PsiOutputRoleId.PackageStatement)
-      ),
-      Scala3PsiProduction(
-        id = "file-package-top-statements",
-        grammarRoleId = GrammarRoleId.CompilationUnit,
-        pattern = CompilerProductionPattern(
-          InventoryKind.Node,
-          "PackageDef",
-          Vector(
-            CompilerFieldPattern("pid", CatalogValuePattern.Node),
-            CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
-          ),
-          Vector(
-            CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable)
-          )
-        ),
-        dispositions = Vector(
-          FieldDisposition("pid", FieldDispositionKind.Child),
-          FieldDisposition("stats", FieldDispositionKind.Child)
-        ),
-        children = Vector(
-          ChildDeclaration(
-            "package-reference",
-            "pid",
-            ChildCardinality.ExactlyOne,
-            "package-stable-reference",
-            Set("package-stable-identifier-reference")
-          ),
-          ChildDeclaration(
-            "top-statements",
-            "stats",
-            ChildCardinality.Grouped(1, None),
-            "import-statement",
-            Set("export-statement")
-          )
-        ),
-        terminals = Vector(
-          TerminalDeclaration(
-            "whole-file",
-            TerminalIntervalSelector.WholeSource,
-            TerminalLeafTarget.Parent,
-            OccurrenceCardinality.ExactlyOne,
-            PsiOutputRoleId.SourceTerminal
-          ),
-          TerminalDeclaration(
-            "package-header-separator",
-            TerminalIntervalSelector.ChildGap("package-reference", "top-statements"),
-            TerminalLeafTarget.Separator,
-            OccurrenceCardinality.ExactlyOne,
-            PsiOutputRoleId.SourceTerminal
-          )
-        ),
-        layouts = Vector(LayoutAlternative.None),
-        recovery = RecoveryPolicy.Reject,
-        targetSurfaceId = PackageSurface,
-        targetRequirement = TargetRequirement.Native,
-        accessors = PackageAccessors,
-        persistence = PersistenceObligations.Required(
-          PackagePersistenceSurfaces.Stub,
-          PackagePersistenceSurfaces.Serializer,
-          Vector(PackagePersistenceSurfaces.FqnIndex),
-          ImportPersistenceSurfaces.SelfNavigation
-        ),
-        navigation = Some(NavigationObligation.Self),
-        outputRoleId = Some(PsiOutputRoleId.PackageStatement)
-      ),
+      packageProduction("file-package", body = false),
+      packageProduction("file-package-top-statements", body = true),
       Scala3PsiProduction(
         id = "file-top-statements",
         grammarRoleId = GrammarRoleId.CompilationUnit,
@@ -2144,7 +2208,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "stats",
             ChildCardinality.Grouped(1, None),
             "import-statement",
-            Set("export-statement")
+            Set("export-statement", "file-package", "file-package-top-statements")
           )
         ),
         terminals = Vector(
@@ -4122,6 +4186,8 @@ private[metallurgy] enum CatalogValidationError:
   case MissingTerminalDeclaration(productionId: String, fieldName: String)
   case UnknownTerminalField(productionId: String, fieldName: String)
   case UnknownTerminalChildRole(productionId: String, roleId: String)
+  case UnknownTerminalOutput(productionId: String, terminalId: String, outputId: String)
+  case UnknownOutputRangeChildRole(productionId: String, outputId: String, roleId: String)
   case InvalidSurface(
       productionId: String,
       outputRoleId: PsiOutputRoleId,
@@ -4437,6 +4503,14 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       realizations.foreach { realization =>
         val template                                             = realization.template; val outputIds = template.composites.map(_.id)
         duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))
+        p.terminals.foreach:
+          case terminal @ TerminalDeclaration(_, selector, _, _, _, _) =>
+            selector match
+              case TerminalIntervalSelector.LocalOutput(outputId) if !outputIds.contains(outputId)            =>
+                errors += CatalogValidationError.UnknownTerminalOutput(p.id, terminal.id, outputId)
+              case TerminalIntervalSelector.RootOutsideLocalOutput(outputId) if !outputIds.contains(outputId) =>
+                errors += CatalogValidationError.UnknownTerminalOutput(p.id, terminal.id, outputId)
+              case _                                                                                          => ()
         template.composites.foreach: output =>
           if !catalog.stableRoles.outputRoles(output.outputRoleId) then
             errors += CatalogValidationError.UnknownOutputRole(p.id, output.id, output.outputRoleId)
@@ -4512,8 +4586,20 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case OutputBoundary.Advance(base, _)               => validateBoundary(base)
             case _                                             => ()
           output.range match
-            case OutputRangeDeclaration.CompilerPosition | OutputRangeDeclaration.CompilerPositionWithPolicy(_) => ()
-            case OutputRangeDeclaration.BoundaryDerived(start, end)                                             => validateBoundary(start); validateBoundary(end)
+            case OutputRangeDeclaration.CompilerPosition | OutputRangeDeclaration.CompilerPositionWithPolicy(_) |
+                OutputRangeDeclaration.CompilerEndMarker =>
+              ()
+            case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
+                  headerRole,
+                  bodyRole,
+                  _,
+                  _,
+                  _
+                ) =>
+              (Vector(headerRole) ++ bodyRole)
+                .filterNot(childRoles)
+                .foreach(role => errors += CatalogValidationError.UnknownOutputRangeChildRole(p.id, output.id, role))
+            case OutputRangeDeclaration.BoundaryDerived(start, end) => validateBoundary(start); validateBoundary(end)
         template.composites
           .filter(_.range == OutputRangeDeclaration.CompilerPosition)
           .groupBy(_.parentId)
@@ -4608,9 +4694,13 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         else if children > 0 then errors += CatalogValidationError.ChildDeclarationForNonChildField(p.id, name)
         if disposition.size == 1 && disposition.head.kind == FieldDispositionKind.TerminalOrLayout then
           val declared = p.terminals.exists(_.selector match
-            case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource => true
+            case TerminalIntervalSelector.WholeProduction | TerminalIntervalSelector.WholeSource =>
+              true
             case TerminalIntervalSelector.FieldBounds(a, b)                                      => a == name || b == name
             case _: TerminalIntervalSelector.ChildGap                                            => false
+            case TerminalIntervalSelector.CompilerEndMarkerKeyword | TerminalIntervalSelector.LocalOutput(_) |
+                TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
+              false
           )
           if !declared then errors += CatalogValidationError.MissingTerminalDeclaration(p.id, name)
       p.terminals.foreach(_.selector match
@@ -4846,6 +4936,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
       end: Int,
       productionRange: PcSourceRange
   )
+  case InvalidCompilerEndMarker(owner: ProductionInstanceId, reason: String)
   case UnknownOutputRealization(owner: ProductionInstanceId, productionId: String)
   case AmbiguousOutputRealization(owner: ProductionInstanceId, productionId: String, realizationIds: Vector[String])
   case OutputChildOutsideParent(parent: CompositeInstanceId, child: CompositeInstanceId)
@@ -5153,15 +5244,21 @@ private[metallurgy] object WholeFileProductionPlanner:
       val groupedChildren  = collection.mutable.LinkedHashMap
         .empty[(ProductionInstanceId, String), Vector[Vector[ProductionInstanceId]]]
       ordered.foreach: instance =>
+        val production = selected(instance)
+        production.dispositions.collectFirst:
+          case FieldDisposition(fieldName, FieldDispositionKind.Unsupported) => fieldName
+        match
+          case Some(fieldName) =>
+            break(Left(WholeFilePlanningFailure.UnsupportedFieldDisposition(instance, fieldName)))
+          case None            => ()
+        if production.layouts != Vector(LayoutAlternative.None) then
+          break(Left(WholeFilePlanningFailure.UnsupportedLayout(instance, production.layouts)))
+        if production.recovery != RecoveryPolicy.Reject then
+          break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
+      ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)
           val plannedChildren = Vector.newBuilder[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)]
-          production.dispositions.collectFirst:
-            case FieldDisposition(fieldName, FieldDispositionKind.Unsupported) => fieldName
-          match
-            case Some(fieldName) =>
-              break(Left(WholeFilePlanningFailure.UnsupportedFieldDisposition(instance, fieldName)))
-            case None            => ()
           production.children.foreach: declaration =>
             if instance.kind == InventoryKind.Positioned then
               break(Left(WholeFilePlanningFailure.UnsupportedPositionedChildren(instance)))
@@ -5227,10 +5324,6 @@ private[metallurgy] object WholeFileProductionPlanner:
                 if current.nonEmpty then groups += current
                 groupedChildren += (instance -> declaration.roleId) -> groups.result()
               case _                              => ()
-          if production.layouts != Vector(LayoutAlternative.None) then
-            break(Left(WholeFilePlanningFailure.UnsupportedLayout(instance, production.layouts)))
-          if production.recovery != RecoveryPolicy.Reject then
-            break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
           compilerChildren.update(instance, plannedChildren.result())
       if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
 
@@ -5282,8 +5375,82 @@ private[metallurgy] object WholeFileProductionPlanner:
         (evidence.atoms.flatMap(atom =>
           Vector(atom.start, atom.end)
         ) ++ evidence.lexicalContract.boundaries).distinct.sorted
+      val endMarkersByOwner                                             = snapshot.endMarkers.groupBy(_.ownerNodeId)
+      def compilerEndMarker(
+          instance: ProductionInstanceId
+      )(using
+          scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
+      ): Option[(PcSourceRange, PcSourceRange)] =
+        if instance.kind != InventoryKind.Node then None
+        else
+          endMarkersByOwner.get(instance.valueId) match
+            case None          => None
+            case Some(markers) =>
+              if markers.size != 1 then
+                break(Left(WholeFilePlanningFailure.InvalidCompilerEndMarker(instance, "owner is not unique")))
+              val marker          = markers.head
+              val lexical         = evidence.lexicalContract.atoms
+              val designator      = marker.designatorRange
+              val designatorIndex = lexical.indexWhere(atom =>
+                atom.start == designator.startOffset && atom.end == designator.endOffset &&
+                  (atom.kind == ClosedSourceLexicalKind.Identifier ||
+                    atom.kind == ClosedSourceLexicalKind.QuotedIdentifier)
+              )
+              if designatorIndex < 0 then
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidCompilerEndMarker(
+                      instance,
+                      "designator is not one closed lexical identifier"
+                    )
+                  )
+                )
+              var keywordIndex    = designatorIndex - 1
+              while keywordIndex >= 0 && (lexical(keywordIndex).kind match
+                  case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                      ClosedSourceLexicalKind.BlockComment =>
+                    true
+                  case _ => false
+                )
+              do keywordIndex -= 1
+              val keyword         = lexical
+                .lift(keywordIndex)
+                .filter(atom =>
+                  atom.kind == ClosedSourceLexicalKind.Identifier &&
+                    snapshot.sourceText.substring(atom.start, atom.end) == "end"
+                )
+              keyword match
+                case Some(atom) =>
+                  Some(
+                    PcSourceRange(atom.start, designator.endOffset) ->
+                      PcSourceRange(atom.start, atom.end)
+                  )
+                case None       =>
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.InvalidCompilerEndMarker(
+                        instance,
+                        "compiler marker has no adjacent end-keyword evidence"
+                      )
+                    )
+                  )
       def canonicalOutput(id: CompositeInstanceId): CompositeInstanceId =
-        mergedOutputRoots.get(id).fold(id)(canonicalOutput)
+        var current = id
+        while mergedOutputRoots.contains(current) do current = mergedOutputRoots(current)
+        current
+      snapshot.endMarkers.foreach: marker =>
+        val owners = active.toVector.filter(instance =>
+          instance.kind == InventoryKind.Node && instance.valueId == marker.ownerNodeId
+        )
+        if owners.size != 1 || selected(owners.head).grammarRoleId != GrammarRoleId.PackageClause then
+          break(
+            Left(
+              WholeFilePlanningFailure.InvalidCompilerEndMarker(
+                owners.headOption.getOrElse(ProductionInstanceId(InventoryKind.Node, marker.ownerNodeId, None)),
+                "marker owner is not one active package clause"
+              )
+            )
+          )
       active.toVector.reverse.foreach: instance =>
         val template   = resolvedRealizations(instance).template
         def positionedRange(
@@ -5382,14 +5549,21 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
             val end                                                    = positionedRange(child, policy, value, outputId).endOffset
             def sourceStart(target: ProductionInstanceId): Option[Int] =
-              position(target) match
-                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
-                  Some(range.startOffset)
-                case _                                                                               =>
-                  compilerChildren
-                    .getOrElse(target, Vector.empty)
-                    .flatMap((_, _, child) => sourceStart(child))
-                    .minOption
+              val pending = collection.mutable.Stack(target)
+              val visited = collection.mutable.Set.empty[ProductionInstanceId]
+              var start   = Option.empty[Int]
+              while pending.nonEmpty do
+                val current = pending.pop()
+                if visited.add(current) then
+                  position(current) match
+                    case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                      start = Some(start.fold(range.startOffset)(math.min(_, range.startOffset)))
+                    case _                                                                               =>
+                      compilerChildren
+                        .getOrElse(current, Vector.empty)
+                        .reverseIterator
+                        .foreach((_, _, child) => pending.push(child))
+              start
             val following                                              = compilerChildren(instance).collect { case (`followingRole`, _, candidate) => candidate }
             val followingChild                                         = followingSelector match
               case ChildOccurrenceSelector.First          => following.headOption
@@ -5446,73 +5620,212 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             evidenceBoundaries((index.toLong + count.toLong).toInt)
-        val ranges     = template.composites.map: declaration =>
-          val range            = declaration.range match
-            case OutputRangeDeclaration.CompilerPosition                            =>
-              position(instance) match
-                case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
-                case _                                                                               =>
-                  break(
-                    Left(
-                      WholeFilePlanningFailure.InvalidCatalog(
-                        Vector(
-                          CatalogValidationError.UnsupportedOutputRange(
-                            selected(instance).id,
-                            declaration.id,
-                            declaration.range
+        val ranges     = template.composites
+          .filter(declaration => !declaration.requiresCompilerEndMarker || compilerEndMarker(instance).nonEmpty)
+          .map { declaration =>
+            val range            = declaration.range match
+              case OutputRangeDeclaration.CompilerPosition                            =>
+                position(instance) match
+                  case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
+                  case _                                                                               =>
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.InvalidCatalog(
+                          Vector(
+                            CatalogValidationError.UnsupportedOutputRange(
+                              selected(instance).id,
+                              declaration.id,
+                              declaration.range
+                            )
                           )
                         )
                       )
                     )
+              case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)          =>
+                positionedRange(instance, policy, OutputBoundary.ProductionStart(policy), declaration.id)
+              case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
+                    headerRole,
+                    bodyRole,
+                    opening,
+                    closing,
+                    indentation
+                  ) =>
+                val base         = positionedRange(
+                  instance,
+                  PositionProvenancePolicy.SourceDerivedOnly,
+                  OutputBoundary.ProductionStart(PositionProvenancePolicy.SourceDerivedOnly),
+                  declaration.id
+                )
+                val children     = compilerChildren.getOrElse(instance, Vector.empty)
+                val headerRange  = children
+                  .collect { case (`headerRole`, _, child) => child }
+                  .flatMap(child =>
+                    position(child) match
+                      case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                        Some(range)
+                      case _                                                                               => None
                   )
-            case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)          =>
-              positionedRange(instance, policy, OutputBoundary.ProductionStart(policy), declaration.id)
-            case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary) =>
-              val start            = resolve(startBoundary, declaration.id)
-              val end              = resolve(endBoundary, declaration.id)
-              val emptyWholeSource = snapshot.sourceLength == 0 && start == 0 && end == 0
-              if start > end || (start == end && !emptyWholeSource) then
-                break(
-                  Left(
-                    WholeFilePlanningFailure.InvalidOutputRange(
-                      instance,
-                      declaration.id,
-                      start,
-                      end,
-                      positionedRange(
-                        instance,
-                        PositionProvenancePolicy.PositionedIncludingSynthetic,
-                        startBoundary,
-                        declaration.id
+                  .maxByOption(_.endOffset)
+                  .getOrElse(
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                          instance,
+                          declaration.id,
+                          OutputBoundary.ProductionStart(PositionProvenancePolicy.SourceDerivedOnly),
+                          "header child has no source-derived range"
+                        )
                       )
                     )
                   )
+                val bodyStart    = bodyRole.toVector
+                  .flatMap(role => children.collect { case (`role`, _, child) => child })
+                  .flatMap(child =>
+                    position(child) match
+                      case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                        Some(range.startOffset)
+                      case _                                                                               => None
+                  )
+                  .minOption
+                  .getOrElse(base.endOffset)
+                val delimiter    = evidence.lexicalContract.atoms.find(atom =>
+                  headerRange.endOffset <= atom.start && atom.end <= bodyStart &&
+                    (atom.kind == opening || atom.kind == indentation)
                 )
-              PcSourceRange(start, end)
-          val ownerRange       = positionedRange(
-            instance,
-            PositionProvenancePolicy.PositionedIncludingSynthetic,
-            OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
-            declaration.id
-          )
-          val emptyWholeSource = snapshot.sourceLength == 0 && range.startOffset == 0 && range.endOffset == 0
-          if range.startOffset < ownerRange.startOffset || range.endOffset > ownerRange.endOffset ||
-            (!emptyWholeSource && (range.startOffset >= range.endOffset || !evidenceBoundaries.contains(
-              range.startOffset
-            ) || !evidenceBoundaries.contains(range.endOffset)))
-          then
-            break(
-              Left(
-                WholeFilePlanningFailure.InvalidOutputRange(
-                  instance,
-                  declaration.id,
-                  range.startOffset,
-                  range.endOffset,
-                  ownerRange
+                var delimiterEnd = base.endOffset
+                if delimiter.exists(_.kind == opening) then
+                  var balance = 0
+                  evidence.lexicalContract.atoms
+                    .filter(atom => base.startOffset <= atom.start && atom.end <= base.endOffset)
+                    .foreach: atom =>
+                      if atom.kind == opening then balance += 1
+                      else if atom.kind == closing then balance -= 1
+                  if balance < 0 then
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.InvalidOutputRange(
+                          instance,
+                          declaration.id,
+                          base.startOffset,
+                          base.endOffset,
+                          base
+                        )
+                      )
+                    )
+                  if balance > 0 then
+                    var remaining = balance
+                    var found     = Option.empty[Int]
+                    val suffix    = evidence.lexicalContract.atoms.iterator.filter(_.start >= base.endOffset)
+                    while suffix.hasNext && found.isEmpty do
+                      val atom = suffix.next()
+                      if atom.kind == opening then remaining += 1
+                      else if atom.kind == closing then
+                        remaining -= 1
+                        if remaining == 0 then found = Some(atom.end)
+                    delimiterEnd = found.getOrElse(
+                      break(
+                        Left(
+                          WholeFilePlanningFailure.InvalidOutputRange(
+                            instance,
+                            declaration.id,
+                            base.startOffset,
+                            base.endOffset,
+                            base
+                          )
+                        )
+                      )
+                    )
+                val marker       = compilerEndMarker(instance)
+                if delimiter.exists(_.kind == indentation) && marker.isEmpty then
+                  delimiterEnd = evidence.lexicalContract.atoms
+                    .find(atom =>
+                      atom.start >= base.endOffset && (atom.kind match
+                        case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                            ClosedSourceLexicalKind.BlockComment | ClosedSourceLexicalKind.Semicolon =>
+                          false
+                        case _ => true
+                      )
+                    )
+                    .fold(snapshot.sourceLength)(_.start)
+                val markerEnd    = marker.fold(base.endOffset)(_._1.endOffset)
+                if delimiterEnd < base.endOffset then
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.InvalidOutputRange(
+                        instance,
+                        declaration.id,
+                        base.startOffset,
+                        base.endOffset,
+                        base
+                      )
+                    )
+                  )
+                PcSourceRange(base.startOffset, math.max(delimiterEnd, markerEnd))
+              case OutputRangeDeclaration.CompilerEndMarker                           =>
+                compilerEndMarker(instance)
+                  .map(_._1)
+                  .getOrElse(
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.InvalidCompilerEndMarker(
+                          instance,
+                          "required marker evidence is absent"
+                        )
+                      )
+                    )
+                  )
+              case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary) =>
+                val start            = resolve(startBoundary, declaration.id)
+                val end              = resolve(endBoundary, declaration.id)
+                val emptyWholeSource = snapshot.sourceLength == 0 && start == 0 && end == 0
+                if start > end || (start == end && !emptyWholeSource) then
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.InvalidOutputRange(
+                        instance,
+                        declaration.id,
+                        start,
+                        end,
+                        positionedRange(
+                          instance,
+                          PositionProvenancePolicy.PositionedIncludingSynthetic,
+                          startBoundary,
+                          declaration.id
+                        )
+                      )
+                    )
+                  )
+                PcSourceRange(start, end)
+            val ownerRange       = positionedRange(
+              instance,
+              PositionProvenancePolicy.PositionedIncludingSynthetic,
+              OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
+              declaration.id
+            )
+            val emptyWholeSource = snapshot.sourceLength == 0 && range.startOffset == 0 && range.endOffset == 0
+            val validExtent      = declaration.range match
+              case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(_, _, _, _, _) =>
+                range.startOffset >= ownerRange.startOffset && range.endOffset <= snapshot.sourceLength
+              case _                                                                               =>
+                range.startOffset >= ownerRange.startOffset && range.endOffset <= ownerRange.endOffset
+            if !validExtent ||
+              (!emptyWholeSource && (range.startOffset >= range.endOffset || !evidenceBoundaries.contains(
+                range.startOffset
+              ) || !evidenceBoundaries.contains(range.endOffset)))
+            then
+              break(
+                Left(
+                  WholeFilePlanningFailure.InvalidOutputRange(
+                    instance,
+                    declaration.id,
+                    range.startOffset,
+                    range.endOffset,
+                    ownerRange
+                  )
                 )
               )
-            )
-          (declaration, CompositeInstanceId(instance, declaration.id), range)
+            (declaration, CompositeInstanceId(instance, declaration.id), range)
+          }
         outputRows.update(instance, ranges)
         val localRoots = ranges.collect { case (declaration, id, _) if declaration.parentId.isEmpty => id }
         localOutputRoots.update(instance, localRoots)
@@ -5657,7 +5970,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           production: Scala3PsiProduction,
           terminal: TerminalDeclaration
       ): Vector[PcSourceRange] = terminal.selector match
-        case TerminalIntervalSelector.WholeSource if instance != root =>
+        case TerminalIntervalSelector.WholeSource if instance != root  =>
           break(
             Left(
               WholeFilePlanningFailure.UnsupportedTerminalSelector(
@@ -5667,17 +5980,34 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-        case TerminalIntervalSelector.WholeSource                     =>
+        case TerminalIntervalSelector.WholeSource                      =>
           Vector(PcSourceRange(0, snapshot.sourceLength))
-        case TerminalIntervalSelector.WholeProduction                 =>
+        case TerminalIntervalSelector.LocalOutput(outputId)            =>
+          outputRows
+            .getOrElse(instance, Vector.empty)
+            .collect { case (declaration, _, range) if declaration.id == outputId => range }
+        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId) =>
+          if instance != root then Vector.empty
+          else
+            outputRows
+              .getOrElse(instance, Vector.empty)
+              .collectFirst { case (declaration, _, range) if declaration.id == outputId => range }
+              .toVector
+              .flatMap(range =>
+                Vector(PcSourceRange(0, range.startOffset), PcSourceRange(range.endOffset, snapshot.sourceLength))
+                  .filter(value => value.startOffset < value.endOffset)
+              )
+        case TerminalIntervalSelector.WholeProduction                  =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                 if range.startOffset < range.endOffset =>
               Vector(range)
             case _ => Vector.empty
-        case TerminalIntervalSelector.ChildGap(startRole, endRole)    =>
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)     =>
           childGapIntervals(instance, startRole, endRole)
-        case other                                                    =>
+        case TerminalIntervalSelector.CompilerEndMarkerKeyword         =>
+          compilerEndMarker(instance).map(_._2).toVector
+        case other                                                     =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
       def terminalTokenRanges(
@@ -5749,17 +6079,25 @@ private[metallurgy] object WholeFileProductionPlanner:
         .result()
         .flatMap: (role, offset) =>
           evidence.atoms.find(atom => atom.start < offset && offset < atom.end).map(atom => (atom, role, offset))
-        .groupMap((atom, role, _) => atom -> role)(_._3)
+        .groupBy(_._1)
         .toVector
-        .sortBy((key, _) => (key._1.id.toString, key._2.value))
-        .map: entry =>
-          val ((atom, role), cuts) = entry
-          val boundaries           = (Vector(atom.start, atom.end) ++ cuts).distinct.sorted
-          SourceAtomRefinement(
-            SourceAtomReference(atom.id, atom.start, atom.end),
-            role,
-            boundaries.sliding(2).collect { case Vector(start, end) => PcSourceRange(start, end) }.toVector
-          )
+        .sortBy(_._1.id.toString)
+        .flatMap: (atom, requests) =>
+          val cutsByRole = requests.groupMap(_._2)(_._3).view.mapValues(_.toSet).toVector
+          val roleOrder  = requests.map(_._2).distinct.zipWithIndex.toMap
+          val maximal    = cutsByRole.filterNot: (role, cuts) =>
+            cutsByRole.exists: (otherRole, otherCuts) =>
+              otherRole != role && cuts.subsetOf(otherCuts) && cuts != otherCuts
+          val unique     = maximal.groupBy(_._2).values.map(_.minBy((role, _) => roleOrder(role))).toVector
+          unique
+            .sortBy(_._1.value)
+            .map: (role, cuts) =>
+              val boundaries = (Vector(atom.start, atom.end) ++ cuts).distinct.sorted
+              SourceAtomRefinement(
+                SourceAtomReference(atom.id, atom.start, atom.end),
+                role,
+                boundaries.sliding(2).collect { case Vector(start, end) => PcSourceRange(start, end) }.toVector
+              )
       val refinedEvidence = SourceEvidenceRefinementPlanner
         .refine(evidence, knownEvidenceRoles, refinements)
         .fold(
@@ -5826,6 +6164,20 @@ private[metallurgy] object WholeFileProductionPlanner:
             .map(_ -> atom)
         .groupMap(_._1)(_._2)
       val unclaimedAtoms                                                                                  = planningAtoms.filter(atom => claimOwners(atom, activeClaimOwners).isEmpty)
+      val sourceExtendedRanges                                                                            = outputRows.view
+        .mapValues(_.collect:
+          case (declaration, _, range)
+              if declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker] =>
+            range
+        )
+        .toMap
+      val sourceExtendedAtoms                                                                             = sourceExtendedRanges.map: (instance, ranges) =>
+        instance -> planningAtoms.filter: atom =>
+          ranges.exists(range => range.startOffset <= atom.start && atom.end <= range.endOffset) &&
+            (claimOwners(atom, activeClaimOwners) match
+              case Vector() => true
+              case owners   => owners.forall(owner => owner == instance || isAncestor(owner, instance))
+            )
       val candidates                                                                                      =
         collection.mutable.Map.empty[SourceAtomId, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
       val resolvedTerminals                                                                               = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
@@ -5846,11 +6198,13 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
           val tokenRanges = terminalTokenRanges(instance, terminal, intervals).toSet
           val atoms       = intervals.flatMap: interval =>
-            val candidates = terminal.target match
+            val candidates = (terminal.target match
               case TerminalLeafTarget.Parent =>
                 eligibleParentClaimAtoms.getOrElse(instance, Vector.empty) ++
+                  sourceExtendedAtoms.getOrElse(instance, Vector.empty) ++
                   Option.when(instance == root)(unclaimedAtoms).getOrElse(Vector.empty)
               case _                         => planningAtoms
+            ).distinct
             candidates
               .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
               .filter(atom => terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)))

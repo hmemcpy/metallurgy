@@ -124,6 +124,7 @@ private object PlannedScala3Lexer:
             case ClosedSourceLexicalKind.OperatorIdentifier => ScalaTokenTypes.tIDENTIFIER
             case ClosedSourceLexicalKind.Dot                => ScalaTokenTypes.tDOT
             case ClosedSourceLexicalKind.Comma              => ScalaTokenTypes.tCOMMA
+            case ClosedSourceLexicalKind.Colon              => ScalaTokenTypes.tCOLON
             case ClosedSourceLexicalKind.LeftBrace          => ScalaTokenTypes.tLBRACE
             case ClosedSourceLexicalKind.RightBrace         => ScalaTokenTypes.tRBRACE
             case ClosedSourceLexicalKind.LeftBracket        => ScalaTokenTypes.tLSQBRACKET

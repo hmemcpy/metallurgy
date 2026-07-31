@@ -12,7 +12,8 @@ import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
-import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
+import org.jetbrains.plugins.scala.lang.psi.ScExportsHolder
+import org.jetbrains.plugins.scala.lang.psi.api.base.{ScEnd, ScStableCodeReference}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScInfixTypeElement,
@@ -105,6 +106,7 @@ private[metallurgy] final case class NativePsiElementBindings(
       )
 
 private[metallurgy] object NativePsiElementBindings:
+  val EndKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#EndKeyword"
   val ImportWildcardTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardStar"
   val ImportLegacyWildcardTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUNDER"
   val ImportAliasAsTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasAs"
@@ -145,7 +147,38 @@ private[metallurgy] object NativePsiElementBindings:
           |val probe = 1
           |""".stripMargin
       )
+    val packageLayoutFile     = PsiFileFactory
+      .getInstance(project)
+      .createFileFromText(
+        "NativePackageLayoutBindingProbe.scala",
+        Scala3Language.INSTANCE,
+        """package braced {
+          |  import alpha.braced.Member
+          |}
+          |package outer:
+          |  package inner:
+          |    export alpha.inner.Member
+          |  end inner
+          |end outer
+          |""".stripMargin
+      )
     val packaging             = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
+    val layoutPackagings      = PsiTreeUtil
+      .findChildrenOfType(packageLayoutFile, classOf[ScPackaging])
+      .asScala
+      .toVector
+    val bracedPackaging       = layoutPackagings.find(_.fullPackageName == "braced").orNull
+    val outerPackaging        = layoutPackagings.find(_.fullPackageName == "outer").orNull
+    val innerPackaging        = layoutPackagings.find(_.fullPackageName == "outer.inner").orNull
+    val layoutEnds            = PsiTreeUtil.findChildrenOfType(packageLayoutFile, classOf[ScEnd]).asScala.toVector
+    val innerEnd              = layoutEnds.find(_.getName == "inner").orNull
+    val outerEnd              = layoutEnds.find(_.getName == "outer").orNull
+    val bracedImport          = Option(bracedPackaging)
+      .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScImportStmt])))
+      .orNull
+    val innerExport           = Option(innerPackaging)
+      .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScExportStmt])))
+      .orNull
     val reference             = Option(packaging).flatMap(_.reference).orNull
     val qualifier             = Option(reference).flatMap(_.qualifier).orNull
     val statements            = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
@@ -206,6 +239,13 @@ private[metallurgy] object NativePsiElementBindings:
     val candidates            =
       Vector(
         packaging,
+        bracedPackaging,
+        outerPackaging,
+        innerPackaging,
+        innerEnd,
+        outerEnd,
+        bracedImport,
+        innerExport,
         reference,
         qualifier,
         givenType,
@@ -228,7 +268,9 @@ private[metallurgy] object NativePsiElementBindings:
         integerLiteral
       ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors
-    if packaging == null || reference == null || qualifier == null then Left("native package PSI probe is incomplete")
+    if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
+      innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
+    then Left("native package PSI probe is incomplete")
     else if statements.size != 10 || expressions.size != 10 || selectorSets.size != 6 || selectors.size != 8 then
       Left("native import PSI probe is incomplete")
     else if exportStatements.size != 1 || exportExpressions.map(_.getText) !=
@@ -239,6 +281,38 @@ private[metallurgy] object NativePsiElementBindings:
       qualifier.refName != "example" || packaging.packageName != "example.syntax" || packaging.parentPackageName.nonEmpty ||
       reference.getText != "example.syntax" || qualifier.getText != "example"
     then Left("native package PSI accessors do not expose the required nested reference")
+    else if packaging.isExplicit || packaging.findExplicitMarker.nonEmpty || packaging.getLBrace.nonEmpty ||
+      packaging.getRBrace.nonEmpty || packaging.getColon.nonEmpty || packaging.isEnclosedByBraces ||
+      packaging.isEnclosedByColon || packaging.end.nonEmpty
+    then Left("native unbraced package PSI accessors are inconsistent")
+    else if !bracedPackaging.isExplicit || bracedPackaging.findExplicitMarker.forall(_.getText != "{") ||
+      bracedPackaging.getLBrace.forall(_.getNode.getElementType != ScalaTokenTypes.tLBRACE) ||
+      bracedPackaging.getRBrace.forall(_.getNode.getElementType != ScalaTokenTypes.tRBRACE) ||
+      bracedPackaging.getColon.nonEmpty || !bracedPackaging.isEnclosedByBraces || bracedPackaging.isEnclosedByColon ||
+      bracedPackaging.end.nonEmpty || bracedPackaging.packagings.nonEmpty ||
+      bracedPackaging.getImportStatements.toVector != Vector(
+        bracedImport
+      ) || bracedImport.getParent != bracedPackaging ||
+      !bracedPackaging.bodyText.contains(bracedImport.getText)
+    then Left("native braced package PSI accessors are inconsistent")
+    else if !outerPackaging.isExplicit || outerPackaging.findExplicitMarker.forall(_.getText != ":") ||
+      outerPackaging.getColon.forall(_.getNode.getElementType != ScalaTokenTypes.tCOLON) ||
+      outerPackaging.getLBrace.nonEmpty || outerPackaging.getRBrace.nonEmpty || outerPackaging.isEnclosedByBraces ||
+      !outerPackaging.isEnclosedByColon || outerPackaging.packagings.toVector != Vector(innerPackaging) ||
+      innerPackaging.getParent != outerPackaging || innerPackaging.parentPackageName != "outer" ||
+      innerPackaging.packageName != "inner" || innerPackaging.fullPackageName != "outer.inner" ||
+      innerPackaging.asInstanceOf[ScExportsHolder].getExportStatements.toVector != Vector(innerExport) ||
+      innerExport.getParent != innerPackaging ||
+      outerPackaging.end.toVector != Vector(outerEnd) || innerPackaging.end.toVector != Vector(innerEnd)
+    then Left("native colon package PSI accessors are inconsistent")
+    else if Vector(innerEnd, outerEnd).exists(end =>
+        end.getNode.getElementType != ScalaElementType.END_STMT || end.keyword.getText != "end" ||
+          end.keyword.getNode.getElementType != ScalaTokenType.EndKeyword || end.tag.getText != end.getName ||
+          end.getReference != end || end.getElement != end || end.getRangeInElement != end.tag.getTextRangeInParent ||
+          !end.isSoft || end.getCanonicalText != "ScEnd" || end.begin.forall(_ != end.getParent) ||
+          end.getParent.getLastChild != end
+      )
+    then Left("native end-marker PSI accessors are inconsistent")
     else if expressions.map(_.getText) != Vector(
         "alpha.beta.Member",
         "alpha.beta.*",
@@ -322,8 +396,10 @@ private[metallurgy] object NativePsiElementBindings:
         .exists((selectors, expression) => selectors.getParent != expression) ||
       selectors.exists(selector => !selectorSets.contains(selector.getParent))
     then Left("native import PSI direct parents are inconsistent")
-    else if candidates.exists(value => value.getContainingFile != file || value.getProject != project) then
-      Left("native PSI identity is inconsistent")
+    else if candidates.exists(value =>
+        (value.getContainingFile != file && value.getContainingFile != packageLayoutFile) || value.getProject != project
+      )
+    then Left("native PSI identity is inconsistent")
     else if candidates.exists(value => value.getNode.getPsi ne value) then
       Left("native AST and PSI identity is inconsistent")
     else if candidates.exists(value => !manager.areElementsEquivalent(value, value.getNavigationElement))
@@ -352,6 +428,7 @@ private[metallurgy] object NativePsiElementBindings:
             grouped.view.mapValues(_.head).toMap +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral" ->
                 MetallurgyIntegerLiteral.ElementType) +
+              (EndKeywordTokenSurface                                                          -> ScalaTokenType.EndKeyword) +
               (ImportWildcardTokenSurface                                                      -> wildcardElement.getNode.getElementType) +
               (ImportLegacyWildcardTokenSurface                                                -> legacyWildcardElement.getNode.getElementType) +
               (ImportAliasAsTokenSurface                                                       -> aliasAsElement.getNode.getElementType) +
@@ -363,6 +440,7 @@ private[metallurgy] object NativePsiElementBindings:
               (UpperTypeBoundTokenSurface                                                      -> upperBoundToken.getNode.getElementType),
             Map(
               PsiOutputRoleId.PackageStatement  -> packaging.getNode.getElementType,
+              PsiOutputRoleId.EndStatement      -> innerEnd.getNode.getElementType,
               PsiOutputRoleId.ImportStatement   -> statements.head.getNode.getElementType,
               PsiOutputRoleId.ExportStatement   -> exportStatements.head.getNode.getElementType,
               PsiOutputRoleId.ImportExpression  -> expressions.head.getNode.getElementType,
@@ -378,6 +456,7 @@ private[metallurgy] object NativePsiElementBindings:
             ),
             Map(
               PsiOutputRoleId.PackageStatement  -> surfaceId(packaging.getClass),
+              PsiOutputRoleId.EndStatement      -> surfaceId(innerEnd.getClass),
               PsiOutputRoleId.ImportStatement   -> surfaceId(statements.head.getClass),
               PsiOutputRoleId.ExportStatement   -> surfaceId(exportStatements.head.getClass),
               PsiOutputRoleId.ImportExpression  -> surfaceId(expressions.head.getClass),
@@ -392,6 +471,14 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.IntegerLiteral    -> surfaceId(integerLiteral.getClass)
             ),
             Vector(
+              ScalaPsiSurfaceRow(
+                EndKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native end keyword token")
+              ),
               ScalaPsiSurfaceRow(
                 ImportWildcardTokenSurface,
                 SurfaceFactKind.Token,

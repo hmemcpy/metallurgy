@@ -679,6 +679,7 @@ private[psiproducer] final class TestParserBridge(
       ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available,
+      ParserCapabilityStatus.Available,
       ParserCapabilityStatus.Available
     )
 

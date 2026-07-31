@@ -27,7 +27,7 @@ private[metallurgy] final case class SourceAtomReference(id: SourceAtomId, start
 
 private[metallurgy] enum ClosedSourceLexicalKind:
   case Whitespace, LineComment, BlockComment, QuotedIdentifier, Literal, Number, Identifier, OperatorIdentifier
-  case Dot, Comma, LeftBrace, RightBrace, LeftBracket, RightBracket, LeftParenthesis, RightParenthesis, Semicolon
+  case Dot, Comma, Colon, LeftBrace, RightBrace, LeftBracket, RightBracket, LeftParenthesis, RightParenthesis, Semicolon
 
 private[metallurgy] final case class ClosedSourceLexicalAtom(
     start: Int,
@@ -97,6 +97,13 @@ private[metallurgy] object ClosedSourceLexicalContract:
           current match
             case '.' => add(offset + 1, ClosedSourceLexicalKind.Dot)
             case ',' => add(offset + 1, ClosedSourceLexicalKind.Comma)
+            case ':' =>
+              if offset + 1 < source.length && isOperatorPart(source, offset + 1) then
+                var end = offset + 2
+                while end < source.length && isOperatorPart(source, end) do
+                  end += Character.charCount(Character.codePointAt(source, end))
+                add(end, ClosedSourceLexicalKind.OperatorIdentifier)
+              else add(offset + 1, ClosedSourceLexicalKind.Colon)
             case '{' => add(offset + 1, ClosedSourceLexicalKind.LeftBrace)
             case '}' => add(offset + 1, ClosedSourceLexicalKind.RightBrace)
             case '[' => add(offset + 1, ClosedSourceLexicalKind.LeftBracket)
@@ -410,6 +417,10 @@ private[metallurgy] enum SourceEvidenceFailure:
   case InvalidPoint(kind: String, identity: String, start: Int, point: Int, end: Int)
   case CommentMismatch(index: Int, expected: String, actual: String)
   case OverlappingComments(first: Int, second: Int)
+  case DuplicateEndMarkerOwner(ownerNodeId: Long)
+  case UnknownEndMarkerOwner(ownerNodeId: Long)
+  case InvalidEndMarkerRange(ownerNodeId: Long, start: Int, end: Int, sourceLength: Int)
+  case EndMarkerOutsideOwner(ownerNodeId: Long, start: Int, end: Int)
   case CoverageMismatch(expectedOffset: Int, actualOffset: Int)
   case ReconstructionMismatch
 
@@ -428,6 +439,9 @@ private[metallurgy] object ProvisionalSourceEvidencePlanner:
     )
     duplicateIds(snapshot.positioned.map(_.id)).foreach(id =>
       failures += SourceEvidenceFailure.DuplicateIdentity("positioned", id)
+    )
+    duplicateIds(snapshot.endMarkers.map(_.ownerNodeId)).foreach(id =>
+      failures += SourceEvidenceFailure.DuplicateEndMarkerOwner(id)
     )
 
     val boundaries = collection.mutable.TreeSet(0, source.length)
@@ -466,6 +480,31 @@ private[metallurgy] object ProvisionalSourceEvidencePlanner:
     snapshot.positioned.foreach(value =>
       add("positioned", value.id.toString, SourceClaim.Positioned(value.id, value.occurrences), value.position)
     )
+    val nodesById = snapshot.nodes.map(node => node.id -> node).toMap
+    snapshot.endMarkers.foreach: marker =>
+      val range = marker.designatorRange
+      nodesById.get(marker.ownerNodeId) match
+        case None        => failures += SourceEvidenceFailure.UnknownEndMarkerOwner(marker.ownerNodeId)
+        case Some(owner) =>
+          if range.startOffset < 0 || range.startOffset >= range.endOffset || range.endOffset > source.length then
+            failures += SourceEvidenceFailure.InvalidEndMarkerRange(
+              marker.ownerNodeId,
+              range.startOffset,
+              range.endOffset,
+              source.length
+            )
+          else
+            owner.position match
+              case ParserNodePosition.Positioned(ownerRange, _, ParserPositionProvenance.SourceDerived)
+                  if ownerRange.startOffset <= range.startOffset && range.endOffset <= ownerRange.endOffset =>
+                boundaries += range.startOffset
+                boundaries += range.endOffset
+              case _ =>
+                failures += SourceEvidenceFailure.EndMarkerOutsideOwner(
+                  marker.ownerNodeId,
+                  range.startOffset,
+                  range.endOffset
+                )
     snapshot.diagnostics.zipWithIndex.foreach: (diagnostic, index) =>
       val claim = SourceClaim.Diagnostic(index)
       diagnostic.position match

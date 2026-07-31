@@ -72,6 +72,11 @@ private[pc] object StructuralScala3ParserBridge:
           )
       if commentReader.isEmpty then throw new NoSuchMethodException("parser input comments() or commentSpans()")
       val positionedSpan   = positionedClass.getMethod("span")
+      val endMarkerReader  =
+        try
+          val owner = loader.loadClass("dotty.tools.dotc.ast.Trees$WithEndMarker")
+          Right(EndMarkerReader(owner, owner.getMethod("hasEndMarker"), owner.getMethod("endSpan", contextClass)))
+        catch case NonFatal(error) => Left(errorMessage(error))
       val defTreeRawMods   = defTreeClass.getMethod("rawMods")
       val runtime          = ParserRuntime(
         loader,
@@ -86,6 +91,7 @@ private[pc] object StructuralScala3ParserBridge:
         treeClass,
         defTreeClass,
         defTreeRawMods,
+        endMarkerReader,
         positionedClass,
         positionedSpan,
         commentReader,
@@ -176,7 +182,7 @@ private[pc] object StructuralScala3ParserBridge:
       )
       .getOrElse(throw new NoSuchMethodException("StoreReporter supported constructor"))
 
-  private def availableCapabilities: Scala3ParserCapabilities =
+  private def availableCapabilities(endMarkers: ParserCapabilityStatus): Scala3ParserCapabilities =
     Scala3ParserCapabilities(
       publishedParser = ParserCapabilityStatus.Unavailable(
         "published Scalameta and scala3-interfaces APIs do not expose a parser"
@@ -188,7 +194,8 @@ private[pc] object StructuralScala3ParserBridge:
       sourcePositions = ParserCapabilityStatus.Available,
       diagnostics = ParserCapabilityStatus.Available,
       positionedSyntax = ParserCapabilityStatus.Available,
-      comments = ParserCapabilityStatus.Available
+      comments = ParserCapabilityStatus.Available,
+      endMarkers = endMarkers
     )
 
   private def unavailableCapabilities(reason: String): Scala3ParserCapabilities =
@@ -204,7 +211,8 @@ private[pc] object StructuralScala3ParserBridge:
       sourcePositions = unavailable,
       diagnostics = unavailable,
       positionedSyntax = unavailable,
-      comments = unavailable
+      comments = unavailable,
+      endMarkers = unavailable
     )
 
   private def errorMessage(error: Throwable): String =
@@ -226,6 +234,7 @@ private[pc] object StructuralScala3ParserBridge:
       treeClass: Class[?],
       defTreeClass: Class[?],
       defTreeRawMods: Method,
+      endMarkerReader: Either[String, EndMarkerReader],
       positionedClass: Class[?],
       positionedSpan: Method,
       commentReader: Option[CommentReader],
@@ -273,6 +282,8 @@ private[pc] object StructuralScala3ParserBridge:
     case Modern(input: Method, method: Method) extends CommentReader(input, method)
     case Legacy(input: Method, method: Method) extends CommentReader(input, method)
 
+  private final case class EndMarkerReader(ownerClass: Class[?], hasMarker: Method, span: Method)
+
   private enum ReporterFactory:
     case SingleArgument(constructor: Constructor[?])
     case WithTyperState(constructor: Constructor[?])
@@ -281,8 +292,6 @@ private[pc] object StructuralScala3ParserBridge:
       this match
         case SingleArgument(constructor) => constructor.newInstance(null)
         case WithTyperState(constructor) => constructor.newInstance(null, java.lang.Boolean.FALSE)
-
-  val capabilities: Scala3ParserCapabilities = availableCapabilities
 
 private final class StructuralScala3ParserBridge private (
     val identity: Scala3ParserCompilerIdentity,
@@ -367,7 +376,9 @@ private final class StructuralScala3ParserBridge private (
 
   private val runtime = new AtomicReference[Option[ParserRuntimeLease]](Some(new ParserRuntimeLease(initialRuntime)))
 
-  override val capabilities: Scala3ParserCapabilities = StructuralScala3ParserBridge.capabilities
+  override val capabilities: Scala3ParserCapabilities = availableCapabilities(
+    initialRuntime.endMarkerReader.fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available)
+  )
 
   override def loaderState: Scala3ParserLoaderState =
     if runtime.get().nonEmpty then Scala3ParserLoaderState.Open else Scala3ParserLoaderState.Closed
@@ -435,7 +446,7 @@ private final class StructuralScala3ParserBridge private (
     val parser = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue]
     val root   = parser.parse()
     request.cancellation.checkCanceled()
-    val nodes  = collectNodes(active, root, request.cancellation)
+    val nodes  = collectNodes(active, root, context.value, request.sourceText, request.cancellation)
     nodes.map: collected =>
       ParserSyntaxSnapshot(
         request.sourceUri,
@@ -449,12 +460,15 @@ private final class StructuralScala3ParserBridge private (
         comments(active, parser, request.sourceText, request.cancellation),
         diagnostics(active, context, request.cancellation),
         capabilities,
-        identity
+        identity,
+        collected.endMarkers
       )
 
   private def collectNodes(
       active: ParserRuntime,
       root: AnyRef,
+      context: AnyRef,
+      source: String,
       cancellation: Scala3ParserCancellation
   ): Either[Scala3ParserError, CollectedNodes] =
     if !active.treeClass.isInstance(root) then
@@ -466,6 +480,7 @@ private final class StructuralScala3ParserBridge private (
       var nextId           = 0L
       var collected        = Vector.empty[ParserSyntaxNode]
       var positioned       = Vector.empty[ParserPositionedSyntax]
+      var endMarkers       = Vector.empty[ParserEndMarker]
       val positionedIds    = new IdentityHashMap[AnyRef, java.lang.Long]()
       var nextPositionedId = 0L
 
@@ -586,6 +601,7 @@ private final class StructuralScala3ParserBridge private (
                   treePosition(active, tree.asInstanceOf[TreeValue]),
                   Vector.empty
                 )
+                endMarker(active, tree, id, context, source).foreach(marker => endMarkers :+= marker)
                 stack.push(FillTree(id, occurrence))
                 stack.push(EvaluateTreeFields(tree, id))
                 result = null
@@ -754,7 +770,14 @@ private final class StructuralScala3ParserBridge private (
             result = FieldValueResult(ParserFieldValue.Product(production, fields))
 
       val rootId = treeResult(result)
-      Right(CollectedNodes(rootId, collected.sortBy(_.id), positioned.sortBy(_.id)))
+      Right(
+        CollectedNodes(
+          rootId,
+          collected.sortBy(_.id),
+          positioned.sortBy(_.id),
+          endMarkers.sortBy(_.designatorRange.startOffset)
+        )
+      )
 
   private def declaredFieldShape(
       active: ParserRuntime,
@@ -877,6 +900,26 @@ private final class StructuralScala3ParserBridge private (
         ops.`point$extension`(span),
         provenance
       )
+
+  private def endMarker(
+      active: ParserRuntime,
+      tree: AnyRef,
+      ownerNodeId: Long,
+      context: AnyRef,
+      source: String
+  ): Option[ParserEndMarker] =
+    active.endMarkerReader.toOption.flatMap: reader =>
+      if !reader.ownerClass.isInstance(tree) then None
+      else if !reader.hasMarker.invoke(tree).asInstanceOf[java.lang.Boolean].booleanValue() then None
+      else
+        val span = reader.span.invoke(tree, context).asInstanceOf[java.lang.Long].longValue()
+        spanPosition(active, span) match
+          case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
+              if range.startOffset >= 0 && range.startOffset < range.endOffset && range.endOffset <= source.length =>
+            Some(ParserEndMarker(ownerNodeId, range))
+          case ParserNodePosition.Absent => None
+          case position                  =>
+            throw new IllegalStateException(s"compiler end marker has no valid source-derived span: $position")
 
   private def comments(
       active: ParserRuntime,
@@ -1024,5 +1067,6 @@ private final class StructuralScala3ParserBridge private (
   private final case class CollectedNodes(
       rootNodeId: Long,
       nodes: Vector[ParserSyntaxNode],
-      positioned: Vector[ParserPositionedSyntax]
+      positioned: Vector[ParserPositionedSyntax],
+      endMarkers: Vector[ParserEndMarker]
   )

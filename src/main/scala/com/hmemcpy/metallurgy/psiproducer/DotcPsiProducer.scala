@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
-import com.intellij.lang.PsiBuilder
+import com.intellij.lang.{PsiBuilder, WhitespacesBinders}
 import com.intellij.psi.tree.IElementType
 
 import java.util.ArrayDeque
@@ -24,25 +24,47 @@ private[metallurgy] object DotcPsiProducer:
   ): Either[String, Unit] =
     validate(builder, plan, bindings) match
       case None         =>
-        val targets  = plan.targetAssertions.collect:
+        val targets              = plan.targetAssertions.collect:
           case PlannedTargetAssertion(
                 TargetAssertionOwner.Composite(owner),
                 PlannedTargetIdentity.OutputRole(outputRoleId),
                 _
               ) =>
             owner -> outputRoleId
-        val remaps   = plan.physicalLeafOwnership.collect:
+        val remaps               = plan.physicalLeafOwnership.collect:
           case PlannedPhysicalLeaf(_, start, _, _, _, _, TerminalLeafTarget.Token(surfaceId, _)) =>
             start -> bindings.elementTypes(surfaceId)
-        val byParent = plan.composites
+        val byParent             = plan.composites
           .flatMap(parent => parent.children.map(child => child.child -> parent.instance))
           .toMap
-        val roots    = plan.composites.filterNot(value => byParent.contains(value.instance))
-        val byId     = plan.composites.map(value => value.instance -> value).toMap
-        val root     = builder.mark()
+        val trailingTriviaOwners = plan.composites.iterator
+          .filter: composite =>
+            plan.lexicalContract.atoms
+              .find(_.end == composite.range.endOffset)
+              .exists: atom =>
+                (atom.kind == ClosedSourceLexicalKind.Whitespace ||
+                  atom.kind == ClosedSourceLexicalKind.LineComment ||
+                  atom.kind == ClosedSourceLexicalKind.BlockComment) &&
+                  plan.physicalLeafOwnership.exists:
+                    case PlannedPhysicalLeaf(
+                          _,
+                          start,
+                          end,
+                          PhysicalLeafOwner.Composite(owner),
+                          _,
+                          _,
+                          _
+                        ) =>
+                      owner == composite.instance && start <= atom.start && atom.end <= end
+                    case _ => false
+          .map(_.instance)
+          .toSet
+        val roots                = plan.composites.filterNot(value => byParent.contains(value.instance))
+        val byId                 = plan.composites.map(value => value.instance -> value).toMap
+        val root                 = builder.mark()
         roots
           .sortBy(value => (value.range.startOffset, value.range.endOffset, value.instance.toString))
-          .foreach(emit(_, byId, targets.toMap, bindings, builder, remaps.toMap))
+          .foreach(emit(_, byId, targets.toMap, bindings, builder, remaps.toMap, trailingTriviaOwners))
         advanceTo(builder.getOriginalText.length, builder, remaps.toMap)
         root.done(fileElementType)
         Right(())
@@ -59,22 +81,25 @@ private[metallurgy] object DotcPsiProducer:
       targets: Map[CompositeInstanceId, PsiOutputRoleId],
       bindings: NativePsiElementBindings,
       builder: PsiBuilder,
-      tokenRemaps: Map[Int, IElementType] = Map.empty
+      tokenRemaps: Map[Int, IElementType] = Map.empty,
+      trailingTriviaOwners: Set[CompositeInstanceId] = Set.empty
   ): Unit =
     val pending = new ArrayDeque[EmitEvent]()
     pending.addFirst(EmitEvent.Enter(composite))
     while !pending.isEmpty do
       pending.removeFirst() match
-        case EmitEvent.Enter(current)                =>
+        case EmitEvent.Enter(current)                         =>
           val (from, to) = range(current)
           advanceTo(from, builder, tokenRemaps)
           val marker     = builder.mark()
-          pending.addFirst(EmitEvent.Exit(marker, to, bindings.outputRoles(targets(current.instance))))
+          pending.addFirst(EmitEvent.Exit(marker, current, to, bindings.outputRoles(targets(current.instance))))
           current.children.reverseIterator
             .flatMap(child => byId.get(child.child))
             .foreach(child => pending.addFirst(EmitEvent.Enter(child)))
-        case EmitEvent.Exit(marker, to, elementType) =>
+        case EmitEvent.Exit(marker, current, to, elementType) =>
           advanceTo(to, builder, tokenRemaps)
+          if trailingTriviaOwners(current.instance) then
+            marker.setCustomEdgeTokenBinders(null, WhitespacesBinders.GREEDY_RIGHT_BINDER)
           marker.done(elementType)
 
   private def validate(
@@ -247,13 +272,13 @@ private[metallurgy] object DotcPsiProducer:
       root: CompositeInstanceId,
       children: Map[CompositeInstanceId, Vector[CompositeInstanceId]]
   ): Set[CompositeInstanceId] =
-    def loop(pending: List[CompositeInstanceId], seen: Set[CompositeInstanceId]): Set[CompositeInstanceId] =
-      pending match
-        case Nil          => seen
-        case head :: tail =>
-          if seen(head) then loop(tail, seen)
-          else loop(children.getOrElse(head, Vector.empty).toList ::: tail, seen + head)
-    loop(List(root), Set.empty)
+    val pending = new ArrayDeque[CompositeInstanceId]()
+    val seen    = collection.mutable.Set.empty[CompositeInstanceId]
+    pending.addFirst(root)
+    while !pending.isEmpty do
+      val current = pending.removeFirst()
+      if seen.add(current) then children.getOrElse(current, Vector.empty).reverseIterator.foreach(pending.addFirst)
+    seen.toSet
 
   private def lexerBoundariesAreSafe(boundaries: Set[Int], builder: PsiBuilder): Boolean =
     var observed = Set(0, builder.getOriginalText.length)
@@ -284,4 +309,4 @@ private[metallurgy] object DotcPsiProducer:
 
   private enum EmitEvent:
     case Enter(composite: PlannedComposite)
-    case Exit(marker: PsiBuilder.Marker, to: Int, elementType: IElementType)
+    case Exit(marker: PsiBuilder.Marker, composite: PlannedComposite, to: Int, elementType: IElementType)

@@ -87,6 +87,63 @@ final class Scala3ParserBridgeTest:
     finally bridge.close()
 
   @Test
+  def compilerEndMarkerAttachmentsExposeOnlyNeutralOwnerAndDesignatorEvidence(): Unit =
+    val bridge = openBridge()
+    val source =
+      """package a:
+        |  package b:
+        |    import x.y
+        |  end b
+        |end a
+        |""".stripMargin
+    try
+      val snapshot = parse(bridge, source)
+      val expected = Vector("b", "a").map: designator =>
+        val start = source.indexOf(s"end $designator") + 4
+        PcSourceRange(start, start + designator.length)
+
+      assertEquals(expected, snapshot.endMarkers.map(_.designatorRange))
+      assertEquals(
+        Vector("b", "a"),
+        snapshot.endMarkers.map(marker =>
+          source.substring(
+            marker.designatorRange.startOffset,
+            marker.designatorRange.endOffset
+          )
+        )
+      )
+      assertTrue(snapshot.endMarkers.forall: marker =>
+        snapshot.nodes
+          .find(_.id == marker.ownerNodeId)
+          .exists: owner =>
+            owner.production == "PackageDef" && (owner.position match
+              case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                range.endOffset == marker.designatorRange.endOffset
+              case _                                                                               => false
+            ))
+      assertTrue(snapshot.diagnostics.isEmpty)
+      assertNeutral(snapshot)
+
+      val braced  = parse(bridge, "package a { import x.y }", "file:///BracedPackage.scala")
+      assertTrue(braced.endMarkers.isEmpty)
+      val changed = snapshot.copy(endMarkers = snapshot.endMarkers.dropRight(1))
+      assertNotEquals(
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        ParserSyntaxSnapshot.evidenceFingerprint(changed)
+      )
+    finally bridge.close()
+
+  @Test
+  def mismatchedEndMarkerIsDiagnosticWithoutTrustedAttachmentEvidence(): Unit =
+    val bridge = openBridge()
+    try
+      val snapshot = parse(bridge, "package a:\n  import x.y\nend b\n")
+
+      assertTrue(snapshot.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
+      assertTrue(snapshot.endMarkers.isEmpty)
+    finally bridge.close()
+
+  @Test
   def deepPackageSelectionsExportInStrictPreorderWithoutConsumingTheJvmStack(): Unit =
     val bridge = openBridge()
     try

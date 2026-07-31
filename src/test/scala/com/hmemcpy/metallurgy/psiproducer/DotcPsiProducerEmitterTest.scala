@@ -206,7 +206,11 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     val catalog = Scala3PsiProductionCatalog(
       Scala3PsiProductionCatalog.Reviewed.productions.map {
         case production if production.id == "file-package" =>
-          production.copy(outputRoleId = Some(PsiOutputRoleId.ImportSelector))
+          val template = production.effectiveOutputTemplate
+          production.copy(outputTemplate = Some(template.copy(composites = template.composites.map:
+            case output if output.id == "package" => output.copy(outputRoleId = PsiOutputRoleId.ImportSelector)
+            case output                           => output
+          )))
         case production                                    => production
       },
       StableRoleInventory.Reviewed

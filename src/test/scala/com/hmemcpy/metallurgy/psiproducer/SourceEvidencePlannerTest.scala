@@ -136,25 +136,43 @@ final class SourceEvidencePlannerTest:
 
   @Test
   def closedLexicalContractKeepsTokenInteriorsOpaqueAndSeparatesDelimiters(): Unit =
-    val source   = "(\"a,b\", `c d`, '\\u0041', 1.25e-2)"
+    val source   = "(\"a,b\", `c d`, '\\u0041', 1.25e-2, packageName: ? >: L <: U :: Nil)"
     val contract = ClosedSourceLexicalContract.from(source)
     val atoms    = contract.atoms.map(atom => source.substring(atom.start, atom.end) -> atom.kind)
 
     assertEquals(source, contract.reconstruct(source))
     assertEquals(
       Vector(
-        "("         -> ClosedSourceLexicalKind.LeftParenthesis,
-        "\"a,b\""   -> ClosedSourceLexicalKind.Literal,
-        ","         -> ClosedSourceLexicalKind.Comma,
-        " "         -> ClosedSourceLexicalKind.Whitespace,
-        "`c d`"     -> ClosedSourceLexicalKind.QuotedIdentifier,
-        ","         -> ClosedSourceLexicalKind.Comma,
-        " "         -> ClosedSourceLexicalKind.Whitespace,
-        "'\\u0041'" -> ClosedSourceLexicalKind.Literal,
-        ","         -> ClosedSourceLexicalKind.Comma,
-        " "         -> ClosedSourceLexicalKind.Whitespace,
-        "1.25e-2"   -> ClosedSourceLexicalKind.Number,
-        ")"         -> ClosedSourceLexicalKind.RightParenthesis
+        "("           -> ClosedSourceLexicalKind.LeftParenthesis,
+        "\"a,b\""     -> ClosedSourceLexicalKind.Literal,
+        ","           -> ClosedSourceLexicalKind.Comma,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "`c d`"       -> ClosedSourceLexicalKind.QuotedIdentifier,
+        ","           -> ClosedSourceLexicalKind.Comma,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "'\\u0041'"   -> ClosedSourceLexicalKind.Literal,
+        ","           -> ClosedSourceLexicalKind.Comma,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "1.25e-2"     -> ClosedSourceLexicalKind.Number,
+        ","           -> ClosedSourceLexicalKind.Comma,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "packageName" -> ClosedSourceLexicalKind.Identifier,
+        ":"           -> ClosedSourceLexicalKind.Colon,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "?"           -> ClosedSourceLexicalKind.OperatorIdentifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        ">:"          -> ClosedSourceLexicalKind.OperatorIdentifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "L"           -> ClosedSourceLexicalKind.Identifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "<:"          -> ClosedSourceLexicalKind.OperatorIdentifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "U"           -> ClosedSourceLexicalKind.Identifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "::"          -> ClosedSourceLexicalKind.OperatorIdentifier,
+        " "           -> ClosedSourceLexicalKind.Whitespace,
+        "Nil"         -> ClosedSourceLexicalKind.Identifier,
+        ")"           -> ClosedSourceLexicalKind.RightParenthesis
       ),
       atoms
     )
@@ -297,6 +315,31 @@ final class SourceEvidencePlannerTest:
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.CommentMismatch]))
     assertTrue(failures.exists(_.isInstanceOf[SourceEvidenceFailure.OverlappingComments]))
 
+    def markerFailures(snapshot: ParserSyntaxSnapshot): Vector[SourceEvidenceFailure] =
+      ProvisionalSourceEvidencePlanner.plan(snapshot).swap.getOrElse(Vector.empty)
+    val markerBase                                                                    = fixture(source, Vector(node(1, 0, source.length, 0)))
+    assertTrue(
+      markerFailures(
+        markerBase.copy(endMarkers = Vector.fill(2)(ParserEndMarker(1, PcSourceRange(1, 2))))
+      ).exists(_.isInstanceOf[SourceEvidenceFailure.DuplicateEndMarkerOwner])
+    )
+    assertTrue(
+      markerFailures(markerBase.copy(endMarkers = Vector(ParserEndMarker(2, PcSourceRange(1, 2)))))
+        .exists(_.isInstanceOf[SourceEvidenceFailure.UnknownEndMarkerOwner])
+    )
+    assertTrue(
+      markerFailures(markerBase.copy(endMarkers = Vector(ParserEndMarker(1, PcSourceRange(2, 2)))))
+        .exists(_.isInstanceOf[SourceEvidenceFailure.InvalidEndMarkerRange])
+    )
+    assertTrue(
+      markerFailures(
+        markerBase.copy(
+          nodes = Vector(node(1, 0, 1, 0)),
+          endMarkers = Vector(ParserEndMarker(1, PcSourceRange(2, 3)))
+        )
+      ).exists(_.isInstanceOf[SourceEvidenceFailure.EndMarkerOutsideOwner])
+    )
+
   private def planned(snapshot: ParserSyntaxSnapshot): ProvisionalSourceEvidencePlan =
     ProvisionalSourceEvidencePlanner
       .plan(snapshot)
@@ -338,11 +381,13 @@ final class SourceEvidencePlannerTest:
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
+        ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available
       ),
       Scala3ParserCompilerIdentity(
         Scala3ParserArtifactCoordinate("org", "compiler", "test"),
         Vector.empty,
         Scala3ParserLoaderIdentity(1)
-      )
+      ),
+      Vector.empty
     )

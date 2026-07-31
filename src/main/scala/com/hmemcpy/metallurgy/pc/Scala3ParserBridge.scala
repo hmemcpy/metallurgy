@@ -132,8 +132,11 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     comments: Vector[ParserComment],
     diagnostics: Vector[ParserDiagnostic],
     capabilities: Scala3ParserCapabilities,
-    compilerIdentity: Scala3ParserCompilerIdentity
+    compilerIdentity: Scala3ParserCompilerIdentity,
+    endMarkers: Vector[ParserEndMarker]
 )
+
+private[metallurgy] final case class ParserEndMarker(ownerNodeId: Long, designatorRange: PcSourceRange)
 
 private[metallurgy] final case class ParserPositionedSyntax(
     id: Long,
@@ -233,6 +236,10 @@ private[metallurgy] object CanonicalByteEncoder:
       diagnostic.position match
         case None           => e.tag(0)
         case Some(position) => e.tag(1); writeRange(position.range, e); e.int(position.point)
+    if snapshot.endMarkers.nonEmpty then
+      e.tag(10)
+      e.sequence(snapshot.endMarkers): marker =>
+        e.long(marker.ownerNodeId); writeRange(marker.designatorRange, e)
     val capabilities = snapshot.capabilities
     Vector(
       capabilities.publishedParser,
@@ -381,7 +388,8 @@ private[metallurgy] final case class Scala3ParserCapabilities(
     sourcePositions: ParserCapabilityStatus,
     diagnostics: ParserCapabilityStatus,
     positionedSyntax: ParserCapabilityStatus,
-    comments: ParserCapabilityStatus
+    comments: ParserCapabilityStatus,
+    endMarkers: ParserCapabilityStatus
 ):
   def requiredUnavailable: Vector[ParserCapabilityFailure] =
     Vector(
@@ -392,7 +400,8 @@ private[metallurgy] final case class Scala3ParserCapabilities(
       "source positions"    -> sourcePositions,
       "diagnostics"         -> diagnostics,
       "positioned syntax"   -> positionedSyntax,
-      "comments"            -> comments
+      "comments"            -> comments,
+      "end markers"         -> endMarkers
     ).collect { case (name, ParserCapabilityStatus.Unavailable(reason)) =>
       ParserCapabilityFailure(name, reason)
     }
