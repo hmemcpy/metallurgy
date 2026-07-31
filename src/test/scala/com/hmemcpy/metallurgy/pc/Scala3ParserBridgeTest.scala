@@ -1,10 +1,12 @@
 package com.hmemcpy.metallurgy.pc
 
+import com.intellij.openapi.diagnostic.ControlFlowException
 import org.junit.Assert.{assertEquals, assertFalse, assertNotEquals, assertTrue}
 import org.junit.Test
 
 import java.nio.file.{Files, Path}
 import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.jar.JarOutputStream
 
 final class Scala3ParserBridgeTest:
@@ -85,6 +87,89 @@ final class Scala3ParserBridgeTest:
     finally bridge.close()
 
   @Test
+  def deepPackageSelectionsExportInStrictPreorderWithoutConsumingTheJvmStack(): Unit =
+    val bridge = openBridge()
+    try
+      Vector(1024, 4096).foreach: segmentCount =>
+        val source = deepPackageSource(segmentCount)
+        val uri    = s"file:///DeepPackage$segmentCount.scala"
+        val first  = parse(bridge, source, uri)
+        val second = parse(bridge, source, uri)
+
+        assertEquals(first, second)
+        assertEquals(ParserSyntaxSnapshot.evidenceFingerprint(first), ParserSyntaxSnapshot.evidenceFingerprint(second))
+        assertEquals((0L until first.nodes.size.toLong).toVector, first.nodes.map(_.id))
+        assertEquals(1, first.nodes.count(_.production == "PackageDef"))
+        assertEquals(segmentCount - 1, first.nodes.count(_.production == "Select"))
+        assertEquals("PackageDef", first.nodes.head.production)
+        assertEquals(
+          ParserNodePosition.Positioned(PcSourceRange(0, source.length), 8, ParserPositionProvenance.SourceDerived),
+          first.nodes.head.position
+        )
+        assertTrue(first.nodes.filter(_.production == "Select").forall(hasStrictSourceSpan(_, source.length)))
+        assertTrue(first.nodes.tail.forall(_.occurrences.nonEmpty))
+        assertNeutral(first)
+    finally bridge.close()
+
+  @Test
+  def deepImportSelectionSuspendsInsideRepeatedFieldsWithExactSourceOccurrences(): Unit =
+    val bridge       = openBridge()
+    val segmentCount = 4096
+    val selectedPath = (0 until segmentCount).map(index => s"p$index").mkString(".")
+    val source       = s"import $selectedPath.value"
+    try
+      val first    = parse(bridge, source, "file:///DeepImport.scala")
+      val second   = parse(bridge, source, "file:///DeepImport.scala")
+      val selects  = first.nodes.filter(_.production == "Select")
+      val root     = first.nodes.find(_.id == first.rootNodeId).get
+      val imported = first.nodes.find(_.production == "Import").get
+
+      assertEquals(first, second)
+      assertEquals(ParserSyntaxSnapshot.evidenceFingerprint(first), ParserSyntaxSnapshot.evidenceFingerprint(second))
+      assertEquals(segmentCount - 1, selects.size)
+      assertEquals(
+        Vector(
+          ParserNodeOccurrence(
+            root.id,
+            Vector(ParserFieldPathSegment.NamedField("stats"), ParserFieldPathSegment.RepeatedIndex(0))
+          )
+        ),
+        imported.occurrences
+      )
+      assertEquals(
+        ParserNodePosition.Positioned(PcSourceRange(0, source.length), 7, ParserPositionProvenance.SourceDerived),
+        imported.position
+      )
+      assertTrue(selects.forall(hasStrictSourceSpan(_, source.length)))
+      assertTrue(
+        selects
+          .flatMap(_.occurrences)
+          .forall: occurrence =>
+            first.nodes.exists(_.id == occurrence.ownerNodeId) && occurrence.fieldPath.nonEmpty
+      )
+      assertNeutral(first)
+    finally bridge.close()
+
+  @Test
+  def cancellationDuringDeepExportLeavesTheBridgeOpenAndReusable(): Unit =
+    val bridge       = openBridge()
+    val cancellation = new CountingCancellation(256)
+    try
+      val thrown =
+        try
+          val _ = bridge.parse(request(deepPackageSource(4096), "file:///CanceledDeepPackage.scala", cancellation))
+          false
+        catch case _: TestControlFlowException => true
+
+      assertTrue(thrown)
+      assertTrue(cancellation.checks.get() > 256)
+      assertEquals(Scala3ParserLoaderState.Open, bridge.loaderState)
+      val recovered = parse(bridge, "package recovered", "file:///RecoveredPackage.scala")
+      assertEquals("PackageDef", recovered.nodes.head.production)
+      assertEquals(Scala3ParserLoaderState.Open, bridge.loaderState)
+    finally bridge.close()
+
+  @Test
   def closingTheBridgeDetachesItsRuntimeAndRejectsFurtherParsing(): Unit =
     val bridge   = openBridge()
     val identity = bridge.identity
@@ -125,18 +210,42 @@ final class Scala3ParserBridgeTest:
       .fold(error => throw new AssertionError(error.toString), identity)
 
   private def parse(bridge: Scala3ParserBridge, source: String): ParserSyntaxSnapshot =
+    parse(bridge, source, "file:///ParserBridgeTest.scala")
+
+  private def parse(bridge: Scala3ParserBridge, source: String, uri: String): ParserSyntaxSnapshot =
     bridge
-      .parse(request(source))
+      .parse(request(source, uri))
       .fold(error => throw new AssertionError(error.toString), identity)
 
   private def request(source: String): Scala3ParserRequest =
+    request(source, "file:///ParserBridgeTest.scala", Scala3ParserCancellation.Never)
+
+  private def request(
+      source: String,
+      uri: String,
+      cancellation: Scala3ParserCancellation = Scala3ParserCancellation.Never
+  ): Scala3ParserRequest =
     Scala3ParserRequest(
       ParserSourceUri
-        .from("file:///ParserBridgeTest.scala")
+        .from(uri)
         .fold(message => throw new AssertionError(message), identity),
       source,
-      Vector.empty
+      Vector.empty,
+      cancellation
     )
+
+  private def deepPackageSource(segmentCount: Int): String =
+    (0 until segmentCount).map(index => s"p$index").mkString("package ", ".", "")
+
+  private def hasStrictSourceSpan(node: ParserSyntaxNode, sourceLength: Int): Boolean =
+    node.position match
+      case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived) =>
+        range.startOffset >= 0 &&
+        range.startOffset < range.endOffset &&
+        range.endOffset <= sourceLength &&
+        point >= range.startOffset &&
+        point <= range.endOffset
+      case _                                                                                   => false
 
   private def coordinate: Scala3ParserArtifactCoordinate =
     Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", ScalaVersion)
@@ -187,3 +296,11 @@ final class Scala3ParserBridgeTest:
     )
 
   private val ScalaVersion = "3.7.4"
+
+  private final class CountingCancellation(limit: Int) extends Scala3ParserCancellation:
+    val checks = new AtomicInteger(0)
+
+    override def checkCanceled(): Unit =
+      if checks.incrementAndGet() > limit then throw new TestControlFlowException
+
+  private final class TestControlFlowException extends RuntimeException("cancelled"), ControlFlowException

@@ -469,161 +469,292 @@ private final class StructuralScala3ParserBridge private (
       val positionedIds    = new IdentityHashMap[AnyRef, java.lang.Long]()
       var nextPositionedId = 0L
 
-      def visitPositioned(
+      sealed trait EvaluationResult
+      final case class TreeResult(id: Long)                            extends EvaluationResult
+      final case class PositionedResult(id: Long)                      extends EvaluationResult
+      final case class FieldValueResult(value: ParserFieldValue)       extends EvaluationResult
+      final case class FieldsResult(fields: Vector[ParserSyntaxField]) extends EvaluationResult
+
+      sealed trait EvaluationFrame
+      final case class EnterTree(tree: AnyRef, occurrence: Option[ParserNodeOccurrence]) extends EvaluationFrame
+      final case class EvaluateTreeFields(tree: AnyRef, id: Long)                        extends EvaluationFrame
+      final case class ContinueTreeFields(tree: AnyRef, id: Long)                        extends EvaluationFrame
+      final case class FinishTreeFields(fields: Vector[ParserSyntaxField])               extends EvaluationFrame
+      final case class FillTree(id: Long, occurrence: Option[ParserNodeOccurrence])      extends EvaluationFrame
+      final case class EnterPositioned(
           value: AnyRef,
           ownerNodeId: Long,
           path: Vector[ParserFieldPathSegment]
-      ): Long =
-        val existing = Option(positionedIds.get(value))
-        val id       = existing
-          .map(_.longValue())
-          .getOrElse:
-            val assigned = nextPositionedId
-            nextPositionedId += 1
-            positionedIds.put(value, assigned)
-            val product  = value.asInstanceOf[ProductValue]
-            positioned :+= ParserPositionedSyntax(
-              assigned,
-              product.productPrefix(),
-              Vector.empty,
-              positionedPosition(active, value),
-              Vector.empty
-            )
-            assigned
+      ) extends EvaluationFrame
+      final case class FillPositioned(id: Long)                                          extends EvaluationFrame
+      final case class EvaluateProductFields(
+          product: ProductValue,
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment]
+      ) extends EvaluationFrame
+      final case class EvaluateProductField(
+          product: ProductValue,
+          arity: Int,
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment],
+          index: Int,
+          fields: Vector[ParserSyntaxField]
+      ) extends EvaluationFrame
+      final case class FinishProductField(
+          product: ProductValue,
+          arity: Int,
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment],
+          index: Int,
+          fields: Vector[ParserSyntaxField],
+          fieldName: String
+      ) extends EvaluationFrame
+      final case class EvaluateFieldValue(
+          value: AnyRef,
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment]
+      ) extends EvaluationFrame
+      case object FinishNodeValue                                                        extends EvaluationFrame
+      case object FinishPositionedValue                                                  extends EvaluationFrame
+      case object FinishOptionalValue                                                    extends EvaluationFrame
+      final case class EvaluateRepeatedValue(
+          values: Vector[AnyRef],
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment],
+          index: Int,
+          fields: Vector[ParserFieldValue]
+      ) extends EvaluationFrame
+      final case class FinishRepeatedValue(
+          values: Vector[AnyRef],
+          ownerNodeId: Long,
+          path: Vector[ParserFieldPathSegment],
+          index: Int,
+          fields: Vector[ParserFieldValue]
+      ) extends EvaluationFrame
+      final case class FinishProductValue(value: AnyRef, production: String)             extends EvaluationFrame
 
-        val occurrence = ParserPositionedOccurrence(ownerNodeId, path)
-        val index      = positioned.indexWhere(_.id == id)
-        val current    = positioned(index)
+      def nodeOccurrence(id: Long, occurrence: ParserNodeOccurrence): Unit =
+        val index   = collected.indexWhere(_.id == id)
+        val current = collected(index)
+        if !current.occurrences.contains(occurrence) then
+          collected = collected.updated(index, current.copy(occurrences = current.occurrences :+ occurrence))
+
+      def positionedOccurrence(id: Long, occurrence: ParserPositionedOccurrence): Unit =
+        val index   = positioned.indexWhere(_.id == id)
+        val current = positioned(index)
         if !current.occurrences.contains(occurrence) then
           positioned = positioned.updated(index, current.copy(occurrences = current.occurrences :+ occurrence))
-        if existing.isEmpty then
-          val product   = value.asInstanceOf[ProductValue]
-          val fields    = productFields(
-            active,
-            product,
-            ownerNodeId,
-            path,
-            cancellation,
-            visitTree,
-            visitPositioned,
-            products,
-            generated
-          )
-          val refreshed = positioned(positioned.indexWhere(_.id == id))
-          positioned = positioned.updated(
-            positioned.indexWhere(_.id == id),
-            refreshed.copy(fields = fields)
-          )
-        id
 
-      def visitTree(tree: AnyRef, occurrence: Option[ParserNodeOccurrence]): Long =
-        val existing = Option(ids.get(tree))
-        val id       = existing
-          .map(_.longValue())
-          .getOrElse:
-            cancellation.checkCanceled()
-            val id      = nextId
-            nextId += 1
-            ids.put(tree, id)
-            val product = tree.asInstanceOf[ProductValue]
-            collected :+= ParserSyntaxNode(
-              id,
-              product.productPrefix(),
-              Vector.empty,
-              treePosition(active, tree.asInstanceOf[TreeValue]),
-              Vector.empty
-            )
-            val fields  = productFields(
-              active,
-              product,
-              id,
-              Vector.empty,
-              cancellation,
-              visitTree,
-              visitPositioned,
-              products,
-              generated
-            ) ++ definitionModifiers(
-              active,
-              tree,
-              id,
-              cancellation,
-              visitTree,
-              visitPositioned,
-              products,
-              generated
-            )
+      def treeResult(result: EvaluationResult): Long = result match
+        case TreeResult(id) => id
+        case other          => throw new IllegalStateException(s"expected tree traversal result, found $other")
+
+      def positionedResult(result: EvaluationResult): Long = result match
+        case PositionedResult(id) => id
+        case other                => throw new IllegalStateException(s"expected positioned traversal result, found $other")
+
+      def fieldValueResult(result: EvaluationResult): ParserFieldValue = result match
+        case FieldValueResult(value) => value
+        case other                   => throw new IllegalStateException(s"expected field traversal result, found $other")
+
+      def fieldsResult(result: EvaluationResult): Vector[ParserSyntaxField] = result match
+        case FieldsResult(fields) => fields
+        case other                => throw new IllegalStateException(s"expected product traversal result, found $other")
+
+      val stack                    = new java.util.ArrayDeque[EvaluationFrame]()
+      var result: EvaluationResult = null
+      stack.push(EnterTree(root, None))
+
+      while !stack.isEmpty do
+        stack.pop() match
+          case EnterTree(tree, occurrence)                                                     =>
+            Option(ids.get(tree)) match
+              case Some(existing) =>
+                val id = existing.longValue()
+                occurrence.foreach(nodeOccurrence(id, _))
+                result = TreeResult(id)
+              case None           =>
+                cancellation.checkCanceled()
+                val id      = nextId
+                nextId += 1
+                ids.put(tree, id)
+                val product = tree.asInstanceOf[ProductValue]
+                collected :+= ParserSyntaxNode(
+                  id,
+                  product.productPrefix(),
+                  Vector.empty,
+                  treePosition(active, tree.asInstanceOf[TreeValue]),
+                  Vector.empty
+                )
+                stack.push(FillTree(id, occurrence))
+                stack.push(EvaluateTreeFields(tree, id))
+                result = null
+          case EvaluateTreeFields(tree, id)                                                    =>
+            stack.push(ContinueTreeFields(tree, id))
+            stack.push(EvaluateProductFields(tree.asInstanceOf[ProductValue], id, Vector.empty))
+            result = null
+          case ContinueTreeFields(tree, id)                                                    =>
+            val fields = fieldsResult(result)
+            if active.defTreeClass.isInstance(tree) then
+              stack.push(FinishTreeFields(fields))
+              stack.push(
+                EvaluateFieldValue(
+                  active.defTreeRawMods.invoke(tree),
+                  id,
+                  Vector(ParserFieldPathSegment.NamedField("mods"))
+                )
+              )
+              result = null
+            else result = FieldsResult(fields)
+          case FinishTreeFields(fields)                                                        =>
+            result = FieldsResult(fields :+ ParserSyntaxField("mods", fieldValueResult(result)))
+          case FillTree(id, occurrence)                                                        =>
+            val fields  = fieldsResult(result)
             val index   = collected.indexWhere(_.id == id)
-            collected = collected.updated(index, collected(index).copy(fields = fields))
-            id
+            val current = collected(index)
+            collected = collected.updated(index, current.copy(fields = fields))
+            occurrence.foreach(nodeOccurrence(id, _))
+            result = TreeResult(id)
+          case EnterPositioned(value, ownerNodeId, path)                                       =>
+            Option(positionedIds.get(value)) match
+              case Some(existing) =>
+                val id = existing.longValue()
+                positionedOccurrence(id, ParserPositionedOccurrence(ownerNodeId, path))
+                result = PositionedResult(id)
+              case None           =>
+                val id      = nextPositionedId
+                nextPositionedId += 1
+                positionedIds.put(value, id)
+                val product = value.asInstanceOf[ProductValue]
+                positioned :+= ParserPositionedSyntax(
+                  id,
+                  product.productPrefix(),
+                  Vector.empty,
+                  positionedPosition(active, value),
+                  Vector.empty
+                )
+                positionedOccurrence(id, ParserPositionedOccurrence(ownerNodeId, path))
+                stack.push(FillPositioned(id))
+                stack.push(EvaluateProductFields(product, ownerNodeId, path))
+                result = null
+          case FillPositioned(id)                                                              =>
+            val fields  = fieldsResult(result)
+            val index   = positioned.indexWhere(_.id == id)
+            val current = positioned(index)
+            positioned = positioned.updated(index, current.copy(fields = fields))
+            result = PositionedResult(id)
+          case EvaluateProductFields(product, ownerNodeId, path)                               =>
+            stack.push(EvaluateProductField(product, product.productArity(), ownerNodeId, path, 0, Vector.empty))
+            result = null
+          case EvaluateProductField(product, arity, ownerNodeId, path, index, fields)          =>
+            if index == arity then result = FieldsResult(fields)
+            else
+              cancellation.checkCanceled()
+              val fieldName = product.productElementName(index)
+              val value     = product.productElement(index)
+              val fieldPath = path :+ ParserFieldPathSegment.NamedField(product.productElementName(index))
+              stack.push(FinishProductField(product, arity, ownerNodeId, path, index, fields, fieldName))
+              stack.push(EvaluateFieldValue(value, ownerNodeId, fieldPath))
+              result = null
+          case FinishProductField(product, arity, ownerNodeId, path, index, fields, fieldName) =>
+            val field = ParserSyntaxField(
+              fieldName,
+              fieldValueResult(result),
+              declaredFieldShape(active, product, product.productElementName(index))
+            )
+            stack.push(EvaluateProductField(product, arity, ownerNodeId, path, index + 1, fields :+ field))
+            result = null
+          case EvaluateFieldValue(value, ownerNodeId, path)                                    =>
+            if value == null then result = FieldValueResult(ParserFieldValue.Optional(None))
+            else if active.treeClass.isInstance(value) then
+              stack.push(FinishNodeValue)
+              stack.push(EnterTree(value, Some(ParserNodeOccurrence(ownerNodeId, path))))
+              result = null
+            else
+              value match
+                case text: String                                =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Text(text)))
+                case number: java.lang.Integer                   =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Integer(number.intValue())))
+                case number: java.lang.Long                      =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.LongInteger(number.longValue())))
+                case number: java.lang.Double                    =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Decimal(number.doubleValue())))
+                case logical: java.lang.Boolean                  =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Logical(logical.booleanValue())))
+                case character: java.lang.Character              =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Character(character.charValue())))
+                case _ if active.nameClass.isInstance(value)     =>
+                  result = FieldValueResult(parserName(active, value, generated))
+                case _ if active.optionClass.isInstance(value)   =>
+                  val option = value.asInstanceOf[OptionValue]
+                  if option.isEmpty() then result = FieldValueResult(ParserFieldValue.Optional(None))
+                  else
+                    stack.push(FinishOptionalValue)
+                    stack.push(
+                      EvaluateFieldValue(
+                        option.get(),
+                        ownerNodeId,
+                        path :+ ParserFieldPathSegment.OptionalNesting
+                      )
+                    )
+                    result = null
+                case _ if active.iterableClass.isInstance(value) =>
+                  val values = iteratorValues(value.asInstanceOf[IterableValue], cancellation)
+                  stack.push(EvaluateRepeatedValue(values, ownerNodeId, path, 0, Vector.empty))
+                  result = null
+                case _ if active.productClass.isInstance(value)  =>
+                  if active.positionedClass.isInstance(value) then
+                    stack.push(FinishPositionedValue)
+                    stack.push(EnterPositioned(value, ownerNodeId, path))
+                    result = null
+                  else if products.put(value, java.lang.Boolean.TRUE) != null then
+                    result = FieldValueResult(ParserFieldValue.Unsupported(value.getClass.getName))
+                  else
+                    val product    = value.asInstanceOf[ProductValue]
+                    val production = product.productPrefix()
+                    val boundary   = product.productPrefix()
+                    stack.push(FinishProductValue(value, production))
+                    stack.push(
+                      EvaluateProductFields(
+                        product,
+                        ownerNodeId,
+                        path :+ ParserFieldPathSegment.NestedProductBoundary(boundary)
+                      )
+                    )
+                    result = null
+                case _                                           =>
+                  result = FieldValueResult(ParserFieldValue.Unsupported(value.getClass.getName))
+          case FinishNodeValue                                                                 =>
+            result = FieldValueResult(ParserFieldValue.Node(treeResult(result)))
+          case FinishPositionedValue                                                           =>
+            result = FieldValueResult(ParserFieldValue.Positioned(positionedResult(result)))
+          case FinishOptionalValue                                                             =>
+            result = FieldValueResult(ParserFieldValue.Optional(Some(fieldValueResult(result))))
+          case EvaluateRepeatedValue(values, ownerNodeId, path, index, fields)                 =>
+            if index == values.size then result = FieldValueResult(ParserFieldValue.Repeated(fields))
+            else
+              stack.push(FinishRepeatedValue(values, ownerNodeId, path, index, fields))
+              stack.push(
+                EvaluateFieldValue(
+                  values(index),
+                  ownerNodeId,
+                  path :+ ParserFieldPathSegment.RepeatedIndex(index)
+                )
+              )
+              result = null
+          case FinishRepeatedValue(values, ownerNodeId, path, index, fields)                   =>
+            stack.push(
+              EvaluateRepeatedValue(values, ownerNodeId, path, index + 1, fields :+ fieldValueResult(result))
+            )
+            result = null
+          case FinishProductValue(value, production)                                           =>
+            val fields = fieldsResult(result)
+            products.remove(value)
+            result = FieldValueResult(ParserFieldValue.Product(production, fields))
 
-        occurrence.foreach: value =>
-          val index   = collected.indexWhere(_.id == id)
-          val current = collected(index)
-          if !current.occurrences.contains(value) then
-            collected = collected.updated(index, current.copy(occurrences = current.occurrences :+ value))
-        id
-
-      val rootId = visitTree(root, None)
+      val rootId = treeResult(result)
       Right(CollectedNodes(rootId, collected.sortBy(_.id), positioned.sortBy(_.id)))
-
-  private def definitionModifiers(
-      active: ParserRuntime,
-      tree: AnyRef,
-      ownerNodeId: Long,
-      cancellation: Scala3ParserCancellation,
-      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
-      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
-      products: IdentityHashMap[AnyRef, java.lang.Boolean],
-      generated: HashMap[String, java.lang.Integer]
-  ): Vector[ParserSyntaxField] =
-    if !active.defTreeClass.isInstance(tree) then Vector.empty
-    else
-      Vector(
-        ParserSyntaxField(
-          "mods",
-          fieldValue(
-            active,
-            active.defTreeRawMods.invoke(tree),
-            ownerNodeId,
-            Vector(ParserFieldPathSegment.NamedField("mods")),
-            cancellation,
-            visitTree,
-            visitPositioned,
-            products,
-            generated
-          )
-        )
-      )
-
-  private def productFields(
-      active: ParserRuntime,
-      product: ProductValue,
-      ownerNodeId: Long,
-      path: Vector[ParserFieldPathSegment],
-      cancellation: Scala3ParserCancellation,
-      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
-      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
-      products: IdentityHashMap[AnyRef, java.lang.Boolean],
-      generated: HashMap[String, java.lang.Integer]
-  ): Vector[ParserSyntaxField] =
-    Vector.tabulate(product.productArity()): index =>
-      cancellation.checkCanceled()
-      ParserSyntaxField(
-        product.productElementName(index),
-        fieldValue(
-          active,
-          product.productElement(index),
-          ownerNodeId,
-          path :+ ParserFieldPathSegment.NamedField(product.productElementName(index)),
-          cancellation,
-          visitTree,
-          visitPositioned,
-          products,
-          generated
-        ),
-        declaredFieldShape(active, product, product.productElementName(index))
-      )
 
   private def declaredFieldShape(
       active: ParserRuntime,
@@ -674,91 +805,6 @@ private final class StructuralScala3ParserBridge private (
       else if cls == java.lang.Void.TYPE || cls == classOf[scala.runtime.BoxedUnit] then Some("UnitValue")
       else None
     kind.map(ParserDeclaredShape.Scalar.apply)
-
-  private def fieldValue(
-      active: ParserRuntime,
-      value: AnyRef,
-      ownerNodeId: Long,
-      path: Vector[ParserFieldPathSegment],
-      cancellation: Scala3ParserCancellation,
-      visitTree: (AnyRef, Option[ParserNodeOccurrence]) => Long,
-      visitPositioned: (AnyRef, Long, Vector[ParserFieldPathSegment]) => Long,
-      products: IdentityHashMap[AnyRef, java.lang.Boolean],
-      generated: HashMap[String, java.lang.Integer]
-  ): ParserFieldValue =
-    if value == null then ParserFieldValue.Optional(None)
-    else if active.treeClass.isInstance(value) then
-      ParserFieldValue.Node(visitTree(value, Some(ParserNodeOccurrence(ownerNodeId, path))))
-    else
-      value match
-        case text: String                                => ParserFieldValue.Scalar(ParserScalar.Text(text))
-        case number: java.lang.Integer                   => ParserFieldValue.Scalar(ParserScalar.Integer(number.intValue()))
-        case number: java.lang.Long                      => ParserFieldValue.Scalar(ParserScalar.LongInteger(number.longValue()))
-        case number: java.lang.Double                    => ParserFieldValue.Scalar(ParserScalar.Decimal(number.doubleValue()))
-        case logical: java.lang.Boolean                  => ParserFieldValue.Scalar(ParserScalar.Logical(logical.booleanValue()))
-        case character: java.lang.Character              =>
-          ParserFieldValue.Scalar(ParserScalar.Character(character.charValue()))
-        case _ if active.nameClass.isInstance(value)     =>
-          parserName(active, value, generated)
-        case _ if active.optionClass.isInstance(value)   =>
-          val option = value.asInstanceOf[OptionValue]
-          ParserFieldValue.Optional(
-            Option.unless(option.isEmpty())(
-              fieldValue(
-                active,
-                option.get(),
-                ownerNodeId,
-                path :+ ParserFieldPathSegment.OptionalNesting,
-                cancellation,
-                visitTree,
-                visitPositioned,
-                products,
-                generated
-              )
-            )
-          )
-        case _ if active.iterableClass.isInstance(value) =>
-          ParserFieldValue.Repeated(
-            iteratorValues(value.asInstanceOf[IterableValue], cancellation).zipWithIndex.map: (element, index) =>
-              fieldValue(
-                active,
-                element,
-                ownerNodeId,
-                path :+ ParserFieldPathSegment.RepeatedIndex(index),
-                cancellation,
-                visitTree,
-                visitPositioned,
-                products,
-                generated
-              )
-          )
-        case _ if active.productClass.isInstance(value)  =>
-          if active.positionedClass.isInstance(value) then
-            ParserFieldValue.Positioned(visitPositioned(value, ownerNodeId, path))
-          else if products.put(value, java.lang.Boolean.TRUE) != null then
-            ParserFieldValue.Unsupported(value.getClass.getName)
-          else
-            val product     = value.asInstanceOf[ProductValue]
-            lazy val fields =
-              productFields(
-                active,
-                product,
-                ownerNodeId,
-                path :+ ParserFieldPathSegment.NestedProductBoundary(product.productPrefix()),
-                cancellation,
-                visitTree,
-                visitPositioned,
-                products,
-                generated
-              )
-            val result      = ParserFieldValue.Product(
-              product.productPrefix(),
-              fields
-            )
-            products.remove(value)
-            result
-        case _                                           =>
-          ParserFieldValue.Unsupported(value.getClass.getName)
 
   private def parserName(
       active: ParserRuntime,
