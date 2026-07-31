@@ -75,11 +75,12 @@ never invokes the bundled Scala parser or lexer. Editor coloring uses the instal
 does not construct PSI. `Scala3SyntaxCapabilityService` retains exact file-scoped failure stage, detail, source digest,
 parser preparation epoch, and compiler identity when a required production is unavailable.
 
-The reviewed catalog currently owns file/package roots and the supported import family: one-level selected paths, direct and
-braced selectors, aliases, wildcard, unbounded `given`, and bounded `given` with simple identifier-headed or recursive
-applied types, plus ordinary/operator names, local output-composite templates, stable output roles, exact physical
-ownership, accessors, navigation, stubs, serializers, and the aliased import index. Qualified, wildcard-bound, and
-infix bounded-given types and deeper selected import paths remain part of their connected grammar cuts and fail closed.
+The reviewed catalog currently owns file/package roots and the supported import family: arbitrary finite stable
+`Select`/`Ident` paths, direct and braced selectors, aliases, wildcard, unbounded `given`, and bounded `given` with
+simple identifier-headed or recursive applied types, plus ordinary/operator/Unicode/quoted names, local
+output-composite templates, stable output roles, exact physical ownership, accessors, navigation, stubs, serializers,
+and the aliased import index. Qualified, wildcard-bound, and infix bounded-given types remain part of their connected
+grammar cuts and fail closed.
 Native bindings execute their public PSI and persistence contracts before activation. All other grammar families
 remain unavailable and therefore produce deterministic neutral file-scoped PSI.
 

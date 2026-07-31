@@ -11,10 +11,11 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiErrorElement, PsiManager, SmartPointerManager}
 import com.intellij.psi.impl.source.PsiFileImpl
-import com.intellij.psi.stubs.{IndexSink, PsiFileStubImpl, StubIndexKey, StubInputStream, StubOutputStream}
-import com.intellij.util.io.AbstractStringEnumerator
+import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.stubs.{IndexSink, PsiFileStubImpl, StubIndex, StubIndexKey, StubInputStream, StubOutputStream}
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.testFramework.{PlatformTestUtil, ServiceContainerUtil}
+import com.intellij.testFramework.{IndexingTestUtil, PlatformTestUtil, ServiceContainerUtil}
+import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
@@ -210,6 +211,147 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
 
+  private def indexedPackages(fqn: String): Vector[ScPackaging] =
+    StubIndex
+      .getElements(
+        ScalaIndexKeys.PACKAGE_FQN_KEY,
+        fqn,
+        getProject,
+        GlobalSearchScope.projectScope(getProject),
+        classOf[ScPackaging]
+      )
+      .asScala
+      .toVector
+
+  private def awaitReady(lifecycle: Scala3ParserPreparationLifecycle, label: String): Unit =
+    PlatformTestUtil.waitWithEventsDispatching(
+      label,
+      () => lifecycle.stateFor(getModule).isInstanceOf[ParserPreparationState.Ready],
+      10000
+    )
+
+  private def assertRecursiveStablePathsPreserveNativePsiPersistenceAndEditIdentity(): Unit =
+    val packageSource   = "package alpha.beta.gamma.delta\n"
+    val packagePending  = myFixture.addFileToProject("src/RecursivePackageCase.scala", packageSource)
+    val packageFile     = PsiManager.getInstance(getProject).findFile(packagePending.getVirtualFile)
+    assertSame(packageFile, PsiManager.getInstance(getProject).findFile(packagePending.getVirtualFile))
+    assertPackagePath(packageFile, packageSource, Vector("alpha", "beta", "gamma", "delta"), persistence = true)
+    assertPackagePath(
+      packageFile.copy().asInstanceOf[com.intellij.psi.PsiFile],
+      packageSource,
+      Vector("alpha", "beta", "gamma", "delta"),
+      persistence = true
+    )
+    val packagePrefix   = PsiTreeUtil
+      .findChildrenOfType(packageFile, classOf[ScStableCodeReference])
+      .asScala
+      .find(_.getText == "alpha.beta")
+      .get
+    val packagePointer  = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(packagePrefix)
+    val packageDocument = FileDocumentManager.getInstance.getDocument(packagePending.getVirtualFile)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = packageDocument.insertString(packageSource.length - 1, ".epsilon.zeta")
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(packageDocument)
+    val increased       = PsiManager.getInstance(getProject).findFile(packagePending.getVirtualFile)
+    assertPackagePath(
+      increased,
+      "package alpha.beta.gamma.delta.epsilon.zeta\n",
+      Vector("alpha", "beta", "gamma", "delta", "epsilon", "zeta"),
+      persistence = true
+    )
+    assertEquals("alpha.beta", packagePointer.getElement.getText)
+    assertSame(packagePointer.getElement, packagePointer.getElement.getNavigationElement)
+
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = packageDocument.setText("package alpha.beta\n")
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(packageDocument)
+    val decreased = PsiManager.getInstance(getProject).findFile(packagePending.getVirtualFile)
+    assertPackagePath(decreased, "package alpha.beta\n", Vector("alpha", "beta"), persistence = true)
+    assertEquals("alpha.beta", packagePointer.getElement.getText)
+    assertSame(packagePointer.getElement, packagePointer.getElement.getNavigationElement)
+
+    val namedSource  = "package alpha.`match`.δ.++\n"
+    val namedPending = myFixture.addFileToProject("src/NamedRecursivePackageCase.scala", namedSource)
+    val namedFile    = PsiManager.getInstance(getProject).findFile(namedPending.getVirtualFile)
+    assertPackagePath(namedFile, namedSource, Vector("alpha", "`match`", "δ", "++"), persistence = true)
+
+    val importSource   =
+      """import packet.alpha.`match`.δ.deep.ordinary
+        |import packet.alpha.`match`.δ.deep.*
+        |import packet.alpha.`match`.δ.deep.ordinary as renamed
+        |import packet.alpha.`match`.δ.deep.{ordinary}
+        |import packet.alpha.`match`.δ.deep.{ordinary as alias}
+        |import packet.alpha.`match`.δ.deep.{ordinary => legacy}
+        |import packet.alpha.`match`.δ.deep.given
+        |import packet.alpha.`match`.δ.deep.given Box[Int]
+        |import packet.alpha.`match`.δ.deep.{given, given Box[Int], *}
+        |import packet.alpha.`match`.δ.deep.++
+        |import packet.alpha.`match`.δ.deep.λ
+        |import packet.alpha.`match`.δ.deep.`back-tick`
+        |""".stripMargin
+    val importPending  = myFixture.addFileToProject("src/RecursiveImportCase.scala", importSource)
+    val importFile     = PsiManager.getInstance(getProject).findFile(importPending.getVirtualFile)
+    val qualifier      = Vector("packet", "alpha", "`match`", "δ", "deep")
+    assertSame(importFile, PsiManager.getInstance(getProject).findFile(importPending.getVirtualFile))
+    assertImportPaths(importFile, importSource, qualifier)
+    assertImportPaths(importFile.copy().asInstanceOf[com.intellij.psi.PsiFile], importSource, qualifier)
+    val importPrefix   = PsiTreeUtil
+      .findChildrenOfType(importFile, classOf[ScStableCodeReference])
+      .asScala
+      .find(_.getText == "packet.alpha")
+      .get
+    val importPointer  = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(importPrefix)
+    val importDocument = FileDocumentManager.getInstance.getDocument(importPending.getVirtualFile)
+    val increasedText  = importSource.replace("packet.alpha.`match`.δ.deep", "packet.alpha.`match`.δ.deep.more")
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = importDocument.setText(increasedText)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(importDocument)
+    assertImportPaths(
+      PsiManager.getInstance(getProject).findFile(importPending.getVirtualFile),
+      increasedText,
+      qualifier :+ "more"
+    )
+    assertEquals("packet.alpha", importPointer.getElement.getText)
+    assertSame(importPointer.getElement, importPointer.getElement.getNavigationElement)
+
+    val decreasedText = increasedText.replace("packet.alpha.`match`.δ.deep.more", "packet.alpha.deep")
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = importDocument.setText(decreasedText)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(importDocument)
+    assertImportPaths(
+      PsiManager.getInstance(getProject).findFile(importPending.getVirtualFile),
+      decreasedText,
+      Vector("packet", "alpha", "deep")
+    )
+    assertEquals("packet.alpha", importPointer.getElement.getText)
+    assertSame(importPointer.getElement, importPointer.getElement.getNavigationElement)
+
+    val adjacentSource  = "package alpha.beta.gamma.delta\n\nfinal class Adjacent\n"
+    val adjacentPending = myFixture.addFileToProject("src/AdjacentRecursivePackageCase.scala", adjacentSource)
+    val adjacentFile    = PsiManager.getInstance(getProject).findFile(adjacentPending.getVirtualFile)
+    assertEquals(adjacentSource, adjacentFile.getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(adjacentFile, classOf[ScPackaging]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(adjacentFile, classOf[ScTypeDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(adjacentFile, classOf[PsiErrorElement]).isEmpty)
+    val failure         = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(adjacentPending.getVirtualFile, ParserSyntaxSnapshot.digest(adjacentSource))
+    assertTrue(failure.toString, failure.nonEmpty)
+    assertEquals(Scala3SyntaxCapabilityStage.AggregateInventory, failure.get.stage)
+    assertTrue(adjacentFile.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
+
   def testUnsupportedCompilerValidProductionFailsClosedWithCapabilityReason(): Unit =
     val source      = "class Unsupported\n"
     val pending     = myFixture.addFileToProject("src/UnsupportedCase.scala", source)
@@ -399,18 +541,20 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     val legacyFile    = PsiManager.getInstance(getProject).findFile(legacyPending.getVirtualFile)
     assertLegacyAndHiddenImports(legacyFile, legacySource)
     assertLegacyAndHiddenImports(legacyFile.copy().asInstanceOf[com.intellij.psi.PsiFile], legacySource)
+    assertRecursiveStablePathsPreserveNativePsiPersistenceAndEditIdentity()
 
   def testReadyPhysicalPackageUsesNativePsiAndReparsesAndStubs(): Unit =
-    val source    = "package example.syntax\n"
-    val installed = Scala3ParserPreparationLifecycle.get(getProject)
+    val source     = "package example.syntax\n"
+    val installed  = Scala3ParserPreparationLifecycle.get(getProject)
     installed.dispose()
-    val preparer  = new DeferredPreparer
-    var files     = Vector.empty[VirtualFile]
-    val lifecycle = new Scala3ParserPreparationLifecycle(
+    val preparer   = new DeferredPreparer
+    var files      = Vector.empty[VirtualFile]
+    val activation = new PlatformRecordingActivation(getProject)
+    val lifecycle  = new Scala3ParserPreparationLifecycle(
       getProject,
       preparer,
       _ => files,
-      new PlatformRecordingActivation(getProject)
+      activation
     )
     ServiceContainerUtil.replaceService(
       getProject,
@@ -418,19 +562,32 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       lifecycle,
       getTestRootDisposable
     )
-    val _         = lifecycle.prepare(getModule)
-    val pending   = myFixture.addFileToProject("src/PackageCase.scala", source)
+    val _          = lifecycle.prepare(getModule)
+    val pending    = myFixture.addFileToProject("src/PackageCase.scala", source)
     files = Vector(pending.getVirtualFile)
-    preparer.complete(0, new TestParserBridge(Some((bridge, request) => packageSnapshot(request, bridge))))
-    PlatformTestUtil.waitWithEventsDispatching(
-      "package parser activation",
-      () => lifecycle.stateFor(getModule).isInstanceOf[ParserPreparationState.Ready],
-      10000
-    )
+    preparer.complete(0, new TestParserBridge(Some((bridge, request) => uncoveredSnapshot(request, bridge))))
+    awaitReady(lifecycle, "fail-closed package parser activation")
+    val failClosed = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile).asInstanceOf[PsiFileImpl]
+    assertEquals(source, failClosed.getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(failClosed, classOf[ScPackaging]).isEmpty)
+    assertTrue(failClosed.calcStubTree.getPlainList.asScala.drop(1).isEmpty)
+    IndexingTestUtil.waitUntilIndexesAreReady(getProject)
+    assertTrue(indexedPackages("example.syntax").isEmpty)
+
+    val _ = lifecycle.prepare(getModule)
+    preparer.complete(1, new TestParserBridge(Some((bridge, request) => packageSnapshot(request, bridge))))
+    awaitReady(lifecycle, "covered package parser reactivation")
+    assertEquals(3, activation.batchCount)
+    assertFalse(failClosed.isValid)
+    IndexingTestUtil.waitUntilIndexesAreReady(getProject)
     assertPlan(lifecycle.parserFor(getModule).get, pending.getVirtualFile.getUrl, source)
 
     val file = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
     assertPackage(file, source, "syntax")
+    assertEquals(
+      Vector(pending.getVirtualFile),
+      indexedPackages("example.syntax").map(_.getContainingFile.getVirtualFile).distinct
+    )
     val copy = file.copy().asInstanceOf[com.intellij.psi.PsiFile]
     assertPackage(copy, source, "syntax")
 
@@ -496,6 +653,166 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
           indexed += value.toString
     )
     assertEquals(Vector(s"example.$name", "example"), indexed.result())
+
+  private def assertPackagePath(
+      file: com.intellij.psi.PsiFile,
+      text: String,
+      segments: Vector[String],
+      persistence: Boolean
+  ): Unit =
+    assertEquals(text, file.getText)
+    val leaves    = PsiTreeUtil.collectElements(file, _.getFirstChild == null).toVector
+    assertEquals(text, leaves.map(_.getText).mkString)
+    assertFalse(leaves.exists(_.getText.isEmpty))
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    val packaging = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
+    assertNotNull(packaging)
+    val reference = packaging.reference.get
+    assertStablePath(reference, segments)
+    assertEquals(segments.mkString("."), packaging.packageName)
+    assertEquals("", packaging.parentPackageName)
+    assertEquals(
+      Vector(reference),
+      packaging.getChildren.toVector.collect { case value: ScStableCodeReference => value }
+    )
+    assertSame(file, packaging.getContainingFile)
+    assertSame(getProject, packaging.getProject)
+    assertSame(packaging, packaging.getNode.getPsi)
+    assertSame(packaging, packaging.getNavigationElement)
+    if persistence then
+      val stub    = file
+        .asInstanceOf[PsiFileImpl]
+        .calcStubTree
+        .getPlainList
+        .asScala
+        .collectFirst { case value: ScPackagingStub => value }
+        .orNull
+      assertNotNull(stub)
+      assertEquals(segments.mkString("."), stub.packageName)
+      assertEquals("", stub.parentPackageName)
+      assertFalse(stub.isExplicit)
+      val indexed = Vector.newBuilder[String]
+      ScalaElementType.PACKAGING.indexStub(
+        stub,
+        new IndexSink:
+          override def occurrence[Psi <: PsiElement, K](_indexKey: StubIndexKey[K, Psi], value: K): Unit =
+            assertSame(ScalaIndexKeys.PACKAGE_FQN_KEY, _indexKey)
+            indexed += value.toString
+      )
+      assertEquals(
+        segments.indices.reverse
+          .map(index => segments.take(index + 1).map(_.stripPrefix("`").stripSuffix("`")).mkString("."))
+          .toVector,
+        indexed.result()
+      )
+
+  private def assertImportPaths(
+      file: com.intellij.psi.PsiFile,
+      text: String,
+      qualifierSegments: Vector[String]
+  ): Unit =
+    assertEquals(text, file.getText)
+    val leaves         = PsiTreeUtil.collectElements(file, _.getFirstChild == null).toVector
+    assertEquals(text, leaves.map(_.getText).mkString)
+    assertFalse(leaves.exists(_.getText.isEmpty))
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    val statements     = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
+    val expressions    = statements.flatMap(_.importExprs)
+    val qualifierText  = qualifierSegments.mkString(".")
+    val finalNames     = Vector(
+      Some("ordinary"),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      Some("++"),
+      Some("λ"),
+      Some("`back-tick`")
+    )
+    val referenceTexts = finalNames.map(_.fold(qualifierText)(name => s"$qualifierText.$name"))
+    assertEquals(12, statements.size)
+    assertEquals(12, expressions.size)
+    assertEquals(referenceTexts, expressions.flatMap(_.reference).map(_.getText))
+    expressions
+      .zip(finalNames)
+      .foreach: (expression, finalName) =>
+        val reference = expression.reference.get
+        assertStablePath(reference, qualifierSegments ++ finalName)
+        assertSame(expression, reference.getParent)
+    statements.zip(expressions).foreach((statement, expression) => assertSame(statement, expression.getParent))
+    val selectorSets   = expressions.flatMap(_.selectorSet)
+    val selectors      = expressions.flatMap(_.selectors)
+    assertEquals(7, selectorSets.size)
+    assertEquals(9, selectors.size)
+    assertEquals(3, selectors.count(_.isAliasedImport))
+    assertEquals(4, selectors.count(_.isGivenSelector))
+    assertEquals(1, selectors.count(_.isWildcardSelector))
+    assertEquals(Vector("Box[Int]", "Box[Int]"), selectors.flatMap(_.givenTypeElement).map(_.getText))
+    val capability     = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(text))
+    assertTrue(capability.toString, capability.isEmpty)
+
+    val stubs           = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala
+    val expressionStubs = stubs.collect { case value: ScImportExprStub => value }
+    val selectorStubs   = stubs.collect { case value: ScImportSelectorStub => value }
+    assertEquals(12, stubs.count(_.isInstanceOf[ScImportStmtStub]))
+    assertEquals(12, expressionStubs.size)
+    assertEquals(7, stubs.count(_.isInstanceOf[ScImportSelectorsStub]))
+    assertEquals(9, selectorStubs.size)
+    assertEquals(referenceTexts.map(Some(_)), expressionStubs.map(_.referenceText).toVector)
+    val enumerator      = new TestStringEnumerator
+    val sink            = new ByteArrayOutputStream
+    val output          = new StubOutputStream(sink, enumerator)
+    ScalaElementType.IMPORT_EXPR.serialize(expressionStubs(8), output)
+    output.flush()
+    val expressionCopy  = ScalaElementType.IMPORT_EXPR.deserialize(
+      new StubInputStream(new ByteArrayInputStream(sink.toByteArray), enumerator),
+      new PsiFileStubImpl(null)
+    )
+    assertEquals(expressionStubs(8).referenceText, expressionCopy.referenceText)
+    assertEquals(expressionStubs(8).hasWildcardSelector, expressionCopy.hasWildcardSelector)
+    assertEquals(expressionStubs(8).hasGivenSelector, expressionCopy.hasGivenSelector)
+    val indexed         = Vector.newBuilder[String]
+    selectorStubs.foreach: stub =>
+      ScalaElementType.IMPORT_SELECTOR.indexStub(
+        stub,
+        new IndexSink:
+          override def occurrence[Psi <: PsiElement, K](_indexKey: StubIndexKey[K, Psi], value: K): Unit =
+            assertSame(ScalaIndexKeys.ALIASED_IMPORT_KEY, _indexKey)
+            indexed += value.toString
+      )
+    assertEquals(Vector.fill(4)("ordinary"), indexed.result())
+
+  private def assertStablePath(reference: ScStableCodeReference, segments: Vector[String]): Unit =
+    var current = Option(reference)
+    segments.indices.reverse.foreach: index =>
+      val value        = current.getOrElse(throw new AssertionError(s"missing stable path segment ${segments(index)}"))
+      val expectedText = segments.take(index + 1).mkString(".")
+      assertEquals(expectedText, value.getText)
+      assertEquals(segments(index), value.refName)
+      assertEquals(segments(index), value.nameId.getText)
+      assertEquals(ScalaElementType.REFERENCE, value.getNode.getElementType)
+      assertEquals(value.getTextRange.getStartOffset + expectedText.length, value.getTextRange.getEndOffset)
+      assertEquals(
+        value.getTextRange.getEndOffset - segments(index).length,
+        value.nameId.getTextRange.getStartOffset
+      )
+      assertSame(getProject, value.getProject)
+      assertSame(value, value.getNode.getPsi)
+      assertSame(value, value.getNavigationElement)
+      val qualifier    = value.qualifier
+      assertEquals(
+        qualifier.toVector,
+        value.getChildren.toVector.collect { case child: ScStableCodeReference => child }
+      )
+      qualifier.foreach(child => assertSame(value, child.getParent))
+      current = qualifier
+    assertTrue(current.isEmpty)
 
   private def assertPackageGroupedImports(
       file: com.intellij.psi.PsiFile,
@@ -794,6 +1111,40 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       .plan(snapshot, evidence, catalog)
       .fold(error => throw new AssertionError(error.toString), identity)
     assertEquals(3, plan.composites.size)
+
+  private def uncoveredSnapshot(
+      request: Scala3ParserRequest,
+      bridge: TestParserBridge
+  ): Either[Scala3ParserError, ParserSyntaxSnapshot] =
+    val source = request.sourceText
+    Right(
+      ParserSyntaxSnapshot(
+        request.sourceUri,
+        source,
+        ParserSyntaxSnapshot.digest(source),
+        source.length,
+        request.compilerOptions,
+        1,
+        Vector(
+          ParserSyntaxNode(
+            1,
+            "Uncovered",
+            Vector.empty,
+            ParserNodePosition.Positioned(
+              PcSourceRange(0, source.length),
+              0,
+              ParserPositionProvenance.SourceDerived
+            ),
+            Vector.empty
+          )
+        ),
+        Vector.empty,
+        Vector.empty,
+        Vector.empty,
+        bridge.capabilities,
+        bridge.identity
+      )
+    )
 
   private def packageSnapshot(
       request: Scala3ParserRequest,

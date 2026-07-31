@@ -200,6 +200,221 @@ final class Scala3ParserVerticalSliceTest:
     finally bridge.close()
 
   @Test
+  def recursiveStablePackageAndImportPathsHaveExactCompilerShapesAndClosedPlans(): Unit =
+    val bridge = openBridge()
+    try
+      val packagePaths  = Vector(
+        "package alpha.beta.gamma.delta\n" -> Vector("alpha", "beta", "gamma", "delta"),
+        "package alpha.`match`.δ.++\n"     -> Vector("alpha", "match", "δ", "++")
+      )
+      val importSources = Vector(
+        """import packet.alpha.`match`.δ.deep.ordinary
+          |import packet.alpha.`match`.δ.deep.++ as plus
+          |import packet.alpha.`match`.δ.deep.λ as unicode
+          |import packet.alpha.`match`.δ.deep.`back-tick` as quoted
+          |""".stripMargin,
+        """import packet.alpha.`match`.δ.deep.{ordinary as named, ++ as operator, λ as unicodeBraced, `back-tick` as quotedBraced, *}
+          |import packet.alpha.`match`.δ.deep.{ordinary => legacy}
+          |import packet.alpha.`match`.δ.deep.ordinary as _
+          |import packet.alpha.`match`.δ.deep.given
+          |import packet.alpha.`match`.δ.deep.given Box[Int]
+          |""".stripMargin
+      )
+      val fixtures      = packagePaths.map(_._1) ++ importSources
+      val snapshots     = fixtures.zipWithIndex.map: (source, index) =>
+        val snapshot = parse(bridge, source, s"file:///RecursiveStablePath$index.scala")
+        assertEquals(source, snapshot.sourceText)
+        assertTrue(snapshot.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
+        assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
+        snapshot
+
+      def node(snapshot: ParserSyntaxSnapshot, id: Long): ParserSyntaxNode                                       = snapshot.nodes.find(_.id == id).get
+      def childId(value: ParserFieldValue): Long                                                                 = value match
+        case ParserFieldValue.Node(id) => id
+        case other                     => throw new AssertionError(s"stable path child is $other")
+      def name(value: ParserFieldValue): String                                                                  = value match
+        case ParserFieldValue.Name(value) => value
+        case other                        => throw new AssertionError(s"stable path name is $other")
+      def stableSegments(snapshot: ParserSyntaxSnapshot, id: Long): Vector[String]                               =
+        val current = node(snapshot, id)
+        current.production match
+          case "Ident"  => Vector(name(current.fields.find(_.name == "name").get.value))
+          case "Select" =>
+            stableSegments(snapshot, childId(current.fields.find(_.name == "qualifier").get.value)) :+
+              name(current.fields.find(_.name == "name").get.value)
+          case other    => throw new AssertionError(s"stable path production is $other")
+      def assertLineage(snapshot: ParserSyntaxSnapshot, rootId: Long, anchorId: Long, anchorField: String): Unit =
+        var current = node(snapshot, rootId)
+        assertEquals(
+          Vector(ParserNodeOccurrence(anchorId, Vector(ParserFieldPathSegment.NamedField(anchorField)))),
+          current.occurrences
+        )
+        while current.production == "Select" do
+          val child = node(snapshot, childId(current.fields.find(_.name == "qualifier").get.value))
+          assertEquals(
+            Vector(ParserNodeOccurrence(current.id, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+            child.occurrences
+          )
+          current = child
+        assertEquals("Ident", current.production)
+
+      packagePaths
+        .zip(snapshots.take(packagePaths.size))
+        .foreach: (fixture, snapshot) =>
+          val expected = fixture._2
+          val root     = node(snapshot, snapshot.rootNodeId)
+          val pathId   = childId(root.fields.find(_.name == "pid").get.value)
+          assertEquals(expected, stableSegments(snapshot, pathId))
+          assertLineage(snapshot, pathId, root.id, "pid")
+          assertEquals(expected.size - 1, snapshot.nodes.count(_.production == "Select"))
+
+      val qualifier = Vector("packet", "alpha", "match", "δ", "deep")
+      importSources
+        .zip(snapshots.drop(packagePaths.size))
+        .foreach: (source, snapshot) =>
+          val imports = snapshot.nodes.filter(_.production == "Import")
+          assertEquals(source.count(_ == '\n'), imports.size)
+          imports.foreach: statement =>
+            val pathId = childId(statement.fields.find(_.name == "expr").get.value)
+            assertEquals(qualifier, stableSegments(snapshot, pathId))
+            assertLineage(snapshot, pathId, statement.id, "expr")
+
+      val runtimes  = snapshots.map(snapshot => CompilerRuntimeInventory.from(snapshot).toOption.get)
+      val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
+      val surfaces  = withImportTokenSurfaces(ScalaPsiSurfaceInventory.installed().toOption.get)
+      snapshots
+        .zip(runtimes)
+        .foreach: (snapshot, runtime) =>
+          val prepared = PreparedProductionCatalog
+            .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+            .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+          val evidence = ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get
+          val plan     = WholeFileProductionPlanner
+            .plan(snapshot, evidence, prepared)
+            .fold(error => throw new AssertionError(error.toString), identity)
+          assertEquals(
+            snapshot.sourceText,
+            plan.physicalLeafOwnership
+              .sortBy(_.start)
+              .map(leaf => snapshot.sourceText.substring(leaf.start, leaf.end))
+              .mkString
+          )
+          assertFalse(plan.physicalLeafOwnership.exists(leaf => leaf.start == leaf.end))
+          assertEquals(evidence.structural.map(_.id), plan.structuralEvidenceOwnership.map(_.eventId))
+
+      assertEquals(
+        Vector(
+          "1c3d14098fae95344e6f9e910b17d40aaca45af24c7afe3fb8d4089faded3076",
+          "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
+          "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
+          "7512a4ff34739076d77ccbe91e8aadd2ccc2078296dbc6c021f90375bf2249ea",
+          "ed8263721056a9710eba372b4c462f410000a9d06ebecb63b7d89812b36ea4a4"
+        ),
+        snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
+      )
+    finally bridge.close()
+
+  @Test
+  def veryDeepStablePathsCompleteAggregateAndWholeFilePlanningDeterministically(): Unit =
+    val bridge = openBridge()
+    try
+      val surfaces                                                                            = withImportTokenSurfaces(
+        ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
+      )
+      def assertPlan(source: String, uri: String, depth: Int, productionPrefix: String): Unit =
+        val snapshot  = parse(bridge, source, uri)
+        assertEquals(snapshot, parse(bridge, source, uri))
+        val nodes     = snapshot.nodes.map(node => node.id -> node).toMap
+        val indices   = snapshot.nodes.zipWithIndex.map((node, index) => node.id -> index).toMap
+        val anchor    =
+          if productionPrefix == "package-stable" then nodes(snapshot.rootNodeId) -> "pid"
+          else snapshot.nodes.find(_.production == "Import").get                  -> "expr"
+        val firstId   = anchor._1.fields.collectFirst {
+          case ParserSyntaxField(field, ParserFieldValue.Node(id), _) if field == anchor._2 => id
+        }.get
+        val lineage   = Vector.newBuilder[ParserSyntaxNode]
+        var current   = nodes(firstId)
+        assertEquals(
+          Vector(ParserNodeOccurrence(anchor._1.id, Vector(ParserFieldPathSegment.NamedField(anchor._2)))),
+          current.occurrences
+        )
+        var complete  = false
+        while !complete do
+          lineage += current
+          current.production match
+            case "Select" =>
+              val nextId = current.fields.collectFirst {
+                case ParserSyntaxField("qualifier", ParserFieldValue.Node(id), _) => id
+              }.get
+              val next   = nodes(nextId)
+              assertEquals(
+                Vector(ParserNodeOccurrence(current.id, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+                next.occurrences
+              )
+              current = next
+            case "Ident"  => complete = true
+            case other    => throw new AssertionError(s"deep stable path contains $other")
+        val chain     = lineage.result()
+        assertEquals(depth, chain.size)
+        assertEquals(Vector.fill(depth - 1)("Select") :+ "Ident", chain.map(_.production))
+        assertTrue(chain.map(node => indices(node.id)).sliding(2).forall {
+          case Vector(left, right) => right == left + 1
+          case _                   => true
+        })
+        val evidence  = ProvisionalSourceEvidencePlanner
+          .plan(snapshot)
+          .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+        val runtime   = CompilerRuntimeInventory
+          .from(snapshot)
+          .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+        val aggregate = AggregatedCompilerProductionInventory
+          .aggregate(Vector(runtime))
+          .fold(error => throw new AssertionError(error.toString), identity)
+        val prepared  = PreparedProductionCatalog
+          .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
+          .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+        def plan()    = WholeFileProductionPlanner
+          .plan(snapshot, evidence, prepared)
+          .fold(error => throw new AssertionError(error.toString), identity)
+        val first     = plan()
+        val repeated  = Option.when(depth == 1024)(plan())
+
+        assertEquals(depth - 1, snapshot.nodes.count(_.production == "Select"))
+        val stable = first.composites.filter(_.productionId.startsWith(productionPrefix))
+        assertEquals(
+          Vector.fill(depth - 1)(s"$productionPrefix-reference") :+ s"$productionPrefix-identifier",
+          stable.map(_.productionId)
+        )
+        assertTrue(stable.map(_.range).sliding(2).forall {
+          case Vector(outer, inner) => outer.startOffset == inner.startOffset && inner.endOffset < outer.endOffset
+          case _                    => true
+        })
+        repeated.foreach(second => assertEquals(first, second))
+        assertEquals(source, evidence.reconstruct(source))
+        assertEquals(
+          source,
+          first.physicalLeafOwnership.sortBy(_.start).map(leaf => source.substring(leaf.start, leaf.end)).mkString
+        )
+        assertFalse(first.physicalLeafOwnership.exists(leaf => leaf.start == leaf.end))
+        assertEquals(evidence.structural.map(_.id), first.structuralEvidenceOwnership.map(_.eventId))
+
+      Vector(1024, 4096).foreach: depth =>
+        val segments = Vector.tabulate(depth)(index => s"p$index")
+        assertPlan(
+          s"package ${segments.mkString(".")}\n",
+          s"file:///VeryDeepStablePackagePath$depth.scala",
+          depth,
+          "package-stable"
+        )
+        assertPlan(
+          s"import ${segments.mkString(".")}.target\n",
+          s"file:///VeryDeepStableImportPath$depth.scala",
+          depth,
+          "import-path"
+        )
+    finally bridge.close()
+
+  @Test
   def minimizedFilePackageFamilyHasAnExactInventory(): Unit =
     val bridge = openBridge()
     try

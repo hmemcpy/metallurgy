@@ -46,31 +46,83 @@ private[metallurgy] object InventoryContextLineage:
     case ParserFieldPathSegment.RepeatedIndex(_)                  => CatalogPathSegment.RepeatedElement
     case ParserFieldPathSegment.NestedProductBoundary(production) => CatalogPathSegment.NestedProduct(production)
 
-  def contexts(
-      owner: ParserSyntaxNode,
-      path: Vector[ParserFieldPathSegment],
-      nodes: Map[Long, ParserSyntaxNode]
-  ): Vector[InventoryContext] =
-    ancestries(owner, nodes, Set.empty).map(ancestors =>
-      InventoryContext(InventoryKind.Node, owner.production, normalized(path), ancestors)
-    )
+  def resolver(nodes: Map[Long, ParserSyntaxNode]): Resolver = new Resolver(nodes)
+
+  final class Resolver private[InventoryContextLineage] (nodes: Map[Long, ParserSyntaxNode]):
+    private val cached =
+      val knownParents = nodes.view
+        .mapValues(node => node.occurrences.iterator.map(_.ownerNodeId).filter(nodes.contains).toVector.distinct)
+        .toMap
+      val children     = knownParents.toVector
+        .flatMap((child, parents) => parents.map(_ -> child))
+        .groupMap(_._1)(_._2)
+        .view
+        .mapValues(_.distinct.sorted)
+        .toMap
+      val remaining    = collection.mutable.Map.from(knownParents.view.mapValues(_.size))
+      val ready        = collection.mutable.Queue.from(
+        remaining.iterator.collect { case (id, 0) => id }.toVector.sorted
+      )
+      val values       = collection.mutable.Map.empty[Long, Vector[Vector[InventoryAncestor]]]
+      while ready.nonEmpty do
+        val id       = ready.dequeue()
+        val node     = nodes(id)
+        val computed =
+          if node.occurrences.isEmpty then Vector(Vector.empty)
+          else
+            node.occurrences.flatMap: occurrence =>
+              nodes
+                .get(occurrence.ownerNodeId)
+                .toVector
+                .flatMap: ancestor =>
+                  values
+                    .getOrElse(ancestor.id, Vector.empty)
+                    .map(
+                      InventoryAncestor(InventoryKind.Node, ancestor.production, normalized(occurrence.fieldPath)) +: _
+                    )
+        values += id -> computed
+        children
+          .getOrElse(id, Vector.empty)
+          .foreach: child =>
+            val next = remaining(child) - 1
+            remaining.update(child, next)
+            if next == 0 then ready.enqueue(child)
+      Option.when(values.size == nodes.size)(values.toMap)
+
+    def contexts(owner: ParserSyntaxNode, path: Vector[ParserFieldPathSegment]): Vector[InventoryContext] =
+      cached
+        .flatMap(_.get(owner.id))
+        .getOrElse(ancestries(owner, nodes, Set.empty))
+        .map(ancestors => InventoryContext(InventoryKind.Node, owner.production, normalized(path), ancestors))
 
   private def ancestries(
       owner: ParserSyntaxNode,
       nodes: Map[Long, ParserSyntaxNode],
       visited: Set[Long]
   ): Vector[Vector[InventoryAncestor]] =
-    if visited(owner.id) then Vector.empty
-    else if owner.occurrences.isEmpty then Vector(Vector.empty)
-    else
-      owner.occurrences.flatMap: occurrence =>
-        nodes
-          .get(occurrence.ownerNodeId)
-          .toVector
-          .flatMap: ancestor =>
-            ancestries(ancestor, nodes, visited + owner.id).map(
-              InventoryAncestor(InventoryKind.Node, ancestor.production, normalized(occurrence.fieldPath)) +: _
-            )
+    val pending  = collection.mutable.Stack((owner, visited, Vector.empty[InventoryAncestor]))
+    val complete = Vector.newBuilder[Vector[InventoryAncestor]]
+    while pending.nonEmpty do
+      val (current, currentVisited, currentAncestors) = pending.pop()
+      if !currentVisited(current.id) then
+        if current.occurrences.isEmpty then complete += currentAncestors
+        else
+          current.occurrences.reverseIterator.foreach: occurrence =>
+            nodes
+              .get(occurrence.ownerNodeId)
+              .foreach: ancestor =>
+                pending.push(
+                  (
+                    ancestor,
+                    currentVisited + current.id,
+                    currentAncestors :+ InventoryAncestor(
+                      InventoryKind.Node,
+                      ancestor.production,
+                      normalized(occurrence.fieldPath)
+                    )
+                  )
+                )
+    complete.result()
 
 private[metallurgy] enum NeutralNameClass:
   case Ordinary, Wildcard, Empty
@@ -128,6 +180,20 @@ private[metallurgy] enum ContextPattern:
       ownerPrefix: String,
       path: Vector[CatalogPathSegment],
       ancestor: InventoryAncestor
+  )
+  case AnchorOrParentWithRepeatedAncestor(
+      anchor: InventoryAncestor,
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      repeatedAncestor: InventoryAncestor
+  )
+  case ParentWithRepeatedAncestor(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      repeatedAncestor: InventoryAncestor,
+      anchor: InventoryAncestor
   )
 private[metallurgy] final case class CompilerShapeInventoryRow(
     kind: InventoryKind,
@@ -571,6 +637,7 @@ private[metallurgy] object CompilerRuntimeInventory:
     )
     val nodes                                                            = snapshot.nodes.groupBy(_.id).collect { case (id, Vector(node)) => id -> node }
     val positioned                                                       = snapshot.positioned.groupBy(_.id).collect { case (id, Vector(value)) => id -> value }
+    val lineages                                                         = InventoryContextLineage.resolver(nodes)
     if !nodes.contains(snapshot.rootNodeId) then failures += InventoryFailure.InvalidRoot(snapshot.rootNodeId)
     def references(
         value: ParserFieldValue,
@@ -656,7 +723,7 @@ private[metallurgy] object CompilerRuntimeInventory:
     ): Vector[InventoryContext] =
       nodes.get(occurrence._1) match
         case Some(owner) =>
-          InventoryContextLineage.contexts(owner, occurrence._2, nodes)
+          lineages.contexts(owner, occurrence._2)
         case None        =>
           failures += InventoryFailure.UnknownOccurrenceOwner(kind, id, occurrence._1, occurrence._2)
           Vector.empty
@@ -1997,10 +2064,20 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           ),
           Vector(
             CompilerProductionContextPattern(
-              ContextPattern.Parent(
+              ContextPattern.AnchorOrParentWithRepeatedAncestor(
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Import",
+                  Vector(CatalogPathSegment.NamedField("expr"))
+                ),
                 InventoryKind.Node,
-                "Import",
-                Vector(CatalogPathSegment.NamedField("expr"))
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier")),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Select",
+                  Vector(CatalogPathSegment.NamedField("qualifier"))
+                )
               ),
               SourceClassification.SourceReachable
             )
@@ -2011,7 +2088,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
         ),
         children = Vector(
-          ChildDeclaration("qualifier", "qualifier", ChildCardinality.ExactlyOne, "import-path-identifier")
+          ChildDeclaration(
+            "qualifier",
+            "qualifier",
+            ChildCardinality.ExactlyOne,
+            "import-path-identifier",
+            Set("import-path-reference")
+          )
         ),
         terminals = Vector(
           TerminalDeclaration(
@@ -2045,10 +2128,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           ),
           Vector(
             CompilerProductionContextPattern(
-              ContextPattern.ParentWithAncestor(
+              ContextPattern.ParentWithRepeatedAncestor(
                 InventoryKind.Node,
                 "Select",
                 Vector(CatalogPathSegment.NamedField("qualifier")),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Select",
+                  Vector(CatalogPathSegment.NamedField("qualifier"))
+                ),
                 InventoryAncestor(
                   InventoryKind.Node,
                   "Import",
@@ -2912,10 +3000,20 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           ),
           Vector(
             CompilerProductionContextPattern(
-              ContextPattern.Parent(
+              ContextPattern.AnchorOrParentWithRepeatedAncestor(
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "PackageDef",
+                  Vector(CatalogPathSegment.NamedField("pid"))
+                ),
                 InventoryKind.Node,
-                "PackageDef",
-                Vector(CatalogPathSegment.NamedField("pid"))
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier")),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Select",
+                  Vector(CatalogPathSegment.NamedField("qualifier"))
+                )
               ),
               SourceClassification.SourceReachable
             )
@@ -2930,7 +3028,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "qualifier",
             "qualifier",
             ChildCardinality.ExactlyOne,
-            "package-stable-identifier"
+            "package-stable-identifier",
+            Set("package-stable-reference")
           )
         ),
         terminals = Vector(
@@ -2960,10 +3059,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
           Vector(
             CompilerProductionContextPattern(
-              ContextPattern.ParentWithAncestor(
+              ContextPattern.ParentWithRepeatedAncestor(
                 InventoryKind.Node,
                 "Select",
                 Vector(CatalogPathSegment.NamedField("qualifier")),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Select",
+                  Vector(CatalogPathSegment.NamedField("qualifier"))
+                ),
                 InventoryAncestor(
                   InventoryKind.Node,
                   "PackageDef",
@@ -3399,27 +3503,49 @@ private[metallurgy] object CatalogShapeMatcher:
         catalogField.name == compilerField.name && covers(catalogField.value, compilerField.value)
 
   def contextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
-    case ContextPattern.Any                                      => true
-    case ContextPattern.Root                                     => context.isEmpty
-    case ContextPattern.Parent(kind, owner, p)                   =>
+    case ContextPattern.Any                                                                  => true
+    case ContextPattern.Root                                                                 => context.isEmpty
+    case ContextPattern.Parent(kind, owner, p)                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
-    case ContextPattern.ParentWithAncestor(kind, owner, p, next) =>
+    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
           next
         )
       )
+    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated) =>
+      context.exists(value =>
+        InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) == anchor ||
+          (value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+            value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor))
+      )
+    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)         =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor)
+      )
 
   def aggregateContextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
-    case ContextPattern.Any                                      => false
-    case ContextPattern.Root                                     => context.isEmpty
-    case ContextPattern.Parent(kind, owner, p)                   =>
+    case ContextPattern.Any                                                                  => false
+    case ContextPattern.Root                                                                 => context.isEmpty
+    case ContextPattern.Parent(kind, owner, p)                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
-    case ContextPattern.ParentWithAncestor(kind, owner, p, next) =>
+    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
           next
         )
+      )
+    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated) =>
+      context.exists(value =>
+        InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) == anchor ||
+          (value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+            value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor))
+      )
+    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)         =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor)
       )
 
   def select(
@@ -3579,6 +3705,7 @@ private[metallurgy] object RuntimeRealizationSelector:
   def validate(catalog: Scala3PsiProductionCatalog, runtime: CompilerRuntimeInventory): Vector[CatalogValidationError] =
     val rows                                                                   = runtime.shapes.map(row => (row.kind, row.id) -> row).toMap
     val nodes                                                                  = runtime.nodes.map(node => node.id -> node).toMap
+    val lineages                                                               = InventoryContextLineage.resolver(nodes)
     val selected                                                               = collection.mutable.Map.empty[ProductionInstanceId, Scala3PsiProduction]
     val errors                                                                 = Vector.newBuilder[CatalogValidationError]
     def references(
@@ -3628,7 +3755,7 @@ private[metallurgy] object RuntimeRealizationSelector:
               errors += CatalogValidationError.MissingScenarioOccurrenceOwner(instance, occurrence.ownerNodeId)
               Vector.empty
             case Some(owner) =>
-              val derived = InventoryContextLineage.contexts(owner, occurrence.fieldPath, nodes)
+              val derived = lineages.contexts(owner, occurrence.fieldPath)
               if derived.isEmpty then
                 errors += CatalogValidationError.MissingScenarioOccurrenceContext(instance, occurrence)
               derived.map(Some(_))
@@ -3671,58 +3798,52 @@ private[metallurgy] object RuntimeRealizationSelector:
             values.flatten.distinct.sorted
           )
 
-    val resolved                                 = collection.mutable.Map.empty[ProductionInstanceId, OutputRealization]
-    val resolving                                = collection.mutable.Set.empty[ProductionInstanceId]
-    def resolve(key: ProductionInstanceId): Unit =
-      if !resolved.contains(key) && !resolving(key) then
-        selected.get(key) match
-          case Some(production) =>
-            resolving += key
-            val childOutcomes = production.children.map: declaration =>
-              val refs =
-                children(key).filter: child =>
-                  child.occurrence.exists(occurrence =>
-                    ProductionInstanceLineage
-                      .relativePath(key, occurrence)
-                      .headOption
-                      .contains(
-                        ParserFieldPathSegment.NamedField(declaration.fieldName)
-                      )
-                  )
-              declaration.roleId -> refs
-            childOutcomes.flatMap(_._2).foreach(resolve)
-            val matching      = production.effectiveOutputRealizations.filter: realization =>
-              realization.conditions.forall: condition =>
-                val values = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
-                val child  = condition.occurrence match
-                  case ChildOccurrenceSelector.First        => values.headOption
-                  case ChildOccurrenceSelector.Last         => values.lastOption
-                  case ChildOccurrenceSelector.Exact(index) => values.lift(index)
-                child.exists(candidate =>
-                  condition.expected match
-                    case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
-                    case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.id == id)
+    val resolved = collection.mutable.Map.empty[ProductionInstanceId, OutputRealization]
+    discovered.toVector.reverse.foreach: key =>
+      selected
+        .get(key)
+        .foreach: production =>
+          val childOutcomes = production.children.map: declaration =>
+            val refs =
+              children(key).filter: child =>
+                child.occurrence.exists(occurrence =>
+                  ProductionInstanceLineage
+                    .relativePath(key, occurrence)
+                    .headOption
+                    .contains(
+                      ParserFieldPathSegment.NamedField(declaration.fieldName)
+                    )
                 )
-            val matches       = matching match
-              case Vector() => Vector.empty
-              case values   =>
-                val mostSpecific = values.map(_.conditions.size).max
-                values.filter(_.conditions.size == mostSpecific)
-            matches match
-              case Vector(realization) => resolved += key -> realization
-              case Vector()            =>
-                errors += CatalogValidationError.UnknownScenarioRealization(
-                  production.id,
-                  production.effectiveOutputRealizations.map(_.id).sorted
-                )
-              case many                =>
-                errors += CatalogValidationError.AmbiguousScenarioRealization(
-                  production.id,
-                  many.map(_.id).sorted
-                )
-            resolving -= key
-          case None             => ()
-    discovered.foreach(resolve)
+            declaration.roleId -> refs
+          val matching      = production.effectiveOutputRealizations.filter: realization =>
+            realization.conditions.forall: condition =>
+              val values = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
+              val child  = condition.occurrence match
+                case ChildOccurrenceSelector.First        => values.headOption
+                case ChildOccurrenceSelector.Last         => values.lastOption
+                case ChildOccurrenceSelector.Exact(index) => values.lift(index)
+              child.exists(candidate =>
+                condition.expected match
+                  case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
+                  case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.id == id)
+              )
+          val matches       = matching match
+            case Vector() => Vector.empty
+            case values   =>
+              val mostSpecific = values.map(_.conditions.size).max
+              values.filter(_.conditions.size == mostSpecific)
+          matches match
+            case Vector(realization) => resolved += key -> realization
+            case Vector()            =>
+              errors += CatalogValidationError.UnknownScenarioRealization(
+                production.id,
+                production.effectiveOutputRealizations.map(_.id).sorted
+              )
+            case many                =>
+              errors += CatalogValidationError.AmbiguousScenarioRealization(
+                production.id,
+                many.map(_.id).sorted
+              )
     errors.result()
 
 private[metallurgy] object Scala3PsiProductionCatalogValidator:
@@ -4446,6 +4567,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       val rows                                                                       = compiler.shapes.map(row => (row.kind, row.id) -> row).toMap
       val nodes                                                                      = snapshot.nodes.map(node => node.id -> node).toMap
       val positioned                                                                 = snapshot.positioned.map(value => value.id -> value).toMap
+      val lineages                                                                   = InventoryContextLineage.resolver(nodes)
       def fields(instance: ProductionInstanceId): Vector[ParserSyntaxField]          = instance.kind match
         case InventoryKind.Node       => nodes(instance.valueId).fields
         case InventoryKind.Positioned => positioned(instance.valueId).fields
@@ -4493,7 +4615,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           nodes
             .get(occurrence.ownerNodeId)
             .toVector
-            .flatMap(owner => InventoryContextLineage.contexts(owner, occurrence.fieldPath, nodes))
+            .flatMap(owner => lineages.contexts(owner, occurrence.fieldPath))
             .map(Some(_))
       val root                                                                       = ProductionInstanceId(InventoryKind.Node, snapshot.rootNodeId, None)
       val instances                                                                  = Vector.newBuilder[ProductionInstanceId]
@@ -5151,16 +5273,79 @@ private[metallurgy] object WholeFileProductionPlanner:
         )
       val planningAtoms   = refinedEvidence.atoms
 
-      val candidates                                                                            =
+      val ownershipChildren                                                                               = incoming.iterator
+        .flatMap((child, owners) => owners.map(_ -> child))
+        .toVector
+        .groupMap(_._1)(_._2)
+      val ownershipEntry                                                                                  = collection.mutable.Map.empty[ProductionInstanceId, Int]
+      val ownershipExit                                                                                   = collection.mutable.Map.empty[ProductionInstanceId, Int]
+      val ownershipTraversal                                                                              = collection.mutable.Stack((root, false))
+      var ownershipOrder                                                                                  = 0
+      while ownershipTraversal.nonEmpty do
+        val (instance, exiting) = ownershipTraversal.pop()
+        if exiting then ownershipExit += instance -> ownershipOrder
+        else
+          ownershipEntry += instance -> ownershipOrder
+          ownershipOrder += 1
+          ownershipTraversal.push(instance -> true)
+          ownershipChildren
+            .getOrElse(instance, Vector.empty)
+            .reverseIterator
+            .foreach(child => ownershipTraversal.push(child -> false))
+      def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean           =
+        ownershipEntry
+          .get(ancestor)
+          .exists(entry =>
+            ownershipEntry.get(descendant).exists(_ >= entry) &&
+              ownershipExit.get(descendant).exists(_ <= ownershipExit(ancestor))
+          )
+      val activeClaimOwners                                                                               = active.toVector
+        .groupMap(instance => instance.kind -> instance.valueId)(identity)
+      val outputClaimOwners                                                                               = activeClaimOwners.view
+        .mapValues(_.filter(instance => localOutputRoots(instance).nonEmpty))
+        .toMap
+      def claimOwners(atom: SourceAtom, owners: Map[(InventoryKind, Long), Vector[ProductionInstanceId]]) =
+        atom.claims
+          .flatMap:
+            case SourceClaim.Node(id, _)       => owners.getOrElse(InventoryKind.Node -> id, Vector.empty)
+            case SourceClaim.Positioned(id, _) => owners.getOrElse(InventoryKind.Positioned -> id, Vector.empty)
+            case SourceClaim.Diagnostic(_)     => Vector.empty
+          .distinct
+          .sortBy(ownershipEntry)
+      val deepestOutputClaimOwners                                                                        = planningAtoms
+        .map: atom =>
+          val owners  = claimOwners(atom, outputClaimOwners)
+          val deepest = owners.zipWithIndex.collect:
+            case (owner, index)
+                if owners.lift(index + 1).forall(next => ownershipEntry(next) >= ownershipExit(owner)) =>
+              owner
+          atom.id -> deepest
+        .toMap
+      val eligibleParentClaimAtoms                                                                        = planningAtoms
+        .flatMap: atom =>
+          claimOwners(atom, activeClaimOwners)
+            .filterNot(owner =>
+              deepestOutputClaimOwners(atom.id)
+                .exists(descendant => descendant != owner && isAncestor(owner, descendant))
+            )
+            .map(_ -> atom)
+        .groupMap(_._1)(_._2)
+      val unclaimedAtoms                                                                                  = planningAtoms.filter(atom => claimOwners(atom, activeClaimOwners).isEmpty)
+      val candidates                                                                                      =
         collection.mutable.Map.empty[SourceAtomId, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
-      val resolvedTerminals                                                                     = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
+      val resolvedTerminals                                                                               = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
       active.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
           val intervals   = terminalIntervals(instance, production, terminal)
           val tokenRanges = terminalTokenRanges(instance, terminal, intervals).toSet
           val atoms       = intervals.flatMap: interval =>
-            planningAtoms
+            val candidates = terminal.target match
+              case TerminalLeafTarget.Parent =>
+                eligibleParentClaimAtoms.getOrElse(instance, Vector.empty) ++
+                  Option.when(instance == root)(unclaimedAtoms).getOrElse(Vector.empty)
+              case _                         => planningAtoms
+            candidates
               .filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
               .filter(atom => terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)))
               .filter: atom =>
@@ -5201,20 +5386,8 @@ private[metallurgy] object WholeFileProductionPlanner:
               terminal.target
             )
             candidates.update(atom.id, candidates(atom.id) :+ leaf)
-      def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean =
-        Iterator
-          .iterate(Vector(descendant))(_.flatMap(incoming.getOrElse(_, Vector.empty)))
-          .takeWhile(_.nonEmpty)
-          .flatten
-          .contains(ancestor)
-      val leaves                                                                                = planningAtoms.map: atom =>
-        val eligible = candidates(atom.id).filterNot(candidate =>
-          candidate.target == TerminalLeafTarget.Parent && active.exists(descendant =>
-            descendant != candidate.sourceOwner && isAncestor(candidate.sourceOwner, descendant) && atom.claims.exists(
-              claims(descendant, _)
-            ) && localOutputRoots(descendant).nonEmpty
-          )
-        )
+      val leaves                                                                                          = planningAtoms.map: atom =>
+        val eligible = candidates(atom.id)
         eligible match
           case Vector(leaf) => leaf
           case Vector()     =>
@@ -5252,7 +5425,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             )
-      val atomOwnership                                                                         = leaves.map: leaf =>
+      val atomOwnership                                                                                   = leaves.map: leaf =>
         val role = selected(leaf.sourceOwner).terminals
           .find(_.id == leaf.terminalId)
           .get
@@ -5261,7 +5434,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           SourceAtomReference(leaf.atomId, leaf.start, leaf.end),
           SourceEvidenceOwner(role, s"${leaf.sourceOwner}:${leaf.terminalId}")
         )
-      val eventOwnership                                                                        = refinedEvidence.structural.flatMap: event =>
+      val eventOwnership                                                                                  = refinedEvidence.structural.flatMap: event =>
         val sources    = active.toVector.filter(instance => claims(instance, event.claim))
         val candidates = active.toVector.flatMap: instance =>
           val ownsClaim =
@@ -5290,13 +5463,13 @@ private[metallurgy] object WholeFileProductionPlanner:
           case (instance, ownership)
               if !candidates.exists((other, _) => other != instance && isAncestor(instance, other)) =>
             ownership
-      val finalEvidence                                                                         = FinalSourceEvidencePlanner
+      val finalEvidence                                                                                   = FinalSourceEvidencePlanner
         .plan(refinedEvidence, knownEvidenceRoles, atomOwnership, eventOwnership)
         .fold(
           failures => break(Left(WholeFilePlanningFailure.FinalSourceEvidenceFailures(failures))),
           identity
         )
-      val targets                                                                               = active.toVector.flatMap: instance =>
+      val targets                                                                                         = active.toVector.flatMap: instance =>
         val production = selected(instance)
         val composites = outputRows(instance).collect:
           case (declaration, id, _) if !mergedOutputRoots.contains(id) =>
@@ -5327,7 +5500,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               TargetAssertionKind.Token
             )
         composites ++ terminals
-      val accessors                                                                             = active.toVector.flatMap(instance =>
+      val accessors                                                                                       = active.toVector.flatMap(instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
           case (declaration, id, _)                         =>
@@ -5335,7 +5508,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required)
             )
       )
-      val stubs                                                                                 = active.toVector.flatMap: instance =>
+      val stubs                                                                                           = active.toVector.flatMap: instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
           case (declaration, id, _)                         =>
@@ -5343,7 +5516,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               case PersistenceObligations.NotApplicable                                   => Vector.empty
               case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
                 Vector(PlannedStubAssertion(id, stub, serializer, indices, navigation))
-      val navigation                                                                            = active.toVector.flatMap: instance =>
+      val navigation                                                                                      = active.toVector.flatMap: instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if mergedOutputRoots.contains(id) => Vector.empty
           case (declaration, id, _)                         =>

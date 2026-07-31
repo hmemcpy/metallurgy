@@ -243,6 +243,104 @@ final class Scala3PsiProductionCatalogTest:
       result.productions.head.occurrences.toSet
     )
 
+  @Test def repeatedAncestorContextMatchesOnlyAContiguousLineageEndingAtItsAnchor(): Unit =
+    val qualifier                                     = Vector(CatalogPathSegment.NamedField("qualifier"))
+    val repeated                                      = InventoryAncestor(InventoryKind.Node, "Select", qualifier)
+    val anchor                                        = InventoryAncestor(
+      InventoryKind.Node,
+      "Import",
+      Vector(CatalogPathSegment.NamedField("expr"))
+    )
+    val pattern                                       = ContextPattern.ParentWithRepeatedAncestor(
+      InventoryKind.Node,
+      "Select",
+      qualifier,
+      repeated,
+      anchor
+    )
+    val anchored                                      = ContextPattern.AnchorOrParentWithRepeatedAncestor(
+      anchor,
+      InventoryKind.Node,
+      "Select",
+      qualifier,
+      repeated
+    )
+    def context(ancestors: Vector[InventoryAncestor]) =
+      Some(InventoryContext(InventoryKind.Node, "Select", qualifier, ancestors))
+    val direct                                        = Some(InventoryContext(anchor.ownerKind, anchor.ownerPrefix, anchor.path))
+
+    Vector(
+      context(Vector(anchor)),
+      context(Vector(repeated, anchor)),
+      context(Vector.fill(10000)(repeated) :+ anchor)
+    ).foreach: candidate =>
+      assertTrue(CatalogShapeMatcher.contextMatches(pattern, candidate))
+      assertTrue(CatalogShapeMatcher.aggregateContextMatches(pattern, candidate))
+      assertTrue(CatalogShapeMatcher.contextMatches(anchored, candidate))
+      assertTrue(CatalogShapeMatcher.aggregateContextMatches(anchored, candidate))
+    assertTrue(CatalogShapeMatcher.contextMatches(anchored, direct))
+    assertTrue(CatalogShapeMatcher.aggregateContextMatches(anchored, direct))
+
+    val adjacent = InventoryAncestor(InventoryKind.Node, "Apply", qualifier)
+    Vector(
+      None,
+      context(Vector.empty),
+      context(Vector.fill(10000)(repeated)),
+      context(Vector(repeated, adjacent, anchor)),
+      Some(
+        InventoryContext(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("other")), Vector(anchor))
+      )
+    ).foreach: candidate =>
+      assertFalse(CatalogShapeMatcher.contextMatches(pattern, candidate))
+      assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, candidate))
+      assertFalse(CatalogShapeMatcher.contextMatches(anchored, candidate))
+      assertFalse(CatalogShapeMatcher.aggregateContextMatches(anchored, candidate))
+
+  @Test def inventoryLineageResolutionIsOrderedIterativeAndFailClosed(): Unit =
+    val position                                                                        = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
+    val child                                                                           = Vector(ParserFieldPathSegment.NamedField("child"))
+    def value(id: Long, production: String, occurrences: Vector[ParserNodeOccurrence])  =
+      ParserSyntaxNode(id, production, Vector.empty, position, occurrences)
+    val root                                                                            = value(1, "Root", Vector.empty)
+    val left                                                                            = value(2, "Left", Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("left")))))
+    val right                                                                           = value(
+      3,
+      "Right",
+      Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("right"))))
+    )
+    val leaf                                                                            = value(4, "Leaf", Vector(ParserNodeOccurrence(2, child), ParserNodeOccurrence(3, child)))
+    val nodes                                                                           = Vector(root, left, right, leaf).map(node => node.id -> node).toMap
+    val expected                                                                        = Vector(
+      Vector(
+        InventoryAncestor(InventoryKind.Node, "Left", Vector(CatalogPathSegment.NamedField("child"))),
+        InventoryAncestor(InventoryKind.Node, "Root", Vector(CatalogPathSegment.NamedField("left")))
+      ),
+      Vector(
+        InventoryAncestor(InventoryKind.Node, "Right", Vector(CatalogPathSegment.NamedField("child"))),
+        InventoryAncestor(InventoryKind.Node, "Root", Vector(CatalogPathSegment.NamedField("right")))
+      )
+    )
+    def ancestries(candidate: ParserSyntaxNode, inventory: Map[Long, ParserSyntaxNode]) =
+      InventoryContextLineage
+        .resolver(inventory)
+        .contexts(candidate, Vector(ParserFieldPathSegment.NamedField("value")))
+        .map(_.ancestors)
+
+    assertEquals(expected, ancestries(leaf, nodes))
+    assertEquals(
+      expected.reverse,
+      ancestries(
+        leaf.copy(occurrences = leaf.occurrences.reverse),
+        nodes.updated(4, leaf.copy(occurrences = leaf.occurrences.reverse))
+      )
+    )
+
+    val firstCycle  = value(5, "FirstCycle", Vector(ParserNodeOccurrence(6, child)))
+    val secondCycle = value(6, "SecondCycle", Vector(ParserNodeOccurrence(5, child)))
+    assertTrue(ancestries(firstCycle, Map(5L -> firstCycle, 6L -> secondCycle)).isEmpty)
+    val missing     = value(7, "Missing", Vector(ParserNodeOccurrence(99, child)))
+    assertTrue(ancestries(missing, Map(7L -> missing)).isEmpty)
+
   @Test def aggregateInfersOptionalAndRepeatedFromAllEvidence(): Unit =
     val identity                                      = inventory(snapshot("/one", 1, Vector.empty)).identity
     def value(observation: InventoryValueObservation) = CompilerRuntimeInventory(
