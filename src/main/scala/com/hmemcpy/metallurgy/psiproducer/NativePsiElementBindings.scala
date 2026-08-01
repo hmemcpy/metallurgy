@@ -13,7 +13,17 @@ import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.ScExportsHolder
-import org.jetbrains.plugins.scala.lang.psi.api.base.{ScEnd, ScStableCodeReference}
+import org.jetbrains.plugins.scala.lang.psi.api.base.{
+  ScAccessModifier,
+  ScAnnotation,
+  ScAnnotationExpr,
+  ScAnnotations,
+  ScConstructorInvocation,
+  ScEnd,
+  ScModifierList,
+  ScStableCodeReference
+}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScInfixTypeElement,
@@ -24,15 +34,19 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
 import org.jetbrains.plugins.scala.lang.psi.stubs.{
+  ScAccessModifierStub,
+  ScAnnotationStub,
+  ScAnnotationsStub,
   ScExportStmtStub,
   ScImportExprStub,
   ScImportSelectorStub,
   ScImportSelectorsStub,
   ScImportStmtStub,
+  ScModifiersStub,
   ScPackagingStub
 }
 import org.jetbrains.plugins.scala.lang.psi.stubs.index.ScalaIndexKeys
-import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.{MetallurgyExpressionPayload, MetallurgyIntegerLiteral}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import scala.jdk.CollectionConverters.*
@@ -117,6 +131,28 @@ private[metallurgy] object NativePsiElementBindings:
     "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardTypeQuestionMark"
   val LowerTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
   val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
+  val AnnotatedMemberIndexSurface      =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
+  val ModifierKeywordSurfaceIds        = Map(
+    "Abstract"    -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kABSTRACT",
+    "Final"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kFINAL",
+    "Sealed"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kSEALED",
+    "Implicit"    -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kIMPLICIT",
+    "Lazy"        -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kLAZY",
+    "Override"    -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kOVERRIDE",
+    "Var"         -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAR",
+    "Transparent" -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#TransparentKeyword",
+    "Inline"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#InlineKeyword",
+    "Infix"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#InfixKeyword",
+    "Open"        -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#OpenKeyword",
+    "Opaque"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#OpaqueKeyword",
+    "Given"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#GivenKeyword"
+  )
+  val AccessModifierKeywordSurfaceIds  = Map(
+    "Private"   -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPRIVATE",
+    "Protected" -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPROTECTED"
+  )
+  private val ModifierTokenSurfaceIds  = ModifierKeywordSurfaceIds ++ AccessModifierKeywordSurfaceIds
 
   def probe(project: Project): Either[String, NativePsiElementBindings] =
     if ApplicationManager.getApplication.isReadAccessAllowed then probeInReadAction(project)
@@ -127,7 +163,7 @@ private[metallurgy] object NativePsiElementBindings:
       )
 
   private def probeInReadAction(project: Project): Either[String, NativePsiElementBindings] =
-    val file                  = PsiFileFactory
+    val file                   = PsiFileFactory
       .getInstance(project)
       .createFileFromText(
         "NativeBindingProbe.scala",
@@ -144,10 +180,14 @@ private[metallurgy] object NativePsiElementBindings:
           |import alpha.beta.`back-tick`
           |import alpha.beta._
           |export alpha.beta.{Original as Exported, given Bound, *}
+          |class scope
+          |@ann @pkg.ann @deprecated("m", "1")
+          |private[scope] abstract class AnnotatedProbe:
+          |  protected[this] final inline def member = 1
           |val probe = 1
           |""".stripMargin
       )
-    val packageLayoutFile     = PsiFileFactory
+    val packageLayoutFile      = PsiFileFactory
       .getInstance(project)
       .createFileFromText(
         "NativePackageLayoutBindingProbe.scala",
@@ -162,81 +202,94 @@ private[metallurgy] object NativePsiElementBindings:
           |end outer
           |""".stripMargin
       )
-    val packaging             = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
-    val layoutPackagings      = PsiTreeUtil
+    val packaging              = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
+    val layoutPackagings       = PsiTreeUtil
       .findChildrenOfType(packageLayoutFile, classOf[ScPackaging])
       .asScala
       .toVector
-    val bracedPackaging       = layoutPackagings.find(_.fullPackageName == "braced").orNull
-    val outerPackaging        = layoutPackagings.find(_.fullPackageName == "outer").orNull
-    val innerPackaging        = layoutPackagings.find(_.fullPackageName == "outer.inner").orNull
-    val layoutEnds            = PsiTreeUtil.findChildrenOfType(packageLayoutFile, classOf[ScEnd]).asScala.toVector
-    val innerEnd              = layoutEnds.find(_.getName == "inner").orNull
-    val outerEnd              = layoutEnds.find(_.getName == "outer").orNull
-    val bracedImport          = Option(bracedPackaging)
+    val bracedPackaging        = layoutPackagings.find(_.fullPackageName == "braced").orNull
+    val outerPackaging         = layoutPackagings.find(_.fullPackageName == "outer").orNull
+    val innerPackaging         = layoutPackagings.find(_.fullPackageName == "outer.inner").orNull
+    val layoutEnds             = PsiTreeUtil.findChildrenOfType(packageLayoutFile, classOf[ScEnd]).asScala.toVector
+    val innerEnd               = layoutEnds.find(_.getName == "inner").orNull
+    val outerEnd               = layoutEnds.find(_.getName == "outer").orNull
+    val bracedImport           = Option(bracedPackaging)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScImportStmt])))
       .orNull
-    val innerExport           = Option(innerPackaging)
+    val innerExport            = Option(innerPackaging)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScExportStmt])))
       .orNull
-    val reference             = Option(packaging).flatMap(_.reference).orNull
-    val qualifier             = Option(reference).flatMap(_.qualifier).orNull
-    val statements            = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
-    val expressions           = statements.flatMap(_.importExprs)
-    val selectorSets          = expressions.flatMap(_.selectorSet)
-    val selectors             = selectorSets.flatMap(_.selectors)
-    val exportStatements      = PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector
-    val exportExpressions     = exportStatements.flatMap(_.importExprs)
-    val exportSelectorSets    = exportExpressions.flatMap(_.selectorSet)
-    val exportSelectors       = exportSelectorSets.flatMap(_.selectors)
-    val aliasSelectors        = selectors.filter(_.isAliasedImport)
-    val aliasAsElement        = aliasSelectors.headOption
+    val reference              = Option(packaging).flatMap(_.reference).orNull
+    val qualifier              = Option(reference).flatMap(_.qualifier).orNull
+    val statements             = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
+    val expressions            = statements.flatMap(_.importExprs)
+    val selectorSets           = expressions.flatMap(_.selectorSet)
+    val selectors              = selectorSets.flatMap(_.selectors)
+    val exportStatements       = PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector
+    val exportExpressions      = exportStatements.flatMap(_.importExprs)
+    val exportSelectorSets     = exportExpressions.flatMap(_.selectorSet)
+    val exportSelectors        = exportSelectorSets.flatMap(_.selectors)
+    val aliasSelectors         = selectors.filter(_.isAliasedImport)
+    val aliasAsElement         = aliasSelectors.headOption
       .flatMap(selector => leafAtText(selector, "as"))
       .orNull
-    val aliasArrowElement     = aliasSelectors
+    val aliasArrowElement      = aliasSelectors
       .lift(1)
       .flatMap(selector => leafAtText(selector, "=>"))
       .orNull
-    val givenSelector         = selectors.find(_.isGivenSelector)
-    val wildcardSelector      = selectors.find(_.isWildcardSelector)
-    val wildcardElement       = wildcardSelector.flatMap(_.wildcardElement).orNull
-    val legacyWildcardElement = expressions.lastOption.flatMap(_.wildcardElement).orNull
-    val givenType             = givenSelector.flatMap(_.givenTypeElement).orNull
-    val parameterizedType     = PsiTreeUtil.findChildOfType(file, classOf[ScParameterizedTypeElement])
-    val typeArguments         = Option(parameterizedType).map(_.typeArgList).orNull
-    val leftTypeBracket       = Option(typeArguments).flatMap(leafAtText(_, "[")).orNull
-    val rightTypeBracket      = Option(typeArguments).flatMap(leafAtText(_, "]")).orNull
-    val parameterizedBase     = Option(parameterizedType).map(_.typeElement).orNull
-    val parameterizedArgs     = Option(typeArguments).map(_.typeArgs.toVector).getOrElse(Vector.empty)
-    val givenReference        = Option(givenType)
+    val givenSelector          = selectors.find(_.isGivenSelector)
+    val wildcardSelector       = selectors.find(_.isWildcardSelector)
+    val wildcardElement        = wildcardSelector.flatMap(_.wildcardElement).orNull
+    val legacyWildcardElement  = expressions.lastOption.flatMap(_.wildcardElement).orNull
+    val givenType              = givenSelector.flatMap(_.givenTypeElement).orNull
+    val parameterizedType      = PsiTreeUtil.findChildOfType(file, classOf[ScParameterizedTypeElement])
+    val typeArguments          = Option(parameterizedType).map(_.typeArgList).orNull
+    val leftTypeBracket        = Option(typeArguments).flatMap(leafAtText(_, "[")).orNull
+    val rightTypeBracket       = Option(typeArguments).flatMap(leafAtText(_, "]")).orNull
+    val parameterizedBase      = Option(parameterizedType).map(_.typeElement).orNull
+    val parameterizedArgs      = Option(typeArguments).map(_.typeArgs.toVector).getOrElse(Vector.empty)
+    val givenReference         = Option(givenType)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScStableCodeReference])))
       .orNull
-    val qualifiedType         = selectors
+    val qualifiedType          = selectors
       .flatMap(_.givenTypeElement)
       .collectFirst { case value: ScSimpleTypeElement if value.getText == "alpha.gamma.Bound" => value }
       .orNull
-    val qualifiedReference    = Option(qualifiedType).flatMap(_.reference).orNull
-    val qualifiedQualifier    = Option(qualifiedReference).flatMap(_.qualifier).orNull
-    val wildcardType          = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
-    val wildcardLower         = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
-    val wildcardUpper         = Option(wildcardType).flatMap(_.upperTypeElement).orNull
-    val wildcardQuestion      = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
-    val lowerBoundToken       = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
-    val upperBoundToken       = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
-    val infixType             = PsiTreeUtil
+    val qualifiedReference     = Option(qualifiedType).flatMap(_.reference).orNull
+    val qualifiedQualifier     = Option(qualifiedReference).flatMap(_.qualifier).orNull
+    val wildcardType           = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
+    val wildcardLower          = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
+    val wildcardUpper          = Option(wildcardType).flatMap(_.upperTypeElement).orNull
+    val wildcardQuestion       = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
+    val lowerBoundToken        = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
+    val upperBoundToken        = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
+    val infixType              = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScInfixTypeElement])
       .asScala
       .find(_.getText == "Left | Middle & Right")
       .orNull
-    val nestedInfixType       =
+    val nestedInfixType        =
       Option(infixType).flatMap(_.rightOption).collect { case value: ScInfixTypeElement => value }.orNull
-    val infixLeft             = Option(infixType).map(_.left).orNull
-    val infixRight            = Option(infixType).flatMap(_.rightOption).orNull
-    val infixOperation        = Option(infixType).map(_.operation).orNull
-    val integerLiteral        = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
-    val manager               = PsiManager.getInstance(project)
-    val persistenceFailure    = probePersistence(file).left.toOption
-    val candidates            =
+    val infixLeft              = Option(infixType).map(_.left).orNull
+    val infixRight             = Option(infixType).flatMap(_.rightOption).orNull
+    val infixOperation         = Option(infixType).map(_.operation).orNull
+    val integerLiteral         = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
+    val modifierLists          = PsiTreeUtil.findChildrenOfType(file, classOf[ScModifierList]).asScala.toVector
+    val annotatedModifiers     = modifierLists.find(_.getText == "private[scope] abstract").orNull
+    val memberModifiers        = modifierLists.find(_.getText.contains("protected[this]")).orNull
+    val accessModifiers        = PsiTreeUtil.findChildrenOfType(file, classOf[ScAccessModifier]).asScala.toVector
+    val annotationsContainers  = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotations]).asScala.toVector
+    val annotationContainer    = annotationsContainers.find(_.getText.startsWith("@ann")).orNull
+    val annotations            = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotation]).asScala.toVector
+    val annotationExpressions  = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotationExpr]).asScala.toVector
+    val deprecatedAnnotation   = annotations.find(_.getText == "@deprecated(\"m\", \"1\")").orNull
+    val constructorInvocations = PsiTreeUtil.findChildrenOfType(file, classOf[ScConstructorInvocation]).asScala.toVector
+    val argumentLists          = PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).asScala.toVector
+    val annotationPayloads     =
+      annotationExpressions.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).asScala)
+    val manager                = PsiManager.getInstance(project)
+    val persistenceFailure     = probePersistence(file).left.toOption
+    val candidates             =
       Vector(
         packaging,
         bracedPackaging,
@@ -265,9 +318,13 @@ private[metallurgy] object NativePsiElementBindings:
         infixLeft,
         infixRight,
         infixOperation,
-        integerLiteral
+        integerLiteral,
+        annotatedModifiers,
+        memberModifiers,
+        deprecatedAnnotation
       ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
-        exportSelectorSets ++ exportSelectors
+        exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
+        annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
     if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
       innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
     then Left("native package PSI probe is incomplete")
@@ -384,8 +441,57 @@ private[metallurgy] object NativePsiElementBindings:
     then Left("native infix given type PSI is inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
-    else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null then
-      Left("native import or export index is unavailable")
+    else if annotatedModifiers == null || memberModifiers == null || accessModifiers.size != 2 ||
+      annotationContainer == null || annotations.map(_.getText) !=
+        Vector("@ann", "@pkg.ann", "@deprecated(\"m\", \"1\")") || annotationExpressions.size != 3 ||
+        constructorInvocations.size != 3 || argumentLists.map(_.getText) != Vector("(\"m\", \"1\")") ||
+        deprecatedAnnotation == null
+    then
+      Left(
+        s"native modifier or annotation PSI probe is incomplete: " +
+          s"modifiers=${modifierLists.map(_.getText)}, access=${accessModifiers.map(_.getText)}, " +
+          s"containers=${annotationsContainers.map(_.getText)}, annotations=${annotations.map(_.getText)}, " +
+          s"expressions=${annotationExpressions.map(_.getText)}, constructors=${constructorInvocations.map(_.getText)}, " +
+          s"arguments=${argumentLists.map(_.getText)}"
+      )
+    else if annotatedModifiers.getNode.getElementType != ScalaElementType.MODIFIERS ||
+      accessModifiers.exists(_.getNode.getElementType != ScalaElementType.ACCESS_MODIFIER) ||
+      annotationContainer.getNode.getElementType != ScalaElementType.ANNOTATIONS ||
+      annotations.exists(_.getNode.getElementType != ScalaElementType.ANNOTATION) ||
+      annotationExpressions.exists(_.getNode.getElementType != ScalaElementType.ANNOTATION_EXPR)
+    then Left("native modifier or annotation element types are inconsistent")
+    else if annotatedModifiers.accessModifier.forall(value =>
+        !value.isPrivate || value.isProtected || value.isThis || value.idText != Some("scope")
+      ) || memberModifiers.accessModifier.forall(value =>
+        value.isPrivate || !value.isProtected || !value.isThis || value.idText.nonEmpty
+      ) || annotatedModifiers.modifiersOrdered.map(_.text).toVector != Vector("private", "abstract") ||
+      memberModifiers.modifiersOrdered.map(_.text).toVector != Vector("protected", "final", "inline") ||
+      !annotatedModifiers.hasModifierProperty("private") || !annotatedModifiers.hasModifierProperty("abstract") ||
+      !memberModifiers.hasModifierProperty("protected") || !memberModifiers.hasModifierProperty("final") ||
+      !memberModifiers.hasModifierProperty("inline")
+    then Left("native modifier accessors are inconsistent")
+    else if annotationContainer.getAnnotations.toVector != annotations ||
+      annotations.exists(value => value.getParent != annotationContainer) ||
+      annotations
+        .zip(annotationExpressions)
+        .exists((annotation, expression) =>
+          annotation.annotationExpr != expression || expression.getParent != annotation ||
+            annotation.constructorInvocation != expression.constructorInvocation ||
+            annotation.typeElement != annotation.constructorInvocation.typeElement
+        ) || annotations.exists(
+        _.getQualifiedName == null
+      ) || deprecatedAnnotation.getQualifiedName != "scala.deprecated" ||
+      deprecatedAnnotation.getParameterList.getAttributes.nonEmpty ||
+      deprecatedAnnotation.annotationExpr.getAnnotationParameters.map(_.getText).toVector != Vector("\"m\"", "\"1\"")
+    then
+      Left(
+        s"native annotation accessors are inconsistent: qualified=${annotations.map(_.getQualifiedName)}, " +
+          s"attributes=${deprecatedAnnotation.getParameterList.getAttributes.map(_.getText).toVector}, " +
+          s"parameters=${deprecatedAnnotation.annotationExpr.getAnnotationParameters.map(_.getText).toVector}"
+      )
+    else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null ||
+      ScalaIndexKeys.ANNOTATED_MEMBER_KEY == null
+    then Left("native import or export index is unavailable")
     else if persistenceFailure.nonEmpty then Left(persistenceFailure.get)
     else if reference.getParent != packaging || qualifier.getParent != reference then
       Left("native package PSI direct parents are inconsistent")
@@ -413,6 +519,16 @@ private[metallurgy] object NativePsiElementBindings:
       )
       if !packageSurfaces.subsetOf(grouped.keySet) then
         Left("native package PSI implementation surfaces are unexpected")
+      else if !Set(
+          "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl",
+          "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
+        ).subsetOf(grouped.keySet)
+      then Left("native modifier or annotation implementation surfaces are unexpected")
       else if grouped.values.exists(types => types.tail.exists(_ ne types.head)) then
         Left("native PSI implementation surface has inconsistent element types")
       else if packaging.getNode.getElementType == reference.getNode.getElementType ||
@@ -422,53 +538,100 @@ private[metallurgy] object NativePsiElementBindings:
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
       then Left("native stub-bearing PSI element type cannot produce stubs")
+      else if (Vector(annotatedModifiers, annotationContainer) ++ accessModifiers ++ annotations).exists(value =>
+          !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
+        ) || annotationExpressions.exists(value => value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
+      then
+        Left(
+          "native modifier or annotation stub-bearing status is inconsistent: " +
+            (Vector(annotatedModifiers) ++ accessModifiers ++ Vector(annotationContainer) ++ annotations ++
+              annotationExpressions).map(value =>
+              s"${value.getClass.getSimpleName}=${value.getNode.getElementType.getClass.getName}"
+            )
+        )
       else
         Right(
           NativePsiElementBindings(
             grouped.view.mapValues(_.head).toMap +
-              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral" ->
+              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"    ->
                 MetallurgyIntegerLiteral.ElementType) +
-              (EndKeywordTokenSurface                                                          -> ScalaTokenType.EndKeyword) +
-              (ImportWildcardTokenSurface                                                      -> wildcardElement.getNode.getElementType) +
-              (ImportLegacyWildcardTokenSurface                                                -> legacyWildcardElement.getNode.getElementType) +
-              (ImportAliasAsTokenSurface                                                       -> aliasAsElement.getNode.getElementType) +
-              (ImportAliasArrowTokenSurface                                                    -> aliasArrowElement.getNode.getElementType) +
-              (TypeArgumentLeftTokenSurface                                                    -> leftTypeBracket.getNode.getElementType) +
-              (TypeArgumentRightTokenSurface                                                   -> rightTypeBracket.getNode.getElementType) +
-              (WildcardQuestionTokenSurface                                                    -> wildcardQuestion.getNode.getElementType) +
-              (LowerTypeBoundTokenSurface                                                      -> lowerBoundToken.getNode.getElementType) +
-              (UpperTypeBoundTokenSurface                                                      -> upperBoundToken.getNode.getElementType),
+              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload" ->
+                MetallurgyExpressionPayload.ElementType) +
+              (EndKeywordTokenSurface                                                             -> ScalaTokenType.EndKeyword) +
+              (ImportWildcardTokenSurface                                                         -> wildcardElement.getNode.getElementType) +
+              (ImportLegacyWildcardTokenSurface                                                   -> legacyWildcardElement.getNode.getElementType) +
+              (ImportAliasAsTokenSurface                                                          -> aliasAsElement.getNode.getElementType) +
+              (ImportAliasArrowTokenSurface                                                       -> aliasArrowElement.getNode.getElementType) +
+              (TypeArgumentLeftTokenSurface                                                       -> leftTypeBracket.getNode.getElementType) +
+              (TypeArgumentRightTokenSurface                                                      -> rightTypeBracket.getNode.getElementType) +
+              (WildcardQuestionTokenSurface                                                       -> wildcardQuestion.getNode.getElementType) +
+              (LowerTypeBoundTokenSurface                                                         -> lowerBoundToken.getNode.getElementType) +
+              (UpperTypeBoundTokenSurface                                                         -> upperBoundToken.getNode.getElementType) ++
+              Map(
+                ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
+                ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
+                ModifierKeywordSurfaceIds("Sealed")          -> ScalaTokenTypes.kSEALED,
+                ModifierKeywordSurfaceIds("Implicit")        -> ScalaTokenTypes.kIMPLICIT,
+                ModifierKeywordSurfaceIds("Lazy")            -> ScalaTokenTypes.kLAZY,
+                ModifierKeywordSurfaceIds("Override")        -> ScalaTokenTypes.kOVERRIDE,
+                ModifierKeywordSurfaceIds("Var")             -> ScalaTokenTypes.kVAR,
+                ModifierKeywordSurfaceIds("Transparent")     -> ScalaTokenType.TransparentKeyword,
+                ModifierKeywordSurfaceIds("Inline")          -> ScalaTokenType.InlineKeyword,
+                ModifierKeywordSurfaceIds("Infix")           -> ScalaTokenType.InfixKeyword,
+                ModifierKeywordSurfaceIds("Open")            -> ScalaTokenType.OpenKeyword,
+                ModifierKeywordSurfaceIds("Opaque")          -> ScalaTokenType.OpaqueKeyword,
+                ModifierKeywordSurfaceIds("Given")           -> ScalaTokenType.GivenKeyword,
+                AccessModifierKeywordSurfaceIds("Private")   -> ScalaTokenTypes.kPRIVATE,
+                AccessModifierKeywordSurfaceIds("Protected") -> ScalaTokenTypes.kPROTECTED
+              ),
             Map(
-              PsiOutputRoleId.PackageStatement  -> packaging.getNode.getElementType,
-              PsiOutputRoleId.EndStatement      -> innerEnd.getNode.getElementType,
-              PsiOutputRoleId.ImportStatement   -> statements.head.getNode.getElementType,
-              PsiOutputRoleId.ExportStatement   -> exportStatements.head.getNode.getElementType,
-              PsiOutputRoleId.ImportExpression  -> expressions.head.getNode.getElementType,
-              PsiOutputRoleId.ImportSelectorSet -> selectorSets.head.getNode.getElementType,
-              PsiOutputRoleId.ImportSelector    -> selectors.head.getNode.getElementType,
-              PsiOutputRoleId.StableReference   -> reference.getNode.getElementType,
-              PsiOutputRoleId.SimpleType        -> givenType.getNode.getElementType,
-              PsiOutputRoleId.ParameterizedType -> parameterizedType.getNode.getElementType,
-              PsiOutputRoleId.TypeArguments     -> typeArguments.getNode.getElementType,
-              PsiOutputRoleId.WildcardType      -> wildcardType.getNode.getElementType,
-              PsiOutputRoleId.InfixType         -> infixType.getNode.getElementType,
-              PsiOutputRoleId.IntegerLiteral    -> integerLiteral.getNode.getElementType
+              PsiOutputRoleId.PackageStatement      -> packaging.getNode.getElementType,
+              PsiOutputRoleId.EndStatement          -> innerEnd.getNode.getElementType,
+              PsiOutputRoleId.ImportStatement       -> statements.head.getNode.getElementType,
+              PsiOutputRoleId.ExportStatement       -> exportStatements.head.getNode.getElementType,
+              PsiOutputRoleId.ImportExpression      -> expressions.head.getNode.getElementType,
+              PsiOutputRoleId.ImportSelectorSet     -> selectorSets.head.getNode.getElementType,
+              PsiOutputRoleId.ImportSelector        -> selectors.head.getNode.getElementType,
+              PsiOutputRoleId.StableReference       -> reference.getNode.getElementType,
+              PsiOutputRoleId.SimpleType            -> givenType.getNode.getElementType,
+              PsiOutputRoleId.ParameterizedType     -> parameterizedType.getNode.getElementType,
+              PsiOutputRoleId.TypeArguments         -> typeArguments.getNode.getElementType,
+              PsiOutputRoleId.WildcardType          -> wildcardType.getNode.getElementType,
+              PsiOutputRoleId.InfixType             -> infixType.getNode.getElementType,
+              PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
+              PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
+              PsiOutputRoleId.AccessModifier        -> accessModifiers.head.getNode.getElementType,
+              PsiOutputRoleId.Annotations           -> annotationContainer.getNode.getElementType,
+              PsiOutputRoleId.Annotation            -> annotations.head.getNode.getElementType,
+              PsiOutputRoleId.AnnotationExpr        -> annotationExpressions.head.getNode.getElementType,
+              PsiOutputRoleId.ConstructorInvocation -> constructorInvocations.head.getNode.getElementType,
+              PsiOutputRoleId.AnnotationArguments   -> argumentLists.head.getNode.getElementType,
+              PsiOutputRoleId.ExpressionPayload     -> MetallurgyExpressionPayload.ElementType
             ),
             Map(
-              PsiOutputRoleId.PackageStatement  -> surfaceId(packaging.getClass),
-              PsiOutputRoleId.EndStatement      -> surfaceId(innerEnd.getClass),
-              PsiOutputRoleId.ImportStatement   -> surfaceId(statements.head.getClass),
-              PsiOutputRoleId.ExportStatement   -> surfaceId(exportStatements.head.getClass),
-              PsiOutputRoleId.ImportExpression  -> surfaceId(expressions.head.getClass),
-              PsiOutputRoleId.ImportSelectorSet -> surfaceId(selectorSets.head.getClass),
-              PsiOutputRoleId.ImportSelector    -> surfaceId(selectors.head.getClass),
-              PsiOutputRoleId.StableReference   -> surfaceId(reference.getClass),
-              PsiOutputRoleId.SimpleType        -> surfaceId(givenType.getClass),
-              PsiOutputRoleId.ParameterizedType -> surfaceId(parameterizedType.getClass),
-              PsiOutputRoleId.TypeArguments     -> surfaceId(typeArguments.getClass),
-              PsiOutputRoleId.WildcardType      -> surfaceId(wildcardType.getClass),
-              PsiOutputRoleId.InfixType         -> surfaceId(infixType.getClass),
-              PsiOutputRoleId.IntegerLiteral    -> surfaceId(integerLiteral.getClass)
+              PsiOutputRoleId.PackageStatement      -> surfaceId(packaging.getClass),
+              PsiOutputRoleId.EndStatement          -> surfaceId(innerEnd.getClass),
+              PsiOutputRoleId.ImportStatement       -> surfaceId(statements.head.getClass),
+              PsiOutputRoleId.ExportStatement       -> surfaceId(exportStatements.head.getClass),
+              PsiOutputRoleId.ImportExpression      -> surfaceId(expressions.head.getClass),
+              PsiOutputRoleId.ImportSelectorSet     -> surfaceId(selectorSets.head.getClass),
+              PsiOutputRoleId.ImportSelector        -> surfaceId(selectors.head.getClass),
+              PsiOutputRoleId.StableReference       -> surfaceId(reference.getClass),
+              PsiOutputRoleId.SimpleType            -> surfaceId(givenType.getClass),
+              PsiOutputRoleId.ParameterizedType     -> surfaceId(parameterizedType.getClass),
+              PsiOutputRoleId.TypeArguments         -> surfaceId(typeArguments.getClass),
+              PsiOutputRoleId.WildcardType          -> surfaceId(wildcardType.getClass),
+              PsiOutputRoleId.InfixType             -> surfaceId(infixType.getClass),
+              PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
+              PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
+              PsiOutputRoleId.AccessModifier        -> surfaceId(accessModifiers.head.getClass),
+              PsiOutputRoleId.Annotations           -> surfaceId(annotationContainer.getClass),
+              PsiOutputRoleId.Annotation            -> surfaceId(annotations.head.getClass),
+              PsiOutputRoleId.AnnotationExpr        -> surfaceId(annotationExpressions.head.getClass),
+              PsiOutputRoleId.ConstructorInvocation -> surfaceId(constructorInvocations.head.getClass),
+              PsiOutputRoleId.AnnotationArguments   -> surfaceId(argumentLists.head.getClass),
+              PsiOutputRoleId.ExpressionPayload     ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
             ),
             Vector(
               ScalaPsiSurfaceRow(
@@ -534,7 +697,17 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native upper type-bound token")
-              ),
+              )
+            ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
+              ScalaPsiSurfaceRow(
+                id,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector(s"capability-probed native ${prefix.toLowerCase} modifier token")
+              )
+            } ++ Vector(
               ScalaPsiSurfaceRow(
                 ImportPersistenceSurfaces.AliasedImportIndex,
                 SurfaceFactKind.Index,
@@ -558,6 +731,14 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native package index")
+              ),
+              ScalaPsiSurfaceRow(
+                AnnotatedMemberIndexSurface,
+                SurfaceFactKind.Index,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native annotated member index")
               ),
               ScalaPsiSurfaceRow(
                 ImportPersistenceSurfaces.SelfNavigation,
@@ -588,6 +769,18 @@ private[metallurgy] object NativePsiElementBindings:
       val givenSelectorStub                                   = stubs.collectFirst {
         case value: ScImportSelectorStub if value.isGivenSelector && value.typeText.nonEmpty => value
       }
+      val modifierStubs                                       = stubs.collect { case value: ScModifiersStub => value }
+      val privateAccessStub                                   = stubs.collectFirst {
+        case value: ScAccessModifierStub if value.isPrivate && value.idText.contains("scope") => value
+      }
+      val protectedAccessStub                                 = stubs.collectFirst {
+        case value: ScAccessModifierStub if value.isProtected && value.isThis => value
+      }
+      val annotationStubs                                     = stubs.collect { case value: ScAnnotationStub => value }
+      val annotationsStubs                                    = stubs.collect { case value: ScAnnotationsStub => value }
+      val deprecatedAnnotationStub                            = annotationStubs.find(
+        _.annotationText == "deprecated(\"m\", \"1\")"
+      )
       val enumerator                                          = new AbstractStringEnumerator:
         private val values                         = collection.mutable.ArrayBuffer.empty[String]
         override def enumerate(value: String): Int =
@@ -611,7 +804,12 @@ private[metallurgy] object NativePsiElementBindings:
         exportStatement.exists(_.getElementType eq ScalaElementType.ExportStatement) &&
         expression.exists(_.getElementType eq ScalaElementType.IMPORT_EXPR) &&
         selectorSet.exists(_.getElementType eq ScalaElementType.IMPORT_SELECTORS) &&
-        selector.exists(_.getElementType eq ScalaElementType.IMPORT_SELECTOR)
+        selector.exists(_.getElementType eq ScalaElementType.IMPORT_SELECTOR) && modifierStubs.nonEmpty &&
+        modifierStubs.forall(_.getElementType eq ScalaElementType.MODIFIERS) &&
+        privateAccessStub.exists(_.getElementType eq ScalaElementType.ACCESS_MODIFIER) &&
+        protectedAccessStub.exists(_.getElementType eq ScalaElementType.ACCESS_MODIFIER) && annotationsStubs.nonEmpty &&
+        annotationsStubs.forall(_.getElementType eq ScalaElementType.ANNOTATIONS) && annotationStubs.nonEmpty &&
+        annotationStubs.forall(_.getElementType eq ScalaElementType.ANNOTATION)
       val packagingCopy                                       = packaging.map(stub =>
         ScalaElementType.PACKAGING.deserialize(
           input(bytes(ScalaElementType.PACKAGING.serialize(stub, _))),
@@ -660,6 +858,36 @@ private[metallurgy] object NativePsiElementBindings:
           new PsiFileStubImpl(null)
         )
       )
+      val modifierCopies                                      = modifierStubs.map(stub =>
+        ScalaElementType.MODIFIERS.deserialize(
+          input(bytes(ScalaElementType.MODIFIERS.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
+      val privateAccessCopy                                   = privateAccessStub.map(stub =>
+        ScalaElementType.ACCESS_MODIFIER.deserialize(
+          input(bytes(ScalaElementType.ACCESS_MODIFIER.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
+      val protectedAccessCopy                                 = protectedAccessStub.map(stub =>
+        ScalaElementType.ACCESS_MODIFIER.deserialize(
+          input(bytes(ScalaElementType.ACCESS_MODIFIER.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
+      val annotationCopies                                    = annotationStubs.map(stub =>
+        ScalaElementType.ANNOTATION.deserialize(
+          input(bytes(ScalaElementType.ANNOTATION.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
+      val annotationsCopies                                   = annotationsStubs.map(stub =>
+        ScalaElementType.ANNOTATIONS.deserialize(
+          input(bytes(ScalaElementType.ANNOTATIONS.serialize(stub, _))),
+          new PsiFileStubImpl(null)
+        )
+      )
       val serialized                                          = packaging
         .zip(packagingCopy)
         .exists((before, after) =>
@@ -693,7 +921,23 @@ private[metallurgy] object NativePsiElementBindings:
           .zip(givenCopy)
           .exists((before, after) =>
             before.isGivenSelector == after.isGivenSelector && before.typeText == after.typeText
-          )
+          ) && modifierStubs.nonEmpty && modifierStubs.map(_.modifiers) == modifierCopies.map(_.modifiers) &&
+        privateAccessStub
+          .zip(privateAccessCopy)
+          .exists((before, after) =>
+            before.isPrivate == after.isPrivate && before.isProtected == after.isProtected &&
+              before.isThis == after.isThis && before.idText == after.idText
+          ) && protectedAccessStub
+          .zip(protectedAccessCopy)
+          .exists((before, after) =>
+            before.isPrivate == after.isPrivate && before.isProtected == after.isProtected &&
+              before.isThis == after.isThis && before.idText == after.idText
+          ) && annotationsStubs.size == annotationsCopies.size &&
+        annotationsCopies.forall(
+          _.getElementType eq ScalaElementType.ANNOTATIONS
+        ) && annotationStubs.nonEmpty && annotationStubs
+          .zip(annotationCopies)
+          .forall((before, after) => before.name == after.name && before.annotationText == after.annotationText)
       var importAliasIndexed                                  = false
       selectorCopy.foreach(stub =>
         ScalaElementType.IMPORT_SELECTOR.indexStub(
@@ -740,12 +984,31 @@ private[metallurgy] object NativePsiElementBindings:
               if indexKey == ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY then exportPackages += value.toString
         )
       )
+      var deprecatedAnnotationIndexed                         = false
+      val annotationIndexOccurrences                          = Vector.newBuilder[(String, String)]
+      deprecatedAnnotationStub.foreach(stub =>
+        ScalaElementType.ANNOTATION.indexStub(
+          stub,
+          new IndexSink:
+            override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
+                indexKey: StubIndexKey[K, Psi],
+                value: K
+            ): Unit =
+              annotationIndexOccurrences += indexKey.toString -> value.toString
+              deprecatedAnnotationIndexed ||=
+                indexKey == ScalaIndexKeys.ANNOTATED_MEMBER_KEY && value.toString == "deprecated"
+        )
+      )
       Either.cond(
         actualTypes && serialized && importAliasIndexed && exportAliasIndexed &&
+          deprecatedAnnotationIndexed &&
           packages.result() == Vector("example.syntax", "example") &&
           exportPackages.result() == Vector("example.syntax"),
         (),
-        "native package/import/export persistence contracts are inconsistent"
+        s"native package/import/export persistence contracts are inconsistent: actualTypes=$actualTypes, " +
+          s"serialized=$serialized, importAlias=$importAliasIndexed, exportAlias=$exportAliasIndexed, " +
+          s"annotation=$deprecatedAnnotationIndexed, names=${annotationStubs.map(_.name)}, " +
+          s"texts=${annotationStubs.map(_.annotationText)}, occurrences=${annotationIndexOccurrences.result()}"
       )
     catch case NonFatal(error) => Left(s"native persistence probe failed: ${error.getClass.getSimpleName}")
 

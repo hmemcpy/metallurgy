@@ -238,7 +238,7 @@ private[metallurgy] object DotcPsiProducer:
       Some("composite graph has a cycle or unreachable node")
     else if plan.composites.exists(value =>
         val (from, to) = range(value)
-        from < 0 || from >= to || to > length || value.children
+        from < 0 || from > to || to > length || value.children
           .flatMap(child => ranges.get(child.child))
           .exists: child =>
             val (childFrom, childTo) = child

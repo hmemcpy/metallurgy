@@ -4,22 +4,28 @@ import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.pc.{PcCompilerSymbol, PcSessionManager, PcSnapshot, PcSnapshotCurrency, PcSourceRange}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.codeInsight.documentation.DocumentationManager
+import com.intellij.lang.{ASTFactory}
 import com.intellij.lang.documentation.ide.IdeDocumentationTargetProvider
 import com.intellij.lang.documentation.psi.PsiElementDocumentationTarget
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
+import com.intellij.openapi.command.CommandProcessor
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.project.Project
 import com.intellij.psi.{PsiClass, PsiElement, SmartPointerManager}
+import com.intellij.psi.impl.source.tree.TreeElement
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.util.ui.UIUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
+import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{ScBindingPattern, ScPattern}
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScStableCodeReference
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScFunction,
   ScFunctionDefinition,
@@ -31,7 +37,7 @@ import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.ScalaChangeS
 import org.jetbrains.plugins.scala.lang.refactoring.inline.method.ScalaInlineMethodHandler
 import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
-import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertNull, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertFalse, assertNotEquals, assertNotNull, assertNull, assertSame, assertTrue}
 import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
 
 import java.lang.management.ManagementFactory
@@ -651,6 +657,65 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
     assertEquals(Some("String"), compilerType(expression))
     assertEquals("String", ScalaPluginSemanticBridge.getCompilerType(expression))
+
+  def testCompatibilityExpressionUsesOnlyItsExactRangeCompilerType(): Unit =
+    val source     = "val left = \"m\"\nval right = identity(\"m\")"
+    val settings   = MetallurgySettings(getProject)
+    settings.setEnabled(getModule, enabled = false)
+    val file       = myFixture.configureByText("CompatibilityExpressionExactRange.scala", source)
+    val literals   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .asScala
+      .filter(_.getText == "\"m\"")
+      .toVector
+      .sortBy(_.getTextOffset)
+    val left       = literals.head
+    val bundled    = literals.last
+    val wider      = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .asScala
+      .find(_.getText == "identity(\"m\")")
+      .get
+    val composite  = ASTFactory.composite(MetallurgyExpressionPayload.ElementType)
+    val leaf       = ASTFactory.leaf(ScalaTokenTypes.tSTRING, "\"m\"").asInstanceOf[TreeElement]
+    composite.rawAddChildren(leaf)
+    CommandProcessor
+      .getInstance()
+      .runUndoTransparentAction(() =>
+        ApplicationManager.getApplication.runWriteAction(
+          new Runnable:
+            override def run(): Unit = bundled.getNode.getTreeParent.replaceChild(bundled.getNode, composite)
+        )
+      )
+    val expression = composite.getPsi.asInstanceOf[ScExpression]
+    settings.setEnabled(getModule, enabled = true)
+    val version    = myFixture.getEditor.getDocument.getModificationStamp
+    val expected   = new TextRange(source.lastIndexOf("\"m\""), source.lastIndexOf("\"m\"") + 3)
+    val backend    = Scala3CompilerBackend.get(getProject)
+
+    assertEquals(expected, expression.getTextRange)
+    assertEquals(
+      CompilerBackendPublication.Published,
+      backend.publish(left, CompilerBackendRole.ExpressionExact, version, "Int")
+    )
+    assertTrue(expression.`type`().isLeft)
+    assertTrue(wider.getTextRange.contains(expected))
+    assertNotEquals(expected, wider.getTextRange)
+    assertEquals(
+      CompilerBackendPublication.Published,
+      backend.publish(wider, CompilerBackendRole.ExpressionExact, version, "Boolean")
+    )
+    assertTrue(expression.`type`().isLeft)
+    assertEquals(
+      CompilerBackendPublication.Published,
+      backend.publish(expression, CompilerBackendRole.ExpressionExact, version, "String")
+    )
+    assertEquals("_root_.scala.Predef.String", rendered(expression.`type`()))
+    backend.stateForActiveModule(expression, getModule, CompilerBackendRole.ExpressionExact) match
+      case CompilerBackendState.Current(renderedType, result) =>
+        assertEquals("String", renderedType)
+        assertEquals("_root_.scala.Predef.String", rendered(result))
+      case state                                              => throw new AssertionError(s"expected current exact expression type, got $state")
 
   def testLocalOptOutKeepsPublishedTypeWhenGlobalOptInRemainsActive(): Unit =
     val settings               = MetallurgySettings(getProject)

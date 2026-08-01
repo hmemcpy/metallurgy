@@ -1,14 +1,31 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.*
-import com.intellij.lang.PsiBuilder
+import com.intellij.lang.{ASTFactory, ASTNode, PsiBuilder, PsiBuilderFactory}
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.{CommandProcessor, WriteCommandAction}
+import com.intellij.openapi.util.TextRange
+import com.intellij.psi.{PsiDocumentManager, PsiFile, SmartPointerManager}
+import com.intellij.psi.impl.source.PsiFileImpl
+import com.intellij.psi.impl.source.tree.TreeElement
+import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.base.ScalaLightCodeInsightFixtureTestCase
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
+import org.jetbrains.plugins.scala.lang.psi.api.base.{ScAnnotation, ScAnnotations, ScModifierList}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
+import org.jetbrains.plugins.scala.lang.psi.stubs.{
+  ScAccessModifierStub,
+  ScAnnotationStub,
+  ScAnnotationsStub,
+  ScModifiersStub
+}
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.util.concurrent.atomic.AtomicInteger
+import scala.jdk.CollectionConverters.*
 
 final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestCase:
 
@@ -90,6 +107,230 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       builder
     )
     assertTrue(builder.eof())
+
+  def testEmitsDistinctColocatedZeroWidthCompositeIdentities(): Unit =
+    val source  = "x"
+    val base    = emitterPlan(source, 1)
+    val first   = base.composites.head.copy(
+      instance = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 2L, None), "empty-first"),
+      range = PcSourceRange(0, 0),
+      children = Vector.empty
+    )
+    val second  = first.copy(
+      instance = CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, 3L, None), "empty-second")
+    )
+    val plan    = base.copy(
+      composites = Vector(first, second) ++ base.composites,
+      targetAssertions = Vector(first.instance, second.instance).map(instance =>
+        PlannedTargetAssertion(
+          TargetAssertionOwner.Composite(instance),
+          PlannedTargetIdentity.OutputRole(packagingRole),
+          TargetAssertionKind.NativeComposite
+        )
+      ) ++ base.targetAssertions
+    )
+    val builder = recordingEmitterBuilder(source)
+
+    assertTrue(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, nativeBindings))
+    assertEquals(source.length, builder.getCurrentOffset)
+
+  def testCompatibilityExpressionKeepsOneExactFlatRangeWithoutBundledInference(): Unit =
+    val file       = myFixture.configureByText("PayloadCase.scala", "val value = \"m\"")
+    val bundled    = com.intellij.psi.util.PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScExpression])
+      .stream()
+      .filter(_.getText == "\"m\"")
+      .findFirst()
+      .orElseThrow()
+    val composite  = ASTFactory.composite(MetallurgyExpressionPayload.ElementType)
+    val leaf       = ASTFactory.leaf(ScalaTokenTypes.tSTRING, "\"m\"").asInstanceOf[TreeElement]
+    composite.rawAddChildren(leaf)
+    CommandProcessor
+      .getInstance()
+      .runUndoTransparentAction(() =>
+        ApplicationManager.getApplication.runWriteAction(
+          new Runnable:
+            override def run(): Unit = bundled.getNode.getTreeParent.replaceChild(bundled.getNode, composite)
+        )
+      )
+    val expression = composite.getPsi.asInstanceOf[ScExpression]
+    val pointer    = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(expression)
+
+    assertEquals(classOf[MetallurgyExpressionPayload], expression.getClass)
+    assertEquals("\"m\"", expression.getText)
+    assertEquals(new TextRange(12, 15), expression.getTextRange)
+    assertTrue(expression.getChildren.isEmpty)
+    assertEquals(1, expression.getNode.getChildren(null).length)
+    assertFalse(PsiTreeUtil.findChildrenOfType(expression, classOf[ScExpression]).iterator().hasNext)
+    assertTrue(expression.`type`().isLeft)
+    assertEquals(expression, pointer.getElement)
+    val copied = expression.copy()
+    assertEquals(classOf[MetallurgyExpressionPayload], copied.getClass)
+    assertEquals(expression.getText, copied.getText)
+    assertEquals(expression.getTextRange.getLength, copied.getTextLength)
+
+  def testSyntheticPlanEmitsExactNativeAnnotationSpineAndFlatCompatibilityPayloads(): Unit =
+    val source    = "@deprecated(\"m\", \"1\") final"
+    val bindings  = NativePsiElementBindings
+      .probe(getProject)
+      .flatMap(_.bind(Scala3PsiProductionCatalog.Reviewed))
+      .fold(error => throw new AssertionError(error), identity)
+    val plan      = annotationSpinePlan(source, bindings)
+    val lexer     = PlannedScala3Lexer
+      .compile(source, plan, bindings)
+      .fold(
+        failure => throw new AssertionError(failure.toString),
+        identity
+      )
+    val chameleon = myFixture.configureByText("SyntheticAnnotationSpine.scala", source).getNode
+    val builder   = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, source)
+
+    assertTrue(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, bindings))
+    val nodes       = descendantNodes(builder.getTreeBuilt)
+    val modifiers   = nodes.map(_.getPsi).collectFirst { case value: ScModifierList => value }.get
+    val annotations = nodes.map(_.getPsi).collectFirst { case value: ScAnnotations => value }.get
+    val annotation  = annotations.getAnnotations.head
+    val expression  = annotation.annotationExpr
+    val constructor = expression.constructorInvocation
+    val arguments   = constructor.args.get
+    val payloads    = nodes.map(_.getPsi).collect { case value: MetallurgyExpressionPayload => value }
+
+    assertEquals("final", modifiers.getText)
+    assertEquals(new TextRange(22, 27), modifiers.getTextRange)
+    assertEquals("@deprecated(\"m\", \"1\")", annotations.getText)
+    assertEquals(new TextRange(0, 21), annotations.getTextRange)
+    assertEquals(Vector(annotation), annotations.getAnnotations.toVector)
+    assertEquals(annotations, annotation.getParent)
+    assertEquals("deprecated(\"m\", \"1\")", expression.getText)
+    assertEquals(annotation, expression.getParent)
+    assertEquals(expression, constructor.getParent)
+    assertEquals("deprecated", constructor.typeElement.getText)
+    assertEquals(Some(arguments), constructor.args)
+    assertEquals("(\"m\", \"1\")", arguments.getText)
+    assertEquals(constructor, arguments.getParent)
+    assertEquals(Vector("\"m\"", "\"1\""), arguments.exprs.map(_.getText).toVector)
+    assertEquals(Vector(new TextRange(12, 15), new TextRange(17, 20)), payloads.map(_.getTextRange))
+    assertTrue(payloads.forall(_.getChildren.isEmpty))
+    assertTrue(payloads.forall(value => value.getParent == arguments))
+    assertTrue(payloads.forall(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).isEmpty))
+    assertEquals(source, builder.getTreeBuilt.getText)
+
+  def testNativeModifierAnnotationSpineHasExactPhysicalAndPersistenceContracts(): Unit =
+    val source      = "@deprecated(\"m\", \"1\") private[scope] final class C"
+    val file        = myFixture.configureByText("AnnotationSpineCase.scala", source)
+    val modifiers   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScModifierList])
+      .asScala
+      .find(_.getText.startsWith("private"))
+      .get
+    val annotations = PsiTreeUtil.findChildOfType(file, classOf[ScAnnotations], true)
+    val annotation  = PsiTreeUtil.findChildOfType(annotations, classOf[ScAnnotation], true)
+    val expression  = annotation.annotationExpr
+    val constructor = expression.constructorInvocation
+    val arguments   = constructor.args.get
+    val access      = modifiers.accessModifier.get
+
+    assertEquals("private[scope] final", modifiers.getText)
+    assertEquals(new TextRange(source.indexOf("private"), source.indexOf(" class")), modifiers.getTextRange)
+    assertEquals(ScalaElementType.MODIFIERS, modifiers.getNode.getElementType)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.base.ScModifierListImpl", modifiers.getClass.getName)
+    assertEquals(Vector("private[scope]"), modifiers.getChildren.map(_.getText).toVector)
+    assertEquals(Vector("private", "final"), modifiers.modifiersOrdered.map(_.text).toVector)
+    assertTrue(modifiers.hasModifierProperty("private"))
+    assertTrue(modifiers.hasModifierProperty("final"))
+
+    assertEquals(modifiers.getParent, annotations.getParent)
+    assertEquals(Vector(annotation), annotations.getAnnotations.toVector)
+    assertEquals(ScalaElementType.ANNOTATIONS, annotations.getNode.getElementType)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScAnnotationsImpl", annotations.getClass.getName)
+    assertEquals(annotations, annotation.getParent)
+    assertEquals("@deprecated(\"m\", \"1\")", annotation.getText)
+    assertEquals(new TextRange(0, "@deprecated(\"m\", \"1\")".length), annotation.getTextRange)
+    assertEquals(ScalaElementType.ANNOTATION, annotation.getNode.getElementType)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScAnnotationImpl", annotation.getClass.getName)
+    assertEquals("scala.deprecated", annotation.getQualifiedName)
+    assertEquals(expression, annotation.annotationExpr)
+    assertEquals(constructor, annotation.constructorInvocation)
+    assertEquals(constructor.typeElement, annotation.typeElement)
+
+    assertEquals(annotation, expression.getParent)
+    assertEquals("deprecated(\"m\", \"1\")", expression.getText)
+    assertEquals(ScalaElementType.ANNOTATION_EXPR, expression.getNode.getElementType)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScAnnotationExprImpl", expression.getClass.getName)
+    assertEquals(Vector("\"m\"", "\"1\""), expression.getAnnotationParameters.map(_.getText).toVector)
+    assertTrue(expression.getAttributes.isEmpty)
+    assertEquals(expression, constructor.getParent)
+    assertEquals(
+      "org.jetbrains.plugins.scala.lang.psi.impl.base.ScConstructorInvocationImpl",
+      constructor.getClass.getName
+    )
+    assertEquals("deprecated", constructor.typeElement.getText)
+    assertEquals(Some("deprecated"), constructor.reference.map(_.getText))
+    assertEquals(Some(arguments), constructor.args)
+    assertEquals(Vector("(\"m\", \"1\")"), constructor.arguments.map(_.getText).toVector)
+    assertEquals(constructor, arguments.getParent)
+    assertEquals("(\"m\", \"1\")", arguments.getText)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScArgumentExprListImpl", arguments.getClass.getName)
+    assertEquals(Vector("\"m\"", "\"1\""), arguments.exprs.map(_.getText).toVector)
+    assertTrue(arguments.isArgsInParens)
+    assertFalse(arguments.isUsing)
+    assertEquals(2, arguments.getArgsCount)
+
+    assertEquals(modifiers, access.getParent)
+    assertEquals("private[scope]", access.getText)
+    assertEquals(ScalaElementType.ACCESS_MODIFIER, access.getNode.getElementType)
+    assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.base.ScAccessModifierImpl", access.getClass.getName)
+    assertTrue(access.isPrivate)
+    assertFalse(access.isProtected)
+    assertFalse(access.isThis)
+    assertEquals(Some("scope"), access.idText)
+
+    val copied      = file.copy().asInstanceOf[PsiFile]
+    val copiedSpine = PsiTreeUtil
+      .findChildrenOfType(copied, classOf[ScModifierList])
+      .asScala
+      .find(_.getText.startsWith("private"))
+      .get
+    assertEquals(modifiers.getText, copiedSpine.getText)
+    assertEquals(modifiers.getClass, copiedSpine.getClass)
+    assertEquals(annotation.getClass, PsiTreeUtil.findChildOfType(copied, classOf[ScAnnotation], true).getClass)
+
+    val stubs    = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala
+    assertTrue(stubs.exists(_.isInstanceOf[ScModifiersStub]))
+    assertTrue(stubs.exists(_.isInstanceOf[ScAccessModifierStub]))
+    assertTrue(stubs.exists(_.isInstanceOf[ScAnnotationsStub]))
+    assertTrue(stubs.exists(_.isInstanceOf[ScAnnotationStub]))
+    val pointer  = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(annotation)
+    val document = myFixture.getEditor.getDocument
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.insertString(0, "\n")
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals("@deprecated(\"m\", \"1\")", pointer.getElement.getText)
+    assertEquals(new TextRange(1, 1 + "@deprecated(\"m\", \"1\")".length), pointer.getRange)
+
+    val malformed =
+      myFixture.configureByText("MalformedAnnotationSpine.scala", "@deprecated(\"m\", ) private[scope class C")
+    assertEquals("@deprecated(\"m\", )", PsiTreeUtil.findChildOfType(malformed, classOf[ScAnnotation], true).getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(malformed, classOf[ScExpression]).asScala.exists(_.getText == "\"m\""))
+
+    val annotationOnly = myFixture.configureByText("AnnotationOnlyCase.scala", "@ann class D")
+    val container      = PsiTreeUtil
+      .findChildrenOfType(annotationOnly, classOf[ScAnnotations])
+      .asScala
+      .find(_.getText == "@ann")
+      .get
+    val emptyModifiers = PsiTreeUtil
+      .findChildrenOfType(annotationOnly, classOf[ScModifierList])
+      .asScala
+      .find(_.getParent == container.getParent)
+      .get
+    assertEquals("", emptyModifiers.getText)
+    assertEquals(new TextRange(4, 4), emptyModifiers.getTextRange)
 
   def testRejectsTerminalTextMismatchBeforeOpeningMarkers(): Unit =
     val source    = "x"
@@ -516,5 +757,136 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       Vector.empty,
       Vector.empty
     )
+
+  private def annotationSpinePlan(
+      source: String,
+      bindings: NativePsiElementBindings
+  ): WholeFileProductionPlan =
+    def id(value: Long, local: String)                  =
+      CompositeInstanceId(ProductionInstanceId(InventoryKind.Node, value, None), local)
+    val modifier                                        = id(1, "modifier")
+    val annotations                                     = id(2, "annotations")
+    val annotation                                      = id(3, "annotation")
+    val expression                                      = id(4, "expression")
+    val constructor                                     = id(5, "constructor")
+    val designator                                      = id(6, "designator")
+    val reference                                       = id(7, "reference")
+    val arguments                                       = id(8, "arguments")
+    val firstPayload                                    = id(9, "first-payload")
+    val nextPayload                                     = id(10, "next-payload")
+    def child(role: String, value: CompositeInstanceId) = PlannedChild(role, Vector.empty, value)
+    val composites                                      = Vector(
+      PlannedComposite(modifier, "synthetic-modifiers", PcSourceRange(22, 27), Vector.empty, Vector.empty),
+      PlannedComposite(
+        annotations,
+        "synthetic-annotations",
+        PcSourceRange(0, 21),
+        Vector(child("annotation", annotation)),
+        Vector.empty
+      ),
+      PlannedComposite(
+        annotation,
+        "synthetic-annotation",
+        PcSourceRange(0, 21),
+        Vector(child("expression", expression)),
+        Vector.empty
+      ),
+      PlannedComposite(
+        expression,
+        "synthetic-annotation-expression",
+        PcSourceRange(1, 21),
+        Vector(child("constructor", constructor)),
+        Vector.empty
+      ),
+      PlannedComposite(
+        constructor,
+        "synthetic-constructor",
+        PcSourceRange(1, 21),
+        Vector(child("designator", designator), child("arguments", arguments)),
+        Vector.empty
+      ),
+      PlannedComposite(
+        designator,
+        "synthetic-designator",
+        PcSourceRange(1, 11),
+        Vector(child("reference", reference)),
+        Vector.empty
+      ),
+      PlannedComposite(reference, "synthetic-reference", PcSourceRange(1, 11), Vector.empty, Vector.empty),
+      PlannedComposite(
+        arguments,
+        "synthetic-arguments",
+        PcSourceRange(11, 21),
+        Vector(child("argument", firstPayload), child("argument", nextPayload)),
+        Vector.empty
+      ),
+      PlannedComposite(firstPayload, "synthetic-payload", PcSourceRange(12, 15), Vector.empty, Vector.empty),
+      PlannedComposite(nextPayload, "synthetic-payload", PcSourceRange(17, 20), Vector.empty, Vector.empty)
+    )
+    val roles                                           = Vector(
+      modifier     -> PsiOutputRoleId.ModifierList,
+      annotations  -> PsiOutputRoleId.Annotations,
+      annotation   -> PsiOutputRoleId.Annotation,
+      expression   -> PsiOutputRoleId.AnnotationExpr,
+      constructor  -> PsiOutputRoleId.ConstructorInvocation,
+      designator   -> PsiOutputRoleId.SimpleType,
+      reference    -> PsiOutputRoleId.StableReference,
+      arguments    -> PsiOutputRoleId.AnnotationArguments,
+      firstPayload -> PsiOutputRoleId.ExpressionPayload,
+      nextPayload  -> PsiOutputRoleId.ExpressionPayload
+    )
+    val accessors                                       = roles.flatMap: (instance, role) =>
+      bindings
+        .outputContracts(role)
+        .accessors
+        .map(obligation =>
+          PlannedAccessorAssertion(instance, obligation.surfaceId, obligation.required, obligation.surfaceKind)
+        )
+    val stubs                                           = roles.flatMap: (instance, role) =>
+      bindings.outputContracts(role).persistence match
+        case PersistenceObligations.NotApplicable                                   => None
+        case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+          Some(PlannedStubAssertion(instance, stub, serializer, indices, navigation))
+    val navigation                                      = roles.flatMap: (instance, role) =>
+      bindings.outputContracts(role).navigation.map(PlannedNavigationAssertion(instance, _))
+    WholeFileProductionPlan(
+      ParserSourceUri.from("file:///SyntheticAnnotationSpine.scala").toOption.get,
+      ParserSyntaxSnapshot.digest(source),
+      "synthetic-annotation-spine",
+      ClosedSourceLexicalContract.from(source),
+      Vector(
+        PlannedPhysicalLeaf(
+          atom(1),
+          0,
+          source.length,
+          PhysicalLeafOwner.FileRoot,
+          annotation.origin,
+          "source",
+          TerminalLeafTarget.Parent
+        )
+      ),
+      Vector.empty,
+      Vector.empty,
+      composites,
+      roles.map: (instance, role) =>
+        PlannedTargetAssertion(
+          TargetAssertionOwner.Composite(instance),
+          PlannedTargetIdentity.OutputRole(role),
+          if role == PsiOutputRoleId.ExpressionPayload then TargetAssertionKind.CompatibleComposite
+          else TargetAssertionKind.NativeComposite
+        ),
+      accessors,
+      stubs,
+      navigation
+    )
+
+  private def descendantNodes(root: ASTNode): Vector[ASTNode] =
+    val result  = Vector.newBuilder[ASTNode]
+    val pending = collection.mutable.Stack.from(root.getChildren(null).reverse)
+    while pending.nonEmpty do
+      val current = pending.pop()
+      result += current
+      current.getChildren(null).reverseIterator.foreach(pending.push)
+    result.result()
 
   private def atom(id: Long): SourceAtomId = SourceAtomId(id, 0)

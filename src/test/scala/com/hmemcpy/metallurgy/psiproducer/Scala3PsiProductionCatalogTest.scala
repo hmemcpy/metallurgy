@@ -628,6 +628,46 @@ final class Scala3PsiProductionCatalogTest:
     assertFalse(java.util.Arrays.equals(bytes, result.canonicalBytes))
     assertEquals(CanonicalByteEncoder.sha256Hex(result.canonicalBytes), result.fingerprint)
 
+  @Test def inlineProductsRetainExactOccurrenceIdentityAndScaleWithoutRecursion(): Unit =
+    val exactRuntime = inventory(annotationModifierSnapshot)
+    val modifiers    = exactRuntime.products.filter(_.production == "Modifiers")
+    assertEquals(1, modifiers.size)
+    assertEquals(Vector("flags", "privateWithin", "annotations", "mods"), modifiers.head.fields.map(_.name))
+    assertEquals(
+      ParserNodePosition.Positioned(
+        PcSourceRange(0, 27),
+        0,
+        ParserPositionProvenance.SourceDerived
+      ),
+      modifiers.head.position
+    )
+    assertEquals(
+      Vector(ParserNodeOccurrence(1, Vector(ParserFieldPathSegment.NamedField("mods")))),
+      modifiers.head.occurrences
+    )
+
+    val arity   = 10000
+    val runtime = inventory(colocatedProductSnapshot(arity))
+    val boxes   = runtime.products.filter(_.production == "Box")
+    assertEquals(arity, boxes.size)
+    assertEquals(arity, boxes.map(_.id).distinct.size)
+    assertEquals(arity, boxes.flatMap(_.occurrences).distinct.size)
+    assertTrue(
+      boxes.forall(
+        _.position == ParserNodePosition.Positioned(
+          PcSourceRange(0, 0),
+          0,
+          ParserPositionProvenance.Synthetic
+        )
+      )
+    )
+    assertEquals(
+      boxes.map(product => product.id -> product.occurrences),
+      inventory(colocatedProductSnapshot(arity)).products
+        .filter(_.production == "Box")
+        .map(product => product.id -> product.occurrences)
+    )
+
   @Test def emptyCatalogFailsValidationForNonemptyInventory(): Unit =
     val value    = snapshot("/one", 1, Vector.empty)
     val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
@@ -644,17 +684,17 @@ final class Scala3PsiProductionCatalogTest:
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
-      GrammarRoleId.CompilationUnit    -> Set("file-top-statements"),
-      GrammarRoleId.PackageClause      -> Set("file-package", "file-package-top-statements"),
-      GrammarRoleId.PackageReference   -> Set("file-import-empty-package"),
-      GrammarRoleId.ImportStatement    -> Set("import-statement"),
-      GrammarRoleId.ExportStatement    -> Set("export-statement"),
-      GrammarRoleId.AbsentProduct      -> Set(
+      GrammarRoleId.CompilationUnit     -> Set("file-top-statements"),
+      GrammarRoleId.PackageClause       -> Set("file-package", "file-package-top-statements"),
+      GrammarRoleId.PackageReference    -> Set("file-import-empty-package"),
+      GrammarRoleId.ImportStatement     -> Set("import-statement"),
+      GrammarRoleId.ExportStatement     -> Set("export-statement"),
+      GrammarRoleId.AbsentProduct       -> Set(
         "import-expression-absent",
         "import-selector-absent",
         "import-selector-given-bound-absent"
       ),
-      GrammarRoleId.StableReference    -> Set(
+      GrammarRoleId.StableReference     -> Set(
         "import-path-identifier-reference",
         "import-path-reference",
         "import-path-identifier",
@@ -663,25 +703,70 @@ final class Scala3PsiProductionCatalogTest:
         "package-stable-identifier",
         "import-selector-given-bound-qualifier-ident",
         "import-selector-given-bound-qualifier-select",
-        "import-selector-given-bound-infix-operator"
+        "import-selector-given-bound-infix-operator",
+        "annotation-designator-qualifier-ident",
+        "annotation-designator-qualifier-select"
       ),
-      GrammarRoleId.ImportSelector     -> Set("import-selector-direct", "import-selector-braced"),
-      GrammarRoleId.ImportSelectorName -> Set(
+      GrammarRoleId.ImportSelector      -> Set("import-selector-direct", "import-selector-braced"),
+      GrammarRoleId.ImportSelectorName  -> Set(
         "import-selector-name",
         "import-selector-hidden-name",
         "import-selector-wildcard-name",
         "import-selector-empty-name"
       ),
-      GrammarRoleId.SimpleType         -> Set(
+      GrammarRoleId.SimpleType          -> Set(
         "import-selector-bound-type",
-        "import-selector-given-bound-qualified-type"
+        "import-selector-given-bound-qualified-type",
+        "annotation-designator-ident",
+        "annotation-designator-select"
       ),
-      GrammarRoleId.AppliedType        -> Set("import-selector-bound-applied-type"),
-      GrammarRoleId.WildcardType       -> Set("import-selector-given-bound-wildcard-type"),
-      GrammarRoleId.InfixType          -> Set("import-selector-given-bound-infix-type"),
-      GrammarRoleId.IntegerLiteral     -> Set("integer-literal-number")
+      GrammarRoleId.AppliedType         -> Set("import-selector-bound-applied-type"),
+      GrammarRoleId.WildcardType        -> Set("import-selector-given-bound-wildcard-type"),
+      GrammarRoleId.InfixType           -> Set("import-selector-given-bound-infix-type"),
+      GrammarRoleId.IntegerLiteral      -> Set("integer-literal-number"),
+      GrammarRoleId.ExpressionPayload   -> Set("annotation-argument-literal-payload"),
+      GrammarRoleId.Modifiers           -> Set(
+        "modifiers-annotations-synthetic",
+        "modifiers-annotations-source",
+        "modifiers-keywords",
+        "modifiers-annotations-keywords",
+        "modifiers-absent"
+      ),
+      GrammarRoleId.AccessModifier      -> Set("modifier-access-private", "modifier-access-protected"),
+      GrammarRoleId.KeywordModifier     -> Set(
+        "modifier-keyword-abstract",
+        "modifier-keyword-final",
+        "modifier-keyword-sealed",
+        "modifier-keyword-implicit",
+        "modifier-keyword-lazy",
+        "modifier-keyword-override",
+        "modifier-keyword-var",
+        "modifier-keyword-transparent",
+        "modifier-keyword-inline",
+        "modifier-keyword-infix",
+        "modifier-keyword-open",
+        "modifier-keyword-opaque",
+        "modifier-keyword-given"
+      ),
+      GrammarRoleId.Annotations         -> Set(
+        "modifiers-annotations-synthetic",
+        "modifiers-annotations-source",
+        "modifiers-annotations-keywords"
+      ),
+      GrammarRoleId.Annotation          -> Set(
+        "annotation-apply-simple",
+        "annotation-apply-arguments",
+        "annotation-constructor-select",
+        "annotation-constructor-new"
+      ),
+      GrammarRoleId.AnnotationArguments -> Set("annotation-apply-arguments")
     )
-    val actual   = catalog.productions.groupMap(_.grammarRoleId)(_.id).view.mapValues(_.toSet).toMap
+    val actual   = catalog.productions
+      .flatMap(production => production.grammarRoleIds.map(_ -> production.id))
+      .groupMap(_._1)(_._2)
+      .view
+      .mapValues(_.toSet)
+      .toMap
     assertEquals(expected, actual)
     assertEquals(expected.keySet, catalog.stableRoles.grammarRoles)
     assertTrue(
@@ -691,9 +776,9 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
 
-    val composites = catalog.productions.flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
-    val terminals  = catalog.productions.flatMap(_.terminals)
-    val usedRoles  = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
+    val composites      = catalog.productions.flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
+    val terminals       = catalog.productions.flatMap(_.terminals)
+    val usedRoles       = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
     assertEquals(catalog.stableRoles.outputRoles, usedRoles)
     assertTrue(composites.forall(output => output.outputRoleId.value != output.targetSurfaceId))
     assertTrue(terminals.forall(terminal => catalog.stableRoles.outputRoles(terminal.outputRoleId)))
@@ -702,6 +787,23 @@ final class Scala3PsiProductionCatalogTest:
         .filter(production => production.outputTemplate.isEmpty && production.outputRealizations.isEmpty)
         .forall(_.outputRoleId.nonEmpty)
     )
+    val installedErrors = Scala3PsiProductionCatalogValidator.validateExecutable(
+      catalog,
+      inventory(annotationModifierSnapshot),
+      ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
+    )
+    val packetMethods   = Set(
+      "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl#modifiersOrdered()Lscala/collection/immutable/Seq;",
+      "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl#idText()Lscala/Option;",
+      "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl#getAnnotations()[Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotation;",
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression#type()Lscala/util/Either;",
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression#innerType()Lscala/util/Either;"
+    )
+    val methodFailures  = installedErrors.collect:
+      case value @ CatalogValidationError.InvalidSurface(_, _, id, _) if packetMethods(id)          => value
+      case value @ CatalogValidationError.InvalidSurfaceOwner(_, _, id, _) if packetMethods(id)     => value
+      case value @ CatalogValidationError.IncompleteSurfaceStatus(_, _, id, _) if packetMethods(id) => value
+    assertTrue(methodFailures.mkString("\n"), methodFailures.isEmpty)
 
     val packageBody       = catalog.productions.find(_.id == "file-package-top-statements").get
     val packageStatements = packageBody.children.find(_.fieldName == "stats").get
@@ -710,9 +812,10 @@ final class Scala3PsiProductionCatalogTest:
       Set("import-statement", "export-statement", "file-package", "file-package-top-statements"),
       packageStatements.productionIds
     )
+
     assertEquals(Vector("package-text", "root-remainder", "end-keyword"), packageBody.terminals.map(_.id))
-    val syntheticRoot     = catalog.productions.find(_.id == "file-top-statements").get
-    val rootStatements    = syntheticRoot.children.find(_.fieldName == "stats").get
+    val syntheticRoot  = catalog.productions.find(_.id == "file-top-statements").get
+    val rootStatements = syntheticRoot.children.find(_.fieldName == "stats").get
     assertEquals(ChildCardinality.Grouped(1, None), rootStatements.cardinality)
     assertEquals(packageStatements.productionIds, rootStatements.productionIds)
     assertTrue(syntheticRoot.outputTemplate.exists(_.composites.isEmpty))
@@ -777,6 +880,202 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(
       Set("import-selector-direct", "import-selector-braced"),
       exportProduction.children.find(_.roleId == "selectors").get.productionIds
+    )
+
+  @Test def syntheticDefinitionRoutePlansExactModifierAnnotationAndOpaquePayloadRanges(): Unit =
+    val value            = annotationModifierSnapshot
+    val runtime          = inventory(value)
+    val root             = syntheticModifierOwnerProduction
+    val catalog          = Scala3PsiProductionCatalog.Reviewed.copy(
+      productions = Scala3PsiProductionCatalog.Reviewed.productions :+ root
+    )
+    val aggregate        = this.aggregate(Vector(runtime))
+    val surface          = contractSurfaces(catalog)
+    val prepared         = PreparedProductionCatalog
+      .prepareRuntimeSubset(catalog, runtime, aggregate, surface)
+      .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+    val evidence         = ProvisionalSourceEvidencePlanner
+      .plan(value)
+      .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+    val plan             = WholeFileProductionPlanner
+      .plan(value, evidence, prepared)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val rolesByComposite = plan.targetAssertions.collect:
+      case PlannedTargetAssertion(
+            TargetAssertionOwner.Composite(instance),
+            PlannedTargetIdentity.OutputRole(role),
+            _
+          ) =>
+        instance -> role
+    val roleByComposite  = rolesByComposite.toMap
+    val rangesByRole     = plan.composites
+      .groupMap(composite => roleByComposite(composite.instance).value)(_.range)
+      .view
+      .mapValues(_.sortBy(range => (range.startOffset, range.endOffset)))
+      .toMap
+
+    assertEquals(Vector(PcSourceRange(22, 27)), rangesByRole(PsiOutputRoleId.ModifierList.value))
+    assertEquals(Vector(PcSourceRange(0, 21)), rangesByRole(PsiOutputRoleId.Annotations.value))
+    assertEquals(Vector(PcSourceRange(0, 21)), rangesByRole(PsiOutputRoleId.Annotation.value))
+    assertEquals(Vector(PcSourceRange(1, 21)), rangesByRole(PsiOutputRoleId.AnnotationExpr.value))
+    assertEquals(Vector(PcSourceRange(1, 21)), rangesByRole(PsiOutputRoleId.ConstructorInvocation.value))
+    assertEquals(Vector(PcSourceRange(11, 21)), rangesByRole(PsiOutputRoleId.AnnotationArguments.value))
+    assertEquals(
+      Vector(PcSourceRange(12, 15), PcSourceRange(17, 20)),
+      rangesByRole(PsiOutputRoleId.ExpressionPayload.value)
+    )
+    assertEquals(value.sourceText, evidence.reconstruct(value.sourceText))
+    assertEquals(
+      value.sourceLength,
+      plan.physicalLeafOwnership.map(leaf => leaf.end - leaf.start).sum
+    )
+    assertEquals(
+      plan.physicalLeafOwnership.map(leaf => leaf.start -> leaf.end),
+      plan.physicalLeafOwnership.map(leaf => leaf.start -> leaf.end).distinct
+    )
+    val packetRoles = Set(
+      GrammarRoleId.ExpressionPayload,
+      GrammarRoleId.Modifiers,
+      GrammarRoleId.AccessModifier,
+      GrammarRoleId.KeywordModifier,
+      GrammarRoleId.Annotations,
+      GrammarRoleId.Annotation,
+      GrammarRoleId.AnnotationArguments
+    )
+    assertFalse(
+      Scala3PsiProductionCatalog.Reviewed.productions
+        .filter(_.grammarRoleIds.exists(packetRoles))
+        .exists(_.pattern.occurrences.exists(_.context == ContextPattern.Root))
+    )
+
+    def plannedAccess(value: ParserSyntaxSnapshot) =
+      val runtime   = inventory(value)
+      val aggregate = this.aggregate(Vector(runtime))
+      val prepared  = PreparedProductionCatalog
+        .prepareRuntimeSubset(catalog, runtime, aggregate, surface)
+        .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+      val evidence  = ProvisionalSourceEvidencePlanner
+        .plan(value)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val plan      = WholeFileProductionPlanner
+        .plan(value, evidence, prepared)
+        .fold(failure => throw new AssertionError(failure.toString), identity)
+      val roles     = plan.targetAssertions.collect:
+        case PlannedTargetAssertion(
+              TargetAssertionOwner.Composite(instance),
+              PlannedTargetIdentity.OutputRole(role),
+              _
+            ) =>
+          instance -> role
+      val ranges    = plan.composites.groupMap(composite => roles.toMap.apply(composite.instance))(_.range)
+      plan -> ranges
+
+    val accessValue                = qualifiedAccessSnapshot
+    val (accessPlan, accessRanges) = plannedAccess(accessValue)
+    assertEquals(Vector(PcSourceRange(0, 20)), accessRanges(PsiOutputRoleId.ModifierList))
+    assertEquals(Vector(PcSourceRange(0, 14)), accessRanges(PsiOutputRoleId.AccessModifier))
+    assertTrue(
+      accessPlan.physicalLeafOwnership.exists(leaf =>
+        leaf.start == 0 && leaf.end == 7 && leaf.target == TerminalLeafTarget.Token(
+          NativePsiElementBindings.AccessModifierKeywordSurfaceIds("Private"),
+          Some("private")
+        )
+      )
+    )
+    Vector(
+      accessRangeSnapshot("private [scope]", "Private", "scope")     -> PcSourceRange(0, 15),
+      accessRangeSnapshot("private/*c*/[scope]", "Private", "scope") -> PcSourceRange(0, 19),
+      accessRangeSnapshot("protected(x: Int)", "Protected", "")      -> PcSourceRange(0, 9)
+    ).foreach: (value, expected) =>
+      val (plan, ranges) = plannedAccess(value)
+      assertEquals(value.sourceText, Vector(expected), ranges(PsiOutputRoleId.ModifierList))
+      assertEquals(value.sourceText, Vector(expected), ranges(PsiOutputRoleId.AccessModifier))
+      assertEquals(
+        value.sourceText,
+        plan.physicalLeafOwnership.map(leaf => value.sourceText.substring(leaf.start, leaf.end)).mkString
+      )
+      assertEquals(
+        (0 until value.sourceLength).toVector,
+        plan.physicalLeafOwnership.flatMap(leaf => leaf.start until leaf.end)
+      )
+
+    val annotationOnlyValue     = annotationOnlySnapshot
+    val annotationOnlyRuntime   = inventory(annotationOnlyValue)
+    val annotationOnlyAggregate = this.aggregate(Vector(annotationOnlyRuntime))
+    val annotationOnlyPrepared  = PreparedProductionCatalog
+      .prepareRuntimeSubset(catalog, annotationOnlyRuntime, annotationOnlyAggregate, surface)
+      .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+    val annotationOnlyPlan      = WholeFileProductionPlanner
+      .plan(
+        annotationOnlyValue,
+        ProvisionalSourceEvidencePlanner.plan(annotationOnlyValue).toOption.get,
+        annotationOnlyPrepared
+      )
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val annotationOnlyRoles     = annotationOnlyPlan.targetAssertions.collect:
+      case PlannedTargetAssertion(
+            TargetAssertionOwner.Composite(instance),
+            PlannedTargetIdentity.OutputRole(role),
+            _
+          ) =>
+        instance -> role
+    val annotationOnlyRanges    = annotationOnlyPlan.composites
+      .groupMap(composite => annotationOnlyRoles.toMap.apply(composite.instance))(_.range)
+    assertEquals(Vector(PcSourceRange(21, 21)), annotationOnlyRanges(PsiOutputRoleId.ModifierList))
+    assertEquals(Vector(PcSourceRange(0, 21)), annotationOnlyRanges(PsiOutputRoleId.Annotations))
+    assertEquals(
+      annotationOnlyValue.sourceText,
+      annotationOnlyPlan.physicalLeafOwnership
+        .map(leaf => annotationOnlyValue.sourceText.substring(leaf.start, leaf.end))
+        .mkString
+    )
+
+    val triviaValue     = annotationTriviaSnapshot
+    val triviaRuntime   = inventory(triviaValue)
+    val triviaAggregate = this.aggregate(Vector(triviaRuntime))
+    val triviaPrepared  = PreparedProductionCatalog
+      .prepareRuntimeSubset(catalog, triviaRuntime, triviaAggregate, surface)
+      .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+    val triviaPlan      = WholeFileProductionPlanner
+      .plan(
+        triviaValue,
+        ProvisionalSourceEvidencePlanner.plan(triviaValue).toOption.get,
+        triviaPrepared
+      )
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val triviaRoles     = triviaPlan.targetAssertions.collect:
+      case PlannedTargetAssertion(
+            TargetAssertionOwner.Composite(instance),
+            PlannedTargetIdentity.OutputRole(role),
+            _
+          ) =>
+        instance -> role
+    val payloadRanges   = triviaPlan.composites
+      .filter(composite => triviaRoles.toMap.get(composite.instance).contains(PsiOutputRoleId.ExpressionPayload))
+      .map(_.range)
+    val expectedPayload = "\"[^\"]*\"".r
+      .findAllMatchIn(triviaValue.sourceText)
+      .map(value => PcSourceRange(value.start, value.end))
+      .toVector
+    assertEquals(expectedPayload, payloadRanges)
+    assertEquals(
+      Vector("\"m\"", "\"1\""),
+      payloadRanges.map(range => triviaValue.sourceText.substring(range.startOffset, range.endOffset))
+    )
+    assertTrue(
+      triviaValue.comments.forall(comment =>
+        payloadRanges.forall(payload =>
+          payload.endOffset <= comment.range.startOffset || comment.range.endOffset <= payload.startOffset
+        )
+      )
+    )
+    assertEquals(
+      (0 until triviaValue.sourceLength).toVector,
+      triviaPlan.physicalLeafOwnership.flatMap(leaf => leaf.start until leaf.end)
+    )
+    assertEquals(
+      triviaValue.sourceText,
+      triviaPlan.physicalLeafOwnership.map(leaf => triviaValue.sourceText.substring(leaf.start, leaf.end)).mkString
     )
 
   @Test def roleValidationRejectsMissingUnknownAndEvidenceDerivedIdentities(): Unit =
@@ -1172,6 +1471,7 @@ final class Scala3PsiProductionCatalogTest:
     val runtime                                         = inventory(value)
     val generated                                       = completeCatalog(runtime)
     val root                                            = generated.productions.find(_.id == "Root").get
+    val pair                                            = generated.productions.find(_.id == "Pair").get
     val owners                                          = generated.productions.filter(_.id == "Owner")
     val leaves                                          = generated.productions.filter(_.id == "Leaf")
     def branch(production: Scala3PsiProduction): String =
@@ -1196,7 +1496,7 @@ final class Scala3PsiProductionCatalogTest:
       children =
         owners.head.children.map(_.copy(productionId = "Leaf-left", additionalProductionIds = Set("Leaf-right")))
     )
-    val catalog                                         = generated.copy(productions = Vector(root, owner) ++ selectedLeaves)
+    val catalog                                         = generated.copy(productions = Vector(root, pair, owner) ++ selectedLeaves)
     val prepared                                        = PreparedProductionCatalog.prepare(catalog, aggregate(Vector(runtime)), surfaces(catalog))
     assertTrue(prepared.left.toOption.toString, prepared.isRight)
 
@@ -2724,13 +3024,12 @@ final class Scala3PsiProductionCatalogTest:
         case InventoryValueObservation.Positioned(_, prefix) => Some(prefix)
         case InventoryValueObservation.Optional(value)       => value.flatMap(referencedProduction)
         case InventoryValueObservation.Repeated(values)      => values.flatMap(referencedProduction).headOption
-        case InventoryValueObservation.Product(_, fields)    =>
-          fields.flatMap(field => referencedProduction(field.value)).headOption
+        case InventoryValueObservation.Product(prefix, _)    => Some(prefix)
         case _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName |
             _: InventoryValueObservation.Scalar | _: InventoryValueObservation.Unsupported =>
           None
-      val childField                                                             = shape.patternFields.headOption.map(_.name)
-      val childProduction                                                        = shape.observation.flatMap(field => referencedProduction(field.value)).headOption
+      val childFields                                                            = shape.observation.flatMap(field => referencedProduction(field.value).map(field.name -> _))
+      val childFieldNames                                                        = childFields.map(_._1).toSet
       Scala3PsiProduction(
         id = shape.prefix,
         grammarRoleId = GrammarRoleId(s"test.grammar.${shape.prefix}"),
@@ -2754,14 +3053,18 @@ final class Scala3PsiProductionCatalogTest:
           )
             .map(CompilerProductionContextPattern(_, shape.sourceClassification))
         ),
-        dispositions = childField.toVector.map(FieldDisposition(_, FieldDispositionKind.Child)),
-        children = childField.toVector.flatMap(field =>
-          childProduction.map(production =>
-            ChildDeclaration("child", field, ChildCardinality.Repeated(0, None), production)
+        dispositions = shape.patternFields.map(field =>
+          FieldDisposition(
+            field.name,
+            if childFieldNames(field.name) then FieldDispositionKind.Child else FieldDispositionKind.SemanticOnly
           )
         ),
+        children = childFields.map: (field, production) =>
+          val role = if childFields.size == 1 then "child" else s"child-$field"
+          ChildDeclaration(role, field, ChildCardinality.Repeated(0, None), production)
+        ,
         terminals =
-          if childField.isEmpty then
+          if childFields.isEmpty then
             Vector(
               TerminalDeclaration(
                 "contents",
@@ -2784,13 +3087,439 @@ final class Scala3PsiProductionCatalogTest:
 
   private def focusedRoleInventory(productions: Vector[Scala3PsiProduction]): StableRoleInventory =
     StableRoleInventory(
-      productions.map(_.grammarRoleId).toSet,
+      productions.flatMap(_.grammarRoleIds).toSet,
       productions
         .flatMap(production =>
           production.terminals.map(_.outputRoleId) ++
             production.effectiveOutputRealizations.flatMap(_.template.composites.map(_.outputRoleId))
         )
         .toSet
+    )
+
+  private def contractSurfaces(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =
+    val outputRows = catalog.productions
+      .flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
+      .flatMap: output =>
+        val persistence = output.persistence match
+          case PersistenceObligations.NotApplicable                                   => Vector.empty
+          case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+            Vector(
+              stub       -> SurfaceFactKind.Stub,
+              serializer -> SurfaceFactKind.Serializer,
+              navigation -> SurfaceFactKind.Navigation
+            ) ++ indices.map(_ -> SurfaceFactKind.Index)
+        Vector(output.targetSurfaceId -> SurfaceFactKind.Element) ++
+          output.accessors.map(accessor => accessor.surfaceId -> accessor.surfaceKind) ++ persistence
+    val tokenRows  = catalog.productions.flatMap(_.terminals.collect:
+      case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surface, _), _, _, _) =>
+        surface -> SurfaceFactKind.Token
+    )
+    ScalaPsiSurfaceInventory(
+      (outputRows ++ tokenRows).distinct
+        .map: (id, kind) =>
+          ScalaPsiSurfaceRow(id, kind, None, FactStatus.Available, SurfaceClassification.Derived)
+    )
+
+  private def syntheticModifierOwnerProduction: Scala3PsiProduction =
+    val modifierFields = Vector(
+      CompilerFieldPattern("flags", CatalogValuePattern.Scalar("LongInteger")),
+      CompilerFieldPattern("privateWithin", CatalogValuePattern.Name),
+      CompilerFieldPattern("annotations", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+      CompilerFieldPattern("mods", CatalogValuePattern.Repeated(CatalogValuePattern.Positioned))
+    )
+    val modifierIds    = Scala3PsiProductionCatalog.Reviewed.productions
+      .filter(_.pattern.kind == InventoryKind.Product)
+      .map(_.id)
+      .toSet
+    Scala3PsiProduction(
+      id = "synthetic-modifier-owner",
+      grammarRoleId = GrammarRoleId.CompilationUnit,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "TypeDef",
+        Vector(
+          CompilerFieldPattern("mods", CatalogValuePattern.Product("Modifiers", modifierFields))
+        ),
+        Vector(
+          CompilerProductionContextPattern(ContextPattern.Root, SourceClassification.SourceReachable)
+        )
+      ),
+      dispositions = Vector(FieldDisposition("mods", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "modifiers",
+          "mods",
+          ChildCardinality.ExactlyOne,
+          modifierIds.head,
+          modifierIds.tail
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "source",
+          TerminalIntervalSelector.WholeSource,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = "test.synthetic.modifier-owner",
+      targetRequirement = TargetRequirement.Compatible,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map("modifiers" -> None))),
+      outputRoleId = None
+    )
+
+  private def annotationModifierSnapshot: ParserSyntaxSnapshot =
+    val source                                                                             = "@deprecated(\"m\", \"1\") final"
+    def positioned(start: Int, end: Int, point: Int, provenance: ParserPositionProvenance) =
+      ParserNodePosition.Positioned(PcSourceRange(start, end), point, provenance)
+    val modifiers                                                                          = ParserFieldValue.Product(
+      "Modifiers",
+      Vector(
+        ParserSyntaxField("flags", ParserFieldValue.Scalar(ParserScalar.LongInteger(0L))),
+        ParserSyntaxField("privateWithin", ParserFieldValue.Name("")),
+        ParserSyntaxField("annotations", ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(2)))),
+        ParserSyntaxField("mods", ParserFieldValue.Repeated(Vector(ParserFieldValue.Positioned(10))))
+      )
+    )
+    val root                                                                               = ParserSyntaxNode(
+      1,
+      "TypeDef",
+      Vector(ParserSyntaxField("mods", modifiers)),
+      positioned(0, source.length, 0, ParserPositionProvenance.SourceDerived),
+      Vector.empty
+    )
+    val annotation                                                                         = ParserSyntaxNode(
+      2,
+      "Apply",
+      Vector(
+        ParserSyntaxField("fun", ParserFieldValue.Node(3)),
+        ParserSyntaxField(
+          "args",
+          ParserFieldValue.Repeated(Vector(ParserFieldValue.Node(6), ParserFieldValue.Node(7)))
+        )
+      ),
+      positioned(0, 21, 1, ParserPositionProvenance.SourceDerived),
+      Vector(
+        ParserNodeOccurrence(
+          1,
+          Vector(
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.NestedProductBoundary("Modifiers"),
+            ParserFieldPathSegment.NamedField("annotations"),
+            ParserFieldPathSegment.RepeatedIndex(0)
+          )
+        )
+      )
+    )
+    val constructor                                                                        = ParserSyntaxNode(
+      3,
+      "Select",
+      Vector(
+        ParserSyntaxField("qualifier", ParserFieldValue.Node(4)),
+        ParserSyntaxField("name", ParserFieldValue.Name("<init>"))
+      ),
+      positioned(0, 11, 0, ParserPositionProvenance.Synthetic),
+      Vector(ParserNodeOccurrence(2, Vector(ParserFieldPathSegment.NamedField("fun"))))
+    )
+    val fresh                                                                              = ParserSyntaxNode(
+      4,
+      "New",
+      Vector(ParserSyntaxField("tpt", ParserFieldValue.Node(5))),
+      positioned(0, 11, 0, ParserPositionProvenance.Synthetic),
+      Vector(ParserNodeOccurrence(3, Vector(ParserFieldPathSegment.NamedField("qualifier"))))
+    )
+    val designator                                                                         = ParserSyntaxNode(
+      5,
+      "Ident",
+      Vector(ParserSyntaxField("name", ParserFieldValue.Name("deprecated"))),
+      positioned(1, 11, 1, ParserPositionProvenance.SourceDerived),
+      Vector(ParserNodeOccurrence(4, Vector(ParserFieldPathSegment.NamedField("tpt"))))
+    )
+    def literal(id: Long, start: Int, end: Int, value: String, index: Int)                 = ParserSyntaxNode(
+      id,
+      "Literal",
+      Vector(
+        ParserSyntaxField(
+          "const",
+          ParserFieldValue.Product(
+            "",
+            Vector(ParserSyntaxField("", ParserFieldValue.Scalar(ParserScalar.Text(value))))
+          )
+        )
+      ),
+      positioned(start, end, start, ParserPositionProvenance.SourceDerived),
+      Vector(
+        ParserNodeOccurrence(
+          2,
+          Vector(ParserFieldPathSegment.NamedField("args"), ParserFieldPathSegment.RepeatedIndex(index))
+        )
+      )
+    )
+    val keyword                                                                            = ParserPositionedSyntax(
+      10,
+      "Final",
+      Vector.empty,
+      positioned(22, 27, 22, ParserPositionProvenance.SourceDerived),
+      Vector(
+        ParserPositionedOccurrence(
+          1,
+          Vector(
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.NestedProductBoundary("Modifiers"),
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.RepeatedIndex(0)
+          )
+        )
+      )
+    )
+    val base                                                                               = snapshot("/annotation-modifier", 1, Vector.empty)
+    base.copy(
+      sourceUri = base.sourceUri,
+      sourceText = source,
+      sourceDigest = ParserSyntaxSnapshot.digest(source),
+      sourceLength = source.length,
+      compilerOptions = base.compilerOptions,
+      rootNodeId = 1,
+      nodes = Vector(
+        root,
+        annotation,
+        constructor,
+        fresh,
+        designator,
+        literal(6, 12, 15, "m", 0),
+        literal(7, 17, 20, "1", 1)
+      ),
+      positioned = Vector(keyword),
+      comments = Vector.empty,
+      diagnostics = Vector.empty,
+      capabilities = base.capabilities,
+      compilerIdentity = base.compilerIdentity,
+      endMarkers = Vector.empty,
+      runtimeSupplements = Vector.empty,
+      attachments = Vector.empty
+    )
+
+  private def colocatedProductSnapshot(arity: Int): ParserSyntaxSnapshot =
+    val position = ParserNodePosition.Positioned(
+      PcSourceRange(0, 0),
+      0,
+      ParserPositionProvenance.Synthetic
+    )
+    val products = Vector.tabulate(arity)(index =>
+      ParserFieldValue.Product(
+        "Box",
+        Vector(ParserSyntaxField("event", ParserFieldValue.Positioned(index.toLong)))
+      )
+    )
+    val root     = ParserSyntaxNode(
+      1,
+      "Root",
+      Vector(ParserSyntaxField("products", ParserFieldValue.Repeated(products))),
+      ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived),
+      Vector.empty
+    )
+    val events   = Vector.tabulate(arity)(index =>
+      ParserPositionedSyntax(
+        index.toLong,
+        "Point",
+        Vector.empty,
+        position,
+        Vector(
+          ParserPositionedOccurrence(
+            1,
+            Vector(
+              ParserFieldPathSegment.NamedField("products"),
+              ParserFieldPathSegment.RepeatedIndex(index),
+              ParserFieldPathSegment.NestedProductBoundary("Box"),
+              ParserFieldPathSegment.NamedField("event")
+            )
+          )
+        )
+      )
+    )
+    val base     = snapshot("/colocated-products", 1, Vector.empty)
+    base.copy(
+      sourceUri = base.sourceUri,
+      sourceText = base.sourceText,
+      sourceDigest = base.sourceDigest,
+      sourceLength = base.sourceLength,
+      compilerOptions = base.compilerOptions,
+      rootNodeId = 1,
+      nodes = Vector(root),
+      positioned = events,
+      comments = Vector.empty,
+      diagnostics = Vector.empty,
+      capabilities = base.capabilities,
+      compilerIdentity = base.compilerIdentity,
+      endMarkers = Vector.empty,
+      runtimeSupplements = Vector.empty,
+      attachments = Vector.empty
+    )
+
+  private def annotationOnlySnapshot: ParserSyntaxSnapshot =
+    val base   = annotationModifierSnapshot
+    val source = "@deprecated(\"m\", \"1\")"
+    base.copy(
+      sourceText = source,
+      sourceDigest = ParserSyntaxSnapshot.digest(source),
+      sourceLength = source.length,
+      nodes = base.nodes.map:
+        case node if node.id == base.rootNodeId =>
+          node.copy(
+            fields = node.fields.map:
+              case field @ ParserSyntaxField("mods", ParserFieldValue.Product(prefix, fields), _) =>
+                field.copy(value =
+                  ParserFieldValue.Product(
+                    prefix,
+                    fields.map:
+                      case value @ ParserSyntaxField("mods", _, _) =>
+                        value.copy(
+                          value = ParserFieldValue.Repeated(Vector.empty),
+                          declaredShape = Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Positioned))
+                        )
+                      case value                                   => value
+                  )
+                )
+              case field                                                                          => field,
+            position = ParserNodePosition.Positioned(
+              PcSourceRange(0, source.length),
+              0,
+              ParserPositionProvenance.SourceDerived
+            )
+          )
+        case node                               => node,
+      positioned = Vector.empty
+    )
+
+  private def annotationTriviaSnapshot: ParserSyntaxSnapshot =
+    val base                                                                             = annotationModifierSnapshot
+    val source                                                                           = "@deprecated(/*lead*/ \"m\" /*after*/, /*next*/ \"1\" /*tail*/) final"
+    val annotationEnd                                                                    = source.lastIndexOf(')') + 1
+    val finalStart                                                                       = source.lastIndexOf("final")
+    val literals                                                                         = "\"[^\"]*\"".r.findAllMatchIn(source).toVector
+    def position(start: Int, end: Int, point: Int, provenance: ParserPositionProvenance) =
+      ParserNodePosition.Positioned(PcSourceRange(start, end), point, provenance)
+    val nodes                                                                            = base.nodes.map:
+      case node if node.id == 1 =>
+        node.copy(position = position(0, source.length, 0, ParserPositionProvenance.SourceDerived))
+      case node if node.id == 2 =>
+        node.copy(position = position(0, annotationEnd, 1, ParserPositionProvenance.SourceDerived))
+      case node if node.id == 6 =>
+        node.copy(
+          position =
+            position(literals(0).start, literals(0).end, literals(0).start, ParserPositionProvenance.SourceDerived)
+        )
+      case node if node.id == 7 =>
+        node.copy(
+          position =
+            position(literals(1).start, literals(1).end, literals(1).start, ParserPositionProvenance.SourceDerived)
+        )
+      case node                 => node
+    val keyword                                                                          = base.positioned.head.copy(
+      position = position(finalStart, finalStart + "final".length, finalStart, ParserPositionProvenance.SourceDerived)
+    )
+    val comments                                                                         = "/\\*[^*]*\\*/".r
+      .findAllMatchIn(source)
+      .map: value =>
+        ParserComment(PcSourceRange(value.start, value.end), value.matched, ParserCommentKind.Block)
+    base.copy(
+      sourceText = source,
+      sourceDigest = ParserSyntaxSnapshot.digest(source),
+      sourceLength = source.length,
+      nodes = nodes,
+      positioned = Vector(keyword),
+      comments = comments.toVector
+    )
+
+  private def qualifiedAccessSnapshot: ParserSyntaxSnapshot =
+    accessRangeSnapshot("private[scope] final", "Private", "scope", Some(("Final", 15, 20)))
+
+  private def accessRangeSnapshot(
+      source: String,
+      accessProduction: String,
+      privateWithin: String,
+      trailingModifier: Option[(String, Int, Int)] = None
+  ): ParserSyntaxSnapshot =
+    val position                                                                = ParserNodePosition.Positioned(
+      PcSourceRange(0, source.length),
+      0,
+      ParserPositionProvenance.SourceDerived
+    )
+    val modifiers                                                               = ParserFieldValue.Product(
+      "Modifiers",
+      Vector(
+        ParserSyntaxField("flags", ParserFieldValue.Scalar(ParserScalar.LongInteger(0L))),
+        ParserSyntaxField("privateWithin", ParserFieldValue.Name(privateWithin)),
+        ParserSyntaxField(
+          "annotations",
+          ParserFieldValue.Repeated(Vector.empty),
+          Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node))
+        ),
+        ParserSyntaxField(
+          "mods",
+          ParserFieldValue.Repeated(
+            Vector(ParserFieldValue.Positioned(1)) ++ trailingModifier.map(_ => ParserFieldValue.Positioned(2))
+          )
+        )
+      )
+    )
+    val root                                                                    = ParserSyntaxNode(
+      1,
+      "TypeDef",
+      Vector(ParserSyntaxField("mods", modifiers)),
+      position,
+      Vector.empty
+    )
+    def keyword(id: Long, production: String, start: Int, end: Int, index: Int) = ParserPositionedSyntax(
+      id,
+      production,
+      Vector.empty,
+      ParserNodePosition.Positioned(
+        PcSourceRange(start, end),
+        start,
+        ParserPositionProvenance.SourceDerived
+      ),
+      Vector(
+        ParserPositionedOccurrence(
+          1,
+          Vector(
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.NestedProductBoundary("Modifiers"),
+            ParserFieldPathSegment.NamedField("mods"),
+            ParserFieldPathSegment.RepeatedIndex(index)
+          )
+        )
+      )
+    )
+    val accessText                                                              = accessProduction.toLowerCase
+    val events                                                                  = Vector(keyword(1, accessProduction, 0, accessText.length, 0)) ++
+      trailingModifier.map((production, start, end) => keyword(2, production, start, end, 1))
+    val comments                                                                = "/\\*[^*]*\\*/".r
+      .findAllMatchIn(source)
+      .map(value => ParserComment(PcSourceRange(value.start, value.end), value.matched, ParserCommentKind.Block))
+      .toVector
+    val base                                                                    = snapshot(s"/access-range-${source.length}-${accessProduction}", 1, Vector.empty)
+    base.copy(
+      sourceUri = base.sourceUri,
+      sourceText = source,
+      sourceDigest = ParserSyntaxSnapshot.digest(source),
+      sourceLength = source.length,
+      compilerOptions = base.compilerOptions,
+      rootNodeId = 1,
+      nodes = Vector(root),
+      positioned = events,
+      comments = comments,
+      diagnostics = Vector.empty,
+      capabilities = base.capabilities,
+      compilerIdentity = base.compilerIdentity,
+      endMarkers = Vector.empty,
+      runtimeSupplements = Vector.empty,
+      attachments = Vector.empty
     )
 
   private def surfaces(catalog: Scala3PsiProductionCatalog): ScalaPsiSurfaceInventory =

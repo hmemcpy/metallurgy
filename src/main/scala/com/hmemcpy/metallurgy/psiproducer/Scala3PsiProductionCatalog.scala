@@ -20,7 +20,7 @@ private[metallurgy] final case class CompilerRuntimeIdentity(
 )
 
 private[metallurgy] enum InventoryKind:
-  case Node, Positioned
+  case Node, Positioned, Product
 private[metallurgy] enum SourceClassification:
   case SourceReachable, Synthetic, Absent
 private[metallurgy] enum CatalogPathSegment:
@@ -187,6 +187,12 @@ private[metallurgy] enum ContextPattern:
       path: Vector[CatalogPathSegment],
       ancestor: InventoryAncestor
   )
+  case ParentWithAncestorPrefix(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      ancestors: Vector[InventoryAncestor]
+  )
   case AnchorOrParentWithRepeatedAncestor(
       anchor: InventoryAncestor,
       ownerKind: InventoryKind,
@@ -201,6 +207,13 @@ private[metallurgy] enum ContextPattern:
       repeatedAncestor: InventoryAncestor,
       anchor: InventoryAncestor
   )
+  case ParentWithRepeatedAncestorPrefix(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      repeatedAncestor: InventoryAncestor,
+      ancestors: Vector[InventoryAncestor]
+  )
 private[metallurgy] final case class CompilerShapeInventoryRow(
     kind: InventoryKind,
     id: Long,
@@ -214,7 +227,15 @@ private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
     parserEvidenceFingerprint: String,
     shapes: Vector[CompilerShapeInventoryRow],
-    nodes: Vector[ParserSyntaxNode]
+    nodes: Vector[ParserSyntaxNode],
+    products: Vector[ParserProductSyntax] = Vector.empty
+)
+private[metallurgy] final case class ParserProductSyntax(
+    id: Long,
+    production: String,
+    fields: Vector[ParserSyntaxField],
+    position: ParserNodePosition,
+    occurrences: Vector[ParserNodeOccurrence]
 )
 private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
@@ -634,60 +655,198 @@ private[metallurgy] enum InventoryFailure:
 
 private[metallurgy] object CompilerRuntimeInventory:
   def from(snapshot: ParserSyntaxSnapshot): Either[Vector[InventoryFailure], CompilerRuntimeInventory] =
-    val failures                                                         = Vector.newBuilder[InventoryFailure]
+    val failures                                                                                                   = Vector.newBuilder[InventoryFailure]
     duplicate(snapshot.nodes.map(_.id)).foreach(id =>
       failures += InventoryFailure.DuplicateIdentity(InventoryKind.Node, id)
     )
     duplicate(snapshot.positioned.map(_.id)).foreach(id =>
       failures += InventoryFailure.DuplicateIdentity(InventoryKind.Positioned, id)
     )
-    val nodes                                                            = snapshot.nodes.groupBy(_.id).collect { case (id, Vector(node)) => id -> node }
-    val positioned                                                       = snapshot.positioned.groupBy(_.id).collect { case (id, Vector(value)) => id -> value }
-    val lineages                                                         = InventoryContextLineage.resolver(nodes)
+    val nodes                                                                                                      = snapshot.nodes.groupBy(_.id).collect { case (id, Vector(node)) => id -> node }
+    val positioned                                                                                                 = snapshot.positioned.groupBy(_.id).collect { case (id, Vector(value)) => id -> value }
+    val productIds                                                                                                 = collection.mutable.Map
+      .empty[(InventoryKind, Long, Vector[ParserFieldPathSegment]), Long]
+    val productRows                                                                                                = Vector.newBuilder[ParserProductSyntax]
+    val productPending                                                                                             = collection.mutable.Stack.empty[
+      (InventoryKind, Long, Vector[ParserNodeOccurrence], ParserFieldValue, Vector[ParserFieldPathSegment])
+    ]
+    snapshot.positioned.reverseIterator.foreach: value =>
+      value.fields.reverseIterator.foreach: field =>
+        productPending.push(
+          (
+            InventoryKind.Positioned,
+            value.id,
+            value.occurrences.map(occurrence => ParserNodeOccurrence(occurrence.ownerNodeId, occurrence.fieldPath)),
+            field.value,
+            Vector(ParserFieldPathSegment.NamedField(field.name))
+          )
+        )
+    snapshot.nodes.reverseIterator.foreach: node =>
+      node.fields.reverseIterator.foreach: field =>
+        productPending.push(
+          (
+            InventoryKind.Node,
+            node.id,
+            Vector(ParserNodeOccurrence(node.id, Vector.empty)),
+            field.value,
+            Vector(ParserFieldPathSegment.NamedField(field.name))
+          )
+        )
+    var nextProductId                                                                                              = 0L
+    while productPending.nonEmpty do
+      val (ownerKind, ownerId, ownerOccurrences, value, path) = productPending.pop()
+      value match
+        case ParserFieldValue.Optional(candidate)     =>
+          candidate.foreach(value =>
+            productPending.push(
+              (ownerKind, ownerId, ownerOccurrences, value, path :+ ParserFieldPathSegment.OptionalNesting)
+            )
+          )
+        case ParserFieldValue.Repeated(candidates)    =>
+          candidates.zipWithIndex.reverseIterator.foreach: (candidate, index) =>
+            productPending.push(
+              (
+                ownerKind,
+                ownerId,
+                ownerOccurrences,
+                candidate,
+                path :+ ParserFieldPathSegment.RepeatedIndex(index)
+              )
+            )
+        case ParserFieldValue.Product(prefix, fields) =>
+          val id = nextProductId
+          nextProductId += 1
+          productIds += ((ownerKind, ownerId, path)) -> id
+          val occurrences = ownerOccurrences.map(occurrence =>
+            ParserNodeOccurrence(occurrence.ownerNodeId, occurrence.fieldPath ++ path)
+          )
+          val values      = collection.mutable.Stack.from(fields.reverseIterator.map(_.value))
+          val positions   = Vector.newBuilder[ParserNodePosition.Positioned]
+          while values.nonEmpty do
+            values.pop() match
+              case ParserFieldValue.Node(nodeId)             =>
+                nodes
+                  .get(nodeId)
+                  .foreach(_.position match
+                    case value: ParserNodePosition.Positioned => positions += value
+                    case ParserNodePosition.Absent            => ()
+                  )
+              case ParserFieldValue.Positioned(positionedId) =>
+                positioned
+                  .get(positionedId)
+                  .foreach(_.position match
+                    case value: ParserNodePosition.Positioned => positions += value
+                    case ParserNodePosition.Absent            => ()
+                  )
+              case ParserFieldValue.Optional(candidate)      => candidate.foreach(values.push)
+              case ParserFieldValue.Repeated(candidates)     => candidates.reverseIterator.foreach(values.push)
+              case ParserFieldValue.Product(_, nested)       =>
+                nested.reverseIterator.foreach(field => values.push(field.value))
+              case _                                         => ()
+          val observed    = positions.result()
+          val position    =
+            if observed.isEmpty then ParserNodePosition.Absent
+            else
+              val range      = PcSourceRange(
+                observed.map(_.range.startOffset).min,
+                observed.map(_.range.endOffset).max
+              )
+              val provenance =
+                if observed.exists(_.provenance == ParserPositionProvenance.SourceDerived) then
+                  ParserPositionProvenance.SourceDerived
+                else ParserPositionProvenance.Synthetic
+              ParserNodePosition.Positioned(range, range.startOffset, provenance)
+          productRows += ParserProductSyntax(id, prefix, fields, position, occurrences)
+          fields.reverseIterator.foreach: field =>
+            productPending.push(
+              (
+                InventoryKind.Product,
+                id,
+                occurrences,
+                field.value,
+                Vector(
+                  ParserFieldPathSegment.NestedProductBoundary(prefix),
+                  ParserFieldPathSegment.NamedField(field.name)
+                )
+              )
+            )
+        case _                                        => ()
+    val products                                                                                                   = productRows.result()
+    val lineages                                                                                                   = InventoryContextLineage.resolver(nodes)
     if !nodes.contains(snapshot.rootNodeId) then failures += InventoryFailure.InvalidRoot(snapshot.rootNodeId)
     def references(
         value: ParserFieldValue,
-        path: Vector[ParserFieldPathSegment]
+        path: Vector[ParserFieldPathSegment],
+        ownerKind: InventoryKind,
+        ownerId: Long
     ): Vector[(InventoryKind, Long, Vector[ParserFieldPathSegment])] =
       value match
-        case ParserFieldValue.Node(id)                => Vector((InventoryKind.Node, id, path))
-        case ParserFieldValue.Positioned(id)          => Vector((InventoryKind.Positioned, id, path))
-        case ParserFieldValue.Optional(value)         =>
-          value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting))
-        case ParserFieldValue.Repeated(values)        =>
-          values.zipWithIndex.flatMap((v, i) => references(v, path :+ ParserFieldPathSegment.RepeatedIndex(i)))
-        case ParserFieldValue.Product(prefix, fields) =>
-          fields.flatMap(f =>
-            references(
-              f.value,
-              path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+ ParserFieldPathSegment.NamedField(f.name)
-            )
+        case ParserFieldValue.Node(id)         => Vector((InventoryKind.Node, id, path))
+        case ParserFieldValue.Positioned(id)   => Vector((InventoryKind.Positioned, id, path))
+        case ParserFieldValue.Optional(value)  =>
+          value.toVector.flatMap(
+            references(_, path :+ ParserFieldPathSegment.OptionalNesting, ownerKind, ownerId)
           )
-        case _                                        => Vector.empty
-    def outgoing(fields: Vector[ParserSyntaxField])                      =
-      fields.flatMap(field => references(field.value, Vector(ParserFieldPathSegment.NamedField(field.name))))
-    val graph                                                            = snapshot.nodes.map(node => (InventoryKind.Node, node.id) -> outgoing(node.fields)) ++
-      snapshot.positioned.map(value => (InventoryKind.Positioned, value.id) -> outgoing(value.fields))
-    val edges                                                            = graph.toMap
-    val expectedOccurrences                                              = snapshot.nodes.flatMap(node =>
-      outgoing(node.fields).map { case (kind, id, path) =>
+        case ParserFieldValue.Repeated(values) =>
+          values.zipWithIndex.flatMap((v, i) =>
+            references(v, path :+ ParserFieldPathSegment.RepeatedIndex(i), ownerKind, ownerId)
+          )
+        case _: ParserFieldValue.Product       =>
+          productIds
+            .get((ownerKind, ownerId, path))
+            .toVector
+            .map(id => (InventoryKind.Product, id, path))
+        case _                                 => Vector.empty
+    def outgoing(kind: InventoryKind, id: Long, fields: Vector[ParserSyntaxField], product: Option[String] = None) =
+      fields.flatMap(field =>
+        references(
+          field.value,
+          product.toVector.map(ParserFieldPathSegment.NestedProductBoundary.apply) :+
+            ParserFieldPathSegment.NamedField(field.name),
+          kind,
+          id
+        )
+      )
+    val graph                                                                                                      = snapshot.nodes.map(node =>
+      (InventoryKind.Node, node.id) -> outgoing(InventoryKind.Node, node.id, node.fields)
+    ) ++ snapshot.positioned.map(value =>
+      (InventoryKind.Positioned, value.id) -> outgoing(InventoryKind.Positioned, value.id, value.fields)
+    ) ++ products.map(value =>
+      (InventoryKind.Product, value.id) -> outgoing(
+        InventoryKind.Product,
+        value.id,
+        value.fields,
+        Some(value.production)
+      )
+    )
+    val edges                                                                                                      = graph.toMap
+    val expectedOccurrences                                                                                        = snapshot.nodes.flatMap(node =>
+      outgoing(InventoryKind.Node, node.id, node.fields).map { case (kind, id, path) =>
         (kind, id, InventoryKind.Node, node.id, path)
       }
     ) ++ snapshot.positioned.flatMap(value =>
       value.occurrences.headOption.toVector.flatMap(origin =>
-        outgoing(value.fields).map { case (kind, id, path) =>
+        outgoing(InventoryKind.Positioned, value.id, value.fields).map { case (kind, id, path) =>
+          (kind, id, InventoryKind.Node, origin.ownerNodeId, origin.fieldPath ++ path)
+        }
+      )
+    ) ++ products.flatMap(value =>
+      value.occurrences.headOption.toVector.flatMap(origin =>
+        outgoing(InventoryKind.Product, value.id, value.fields, Some(value.production)).map { case (kind, id, path) =>
           (kind, id, InventoryKind.Node, origin.ownerNodeId, origin.fieldPath ++ path)
         }
       )
     )
-    val actualOccurrences                                                = snapshot.nodes.flatMap(n =>
+    val actualOccurrences                                                                                          = snapshot.nodes.flatMap(n =>
       n.occurrences.map(o => (InventoryKind.Node, n.id, InventoryKind.Node, o.ownerNodeId, o.fieldPath))
     ) ++ snapshot.positioned.flatMap(n =>
       n.occurrences.map(o => (InventoryKind.Positioned, n.id, InventoryKind.Node, o.ownerNodeId, o.fieldPath))
+    ) ++ products.flatMap(n =>
+      n.occurrences.map(o => (InventoryKind.Product, n.id, InventoryKind.Node, o.ownerNodeId, o.fieldPath))
     )
-    def counts[A](values: Vector[A]): Map[A, Int]                        = values.groupMapReduce(identity)(_ => 1)(_ + _)
-    val expectedCounts                                                   = counts(expectedOccurrences.toVector)
-    val actualCounts                                                     = counts(actualOccurrences)
+    def counts[A](values: Vector[A]): Map[A, Int]                                                                  = values.groupMapReduce(identity)(_ => 1)(_ + _)
+    val expectedCounts                                                                                             = counts(expectedOccurrences.toVector)
+    val actualCounts                                                                                               = counts(actualOccurrences)
     expectedCounts.foreach: (occurrence, count) =>
       val (kind, id, ownerKind, ownerId, path) = occurrence
       (0 until (count - actualCounts.getOrElse(occurrence, 0))).foreach(_ =>
@@ -698,16 +857,16 @@ private[metallurgy] object CompilerRuntimeInventory:
       (0 until (count - expectedCounts.getOrElse(occurrence, 0))).foreach(_ =>
         failures += InventoryFailure.ExtraOccurrence(kind, id, ownerId, path)
       )
-    val reachable                                                        = scala.collection.mutable.Set.empty[(InventoryKind, Long)]
-    val pending                                                          = scala.collection.mutable.Stack[(InventoryKind, Long)](InventoryKind.Node -> snapshot.rootNodeId)
+    val reachable                                                                                                  = scala.collection.mutable.Set.empty[(InventoryKind, Long)]
+    val pending                                                                                                    = scala.collection.mutable.Stack[(InventoryKind, Long)](InventoryKind.Node -> snapshot.rootNodeId)
     while pending.nonEmpty do
       val current = pending.pop()
       if !reachable(current) then
         reachable += current
         edges.getOrElse(current, Vector.empty).foreach((kind, id, _) => pending.push(kind -> id))
     edges.keys.filterNot(reachable).foreach((kind, id) => failures += InventoryFailure.UnreachableValue(kind, id))
-    val visitState                                                       = scala.collection.mutable.Map.empty[(InventoryKind, Long), Int]
-    val traversal                                                        = scala.collection.mutable.Stack.empty[((InventoryKind, Long), Boolean)]
+    val visitState                                                                                                 = scala.collection.mutable.Map.empty[(InventoryKind, Long), Int]
+    val traversal                                                                                                  = scala.collection.mutable.Stack.empty[((InventoryKind, Long), Boolean)]
     traversal.push((InventoryKind.Node -> snapshot.rootNodeId) -> false)
     while traversal.nonEmpty do
       val (current, exiting) = traversal.pop()
@@ -781,14 +940,14 @@ private[metallurgy] object CompilerRuntimeInventory:
       case ParserFieldValue.GeneratedName(a, b, c)  => InventoryValueObservation.GeneratedName(a, b, c)
       case ParserFieldValue.Scalar(value)           => InventoryValueObservation.Scalar(value)
       case ParserFieldValue.Unsupported(value)      => InventoryValueObservation.Unsupported(value)
-    def declaredPattern(shape: ParserDeclaredShape): CatalogValuePattern = shape match
+    def declaredPattern(shape: ParserDeclaredShape): CatalogValuePattern                                           = shape match
       case ParserDeclaredShape.Node            => CatalogValuePattern.Node
       case ParserDeclaredShape.Positioned      => CatalogValuePattern.Positioned
       case ParserDeclaredShape.Optional(inner) => CatalogValuePattern.Optional(declaredPattern(inner))
       case ParserDeclaredShape.Repeated(inner) => CatalogValuePattern.Repeated(declaredPattern(inner))
       case ParserDeclaredShape.Name            => CatalogValuePattern.Name
       case ParserDeclaredShape.Scalar(kind)    => CatalogValuePattern.Scalar(kind)
-    def pattern(value: InventoryValueObservation): CatalogValuePattern   = value match
+    def pattern(value: InventoryValueObservation): CatalogValuePattern                                             = value match
       case InventoryValueObservation.Node(_, _)              => CatalogValuePattern.Node
       case InventoryValueObservation.Positioned(_, _)        => CatalogValuePattern.Positioned
       case InventoryValueObservation.Optional(Some(value))   => CatalogValuePattern.Optional(pattern(value))
@@ -804,7 +963,7 @@ private[metallurgy] object CompilerRuntimeInventory:
       case InventoryValueObservation.GeneratedName(_, _, _)  => CatalogValuePattern.GeneratedName
       case InventoryValueObservation.Scalar(value)           => CatalogValuePattern.Scalar(value.productPrefix)
       case InventoryValueObservation.Unsupported(value)      => CatalogValuePattern.Unsupported(value)
-    val rows                                                             = (snapshot.nodes.map(n =>
+    val rows                                                                                                       = (snapshot.nodes.map(n =>
       (
         InventoryKind.Node,
         n.id,
@@ -817,6 +976,16 @@ private[metallurgy] object CompilerRuntimeInventory:
       snapshot.positioned.map(n =>
         (
           InventoryKind.Positioned,
+          n.id,
+          n.production,
+          n.fields,
+          n.position,
+          n.occurrences.map(o => o.ownerNodeId -> o.fieldPath)
+        )
+      ) ++
+      products.map(n =>
+        (
+          InventoryKind.Product,
           n.id,
           n.production,
           n.fields,
@@ -845,7 +1014,7 @@ private[metallurgy] object CompilerRuntimeInventory:
         occurrences.flatMap(contexts(kind, id, _)).distinct,
         classification
       )
-    val found                                                            = failures.result()
+    val found                                                                                                      = failures.result()
     if found.nonEmpty then Left(found.distinct.sortBy(_.toString))
     else
       val identity = snapshot.compilerIdentity
@@ -858,7 +1027,8 @@ private[metallurgy] object CompilerRuntimeInventory:
           ),
           ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
           rows,
-          snapshot.nodes
+          snapshot.nodes,
+          products
         )
       )
   private def duplicate(ids: Vector[Long])                                                             =
@@ -1071,20 +1241,27 @@ private[metallurgy] final case class FieldDisposition(fieldName: String, kind: F
 private[metallurgy] final case class GrammarRoleId(value: String):
   require(value.nonEmpty)
 private[metallurgy] object GrammarRoleId:
-  val CompilationUnit    = GrammarRoleId("scala.compilation-unit")
-  val PackageClause      = GrammarRoleId("scala.package.clause")
-  val PackageReference   = GrammarRoleId("scala.package.reference")
-  val ImportStatement    = GrammarRoleId("scala.import.statement")
-  val ExportStatement    = GrammarRoleId("scala.export.statement")
-  val AbsentProduct      = GrammarRoleId("scala.absent-product")
-  val StableReference    = GrammarRoleId("scala.reference.stable")
-  val ImportSelector     = GrammarRoleId("scala.import.selector")
-  val ImportSelectorName = GrammarRoleId("scala.import.selector-name")
-  val SimpleType         = GrammarRoleId("scala.type.simple")
-  val AppliedType        = GrammarRoleId("scala.type.applied")
-  val WildcardType       = GrammarRoleId("scala.type.wildcard")
-  val InfixType          = GrammarRoleId("scala.type.infix")
-  val IntegerLiteral     = GrammarRoleId("scala.literal.integer")
+  val CompilationUnit     = GrammarRoleId("scala.compilation-unit")
+  val PackageClause       = GrammarRoleId("scala.package.clause")
+  val PackageReference    = GrammarRoleId("scala.package.reference")
+  val ImportStatement     = GrammarRoleId("scala.import.statement")
+  val ExportStatement     = GrammarRoleId("scala.export.statement")
+  val AbsentProduct       = GrammarRoleId("scala.absent-product")
+  val StableReference     = GrammarRoleId("scala.reference.stable")
+  val ImportSelector      = GrammarRoleId("scala.import.selector")
+  val ImportSelectorName  = GrammarRoleId("scala.import.selector-name")
+  val SimpleType          = GrammarRoleId("scala.type.simple")
+  val AppliedType         = GrammarRoleId("scala.type.applied")
+  val WildcardType        = GrammarRoleId("scala.type.wildcard")
+  val InfixType           = GrammarRoleId("scala.type.infix")
+  val IntegerLiteral      = GrammarRoleId("scala.literal.integer")
+  val ExpressionPayload   = GrammarRoleId("scala.expression.payload")
+  val Modifiers           = GrammarRoleId("scala.modifiers")
+  val AccessModifier      = GrammarRoleId("scala.modifier.access")
+  val KeywordModifier     = GrammarRoleId("scala.modifier.keyword")
+  val Annotations         = GrammarRoleId("scala.annotations")
+  val Annotation          = GrammarRoleId("scala.annotation")
+  val AnnotationArguments = GrammarRoleId("scala.annotation.arguments")
 private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
   case Repeated(minimum: Int, maximum: Option[Int])
@@ -1167,6 +1344,7 @@ private[metallurgy] enum OutputBoundary:
 private[metallurgy] enum OutputRangeDeclaration:
   case CompilerPosition
   case CompilerPositionWithPolicy(policy: PositionProvenancePolicy)
+  case CompilerPositionWithTrailingBalancedBrackets(policy: PositionProvenancePolicy)
   case CompilerPositionWithBodyLayoutOrEndMarker(
       headerRole: String,
       bodyRole: Option[String],
@@ -1175,26 +1353,35 @@ private[metallurgy] enum OutputRangeDeclaration:
       indentation: ClosedSourceLexicalKind
   )
   case BoundaryDerived(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
+  case BoundaryDerivedWithTrailingBalancedBrackets(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
   case CompilerEndMarker
 private[metallurgy] final case class PsiOutputRoleId(value: String):
   require(value.nonEmpty)
 private[metallurgy] object PsiOutputRoleId:
-  val SourceTerminal    = PsiOutputRoleId("scala.source.terminal")
-  val PackageStatement  = PsiOutputRoleId("scala.package.statement")
-  val EndStatement      = PsiOutputRoleId("scala.end.statement")
-  val EndKeyword        = PsiOutputRoleId("scala.end.keyword")
-  val ImportStatement   = PsiOutputRoleId("scala.import.statement")
-  val ExportStatement   = PsiOutputRoleId("scala.export.statement")
-  val ImportExpression  = PsiOutputRoleId("scala.import.expression")
-  val ImportSelectorSet = PsiOutputRoleId("scala.import.selector-set")
-  val ImportSelector    = PsiOutputRoleId("scala.import.selector")
-  val StableReference   = PsiOutputRoleId("scala.reference.stable")
-  val SimpleType        = PsiOutputRoleId("scala.type.simple")
-  val ParameterizedType = PsiOutputRoleId("scala.type.parameterized")
-  val TypeArguments     = PsiOutputRoleId("scala.type.arguments")
-  val WildcardType      = PsiOutputRoleId("scala.type.wildcard")
-  val InfixType         = PsiOutputRoleId("scala.type.infix")
-  val IntegerLiteral    = PsiOutputRoleId("scala.literal.integer")
+  val SourceTerminal        = PsiOutputRoleId("scala.source.terminal")
+  val PackageStatement      = PsiOutputRoleId("scala.package.statement")
+  val EndStatement          = PsiOutputRoleId("scala.end.statement")
+  val EndKeyword            = PsiOutputRoleId("scala.end.keyword")
+  val ImportStatement       = PsiOutputRoleId("scala.import.statement")
+  val ExportStatement       = PsiOutputRoleId("scala.export.statement")
+  val ImportExpression      = PsiOutputRoleId("scala.import.expression")
+  val ImportSelectorSet     = PsiOutputRoleId("scala.import.selector-set")
+  val ImportSelector        = PsiOutputRoleId("scala.import.selector")
+  val StableReference       = PsiOutputRoleId("scala.reference.stable")
+  val SimpleType            = PsiOutputRoleId("scala.type.simple")
+  val ParameterizedType     = PsiOutputRoleId("scala.type.parameterized")
+  val TypeArguments         = PsiOutputRoleId("scala.type.arguments")
+  val WildcardType          = PsiOutputRoleId("scala.type.wildcard")
+  val InfixType             = PsiOutputRoleId("scala.type.infix")
+  val IntegerLiteral        = PsiOutputRoleId("scala.literal.integer")
+  val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
+  val ModifierList          = PsiOutputRoleId("scala.modifiers")
+  val AccessModifier        = PsiOutputRoleId("scala.modifier.access")
+  val Annotations           = PsiOutputRoleId("scala.annotations")
+  val Annotation            = PsiOutputRoleId("scala.annotation")
+  val AnnotationExpr        = PsiOutputRoleId("scala.annotation.expression")
+  val ConstructorInvocation = PsiOutputRoleId("scala.annotation.constructor")
+  val AnnotationArguments   = PsiOutputRoleId("scala.annotation.arguments")
 private[metallurgy] final case class StableRoleInventory(
     grammarRoles: Set[GrammarRoleId],
     outputRoles: Set[PsiOutputRoleId]
@@ -1217,7 +1404,14 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.AppliedType,
       GrammarRoleId.WildcardType,
       GrammarRoleId.InfixType,
-      GrammarRoleId.IntegerLiteral
+      GrammarRoleId.IntegerLiteral,
+      GrammarRoleId.ExpressionPayload,
+      GrammarRoleId.Modifiers,
+      GrammarRoleId.AccessModifier,
+      GrammarRoleId.KeywordModifier,
+      GrammarRoleId.Annotations,
+      GrammarRoleId.Annotation,
+      GrammarRoleId.AnnotationArguments
     ),
     Set(
       PsiOutputRoleId.SourceTerminal,
@@ -1235,7 +1429,15 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.TypeArguments,
       PsiOutputRoleId.WildcardType,
       PsiOutputRoleId.InfixType,
-      PsiOutputRoleId.IntegerLiteral
+      PsiOutputRoleId.IntegerLiteral,
+      PsiOutputRoleId.ExpressionPayload,
+      PsiOutputRoleId.ModifierList,
+      PsiOutputRoleId.AccessModifier,
+      PsiOutputRoleId.Annotations,
+      PsiOutputRoleId.Annotation,
+      PsiOutputRoleId.AnnotationExpr,
+      PsiOutputRoleId.ConstructorInvocation,
+      PsiOutputRoleId.AnnotationArguments
     )
   )
 private[metallurgy] object ImportPersistenceSurfaces:
@@ -1265,6 +1467,19 @@ private[metallurgy] object PackagePersistenceSurfaces:
   val Serializer =
     "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScPackagingElementType$#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScPackagingStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
   val FqnIndex   = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#PACKAGE_FQN_KEY"
+private[metallurgy] object ModifierAnnotationPersistenceSurfaces:
+  val ModifierStub          = "org/jetbrains/plugins/scala/lang/psi/stubs/ScModifiersStub"
+  val ModifierSerializer    =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScModifiersElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScModifiersStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val AccessStub            = "org/jetbrains/plugins/scala/lang/psi/stubs/ScAccessModifierStub"
+  val AccessSerializer      =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScAccessModifierElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScAccessModifierStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val AnnotationsStub       = "org/jetbrains/plugins/scala/lang/psi/stubs/ScAnnotationsStub"
+  val AnnotationsSerializer =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScStubElementType#serialize(Lcom/intellij/psi/stubs/StubElement;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val AnnotationStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScAnnotationStub"
+  val AnnotationSerializer  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScAnnotationElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScAnnotationStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
 private[metallurgy] final case class OutputCompositeDeclaration(
     id: String,
     parentId: Option[String],
@@ -1311,8 +1526,10 @@ private[metallurgy] final case class Scala3PsiProduction(
     navigation: Option[NavigationObligation] = None,
     outputTemplate: Option[LocalOutputCompositeTemplate] = None,
     outputRealizations: Vector[OutputRealization] = Vector.empty,
-    outputRoleId: Option[PsiOutputRoleId]
+    outputRoleId: Option[PsiOutputRoleId],
+    additionalGrammarRoleIds: Set[GrammarRoleId] = Set.empty
 ):
+  val grammarRoleIds: Set[GrammarRoleId]                                  = additionalGrammarRoleIds + grammarRoleId
   private def defaultOutputTemplate: Option[LocalOutputCompositeTemplate] = outputTemplate.orElse(
     outputRoleId.map(role =>
       LocalOutputCompositeTemplate(
@@ -1351,33 +1568,44 @@ private[metallurgy] enum CatalogCapabilityFailure:
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty, StableRoleInventory.Empty)
 
-  private val PackageSurface           =
+  private val PackageSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
-  private val EndSurface               = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
-  private val ImportStatementSurface   =
+  private val EndSurface                 = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
+  private val ImportStatementSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
-  private val ExportStatementSurface   =
+  private val ExportStatementSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScExportStmtImpl"
-  private val ExportStatementApi       =
+  private val ExportStatementApi         =
     "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScExportStmt"
-  private val ImportExpressionSurface  =
+  private val ImportExpressionSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportExprImpl"
-  private val ImportSelectorsSurface   =
+  private val ImportSelectorsSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorsImpl"
-  private val ImportSelectorSurface    =
+  private val ImportSelectorSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorImpl"
-  private val StableReferenceSurface   =
+  private val StableReferenceSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl"
-  private val SimpleTypeSurface        =
+  private val SimpleTypeSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSimpleTypeElementImpl"
-  private val ParameterizedTypeSurface =
+  private val ParameterizedTypeSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
-  private val TypeArgumentsSurface     =
+  private val TypeArgumentsSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeArgsImpl"
-  private val WildcardTypeSurface      =
+  private val WildcardTypeSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScWildcardTypeElementImpl"
-  private val InfixTypeSurface         =
+  private val InfixTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScInfixTypeElementImpl"
+  private val ModifierListSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
+  private val AccessModifierSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
+  private val AnnotationsSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
+  private val AnnotationSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl"
+  private val AnnotationExprSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl"
+  private val ConstructorSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl"
+  private val AnnotationArgumentsSurface =
+    "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
+  private val ExpressionPayloadSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
+  private val ExpressionSurface          = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
 
   private def outputComposite(
       id: String,
@@ -1385,7 +1613,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       range: OutputRangeDeclaration,
       role: PsiOutputRoleId,
       surface: String,
-      accessors: Vector[AccessorObligation]
+      accessors: Vector[AccessorObligation],
+      requirement: TargetRequirement = TargetRequirement.Native
   ): OutputCompositeDeclaration =
     val persistence = role match
       case PsiOutputRoleId.PackageStatement  =>
@@ -1430,6 +1659,34 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           Vector(ImportPersistenceSurfaces.AliasedImportIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
+      case PsiOutputRoleId.ModifierList      =>
+        PersistenceObligations.Required(
+          ModifierAnnotationPersistenceSurfaces.ModifierStub,
+          ModifierAnnotationPersistenceSurfaces.ModifierSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.AccessModifier    =>
+        PersistenceObligations.Required(
+          ModifierAnnotationPersistenceSurfaces.AccessStub,
+          ModifierAnnotationPersistenceSurfaces.AccessSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.Annotations       =>
+        PersistenceObligations.Required(
+          ModifierAnnotationPersistenceSurfaces.AnnotationsStub,
+          ModifierAnnotationPersistenceSurfaces.AnnotationsSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.Annotation        =>
+        PersistenceObligations.Required(
+          ModifierAnnotationPersistenceSurfaces.AnnotationStub,
+          ModifierAnnotationPersistenceSurfaces.AnnotationSerializer,
+          Vector(NativePsiElementBindings.AnnotatedMemberIndexSurface),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
       case _                                 => PersistenceObligations.NotApplicable
     OutputCompositeDeclaration(
       id,
@@ -1437,19 +1694,19 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       range,
       role,
       surface,
-      TargetRequirement.Native,
+      requirement,
       accessors,
       persistence,
       Some(NavigationObligation.Self)
     )
 
-  private val ImportStatementAccessors   = Vector(
+  private val ImportStatementAccessors     = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportOrExportStmt#importExprs()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  private val ExportStatementAccessors   = ImportStatementAccessors ++ Vector(
+  private val ExportStatementAccessors     = ImportStatementAccessors ++ Vector(
     AccessorObligation(
       s"$ExportStatementApi#isTopLevel()Z",
       required = true,
@@ -1461,7 +1718,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       SurfaceFactKind.Method
     )
   )
-  private val PackageAccessors           = Vector(
+  private val PackageAccessors             = Vector(
     AccessorObligation(s"$PackageSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(
@@ -1484,7 +1741,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$PackageSurface#isEnclosedByColon()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$PackageSurface#end()Lscala/Option;", required = true)
   )
-  private val EndAccessors               = Vector(
+  private val EndAccessors                 = Vector(
     AccessorObligation(s"$EndSurface#begin()Lscala/Option;", required = true),
     AccessorObligation(s"$EndSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(s"$EndSurface#tag()Lcom/intellij/psi/PsiElement;", required = true),
@@ -1500,18 +1757,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$EndSurface#isSoft()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$EndSurface#getCanonicalText()Ljava/lang/String;", required = true, SurfaceFactKind.Method)
   )
-  private val ImportExpressionAccessors  = Vector(
+  private val ImportExpressionAccessors    = Vector(
     AccessorObligation(s"$ImportExpressionSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#selectorSet()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#qualifier()Lscala/Option;", required = true)
   )
-  private val ImportSelectorsAccessors   = Vector(
+  private val ImportSelectorsAccessors     = Vector(
     AccessorObligation(
       s"$ImportSelectorsSurface#selectors()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  private val ImportSelectorAccessors    = Vector(
+  private val ImportSelectorAccessors      = Vector(
     AccessorObligation(
       s"$ImportSelectorSurface#parentImportExpression()Lorg/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportExpr;",
       required = true
@@ -1519,17 +1776,17 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$ImportSelectorSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportSelectorSurface#givenTypeElement()Lscala/Option;", required = true)
   )
-  private val StableReferenceAccessors   = Vector(
+  private val StableReferenceAccessors     = Vector(
     AccessorObligation(s"$StableReferenceSurface#qualifier()Lscala/Option;", required = true),
     AccessorObligation(
       s"$StableReferenceSurface#nameId()Lcom/intellij/psi/PsiElement;",
       required = true
     )
   )
-  private val SimpleTypeAccessors        = Vector(
+  private val SimpleTypeAccessors          = Vector(
     AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true)
   )
-  private val ParameterizedTypeAccessors = Vector(
+  private val ParameterizedTypeAccessors   = Vector(
     AccessorObligation(
       s"$ParameterizedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -1539,14 +1796,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
-  private val TypeArgumentsAccessors     = Vector(
+  private val TypeArgumentsAccessors       = Vector(
     AccessorObligation(s"$TypeArgumentsSurface#typeArgs()Lscala/collection/immutable/Seq;", required = true)
   )
-  private val WildcardTypeAccessors      = Vector(
+  private val WildcardTypeAccessors        = Vector(
     AccessorObligation(s"$WildcardTypeSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$WildcardTypeSurface#upperTypeElement()Lscala/Option;", required = true)
   )
-  private val InfixTypeAccessors         = Vector(
+  private val InfixTypeAccessors           = Vector(
     AccessorObligation(
       s"$InfixTypeSurface#left()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -1556,6 +1813,74 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       s"$InfixTypeSurface#operation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference;",
       required = true
     )
+  )
+  private val ModifierListAccessors        = Vector(
+    AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
+    AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
+    AccessorObligation(
+      s"$ModifierListSurface#modifiersOrdered()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  private val AccessModifierAccessors      = Vector(
+    AccessorObligation(s"$AccessModifierSurface#idText()Lscala/Option;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$AccessModifierSurface#isPrivate()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$AccessModifierSurface#isProtected()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$AccessModifierSurface#isThis()Z", required = true, SurfaceFactKind.Method)
+  )
+  private val AnnotationsAccessors         = Vector(
+    AccessorObligation(
+      s"$AnnotationsSurface#getAnnotations()[Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotation;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  private val AnnotationAccessors          = Vector(
+    AccessorObligation(
+      s"$AnnotationSurface#annotationExpr()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotationExpr;",
+      required = true
+    ),
+    AccessorObligation(
+      s"$AnnotationSurface#constructorInvocation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScConstructorInvocation;",
+      required = true
+    ),
+    AccessorObligation(
+      s"$AnnotationSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    )
+  )
+  private val AnnotationExprAccessors      = Vector(
+    AccessorObligation(
+      s"$AnnotationExprSurface#constructorInvocation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScConstructorInvocation;",
+      required = true
+    ),
+    AccessorObligation(s"$AnnotationExprSurface#getAttributes()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(
+      s"$AnnotationExprSurface#getAnnotationParameters()Lscala/collection/immutable/Seq;",
+      required = true
+    )
+  )
+  private val ConstructorAccessors         = Vector(
+    AccessorObligation(
+      s"$ConstructorSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(s"$ConstructorSurface#simpleTypeElement()Lscala/Option;", required = true),
+    AccessorObligation(s"$ConstructorSurface#typeArgList()Lscala/Option;", required = true),
+    AccessorObligation(s"$ConstructorSurface#args()Lscala/Option;", required = true),
+    AccessorObligation(s"$ConstructorSurface#arguments()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$ConstructorSurface#reference()Lscala/Option;", required = true)
+  )
+  private val AnnotationArgumentsAccessors = Vector(
+    AccessorObligation(s"$AnnotationArgumentsSurface#exprs()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$AnnotationArgumentsSurface#isUsing()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$AnnotationArgumentsSurface#isArgsInParens()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$AnnotationArgumentsSurface#getArgsCount()I", required = true, SurfaceFactKind.Method)
+  )
+  private val ExpressionPayloadAccessors   = Vector(
+    AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)
   )
 
   private val GivenSelectorBoundAnchor        = InventoryAncestor(
@@ -2180,6 +2505,837 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       navigation = Some(NavigationObligation.Self),
       outputTemplate = Some(packageTemplate(children.map(_.roleId), Option.when(body)("package-statements"))),
       outputRoleId = None
+    )
+
+  private val ModifierOwnerPrefixes = Vector("TypeDef", "ModuleDef", "DefDef", "ValDef", "PatDef", "Template")
+  private val ModifierPath          = Vector(CatalogPathSegment.NamedField("mods"))
+  private val ModifierChildrenPath  = Vector(
+    CatalogPathSegment.NamedField("mods"),
+    CatalogPathSegment.NestedProduct("Modifiers")
+  )
+
+  private def modifierOccurrences(classification: SourceClassification) = ModifierOwnerPrefixes.map(owner =>
+    CompilerProductionContextPattern(
+      ContextPattern.Parent(InventoryKind.Node, owner, ModifierPath),
+      classification
+    )
+  )
+
+  private def annotationAnchor(owner: String) = InventoryAncestor(
+    InventoryKind.Node,
+    owner,
+    ModifierChildrenPath ++ Vector(
+      CatalogPathSegment.NamedField("annotations"),
+      CatalogPathSegment.RepeatedElement
+    )
+  )
+
+  private def annotationOccurrences(classifications: SourceClassification*) =
+    ModifierOwnerPrefixes.flatMap(owner =>
+      classifications.map(classification =>
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            owner,
+            annotationAnchor(owner).path
+          ),
+          classification
+        )
+      )
+    )
+
+  private def annotationChildOccurrences(
+      owner: String,
+      path: Vector[CatalogPathSegment],
+      directAncestors: Vector[InventoryAncestor],
+      classification: SourceClassification
+  ) = ModifierOwnerPrefixes.map(definition =>
+    CompilerProductionContextPattern(
+      ContextPattern.ParentWithAncestorPrefix(
+        InventoryKind.Node,
+        owner,
+        path,
+        directAncestors :+ annotationAnchor(definition)
+      ),
+      classification
+    )
+  )
+
+  private val ApplyFunAncestor           = InventoryAncestor(
+    InventoryKind.Node,
+    "Apply",
+    Vector(CatalogPathSegment.NamedField("fun"))
+  )
+  private val SelectQualifierAncestor    = InventoryAncestor(
+    InventoryKind.Node,
+    "Select",
+    Vector(CatalogPathSegment.NamedField("qualifier"))
+  )
+  private val NewTypeAncestor            = InventoryAncestor(
+    InventoryKind.Node,
+    "New",
+    Vector(CatalogPathSegment.NamedField("tpt"))
+  )
+  private val ModifierChildProductionIds = Set(
+    "modifier-access-private",
+    "modifier-access-protected",
+    "modifier-keyword-abstract",
+    "modifier-keyword-final",
+    "modifier-keyword-sealed",
+    "modifier-keyword-implicit",
+    "modifier-keyword-lazy",
+    "modifier-keyword-override",
+    "modifier-keyword-transparent",
+    "modifier-keyword-inline",
+    "modifier-keyword-infix",
+    "modifier-keyword-open",
+    "modifier-keyword-opaque",
+    "modifier-keyword-given",
+    "modifier-keyword-var"
+  )
+
+  private def modifierTemplate(withAnnotations: Boolean, withModifiers: Boolean): LocalOutputCompositeTemplate =
+    val modifierRange =
+      if withModifiers then
+        OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(
+          OutputBoundary.ChildStart(
+            "modifiers",
+            ChildOccurrenceSelector.First,
+            PositionProvenancePolicy.PositionedIncludingSynthetic
+          ),
+          OutputBoundary.ChildEnd(
+            "modifiers",
+            ChildOccurrenceSelector.Last,
+            PositionProvenancePolicy.PositionedIncludingSynthetic
+          )
+        )
+      else
+        val end = OutputBoundary.ChildEnd(
+          "annotations",
+          ChildOccurrenceSelector.Last,
+          PositionProvenancePolicy.PositionedIncludingSynthetic
+        )
+        OutputRangeDeclaration.BoundaryDerived(end, end)
+    val annotations   = Option.when(withAnnotations)(
+      outputComposite(
+        "annotations",
+        None,
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary.ChildStart(
+            "annotations",
+            ChildOccurrenceSelector.First,
+            PositionProvenancePolicy.PositionedIncludingSynthetic
+          ),
+          OutputBoundary.ChildEnd(
+            "annotations",
+            ChildOccurrenceSelector.Last,
+            PositionProvenancePolicy.PositionedIncludingSynthetic
+          )
+        ),
+        PsiOutputRoleId.Annotations,
+        AnnotationsSurface,
+        AnnotationsAccessors
+      )
+    )
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "modifiers",
+          None,
+          modifierRange,
+          PsiOutputRoleId.ModifierList,
+          ModifierListSurface,
+          ModifierListAccessors
+        )
+      ) ++ annotations,
+      Map(
+        "annotations" -> Some(if withAnnotations then "annotations" else "modifiers"),
+        "modifiers"   -> Some("modifiers")
+      )
+    )
+
+  private def modifiersProduction(
+      id: String,
+      annotations: CatalogValuePattern,
+      modifiers: CatalogValuePattern,
+      classification: SourceClassification,
+      template: LocalOutputCompositeTemplate,
+      minimumAnnotations: Int,
+      minimumModifiers: Int
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id = id,
+    grammarRoleId = GrammarRoleId.Modifiers,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Product,
+      "Modifiers",
+      Vector(
+        CompilerFieldPattern("flags", CatalogValuePattern.Scalar("LongInteger")),
+        CompilerFieldPattern("privateWithin", CatalogValuePattern.Name),
+        CompilerFieldPattern("annotations", annotations),
+        CompilerFieldPattern("mods", modifiers)
+      ),
+      modifierOccurrences(classification)
+    ),
+    dispositions = Vector(
+      FieldDisposition("flags", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("privateWithin", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("annotations", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "annotations",
+        "annotations",
+        ChildCardinality.Repeated(minimumAnnotations, None),
+        "annotation-apply-simple",
+        Set("annotation-apply-arguments")
+      ),
+      ChildDeclaration(
+        "modifiers",
+        "mods",
+        ChildCardinality.Repeated(minimumModifiers, None),
+        ModifierChildProductionIds.head,
+        ModifierChildProductionIds.tail
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "modifier-text",
+        TerminalIntervalSelector.LocalOutput("modifiers"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ModifierListSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = ModifierListAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(template),
+    outputRoleId = None,
+    additionalGrammarRoleIds = Option
+      .when(annotations != CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))(
+        GrammarRoleId.Annotations
+      )
+      .toSet
+  )
+
+  private def transparentProduction(
+      id: String,
+      role: GrammarRoleId,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      occurrences: Vector[CompilerProductionContextPattern],
+      dispositions: Vector[FieldDisposition],
+      children: Vector[ChildDeclaration]
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id,
+    role,
+    CompilerProductionPattern(InventoryKind.Node, prefix, fields, occurrences),
+    dispositions,
+    children,
+    Vector.empty,
+    Vector(LayoutAlternative.None),
+    RecoveryPolicy.Reject,
+    StableReferenceSurface,
+    TargetRequirement.Native,
+    Vector.empty,
+    PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate(children.map(_.roleId)*)),
+    outputRoleId = None
+  )
+
+  private def annotationTemplate(withArguments: Boolean): LocalOutputCompositeTemplate =
+    val whole = OutputRangeDeclaration.CompilerPositionWithPolicy(
+      PositionProvenancePolicy.PositionedIncludingSynthetic
+    )
+    val body  = OutputRangeDeclaration.BoundaryDerived(
+      OutputBoundary.Advance(
+        OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
+        1
+      ),
+      OutputBoundary.ProductionEnd(PositionProvenancePolicy.PositionedIncludingSynthetic)
+    )
+    val args  = Option.when(withArguments)(
+      outputComposite(
+        "arguments",
+        Some("constructor"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary.ChildEnd(
+            "fun",
+            ChildOccurrenceSelector.First,
+            PositionProvenancePolicy.PositionedIncludingSynthetic
+          ),
+          OutputBoundary.ProductionEnd(PositionProvenancePolicy.PositionedIncludingSynthetic)
+        ),
+        PsiOutputRoleId.AnnotationArguments,
+        AnnotationArgumentsSurface,
+        AnnotationArgumentsAccessors
+      )
+    )
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite("annotation", None, whole, PsiOutputRoleId.Annotation, AnnotationSurface, AnnotationAccessors),
+        outputComposite(
+          "expression",
+          Some("annotation"),
+          body,
+          PsiOutputRoleId.AnnotationExpr,
+          AnnotationExprSurface,
+          AnnotationExprAccessors
+        ),
+        outputComposite(
+          "constructor",
+          Some("expression"),
+          body,
+          PsiOutputRoleId.ConstructorInvocation,
+          ConstructorSurface,
+          ConstructorAccessors
+        )
+      ) ++ args,
+      Map("fun" -> Some("constructor"), "args" -> Some(if withArguments then "arguments" else "constructor"))
+    )
+
+  private def annotationApplyProduction(id: String, withArguments: Boolean): Scala3PsiProduction =
+    val arguments =
+      if withArguments then CatalogValuePattern.Repeated(CatalogValuePattern.Node)
+      else CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.Annotation,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Apply",
+        Vector(
+          CompilerFieldPattern("fun", CatalogValuePattern.Node),
+          CompilerFieldPattern("args", arguments)
+        ),
+        annotationOccurrences(SourceClassification.SourceReachable, SourceClassification.Synthetic)
+      ),
+      dispositions = Vector(
+        FieldDisposition("fun", FieldDispositionKind.Child),
+        FieldDisposition("args", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        ChildDeclaration("fun", "fun", ChildCardinality.ExactlyOne, "annotation-constructor-select"),
+        ChildDeclaration(
+          "args",
+          "args",
+          ChildCardinality.Repeated(if withArguments then 1 else 0, None),
+          "annotation-argument-literal-payload"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "annotation-text",
+          TerminalIntervalSelector.LocalOutput("annotation"),
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = AnnotationSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = AnnotationAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(annotationTemplate(withArguments)),
+      outputRoleId = None,
+      additionalGrammarRoleIds = Option.when(withArguments)(GrammarRoleId.AnnotationArguments).toSet
+    )
+
+  private def modifierKeywordProduction(prefix: String, expectedText: String, surface: String) =
+    Scala3PsiProduction(
+      id = s"modifier-keyword-${expectedText}",
+      grammarRoleId = GrammarRoleId.KeywordModifier,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Positioned,
+        prefix,
+        Vector.empty,
+        ModifierOwnerPrefixes.map(owner =>
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(
+              InventoryKind.Node,
+              owner,
+              ModifierChildrenPath ++ Vector(
+                CatalogPathSegment.NamedField("mods"),
+                CatalogPathSegment.RepeatedElement
+              )
+            ),
+            SourceClassification.SourceReachable
+          )
+        )
+      ),
+      dispositions = Vector.empty,
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "keyword",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(surface, Some(expectedText)),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = surface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map.empty)),
+      outputRoleId = None
+    )
+
+  private def accessModifierProduction(prefix: String, expectedText: String, surface: String) =
+    Scala3PsiProduction(
+      id = s"modifier-access-$expectedText",
+      grammarRoleId = GrammarRoleId.AccessModifier,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Positioned,
+        prefix,
+        Vector.empty,
+        ModifierOwnerPrefixes.map(owner =>
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(
+              InventoryKind.Node,
+              owner,
+              ModifierChildrenPath ++ Vector(
+                CatalogPathSegment.NamedField("mods"),
+                CatalogPathSegment.RepeatedElement
+              )
+            ),
+            SourceClassification.SourceReachable
+          )
+        )
+      ),
+      dispositions = Vector.empty,
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "keyword",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(surface, Some(expectedText)),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = AccessModifierSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = AccessModifierAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(
+        LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "access",
+              None,
+              OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(
+                PositionProvenancePolicy.SourceDerivedOnly
+              ),
+              PsiOutputRoleId.AccessModifier,
+              AccessModifierSurface,
+              AccessModifierAccessors
+            )
+          ),
+          Map.empty
+        )
+      ),
+      outputRoleId = None
+    )
+
+  private def annotationConstructorSelectProduction: Scala3PsiProduction = transparentProduction(
+    "annotation-constructor-select",
+    GrammarRoleId.Annotation,
+    "Select",
+    Vector(
+      CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+      CompilerFieldPattern("name", CatalogValuePattern.Name)
+    ),
+    annotationChildOccurrences(
+      "Apply",
+      Vector(CatalogPathSegment.NamedField("fun")),
+      Vector.empty,
+      SourceClassification.Synthetic
+    ),
+    Vector(
+      FieldDisposition("qualifier", FieldDispositionKind.Child),
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly)
+    ),
+    Vector(
+      ChildDeclaration(
+        "constructor",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "annotation-constructor-new"
+      )
+    )
+  )
+
+  private def annotationConstructorNewProduction: Scala3PsiProduction = transparentProduction(
+    "annotation-constructor-new",
+    GrammarRoleId.Annotation,
+    "New",
+    Vector(CompilerFieldPattern("tpt", CatalogValuePattern.Node)),
+    annotationChildOccurrences(
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier")),
+      Vector(ApplyFunAncestor),
+      SourceClassification.Synthetic
+    ),
+    Vector(FieldDisposition("tpt", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration(
+        "designator",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        "annotation-designator-ident",
+        Set("annotation-designator-select")
+      )
+    )
+  )
+
+  private def annotationDesignatorOccurrences = annotationChildOccurrences(
+    "New",
+    Vector(CatalogPathSegment.NamedField("tpt")),
+    Vector(SelectQualifierAncestor, ApplyFunAncestor),
+    SourceClassification.SourceReachable
+  )
+
+  private def annotationDesignatorIdentProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "annotation-designator-ident",
+    grammarRoleId = GrammarRoleId.SimpleType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+      annotationDesignatorOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "designator-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SimpleTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SimpleTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "type",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.SimpleType,
+            SimpleTypeSurface,
+            SimpleTypeAccessors
+          ),
+          outputComposite(
+            "reference",
+            Some("type"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.StableReference,
+            StableReferenceSurface,
+            StableReferenceAccessors
+          )
+        ),
+        Map.empty
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private def annotationDesignatorSelectProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "annotation-designator-select",
+    grammarRoleId = GrammarRoleId.SimpleType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
+      ),
+      annotationDesignatorOccurrences
+    ),
+    dispositions = Vector(
+      FieldDisposition("qualifier", FieldDispositionKind.Child),
+      FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "qualifier",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "annotation-designator-qualifier-ident",
+        Set("annotation-designator-qualifier-select")
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "designator-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SimpleTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SimpleTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(qualifiedTypeTemplate),
+    outputRoleId = None
+  )
+
+  private def annotationQualifierOccurrences = ModifierOwnerPrefixes.map(definition =>
+    CompilerProductionContextPattern(
+      ContextPattern.ParentWithRepeatedAncestorPrefix(
+        InventoryKind.Node,
+        "Select",
+        Vector(CatalogPathSegment.NamedField("qualifier")),
+        SelectQualifierAncestor,
+        Vector(NewTypeAncestor, SelectQualifierAncestor, ApplyFunAncestor, annotationAnchor(definition))
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private def annotationQualifierProduction(prefix: String, recursive: Boolean): Scala3PsiProduction =
+    val children = Option
+      .when(recursive)(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          "annotation-designator-qualifier-ident",
+          Set("annotation-designator-qualifier-select")
+        )
+      )
+      .toVector
+    Scala3PsiProduction(
+      id = s"annotation-designator-qualifier-${prefix.toLowerCase}",
+      grammarRoleId = GrammarRoleId.StableReference,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        prefix,
+        if recursive then
+          Vector(
+            CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+            CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
+          )
+        else Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+        annotationQualifierOccurrences
+      ),
+      dispositions =
+        if recursive then
+          Vector(
+            FieldDisposition("qualifier", FieldDispositionKind.Child),
+            FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+          )
+        else Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+      children = children,
+      terminals = Vector(
+        TerminalDeclaration(
+          "reference-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = StableReferenceSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = StableReferenceAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(stableReferenceTemplate(children.map(_.roleId)*)),
+      outputRoleId = None
+    )
+
+  private def annotationLiteralPayloadProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "annotation-argument-literal-payload",
+    grammarRoleId = GrammarRoleId.ExpressionPayload,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Literal",
+      Vector(
+        CompilerFieldPattern(
+          "const",
+          CatalogValuePattern.Product(
+            "",
+            Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar("Text")))
+          )
+        )
+      ),
+      annotationChildOccurrences(
+        "Apply",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+        Vector.empty,
+        SourceClassification.SourceReachable
+      )
+    ),
+    dispositions = Vector(FieldDisposition("const", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "payload-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ExpressionPayloadSurface,
+    targetRequirement = TargetRequirement.Compatible,
+    accessors = ExpressionPayloadAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "payload",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.ExpressionPayload,
+            ExpressionPayloadSurface,
+            ExpressionPayloadAccessors,
+            TargetRequirement.Compatible
+          )
+        ),
+        Map.empty
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private def modifierAnnotationProductions: Vector[Scala3PsiProduction] =
+    val emptyNode          = CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)
+    val repeatedNode       = CatalogValuePattern.Repeated(CatalogValuePattern.Node)
+    val emptyPositioned    = CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Positioned)
+    val repeatedPositioned = CatalogValuePattern.Repeated(CatalogValuePattern.Positioned)
+    val modifiers          = Vector(
+      modifiersProduction(
+        "modifiers-annotations-synthetic",
+        repeatedNode,
+        emptyPositioned,
+        SourceClassification.Synthetic,
+        modifierTemplate(withAnnotations = true, withModifiers = false),
+        minimumAnnotations = 1,
+        minimumModifiers = 0
+      ),
+      modifiersProduction(
+        "modifiers-annotations-source",
+        repeatedNode,
+        emptyPositioned,
+        SourceClassification.SourceReachable,
+        modifierTemplate(withAnnotations = true, withModifiers = false),
+        minimumAnnotations = 1,
+        minimumModifiers = 0
+      ),
+      modifiersProduction(
+        "modifiers-keywords",
+        emptyNode,
+        repeatedPositioned,
+        SourceClassification.SourceReachable,
+        modifierTemplate(withAnnotations = false, withModifiers = true),
+        minimumAnnotations = 0,
+        minimumModifiers = 1
+      ),
+      modifiersProduction(
+        "modifiers-annotations-keywords",
+        repeatedNode,
+        repeatedPositioned,
+        SourceClassification.SourceReachable,
+        modifierTemplate(withAnnotations = true, withModifiers = true),
+        minimumAnnotations = 1,
+        minimumModifiers = 1
+      ),
+      Scala3PsiProduction(
+        id = "modifiers-absent",
+        grammarRoleId = GrammarRoleId.Modifiers,
+        pattern = CompilerProductionPattern(
+          InventoryKind.Product,
+          "Modifiers",
+          Vector(
+            CompilerFieldPattern("flags", CatalogValuePattern.Scalar("LongInteger")),
+            CompilerFieldPattern("privateWithin", CatalogValuePattern.Name),
+            CompilerFieldPattern("annotations", emptyNode),
+            CompilerFieldPattern("mods", emptyPositioned)
+          ),
+          modifierOccurrences(SourceClassification.Absent)
+        ),
+        dispositions = Vector(
+          FieldDisposition("flags", FieldDispositionKind.SemanticOnly),
+          FieldDisposition("privateWithin", FieldDispositionKind.SemanticOnly),
+          FieldDisposition("annotations", FieldDispositionKind.Synthetic),
+          FieldDisposition("mods", FieldDispositionKind.Synthetic)
+        ),
+        children = Vector.empty,
+        terminals = Vector.empty,
+        layouts = Vector(LayoutAlternative.None),
+        recovery = RecoveryPolicy.Reject,
+        targetSurfaceId = ModifierListSurface,
+        targetRequirement = TargetRequirement.Native,
+        accessors = Vector.empty,
+        persistence = PersistenceObligations.NotApplicable,
+        outputTemplate = Some(transparentTemplate()),
+        outputRoleId = None
+      )
+    )
+    val access             = Vector("Private" -> "private", "Protected" -> "protected").map: (prefix, text) =>
+      accessModifierProduction(prefix, text, NativePsiElementBindings.AccessModifierKeywordSurfaceIds(prefix))
+    val keyword            = Vector(
+      "Abstract"    -> "abstract",
+      "Final"       -> "final",
+      "Sealed"      -> "sealed",
+      "Implicit"    -> "implicit",
+      "Lazy"        -> "lazy",
+      "Override"    -> "override",
+      "Var"         -> "var",
+      "Transparent" -> "transparent",
+      "Inline"      -> "inline",
+      "Infix"       -> "infix",
+      "Open"        -> "open",
+      "Opaque"      -> "opaque",
+      "Given"       -> "given"
+    ).map: (prefix, text) =>
+      modifierKeywordProduction(prefix, text, NativePsiElementBindings.ModifierKeywordSurfaceIds(prefix))
+    modifiers ++ access ++ keyword ++ Vector(
+      annotationApplyProduction("annotation-apply-simple", withArguments = false),
+      annotationApplyProduction("annotation-apply-arguments", withArguments = true),
+      annotationConstructorSelectProduction,
+      annotationConstructorNewProduction,
+      annotationDesignatorIdentProduction,
+      annotationDesignatorSelectProduction,
+      annotationQualifierProduction("Ident", recursive = false),
+      annotationQualifierProduction("Select", recursive = true),
+      annotationLiteralPayloadProduction
     )
 
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
@@ -3689,7 +4845,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         navigation = Some(NavigationObligation.Self),
         outputRoleId = Some(PsiOutputRoleId.IntegerLiteral)
       )
-    ),
+    ) ++ modifierAnnotationProductions,
     StableRoleInventory.Reviewed
   )
 
@@ -3788,7 +4944,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     catalog.stableRoles.grammarRoles.toVector
       .sortBy(_.value)
       .foreach: role =>
-        val alternatives = catalog.productions.filter(_.grammarRoleId == role).map(_.id).distinct.sorted
+        val alternatives = catalog.productions.filter(_.grammarRoleIds(role)).map(_.id).distinct.sorted
         val status       =
           if alternatives.isEmpty then "unreferenced" else s"catalog-alternatives=${alternatives.mkString(",")}"
         lines += s"- `${role.value}` — **$status**"
@@ -4018,57 +5174,77 @@ private[metallurgy] object CatalogShapeMatcher:
         catalogField.name == compilerField.name && covers(catalogField.value, compilerField.value)
 
   def contextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
-    case ContextPattern.Any                                                                  => true
-    case ContextPattern.Root                                                                 => context.isEmpty
-    case ContextPattern.Parent(kind, owner, p)                                               =>
+    case ContextPattern.Any                                                                   => true
+    case ContextPattern.Root                                                                  => context.isEmpty
+    case ContextPattern.Parent(kind, owner, p)                                                =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
-    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                            =>
+    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
       )
-    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
+    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                              =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
           next
         )
       )
-    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated) =>
+    case ContextPattern.ParentWithAncestorPrefix(kind, owner, p, ancestors)                   =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.startsWith(ancestors)
+      )
+    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated)  =>
       context.exists(value =>
         InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) == anchor ||
           (value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
             value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor))
       )
-    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)         =>
+    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)          =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor)
+      )
+    case ContextPattern.ParentWithRepeatedAncestorPrefix(kind, owner, p, repeated, ancestors) =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.dropWhile(_ == repeated).startsWith(ancestors)
       )
 
   def aggregateContextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
-    case ContextPattern.Any                                                                  => false
-    case ContextPattern.Root                                                                 => context.isEmpty
-    case ContextPattern.Parent(kind, owner, p)                                               =>
+    case ContextPattern.Any                                                                   => false
+    case ContextPattern.Root                                                                  => context.isEmpty
+    case ContextPattern.Parent(kind, owner, p)                                                =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
-    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                            =>
+    case ContextPattern.ParentUnderAnchor(kind, owner, p, anchor)                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
       )
-    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                             =>
+    case ContextPattern.ParentWithAncestor(kind, owner, p, next)                              =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
           next
         )
       )
-    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated) =>
+    case ContextPattern.ParentWithAncestorPrefix(kind, owner, p, ancestors)                   =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.startsWith(ancestors)
+      )
+    case ContextPattern.AnchorOrParentWithRepeatedAncestor(anchor, kind, owner, p, repeated)  =>
       context.exists(value =>
         InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) == anchor ||
           (value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
             value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor))
       )
-    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)         =>
+    case ContextPattern.ParentWithRepeatedAncestor(kind, owner, p, repeated, anchor)          =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(_ == repeated).headOption.contains(anchor)
+      )
+    case ContextPattern.ParentWithRepeatedAncestorPrefix(kind, owner, p, repeated, ancestors) =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.dropWhile(_ == repeated).startsWith(ancestors)
       )
 
   def select(
@@ -4233,33 +5409,58 @@ private[metallurgy] object RuntimeRealizationSelector:
     val lineages                                                               = InventoryContextLineage.resolver(nodes)
     val selected                                                               = collection.mutable.Map.empty[ProductionInstanceId, Scala3PsiProduction]
     val errors                                                                 = Vector.newBuilder[CatalogValidationError]
+    val productsByOccurrence                                                   = runtime.products
+      .flatMap(product =>
+        product.occurrences.map(occurrence =>
+          ProductionOccurrenceId(occurrence.ownerNodeId, occurrence.fieldPath) -> product
+        )
+      )
+      .toMap
     def references(
         value: InventoryValueObservation,
-        path: Vector[ParserFieldPathSegment]
+        path: Vector[ParserFieldPathSegment],
+        instance: ProductionInstanceId
     ): Vector[(InventoryKind, Long, Vector[ParserFieldPathSegment])] = value match
       case InventoryValueObservation.Node(id, _)             => Vector((InventoryKind.Node, id, path))
       case InventoryValueObservation.Positioned(id, _)       => Vector((InventoryKind.Positioned, id, path))
       case InventoryValueObservation.Optional(value)         =>
-        value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting))
+        value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting, instance))
       case InventoryValueObservation.Repeated(values)        =>
         values.zipWithIndex.flatMap((candidate, index) =>
-          references(candidate, path :+ ParserFieldPathSegment.RepeatedIndex(index))
+          references(candidate, path :+ ParserFieldPathSegment.RepeatedIndex(index), instance)
         )
       case InventoryValueObservation.Product(prefix, fields) =>
-        fields.flatMap(field =>
-          references(
-            field.value,
-            path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+ ParserFieldPathSegment.NamedField(
-              field.name
+        if catalog.productions.exists(production =>
+            production.pattern.kind == InventoryKind.Product && production.pattern.prefix == prefix
+          )
+        then
+          val occurrence = ProductionInstanceLineage.child(instance, InventoryKind.Product, 0L, path).occurrence
+          occurrence
+            .flatMap(productsByOccurrence.get)
+            .toVector
+            .map(product => (InventoryKind.Product, product.id, path))
+        else
+          fields.flatMap(field =>
+            references(
+              field.value,
+              path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+
+                ParserFieldPathSegment.NamedField(field.name),
+              instance
             )
           )
-        )
       case _                                                 => Vector.empty
     def children(instance: ProductionInstanceId): Vector[ProductionInstanceId] =
       if instance.kind == InventoryKind.Positioned then Vector.empty
       else
         rows(instance.kind -> instance.valueId).observation.flatMap(field =>
-          references(field.value, Vector(ParserFieldPathSegment.NamedField(field.name))).map: (kind, id, path) =>
+          val path =
+            if instance.kind == InventoryKind.Product then
+              Vector(
+                ParserFieldPathSegment.NestedProductBoundary(rows(instance.kind -> instance.valueId).prefix),
+                ParserFieldPathSegment.NamedField(field.name)
+              )
+            else Vector(ParserFieldPathSegment.NamedField(field.name))
+          references(field.value, path, instance).map: (kind, id, path) =>
             ProductionInstanceLineage.child(instance, kind, id, path)
         )
     val roots                                                                  = runtime.shapes
@@ -4458,12 +5659,13 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       val names        = p.pattern.fields.map(_.name)
       val childRoles   = p.children.map(_.roleId).toSet
       val realizations = p.effectiveOutputRealizations
-      if !catalog.stableRoles.grammarRoles(p.grammarRoleId) then
-        errors += CatalogValidationError.UnknownGrammarRole(p.id, p.grammarRoleId)
-      if productionIds(p.grammarRoleId.value) then
-        errors += CatalogValidationError.CatalogAlternativeDerivedGrammarRole(p.id, p.grammarRoleId)
-      if compilerPrefixes(p.grammarRoleId.value) then
-        errors += CatalogValidationError.CompilerDerivedGrammarRole(p.id, p.grammarRoleId, p.grammarRoleId.value)
+      p.grammarRoleIds.foreach: grammarRoleId =>
+        if !catalog.stableRoles.grammarRoles(grammarRoleId) then
+          errors += CatalogValidationError.UnknownGrammarRole(p.id, grammarRoleId)
+        if productionIds(grammarRoleId.value) then
+          errors += CatalogValidationError.CatalogAlternativeDerivedGrammarRole(p.id, grammarRoleId)
+        if compilerPrefixes(grammarRoleId.value) then
+          errors += CatalogValidationError.CompilerDerivedGrammarRole(p.id, grammarRoleId, grammarRoleId.value)
       if realizations.isEmpty then
         if p.outputTemplate.isEmpty && p.outputRealizations.isEmpty && p.outputRoleId.isEmpty then
           errors += CatalogValidationError.MissingDefaultOutputRole(p.id)
@@ -4587,6 +5789,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case _                                             => ()
           output.range match
             case OutputRangeDeclaration.CompilerPosition | OutputRangeDeclaration.CompilerPositionWithPolicy(_) |
+                OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(_) |
                 OutputRangeDeclaration.CompilerEndMarker =>
               ()
             case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
@@ -4599,7 +5802,10 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               (Vector(headerRole) ++ bodyRole)
                 .filterNot(childRoles)
                 .foreach(role => errors += CatalogValidationError.UnknownOutputRangeChildRole(p.id, output.id, role))
-            case OutputRangeDeclaration.BoundaryDerived(start, end) => validateBoundary(start); validateBoundary(end)
+            case OutputRangeDeclaration.BoundaryDerived(start, end)                             =>
+              validateBoundary(start); validateBoundary(end)
+            case OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(start, end) =>
+              validateBoundary(start); validateBoundary(end)
         template.composites
           .filter(_.range == OutputRangeDeclaration.CompilerPosition)
           .groupBy(_.parentId)
@@ -4731,7 +5937,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               indices.foreach(requireSurface(p, output.outputRoleId, _, SurfaceFactKind.Index))
               requireSurface(p, output.outputRoleId, navigation, SurfaceFactKind.Navigation)
     errors ++= coverage
-    val referencedGrammarRoles = catalog.productions.map(_.grammarRoleId).toSet
+    val referencedGrammarRoles = catalog.productions.flatMap(_.grammarRoleIds).toSet
     val referencedOutputRoles  = catalog.productions
       .flatMap(production =>
         production.terminals.map(_.outputRoleId) ++
@@ -4759,35 +5965,43 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory
   ): Vector[CatalogValidationError] =
-    compiler.shapes.flatMap: shape =>
-      val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
-      for
-        context <- contexts
-        selected = CatalogShapeMatcher.select(
-                     catalog,
-                     shape.kind,
-                     shape.prefix,
-                     shape.observation,
-                     context,
-                     shape.sourceClassification
-                   )
-        error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
-      yield error
+    val catalogProducts = catalog.productions.collect:
+      case production if production.pattern.kind == InventoryKind.Product => production.pattern.prefix
+    compiler.shapes
+      .filter(shape => shape.kind != InventoryKind.Product || catalogProducts.contains(shape.prefix))
+      .flatMap: shape =>
+        val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
+        for
+          context <- contexts
+          selected = CatalogShapeMatcher.select(
+                       catalog,
+                       shape.kind,
+                       shape.prefix,
+                       shape.observation,
+                       context,
+                       shape.sourceClassification
+                     )
+          error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
+        yield error
 
   private def aggregatedCoverage(
       catalog: Scala3PsiProductionCatalog,
       compiler: AggregatedCompilerProductionInventory
   ): Vector[CatalogValidationError] =
-    val uncovered     = compiler.productions.flatMap: row =>
-      row.occurrences.flatMap: occurrence =>
-        coverageError(
-          row.kind,
-          row.prefix,
-          occurrence.context,
-          occurrence.sourceClassification,
-          CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
-        )
-    val unrepresented = catalog.productions.collect:
+    val catalogProducts = catalog.productions.collect:
+      case production if production.pattern.kind == InventoryKind.Product => production.pattern.prefix
+    val uncovered       = compiler.productions
+      .filter(row => row.kind != InventoryKind.Product || catalogProducts.contains(row.prefix))
+      .flatMap: row =>
+        row.occurrences.flatMap: occurrence =>
+          coverageError(
+            row.kind,
+            row.prefix,
+            occurrence.context,
+            occurrence.sourceClassification,
+            CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
+          )
+    val unrepresented   = catalog.productions.collect:
       case production
           if production.pattern.occurrences.exists(pattern =>
             !compiler.productions.exists(row =>
@@ -4958,8 +6172,8 @@ private[metallurgy] object ProductionInstanceLineage:
       path: Vector[ParserFieldPathSegment]
   ): ProductionInstanceId =
     val origin = parent.kind match
-      case InventoryKind.Node       => ProductionOccurrenceId(parent.valueId, Vector.empty)
-      case InventoryKind.Positioned =>
+      case InventoryKind.Node                               => ProductionOccurrenceId(parent.valueId, Vector.empty)
+      case InventoryKind.Positioned | InventoryKind.Product =>
         parent.occurrence.getOrElse(ProductionOccurrenceId(parent.valueId, Vector.empty))
     ProductionInstanceId(kind, id, Some(ProductionOccurrenceId(origin.ownerNodeId, origin.fieldPath ++ path)))
 
@@ -4968,8 +6182,8 @@ private[metallurgy] object ProductionInstanceLineage:
       childOccurrence: ProductionOccurrenceId
   ): Vector[ParserFieldPathSegment] =
     val retainedPrefixLength = parent.kind match
-      case InventoryKind.Node       => 0
-      case InventoryKind.Positioned => parent.occurrence.fold(0)(_.fieldPath.size)
+      case InventoryKind.Node                               => 0
+      case InventoryKind.Positioned | InventoryKind.Product => parent.occurrence.fold(0)(_.fieldPath.size)
     childOccurrence.fieldPath.drop(retainedPrefixLength)
 
 private[metallurgy] final case class CompositeInstanceId(
@@ -5121,36 +6335,65 @@ private[metallurgy] object WholeFileProductionPlanner:
       compiler: CompilerRuntimeInventory
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
     boundary[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]:
-      val rows                                                                       = compiler.shapes.map(row => (row.kind, row.id) -> row).toMap
-      val nodes                                                                      = snapshot.nodes.map(node => node.id -> node).toMap
-      val positioned                                                                 = snapshot.positioned.map(value => value.id -> value).toMap
-      val lineages                                                                   = InventoryContextLineage.resolver(nodes)
-      def fields(instance: ProductionInstanceId): Vector[ParserSyntaxField]          = instance.kind match
+      val rows                                                                                    = compiler.shapes.map(row => (row.kind, row.id) -> row).toMap
+      val nodes                                                                                   = snapshot.nodes.map(node => node.id -> node).toMap
+      val positioned                                                                              = snapshot.positioned.map(value => value.id -> value).toMap
+      val products                                                                                = compiler.products.map(value => value.id -> value).toMap
+      val productsByOccurrence                                                                    = compiler.products
+        .flatMap(product =>
+          product.occurrences.map(occurrence =>
+            ProductionOccurrenceId(occurrence.ownerNodeId, occurrence.fieldPath) -> product
+          )
+        )
+        .toMap
+      val lineages                                                                                = InventoryContextLineage.resolver(nodes)
+      def fields(instance: ProductionInstanceId): Vector[ParserSyntaxField]                       = instance.kind match
         case InventoryKind.Node       => nodes(instance.valueId).fields
         case InventoryKind.Positioned => positioned(instance.valueId).fields
-      def position(instance: ProductionInstanceId): ParserNodePosition               = instance.kind match
+        case InventoryKind.Product    => products(instance.valueId).fields
+      def position(instance: ProductionInstanceId): ParserNodePosition                            = instance.kind match
         case InventoryKind.Node       => nodes(instance.valueId).position
         case InventoryKind.Positioned => positioned(instance.valueId).position
+        case InventoryKind.Product    => products(instance.valueId).position
+      def fieldPath(instance: ProductionInstanceId, name: String): Vector[ParserFieldPathSegment] =
+        if instance.kind == InventoryKind.Product then
+          Vector(
+            ParserFieldPathSegment.NestedProductBoundary(products(instance.valueId).production),
+            ParserFieldPathSegment.NamedField(name)
+          )
+        else Vector(ParserFieldPathSegment.NamedField(name))
       def references(
           value: ParserFieldValue,
-          path: Vector[ParserFieldPathSegment]
+          path: Vector[ParserFieldPathSegment],
+          instance: ProductionInstanceId
       ): Vector[(InventoryKind, Long, Vector[ParserFieldPathSegment])] = value match
         case ParserFieldValue.Node(id)                => Vector((InventoryKind.Node, id, path))
         case ParserFieldValue.Positioned(id)          => Vector((InventoryKind.Positioned, id, path))
         case ParserFieldValue.Optional(value)         =>
-          value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting))
+          value.toVector.flatMap(references(_, path :+ ParserFieldPathSegment.OptionalNesting, instance))
         case ParserFieldValue.Repeated(values)        =>
           values.zipWithIndex.flatMap((candidate, index) =>
-            references(candidate, path :+ ParserFieldPathSegment.RepeatedIndex(index))
+            references(candidate, path :+ ParserFieldPathSegment.RepeatedIndex(index), instance)
           )
         case ParserFieldValue.Product(prefix, nested) =>
-          nested.flatMap(field =>
-            references(
-              field.value,
-              path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+
-                ParserFieldPathSegment.NamedField(field.name)
+          if catalog.productions.exists(production =>
+              production.pattern.kind == InventoryKind.Product && production.pattern.prefix == prefix
             )
-          )
+          then
+            val occurrence = ProductionInstanceLineage.child(instance, InventoryKind.Product, 0L, path).occurrence
+            occurrence
+              .flatMap(productsByOccurrence.get)
+              .toVector
+              .map(product => (InventoryKind.Product, product.id, path))
+          else
+            nested.flatMap(field =>
+              references(
+                field.value,
+                path :+ ParserFieldPathSegment.NestedProductBoundary(prefix) :+
+                  ParserFieldPathSegment.NamedField(field.name),
+                instance
+              )
+            )
         case _                                        => Vector.empty
       def childInstance(
           instance: ProductionInstanceId,
@@ -5159,14 +6402,14 @@ private[metallurgy] object WholeFileProductionPlanner:
           path: Vector[ParserFieldPathSegment]
       ): ProductionInstanceId =
         ProductionInstanceLineage.child(instance, kind, id, path)
-      def children(instance: ProductionInstanceId): Vector[ProductionInstanceId]     =
+      def children(instance: ProductionInstanceId): Vector[ProductionInstanceId]                  =
         if instance.kind == InventoryKind.Positioned then Vector.empty
         else
           fields(instance).flatMap(field =>
-            references(field.value, Vector(ParserFieldPathSegment.NamedField(field.name))).map: (kind, id, path) =>
+            references(field.value, fieldPath(instance, field.name), instance).map: (kind, id, path) =>
               childInstance(instance, kind, id, path)
           )
-      def contexts(instance: ProductionInstanceId): Vector[Option[InventoryContext]] = instance.occurrence match
+      def contexts(instance: ProductionInstanceId): Vector[Option[InventoryContext]]              = instance.occurrence match
         case None             => Vector(None)
         case Some(occurrence) =>
           nodes
@@ -5174,17 +6417,17 @@ private[metallurgy] object WholeFileProductionPlanner:
             .toVector
             .flatMap(owner => lineages.contexts(owner, occurrence.fieldPath))
             .map(Some(_))
-      val root                                                                       = ProductionInstanceId(InventoryKind.Node, snapshot.rootNodeId, None)
-      val instances                                                                  = Vector.newBuilder[ProductionInstanceId]
-      val pending                                                                    = collection.mutable.Stack(root)
-      val discovered                                                                 = collection.mutable.Set.empty[ProductionInstanceId]
+      val root                                                                                    = ProductionInstanceId(InventoryKind.Node, snapshot.rootNodeId, None)
+      val instances                                                                               = Vector.newBuilder[ProductionInstanceId]
+      val pending                                                                                 = collection.mutable.Stack(root)
+      val discovered                                                                              = collection.mutable.Set.empty[ProductionInstanceId]
       while pending.nonEmpty do
         val instance = pending.pop()
         if discovered.add(instance) then
           instances += instance
           children(instance).reverseIterator.foreach(pending.push)
-      val ordered                                                                    = instances.result()
-      val selected                                                                   = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Scala3PsiProduction]
+      val ordered                                                                                 = instances.result()
+      val selected                                                                                = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Scala3PsiProduction]
       ordered.foreach: instance =>
         val row        = rows.getOrElse(
           instance.kind -> instance.valueId,
@@ -5264,7 +6507,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               break(Left(WholeFilePlanningFailure.UnsupportedPositionedChildren(instance)))
             val field = fields(instance).find(_.name == declaration.fieldName).toVector
             val found = field.flatMap(value =>
-              references(value.value, Vector(ParserFieldPathSegment.NamedField(value.name))).map: (kind, id, path) =>
+              references(value.value, fieldPath(instance, value.name), instance).map: (kind, id, path) =>
                 childInstance(instance, kind, id, path) -> path
             )
             if !accepts(declaration.cardinality, found.size) then
@@ -5620,11 +6863,51 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             evidenceBoundaries((index.toLong + count.toLong).toInt)
+        def withTrailingBalancedBrackets(
+            base: PcSourceRange,
+            outputId: String
+        )(using
+            scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
+        ): PcSourceRange =
+          val suffix = evidence.lexicalContract.atoms.iterator.dropWhile(_.start < base.endOffset)
+          var atom   = Option.empty[ClosedSourceLexicalAtom]
+          while suffix.hasNext && atom.isEmpty do
+            val candidate = suffix.next()
+            candidate.kind match
+              case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                  ClosedSourceLexicalKind.BlockComment =>
+                ()
+              case _ => atom = Some(candidate)
+          atom match
+            case Some(open) if open.kind == ClosedSourceLexicalKind.LeftBracket =>
+              var depth = 1
+              var end   = open.end
+              while suffix.hasNext && depth > 0 do
+                val candidate = suffix.next()
+                candidate.kind match
+                  case ClosedSourceLexicalKind.LeftBracket  => depth += 1
+                  case ClosedSourceLexicalKind.RightBracket => depth -= 1
+                  case _                                    => ()
+                end = candidate.end
+              if depth != 0 then
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidOutputRange(
+                      instance,
+                      outputId,
+                      base.startOffset,
+                      end,
+                      base
+                    )
+                  )
+                )
+              PcSourceRange(base.startOffset, end)
+            case _                                                              => base
         val ranges     = template.composites
           .filter(declaration => !declaration.requiresCompilerEndMarker || compilerEndMarker(instance).nonEmpty)
           .map { declaration =>
-            val range            = declaration.range match
-              case OutputRangeDeclaration.CompilerPosition                            =>
+            val range       = declaration.range match
+              case OutputRangeDeclaration.CompilerPosition                                     =>
                 position(instance) match
                   case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
                   case _                                                                               =>
@@ -5641,8 +6924,16 @@ private[metallurgy] object WholeFileProductionPlanner:
                         )
                       )
                     )
-              case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)          =>
+              case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)                   =>
                 positionedRange(instance, policy, OutputBoundary.ProductionStart(policy), declaration.id)
+              case OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(policy) =>
+                val base = positionedRange(
+                  instance,
+                  policy,
+                  OutputBoundary.ProductionStart(policy),
+                  declaration.id
+                )
+                withTrailingBalancedBrackets(base, declaration.id)
               case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(
                     headerRole,
                     bodyRole,
@@ -5761,7 +7052,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 PcSourceRange(base.startOffset, math.max(delimiterEnd, markerEnd))
-              case OutputRangeDeclaration.CompilerEndMarker                           =>
+              case OutputRangeDeclaration.CompilerEndMarker                                    =>
                 compilerEndMarker(instance)
                   .map(_._1)
                   .getOrElse(
@@ -5774,11 +7065,10 @@ private[metallurgy] object WholeFileProductionPlanner:
                       )
                     )
                   )
-              case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary) =>
-                val start            = resolve(startBoundary, declaration.id)
-                val end              = resolve(endBoundary, declaration.id)
-                val emptyWholeSource = snapshot.sourceLength == 0 && start == 0 && end == 0
-                if start > end || (start == end && !emptyWholeSource) then
+              case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary)          =>
+                val start = resolve(startBoundary, declaration.id)
+                val end   = resolve(endBoundary, declaration.id)
+                if start > end then
                   break(
                     Left(
                       WholeFilePlanningFailure.InvalidOutputRange(
@@ -5796,22 +7086,46 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 PcSourceRange(start, end)
-            val ownerRange       = positionedRange(
+              case OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(
+                    startBoundary,
+                    endBoundary
+                  ) =>
+                val start = resolve(startBoundary, declaration.id)
+                val end   = resolve(endBoundary, declaration.id)
+                if start > end then
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.InvalidOutputRange(
+                        instance,
+                        declaration.id,
+                        start,
+                        end,
+                        positionedRange(
+                          instance,
+                          PositionProvenancePolicy.PositionedIncludingSynthetic,
+                          startBoundary,
+                          declaration.id
+                        )
+                      )
+                    )
+                  )
+                withTrailingBalancedBrackets(PcSourceRange(start, end), declaration.id)
+            val ownerRange  = positionedRange(
               instance,
               PositionProvenancePolicy.PositionedIncludingSynthetic,
               OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
               declaration.id
             )
-            val emptyWholeSource = snapshot.sourceLength == 0 && range.startOffset == 0 && range.endOffset == 0
-            val validExtent      = declaration.range match
-              case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(_, _, _, _, _) =>
+            val validExtent = declaration.range match
+              case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(_, _, _, _, _) |
+                  OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(_) |
+                  OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(_, _) =>
                 range.startOffset >= ownerRange.startOffset && range.endOffset <= snapshot.sourceLength
-              case _                                                                               =>
+              case _ =>
                 range.startOffset >= ownerRange.startOffset && range.endOffset <= ownerRange.endOffset
-            if !validExtent ||
-              (!emptyWholeSource && (range.startOffset >= range.endOffset || !evidenceBoundaries.contains(
+            if !validExtent || range.startOffset > range.endOffset || !evidenceBoundaries.contains(
                 range.startOffset
-              ) || !evidenceBoundaries.contains(range.endOffset)))
+              ) || !evidenceBoundaries.contains(range.endOffset)
             then
               break(
                 Left(
@@ -6167,7 +7481,9 @@ private[metallurgy] object WholeFileProductionPlanner:
       val sourceExtendedRanges                                                                            = outputRows.view
         .mapValues(_.collect:
           case (declaration, _, range)
-              if declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker] =>
+              if declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker] ||
+                declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets] ||
+                declaration.range.isInstanceOf[OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets] =>
             range
         )
         .toMap
