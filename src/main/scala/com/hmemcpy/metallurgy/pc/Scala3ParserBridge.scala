@@ -133,10 +133,30 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     diagnostics: Vector[ParserDiagnostic],
     capabilities: Scala3ParserCapabilities,
     compilerIdentity: Scala3ParserCompilerIdentity,
-    endMarkers: Vector[ParserEndMarker]
+    endMarkers: Vector[ParserEndMarker],
+    runtimeSupplements: Vector[ParserRuntimeSupplement] = Vector.empty,
+    attachments: Vector[ParserTreeAttachment] = Vector.empty
 )
 
 private[metallurgy] final case class ParserEndMarker(ownerNodeId: Long, designatorRange: PcSourceRange)
+
+private[metallurgy] final case class ParserRuntimeSupplement(
+    ownerNodeId: Long,
+    fields: Vector[ParserSyntaxField]
+)
+
+private[metallurgy] final case class ParserTreeAttachment(
+    ownerNodeId: Long,
+    ordinal: Int,
+    keyKind: String,
+    value: ParserAttachmentValue
+)
+
+private[metallurgy] enum ParserAttachmentValue:
+  case Product(production: String)
+  case Name(value: String)
+  case Scalar(value: ParserScalar)
+  case RuntimeKind(kind: String)
 
 private[metallurgy] final case class ParserPositionedSyntax(
     id: Long,
@@ -252,6 +272,22 @@ private[metallurgy] object CanonicalByteEncoder:
       capabilities.positionedSyntax,
       capabilities.comments
     ).foreach(writeCapability(_, e))
+    if snapshot.runtimeSupplements.nonEmpty then
+      e.tag(11)
+      e.sequence(snapshot.runtimeSupplements): supplement =>
+        e.long(supplement.ownerNodeId)
+        e.sequence(supplement.fields)(writeField(_, e))
+    if snapshot.attachments.nonEmpty then
+      e.tag(12)
+      e.sequence(snapshot.attachments): attachment =>
+        e.long(attachment.ownerNodeId)
+        e.int(attachment.ordinal)
+        e.string(attachment.keyKind)
+        attachment.value match
+          case ParserAttachmentValue.Product(production) => e.tag(1); e.string(production)
+          case ParserAttachmentValue.Name(value)         => e.tag(2); e.string(value)
+          case ParserAttachmentValue.Scalar(value)       => e.tag(3); writeScalar(value, e)
+          case ParserAttachmentValue.RuntimeKind(kind)   => e.tag(4); e.string(kind)
     e.result()
 
   private def writeSyntax(

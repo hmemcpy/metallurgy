@@ -721,7 +721,7 @@ final class Scala3ParserVerticalSliceTest:
       assertEquals(
         Vector(
           "cc3f6ee35c45c9e7b689e619377ac13474a6ceb5a002a864ee4fb4a5435eaa4f",
-          "47b7004f83daa2d90d5718a0c9daa0f574f298dfd71388e50dc63abbac8bffb5",
+          "04e4d8bc6edeeb94a9e4e6093b167d9738f94d40787f4196dd4f8eaa82edc94a",
           "5e5b6520e00ea3c5f96380ccbb4b89c72d0b2553d2443535d2b1d78d95499a64",
           "27ed4cecad06bef262a37898c79db84f6f2a17d00e21cd4bbaf9ea7ccc653f4e",
           "1bd20209dc5ae9b4865f20761c06a4f5060ece5b47f40833924cfaaa4b9bf3cf",
@@ -913,8 +913,8 @@ final class Scala3ParserVerticalSliceTest:
           "1c3d14098fae95344e6f9e910b17d40aaca45af24c7afe3fb8d4089faded3076",
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
-          "7512a4ff34739076d77ccbe91e8aadd2ccc2078296dbc6c021f90375bf2249ea",
-          "ed8263721056a9710eba372b4c462f410000a9d06ebecb63b7d89812b36ea4a4"
+          "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
+          "7e6fcfdbdf5611129e4d792e50c8baca5af4ccd8c72c6a82181681671e319d0f"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -1395,7 +1395,7 @@ final class Scala3ParserVerticalSliceTest:
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("abd7b4fa78eb68661b6d46f5e74dededc2d1be5dbd31f78c8eca5fef3ffe3f26", aggregate.fingerprint)
+      assertEquals("1b6e004ef8fdc017735811c8fa15cff18c710659614b36c7ce4501891090a834", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,

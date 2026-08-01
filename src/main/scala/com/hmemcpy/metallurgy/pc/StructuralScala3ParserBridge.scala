@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.pc
 
 import java.io.File
 import java.lang.reflect.{Constructor, Method, ParameterizedType, Type, TypeVariable, WildcardType}
+import java.lang.reflect.Modifier
 import java.net.URLClassLoader
 import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
@@ -47,6 +48,11 @@ private[pc] object StructuralScala3ParserBridge:
       val scannerClass      = loader.loadClass("dotty.tools.dotc.parsing.Scanners$Scanner")
       val treeClass         = loader.loadClass("dotty.tools.dotc.ast.Trees$Tree")
       val defTreeClass      = loader.loadClass("dotty.tools.dotc.ast.Trees$DefTree")
+      val lazyFieldsReader  =
+        try
+          val owner = loader.loadClass("dotty.tools.dotc.ast.Trees$WithLazyFields")
+          Some(LazyFieldsReader(owner, owner.getMethod("forceFields", contextClass)))
+        catch case NonFatal(_) => None
       val positionedClass   = loader.loadClass("dotty.tools.dotc.ast.Positioned")
       val productClass      = loader.loadClass("scala.Product")
       val optionClass       = loader.loadClass("scala.Option")
@@ -78,6 +84,23 @@ private[pc] object StructuralScala3ParserBridge:
           Right(EndMarkerReader(owner, owner.getMethod("hasEndMarker"), owner.getMethod("endSpan", contextClass)))
         catch case NonFatal(error) => Left(errorMessage(error))
       val defTreeRawMods   = defTreeClass.getMethod("rawMods")
+      val attachments      =
+        try
+          val keyClass = loader.loadClass("dotty.tools.dotc.util.Property$Key")
+          val keyNames = new IdentityHashMap[AnyRef, String]()
+          Vector("dotty.tools.dotc.ast.Trees$", "dotty.tools.dotc.ast.untpd$").foreach: moduleName =>
+            val moduleClass = loader.loadClass(moduleName)
+            val module      = moduleClass.getField("MODULE$").get(null)
+            moduleClass.getMethods.toVector
+              .filter(method =>
+                Modifier.isPublic(method.getModifiers) &&
+                  method.getParameterCount == 0 &&
+                  keyClass.isAssignableFrom(method.getReturnType)
+              )
+              .sortBy(_.getName)
+              .foreach(method => keyNames.put(method.invoke(module), method.getName))
+          Some(AttachmentReader(treeClass.getMethod("allAttachments"), keyNames))
+        catch case NonFatal(_) => None
       val runtime          = ParserRuntime(
         loader,
         contextBaseClass.getConstructor(),
@@ -90,7 +113,9 @@ private[pc] object StructuralScala3ParserBridge:
         diagnosticReader,
         treeClass,
         defTreeClass,
+        lazyFieldsReader,
         defTreeRawMods,
+        attachments,
         endMarkerReader,
         positionedClass,
         positionedSpan,
@@ -233,7 +258,9 @@ private[pc] object StructuralScala3ParserBridge:
       diagnosticReader: DiagnosticReader,
       treeClass: Class[?],
       defTreeClass: Class[?],
+      lazyFieldsReader: Option[LazyFieldsReader],
       defTreeRawMods: Method,
+      attachments: Option[AttachmentReader],
       endMarkerReader: Either[String, EndMarkerReader],
       positionedClass: Class[?],
       positionedSpan: Method,
@@ -283,6 +310,10 @@ private[pc] object StructuralScala3ParserBridge:
     case Legacy(input: Method, method: Method) extends CommentReader(input, method)
 
   private final case class EndMarkerReader(ownerClass: Class[?], hasMarker: Method, span: Method)
+
+  private final case class LazyFieldsReader(ownerClass: Class[?], forceFields: Method)
+
+  private final case class AttachmentReader(all: Method, keyNames: IdentityHashMap[AnyRef, String])
 
   private enum ReporterFactory:
     case SingleArgument(constructor: Constructor[?])
@@ -461,7 +492,9 @@ private final class StructuralScala3ParserBridge private (
         diagnostics(active, context, request.cancellation),
         capabilities,
         identity,
-        collected.endMarkers
+        collected.endMarkers,
+        collected.runtimeSupplements,
+        collected.attachments
       )
 
   private def collectNodes(
@@ -481,6 +514,8 @@ private final class StructuralScala3ParserBridge private (
       var collected        = Vector.empty[ParserSyntaxNode]
       var positioned       = Vector.empty[ParserPositionedSyntax]
       var endMarkers       = Vector.empty[ParserEndMarker]
+      var supplements      = Vector.empty[ParserRuntimeSupplement]
+      var attachments      = Vector.empty[ParserTreeAttachment]
       val positionedIds    = new IdentityHashMap[AnyRef, java.lang.Long]()
       var nextPositionedId = 0L
 
@@ -495,7 +530,8 @@ private final class StructuralScala3ParserBridge private (
       final case class EvaluateTreeFields(tree: AnyRef, id: Long)                        extends EvaluationFrame
       final case class ContinueTreeFields(tree: AnyRef, id: Long)                        extends EvaluationFrame
       final case class FinishTreeFields(fields: Vector[ParserSyntaxField])               extends EvaluationFrame
-      final case class FillTree(id: Long, occurrence: Option[ParserNodeOccurrence])      extends EvaluationFrame
+      final case class FillTree(tree: AnyRef, id: Long, occurrence: Option[ParserNodeOccurrence])
+          extends EvaluationFrame
       final case class EnterPositioned(
           value: AnyRef,
           ownerNodeId: Long,
@@ -590,6 +626,9 @@ private final class StructuralScala3ParserBridge private (
                 result = TreeResult(id)
               case None           =>
                 cancellation.checkCanceled()
+                active.lazyFieldsReader.foreach: reader =>
+                  if reader.ownerClass.isInstance(tree) then
+                    val _ = reader.forceFields.invoke(tree, context)
                 val id      = nextId
                 nextId += 1
                 ids.put(tree, id)
@@ -602,7 +641,7 @@ private final class StructuralScala3ParserBridge private (
                   Vector.empty
                 )
                 endMarker(active, tree, id, context, source).foreach(marker => endMarkers :+= marker)
-                stack.push(FillTree(id, occurrence))
+                stack.push(FillTree(tree, id, occurrence))
                 stack.push(EvaluateTreeFields(tree, id))
                 result = null
           case EvaluateTreeFields(tree, id)                                                    =>
@@ -611,7 +650,7 @@ private final class StructuralScala3ParserBridge private (
             result = null
           case ContinueTreeFields(tree, id)                                                    =>
             val fields = fieldsResult(result)
-            if active.defTreeClass.isInstance(tree) then
+            if active.defTreeClass.isInstance(tree) && !fields.exists(_.name == "mods") then
               stack.push(FinishTreeFields(fields))
               stack.push(
                 EvaluateFieldValue(
@@ -624,11 +663,13 @@ private final class StructuralScala3ParserBridge private (
             else result = FieldsResult(fields)
           case FinishTreeFields(fields)                                                        =>
             result = FieldsResult(fields :+ ParserSyntaxField("mods", fieldValueResult(result)))
-          case FillTree(id, occurrence)                                                        =>
+          case FillTree(tree, id, occurrence)                                                  =>
             val fields  = fieldsResult(result)
             val index   = collected.indexWhere(_.id == id)
             val current = collected(index)
             collected = collected.updated(index, current.copy(fields = fields))
+            runtimeSupplement(active, tree, id, fields, cancellation).foreach(value => supplements :+= value)
+            attachments = attachments ++ treeAttachments(active, tree, id, cancellation)
             occurrence.foreach(nodeOccurrence(id, _))
             result = TreeResult(id)
           case EnterPositioned(value, ownerNodeId, path)                                       =>
@@ -775,9 +816,82 @@ private final class StructuralScala3ParserBridge private (
           rootId,
           collected.sortBy(_.id),
           positioned.sortBy(_.id),
-          endMarkers.sortBy(_.designatorRange.startOffset)
+          endMarkers.sortBy(_.designatorRange.startOffset),
+          supplements.sortBy(_.ownerNodeId),
+          attachments.sortBy(value => (value.ownerNodeId, value.ordinal))
         )
       )
+
+  private def runtimeSupplement(
+      active: ParserRuntime,
+      tree: AnyRef,
+      ownerNodeId: Long,
+      productFields: Vector[ParserSyntaxField],
+      cancellation: Scala3ParserCancellation
+  ): Option[ParserRuntimeSupplement] =
+    val runtimeClass = tree.getClass
+    val productOwner = runtimeClass.getMethod("productArity").getDeclaringClass
+    if runtimeClass == productOwner then None
+    else
+      val productFieldNames = productFields.map(_.name).toSet
+      val fields            = runtimeClass.getDeclaredMethods.toVector
+        .filter(method =>
+          Modifier.isPublic(method.getModifiers) &&
+            method.getParameterCount == 0 &&
+            !method.isBridge &&
+            !method.isSynthetic &&
+            active.iterableClass.isAssignableFrom(method.getReturnType) &&
+            !productFieldNames(method.getName)
+        )
+        .sortBy(method => (method.getName, method.getReturnType.getName))
+        .map: method =>
+          cancellation.checkCanceled()
+          val count = iteratorValues(method.invoke(tree).asInstanceOf[IterableValue], cancellation).size
+          ParserSyntaxField(
+            s"${method.getName}Count",
+            ParserFieldValue.Scalar(ParserScalar.Integer(count)),
+            Some(ParserDeclaredShape.Scalar("Integer"))
+          )
+      Option.when(fields.nonEmpty)(ParserRuntimeSupplement(ownerNodeId, fields))
+
+  private def treeAttachments(
+      active: ParserRuntime,
+      tree: AnyRef,
+      ownerNodeId: Long,
+      cancellation: Scala3ParserCancellation
+  ): Vector[ParserTreeAttachment] =
+    active.attachments.toVector.flatMap: reader =>
+      iteratorValues(reader.all.invoke(tree).asInstanceOf[IterableValue], cancellation).zipWithIndex.map:
+        (entry, ordinal) =>
+          cancellation.checkCanceled()
+          if !active.productClass.isInstance(entry) then
+            throw new IllegalStateException("compiler attachment entry is not a product")
+          val pair = entry.asInstanceOf[ProductValue]
+          if pair.productArity() != 2 then
+            throw new IllegalStateException("compiler attachment entry is not a key/value pair")
+          ParserTreeAttachment(
+            ownerNodeId,
+            ordinal,
+            Option(reader.keyNames.get(pair.productElement(0))).getOrElse(runtimeKind(pair.productElement(0))),
+            attachmentValue(active, pair.productElement(1))
+          )
+
+  private def attachmentValue(active: ParserRuntime, value: AnyRef): ParserAttachmentValue =
+    value match
+      case text: String                               => ParserAttachmentValue.Scalar(ParserScalar.Text(text))
+      case number: java.lang.Integer                  => ParserAttachmentValue.Scalar(ParserScalar.Integer(number.intValue()))
+      case number: java.lang.Long                     => ParserAttachmentValue.Scalar(ParserScalar.LongInteger(number.longValue()))
+      case number: java.lang.Double                   => ParserAttachmentValue.Scalar(ParserScalar.Decimal(number.doubleValue()))
+      case logical: java.lang.Boolean                 => ParserAttachmentValue.Scalar(ParserScalar.Logical(logical.booleanValue()))
+      case character: java.lang.Character             => ParserAttachmentValue.Scalar(ParserScalar.Character(character.charValue()))
+      case _ if active.nameClass.isInstance(value)    => ParserAttachmentValue.Name(value.toString)
+      case _ if active.productClass.isInstance(value) =>
+        ParserAttachmentValue.Product(value.asInstanceOf[ProductValue].productPrefix())
+      case _                                          => ParserAttachmentValue.RuntimeKind(runtimeKind(value))
+
+  private def runtimeKind(value: AnyRef): String =
+    val simple = value.getClass.getSimpleName
+    if simple.nonEmpty then simple else value.getClass.getName.split('.').lastOption.getOrElse(value.getClass.getName)
 
   private def declaredFieldShape(
       active: ParserRuntime,
@@ -1068,5 +1182,7 @@ private final class StructuralScala3ParserBridge private (
       rootNodeId: Long,
       nodes: Vector[ParserSyntaxNode],
       positioned: Vector[ParserPositionedSyntax],
-      endMarkers: Vector[ParserEndMarker]
+      endMarkers: Vector[ParserEndMarker],
+      runtimeSupplements: Vector[ParserRuntimeSupplement],
+      attachments: Vector[ParserTreeAttachment]
   )
