@@ -478,15 +478,21 @@ private[metallurgy] object NativePsiElementBindings:
           annotation.annotationExpr != expression || expression.getParent != annotation ||
             annotation.constructorInvocation != expression.constructorInvocation ||
             annotation.typeElement != annotation.constructorInvocation.typeElement
-        ) || annotations.exists(
-        _.getQualifiedName == null
-      ) || deprecatedAnnotation.getQualifiedName != "scala.deprecated" ||
-      deprecatedAnnotation.getParameterList.getAttributes.nonEmpty ||
+        ) || constructorInvocations.map(_.typeElement.getText) != Vector("ann", "pkg.ann", "deprecated") ||
+      constructorInvocations
+        .map(_.reference.map(_.getText)) != Vector(Some("ann"), Some("pkg.ann"), Some("deprecated")) ||
+      constructorInvocations.map(_.args.map(_.getText)) != Vector(None, None, Some("(\"m\", \"1\")")) ||
+      constructorInvocations
+        .zip(annotationExpressions)
+        .exists((constructor, expression) => constructor.getParent != expression) ||
+      deprecatedAnnotation.annotationExpr.getAttributes.nonEmpty ||
       deprecatedAnnotation.annotationExpr.getAnnotationParameters.map(_.getText).toVector != Vector("\"m\"", "\"1\"")
     then
       Left(
-        s"native annotation accessors are inconsistent: qualified=${annotations.map(_.getQualifiedName)}, " +
-          s"attributes=${deprecatedAnnotation.getParameterList.getAttributes.map(_.getText).toVector}, " +
+        s"native annotation accessors are inconsistent: " +
+          s"designators=${constructorInvocations.map(_.typeElement.getText)}, " +
+          s"arguments=${constructorInvocations.map(_.args.map(_.getText))}, " +
+          s"attributes=${deprecatedAnnotation.annotationExpr.getAttributes.map(_.getText).toVector}, " +
           s"parameters=${deprecatedAnnotation.annotationExpr.getAnnotationParameters.map(_.getText).toVector}"
       )
     else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null ||

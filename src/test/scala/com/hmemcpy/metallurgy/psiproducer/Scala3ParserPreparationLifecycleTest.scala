@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.editor.{Document, RangeMarker}
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.lang.LanguageUtil
 import com.intellij.psi.LanguageSubstitutors
@@ -99,6 +100,30 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       )
     finally lifecycle.dispose()
 
+  def testBindPsiRolesDoesNotRequireResolvedAnnotationClasses(): Unit =
+    val file       = myFixture
+      .addFileToProject("src/AnnotationReadiness.scala", "@deprecated(\"m\", \"1\") class AnnotationReadiness\n")
+      .getVirtualFile
+    val preparer   = new DeferredPreparer
+    val activation = new ControlledActivation
+    val lifecycle  = lifecycleFor(preparer, Vector(file), activation)
+
+    assertEquals(null, ModuleRootManager.getInstance(getModule).getSdk)
+    try
+      val epoch  = lifecycle.prepare(getModule)
+      val bridge = new TestParserBridge
+      preparer.complete(0, bridge)
+      await(lifecycle)(_.isInstanceOf[ParserPreparationState.Activating])
+
+      assertEquals(ParserPreparationState.Activating(epoch), lifecycle.stateFor(getModule))
+      assertFalse(bridge.closed)
+      assertSame(bridge, lifecycle.parserFor(getModule).get.bridge)
+      assertEquals(1, activation.batchCount)
+
+      activation.runNext()
+      assertEquals(ParserPreparationState.Ready(epoch), lifecycle.stateFor(getModule))
+    finally lifecycle.dispose()
+
   def testNativePsiCapabilityFailureKeepsTheModuleUnavailable(): Unit =
     val file       = myFixture.addFileToProject("src/Unavailable.scala", "class Unavailable\n").getVirtualFile
     val preparer   = new DeferredPreparer
@@ -167,6 +192,39 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       val publicationCount = statuses.size
       Scala3SyntaxCapabilityService.get(getProject).resolve(getModule, unavailable.currentEpoch)
       assertEquals("stale preparation resolution must not clear a binding failure", publicationCount, statuses.size)
+    finally lifecycle.dispose()
+
+  def testMalformedNativeAnnotationBindingKeepsTheModuleUnavailable(): Unit =
+    val file             = myFixture
+      .addFileToProject("src/MalformedAnnotationBinding.scala", "@deprecated(\"m\", \"1\") class Binding\n")
+      .getVirtualFile
+    val annotation       = Scala3PsiProductionCatalog.Reviewed.productions.find(_.id == "annotation-apply-simple").get
+    val template         = annotation.outputTemplate.get
+    val malformedSurface = "test.malformed.annotation"
+    val malformed        = annotation.copy(outputTemplate = Some(template.copy(composites = template.composites.map: output =>
+      if output.outputRoleId == PsiOutputRoleId.Annotation then output.copy(targetSurfaceId = malformedSurface)
+      else output)))
+    val catalog          =
+      Scala3PsiProductionCatalog.Reviewed.copy(productions = Scala3PsiProductionCatalog.Reviewed.productions.map:
+        production => if production.id == annotation.id then malformed else production
+      )
+    val preparer         = new DeferredPreparer
+    val activation       = new ControlledActivation
+    val lifecycle        = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
+
+    try
+      val epoch  = lifecycle.prepare(getModule)
+      val bridge = new TestParserBridge
+      preparer.complete(0, bridge)
+      await(lifecycle)(_.isInstanceOf[ParserPreparationState.Unavailable])
+
+      val unavailable = lifecycle.stateFor(getModule).asInstanceOf[ParserPreparationState.Unavailable]
+      assertEquals(epoch, unavailable.currentEpoch)
+      assertTrue(unavailable.detail.contains("output roles have no element-type binding"))
+      assertTrue(unavailable.detail.contains(s"${PsiOutputRoleId.Annotation.value}:$malformedSurface"))
+      assertTrue(bridge.closed)
+      assertTrue(lifecycle.parserFor(getModule).isEmpty)
+      assertEquals(0, activation.batchCount)
     finally lifecycle.dispose()
 
   def testCapabilityProvenCompatibleTargetBindsItsElementType(): Unit =
