@@ -75,7 +75,34 @@ object MetallurgyStatus extends IntelliJApi {
           project,
           new Runnable {
             override def run(): Unit =
-              document.setText("package dogfood.showcase\n\nimport scala.collection.*\n")
+              document.setText(
+                """package dogfood.showcase
+                  |
+                  |def topApply = List(1)
+                  |val topNumber = 1
+                  |var topIdent = topNumber
+                  |class Braced[A, +B, -C]()() {
+                  |  trait NestedTrait[T]():
+                  |    type Abstract
+                  |  end NestedTrait
+                  |  object NestedObject:
+                  |    def selected = List(1).head
+                  |    val tupled = (topNumber, topIdent)
+                  |    var infixed = topNumber + topIdent
+                  |  end NestedObject
+                  |}
+                  |trait Indented[-T]():
+                  |  def blocked = {
+                  |    val local = 1
+                  |    local
+                  |  }
+                  |end Indented
+                  |object Empty {}
+                  |enum Signal:
+                  |  case Ready
+                  |end Signal
+                  |""".stripMargin
+              )
           }
         )
         PsiDocumentManager.getInstance(project).commitDocument(document)

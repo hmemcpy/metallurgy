@@ -200,7 +200,35 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       write(artifacts.resolve("syntax-capability-resolved.txt"), formatMap(resolvedStatus))
       assertEquals("true", resolvedStatus("syntaxWidget.present"))
       assertEquals("true", resolvedStatus("syntaxWidget.componentShowing"))
-      assertEquals("package dogfood.showcase\n\nimport scala.collection.*\n", Files.readString(target))
+      assertEquals(
+        """package dogfood.showcase
+          |
+          |def topApply = List(1)
+          |val topNumber = 1
+          |var topIdent = topNumber
+          |class Braced[A, +B, -C]()() {
+          |  trait NestedTrait[T]():
+          |    type Abstract
+          |  end NestedTrait
+          |  object NestedObject:
+          |    def selected = List(1).head
+          |    val tupled = (topNumber, topIdent)
+          |    var infixed = topNumber + topIdent
+          |  end NestedObject
+          |}
+          |trait Indented[-T]():
+          |  def blocked = {
+          |    val local = 1
+          |    local
+          |  }
+          |end Indented
+          |object Empty {}
+          |enum Signal:
+          |  case Ready
+          |end Signal
+          |""".stripMargin,
+        Files.readString(target)
+      )
       record(timeline, "syntax-capability-finding-cleared", s"text=${resolvedStatus("syntaxWidget.text")}")
 
       val messages = probe.messages()

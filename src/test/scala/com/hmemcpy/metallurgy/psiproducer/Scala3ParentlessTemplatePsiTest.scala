@@ -75,6 +75,8 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     assertTrue(functions.forall(_.hasAssign))
     assertEquals(Vector("x"), values.flatMap(_.bindings.map(_.name)))
     assertEquals(Vector("y"), variables.flatMap(_.bindings.map(_.name)))
+    assertEquals(Vector("val"), values.map(_.keywordToken.getText))
+    assertEquals(Vector("var"), variables.map(_.keywordToken.getText))
     assertEquals(Vector("1"), values.flatMap(_.expr.map(_.getText)))
     assertEquals(Vector("f"), variables.flatMap(_.expr.map(_.getText)))
     assertEquals(Vector("A"), aliases.map(_.name))
@@ -126,6 +128,124 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     )
     assertEquals(stubShape(stubs), stubShape(restored.getPlainList.asScala))
     assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala))
+
+  def testCumulativeTypeFreeDefinitionsAndTemplatesRemainPhysicalInOneFile(): Unit =
+    val source =
+      """def topApply = List(1)
+        |val topNumber = 1
+        |var topIdent = topNumber
+        |class Braced[A, +B, -C]()() {
+        |  trait NestedTrait[T]()()
+        |  object NestedObject:
+        |    def selected = List(1).head
+        |    val tupled = (topNumber, topIdent)
+        |    var infixed = topNumber + topIdent
+        |    type Abstract
+        |  end NestedObject
+        |  enum NestedEnum[+E]:
+        |    case First
+        |    case Second()
+        |  end NestedEnum
+        |}
+        |trait Indented[-T]():
+        |  def blocked = {
+        |    val local = 1
+        |    local
+        |  }
+        |end Indented
+        |object Empty {}
+        |enum Signal:
+        |  case Ready
+        |end Signal
+        |""".stripMargin
+    val file   = physical("Graduation1.scala", source)
+    val owners = definitions(file)
+
+    assertEquals(
+      Vector(
+        "Braced",
+        "NestedTrait",
+        "NestedObject",
+        "NestedEnum",
+        "First",
+        "Second",
+        "Indented",
+        "Empty",
+        "Signal",
+        "Ready"
+      ),
+      owners.map(_.name)
+    )
+    assertEquals(Vector("Braced", "Indented", "Empty", "Signal"), owners.filter(_.getParent == file).map(_.name))
+    assertEquals(
+      Vector("NestedTrait", "NestedObject", "NestedEnum", "First", "Second"),
+      owners.filter(owner => PsiTreeUtil.isAncestor(owners.find(_.name == "Braced").get, owner, true)).map(_.name)
+    )
+
+    val functions = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunctionDefinition])
+      .asScala
+      .toVector
+      .sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("topApply", "selected", "blocked"), functions.map(_.name))
+    assertEquals(
+      Vector("List(1)", "List(1).head", "{\n    val local = 1\n    local\n  }"),
+      functions.flatMap(_.body.map(_.getText))
+    )
+    assertEquals(
+      Vector("topNumber", "tupled"),
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScPatternDefinition])
+        .asScala
+        .toVector
+        .flatMap(_.bindings.map(_.name))
+    )
+    assertEquals(
+      Vector("topIdent", "infixed"),
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScVariableDefinition])
+        .asScala
+        .toVector
+        .flatMap(_.bindings.map(_.name))
+    )
+    assertEquals(
+      Vector("Abstract"),
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector.map(_.name)
+    )
+
+    val clauses = owners
+      .collect { case owner: ScConstructorOwner => owner }
+      .flatMap(_.typeParametersClause)
+      .map(clause => clause.getParent.asInstanceOf[ScTypeDefinition].name -> clause)
+      .toMap
+    assertEquals(
+      Vector("invariant", "covariant", "contravariant"),
+      clauses("Braced").typeParameters.map(_.variance.toString).toVector
+    )
+    assertEquals(Vector("invariant"), clauses("NestedTrait").typeParameters.map(_.variance.toString).toVector)
+    assertEquals(Vector("covariant"), clauses("NestedEnum").typeParameters.map(_.variance.toString).toVector)
+    assertEquals(Vector("contravariant"), clauses("Indented").typeParameters.map(_.variance.toString).toVector)
+
+    val payloads = PsiTreeUtil
+      .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
+      .asScala
+      .toVector
+    Vector(
+      "1",
+      "topNumber",
+      "List(1)",
+      "List(1).head",
+      "(topNumber, topIdent)",
+      "topNumber + topIdent",
+      "{\n    val local = 1\n    local\n  }"
+    ).foreach(text => assertTrue(text, payloads.exists(_.getText == text)))
+    assertTrue(payloads.forall(_.getClass == classOf[MetallurgyExpressionPayload]))
+    assertTrue(
+      payloads.forall(payload =>
+        payload.getText == source.substring(payload.getTextRange.getStartOffset, payload.getTextRange.getEndOffset)
+      )
+    )
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
 
   def testBlockLocalDefinitionsAreOutputFreeWhileTheirExactRhsPayloadsRemainPhysical(): Unit =
     val source   =
@@ -341,6 +461,7 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       "class Parent\nclass Child extends Parent\n",
       "class C derives CanEqual\n",
       "class C(x: Int)\n",
+      "class C(x: Int = 1)\n",
       "class C:\n  self: C =>\n",
       "enum E:\n  case A, B\n",
       "class C:\n  given Int = 1\n",
@@ -352,7 +473,17 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       "class C[A = Any]\n",
       "class C[[A] =>> List[A]]\n",
       "def method[A](value: A): A = value\n",
-      "type Alias[A] = A\n"
+      "def typed(value: Int) = value\n",
+      "def returned: Int = 1\n",
+      "val ascribed: Int = 1\n",
+      "val expressionAscription = (1: Int)\n",
+      "val (left, right) = (1, 2)\n",
+      "type Alias[A] = A\n",
+      "type Alias = Int\n",
+      "opaque type Hidden = Int\n",
+      "extension (value: Int)\n  def doubled = value + value\n",
+      "given ordering: Ordering[Int] = Ordering.Int\n",
+      "class C(value: Int):\n  def this() = this(1)\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending       = myFixture.addFileToProject(s"src/Unsupported${index + 1}.scala", source)
       val file          = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
@@ -368,6 +499,47 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       assertEquals(source, expectedStage, failure.get.stage)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParamClause]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParam]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeDefinition]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScExpression]).isEmpty)
+
+  def testCumulativeDeferredDefinitionsFailClosedAsOneWholeFile(): Unit =
+    val source  =
+      """class Parent
+        |class TypedChild[A <: Any](value: Int = 1) extends Parent derives CanEqual:
+        |  self: TypedChild[A] =>
+        |  def returned(input: Int): Int = input
+        |  val ascribed: Int = 1
+        |  val expressionAscription = (1: Int)
+        |  val (left, right) = (1, 2)
+        |  type Alias = Int
+        |  opaque type Hidden = Int
+        |  given ordering: Ordering[Int] = Ordering.Int
+        |  extension (value: Int)
+        |    def doubled = value + value
+        |class Secondary(value: Int):
+        |  def this() = this(1)
+        |""".stripMargin
+    val pending = myFixture.addFileToProject("src/DeferredBoundary.scala", source)
+    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+
+    assertEquals(source, file.getText)
+    file.getChildren
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertTrue(failure.toString, failure.nonEmpty)
+    assertEquals(Scala3SyntaxCapabilityStage.Catalog, failure.get.stage)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScExpression]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
 
   def testCopiesPointersAndIncrementalReparsePreservePhysicalTemplatePsi(): Unit =
     val source   = "class Before[A]()() {}\n"

@@ -5296,13 +5296,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       else emptyModifiers(flags)
     val children       = Vector(
       ChildDeclaration("inferred-type", "tpt", ChildCardinality.ExactlyOne, "definition-inferred-type-absence"),
-      ChildDeclaration("payload", "preRhs", ChildCardinality.ExactlyOne, payloadRootIds.head, payloadRootIds.tail),
+      ChildDeclaration("payload", "preRhs", ChildCardinality.ExactlyOne, payloadRootIds.head, payloadRootIds.tail)
+    ) ++ Option.when(!variable)(
       ChildDeclaration(
         "modifiers",
         "mods",
         ChildCardinality.ExactlyOne,
-        "modifiers-absent",
-        Option.when(variable)("modifiers-keywords").toSet
+        "modifiers-absent"
       )
     )
     val root           = outputComposite("definition", None, OutputRangeDeclaration.CompilerPosition, role, surface, accessors)
@@ -5364,7 +5364,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
        else Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout))) ++ Vector(
         FieldDisposition("tpt", FieldDispositionKind.Child),
         FieldDisposition("preRhs", FieldDispositionKind.Child),
-        FieldDisposition("mods", FieldDispositionKind.Child)
+        FieldDisposition("mods", if variable then FieldDispositionKind.SemanticOnly else FieldDispositionKind.Child)
       ),
       children,
       Vector(
@@ -5374,7 +5374,24 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           TerminalLeafTarget.Parent,
           OccurrenceCardinality.ExactlyOne,
           PsiOutputRoleId.SourceTerminal
-        ),
+        )
+      ) ++ Option.when(!function && !variable)(
+        TerminalDeclaration(
+          "value-keyword",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.ValueKeywordTokenSurface, Some("val")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ) ++ Option.when(variable)(
+        TerminalDeclaration(
+          "variable-keyword",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.ModifierKeywordSurfaceIds("Var"), Some("var")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ) ++ Vector(
         TerminalDeclaration(
           "assignment",
           TerminalIntervalSelector.BeforeChild("payload"),
@@ -5393,7 +5410,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Some(
         LocalOutputCompositeTemplate(
           root +: extras,
-          Map("inferred-type" -> None, "payload" -> Some("definition"), "modifiers" -> Some("definition"))
+          Map("inferred-type" -> None, "payload" -> Some("definition")) ++
+            Option.when(!variable)("modifiers" -> Some("definition"))
         )
       ),
       Vector.empty,

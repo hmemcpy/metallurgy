@@ -148,6 +148,7 @@ private[metallurgy] object NativePsiElementBindings:
   val LowerTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
   val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
   val AssignmentTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
+  val ValueKeywordTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
   val AnnotatedMemberIndexSurface      =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
   val ModifierKeywordSurfaceIds        = Map(
@@ -714,6 +715,7 @@ private[metallurgy] object NativePsiElementBindings:
               (LowerTypeBoundTokenSurface                                                         -> lowerBoundToken.getNode.getElementType) +
               (UpperTypeBoundTokenSurface                                                         -> upperBoundToken.getNode.getElementType) ++
               Map(AssignmentTokenSurface -> ScalaTokenTypes.tASSIGN) ++
+              Map(ValueKeywordTokenSurface -> ScalaTokenTypes.kVAL) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -892,6 +894,14 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native assignment token")
+              ),
+              ScalaPsiSurfaceRow(
+                ValueKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native value keyword token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(

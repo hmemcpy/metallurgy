@@ -1492,11 +1492,11 @@ final class Scala3ParserVerticalSliceTest:
       )
       assertTrue(report, report.contains("### `Node.Number`"))
       assertTrue(report, report.contains("- Validation: **incomplete**"))
-      assertTrue(report, report.contains("grammar-role=scala.literal.integer"))
-      assertTrue(report, report.contains("catalog-alternative=integer-literal-number"))
-      assertTrue(report, report.contains("output-roles=scala.literal.integer,scala.source.terminal"))
-      assertTrue(report, report.contains("providers=NativeCandidate"))
-      assertTrue(report, report.contains("missing-boundary=compatibility-binding"))
+      assertTrue(
+        report,
+        report.contains("catalog-alternatives=integer-literal-number,payload-descendant-number")
+      )
+      assertTrue(report, report.contains("missing-boundary=neutral-grammar-role-selection"))
       assertTrue(report, report.contains("### `Node.PackageDef`"))
       assertTrue(report, report.contains("compiler-context=root:SourceReachable"))
       assertTrue(report, report.contains("missing-boundary=bridge-normalization-or-neutral-grammar-role"))
