@@ -684,18 +684,18 @@ final class Scala3PsiProductionCatalogTest:
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
-      GrammarRoleId.CompilationUnit     -> Set("file-top-statements"),
-      GrammarRoleId.PackageClause       -> Set("file-package", "file-package-top-statements"),
-      GrammarRoleId.PackageReference    -> Set("file-import-empty-package"),
-      GrammarRoleId.ImportStatement     -> Set("import-statement"),
-      GrammarRoleId.ExportStatement     -> Set("export-statement"),
-      GrammarRoleId.AbsentProduct       -> Set(
+      GrammarRoleId.CompilationUnit        -> Set("file-top-statements"),
+      GrammarRoleId.PackageClause          -> Set("file-package", "file-package-top-statements"),
+      GrammarRoleId.PackageReference       -> Set("file-import-empty-package"),
+      GrammarRoleId.ImportStatement        -> Set("import-statement"),
+      GrammarRoleId.ExportStatement        -> Set("export-statement"),
+      GrammarRoleId.AbsentProduct          -> Set(
         "import-expression-absent",
         "import-selector-absent",
         "import-selector-given-bound-absent",
         "template-absent-tree"
       ),
-      GrammarRoleId.StableReference     -> Set(
+      GrammarRoleId.StableReference        -> Set(
         "import-path-identifier-reference",
         "import-path-reference",
         "import-path-identifier",
@@ -708,33 +708,33 @@ final class Scala3PsiProductionCatalogTest:
         "annotation-designator-qualifier-ident",
         "annotation-designator-qualifier-select"
       ),
-      GrammarRoleId.ImportSelector      -> Set("import-selector-direct", "import-selector-braced"),
-      GrammarRoleId.ImportSelectorName  -> Set(
+      GrammarRoleId.ImportSelector         -> Set("import-selector-direct", "import-selector-braced"),
+      GrammarRoleId.ImportSelectorName     -> Set(
         "import-selector-name",
         "import-selector-hidden-name",
         "import-selector-wildcard-name",
         "import-selector-empty-name"
       ),
-      GrammarRoleId.SimpleType          -> Set(
+      GrammarRoleId.SimpleType             -> Set(
         "import-selector-bound-type",
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
         "annotation-designator-select"
       ),
-      GrammarRoleId.AppliedType         -> Set("import-selector-bound-applied-type"),
-      GrammarRoleId.WildcardType        -> Set("import-selector-given-bound-wildcard-type"),
-      GrammarRoleId.InfixType           -> Set("import-selector-given-bound-infix-type"),
-      GrammarRoleId.IntegerLiteral      -> Set("integer-literal-number"),
-      GrammarRoleId.ExpressionPayload   -> Set("annotation-argument-literal-payload"),
-      GrammarRoleId.Modifiers           -> Set(
+      GrammarRoleId.AppliedType            -> Set("import-selector-bound-applied-type"),
+      GrammarRoleId.WildcardType           -> Set("import-selector-given-bound-wildcard-type"),
+      GrammarRoleId.InfixType              -> Set("import-selector-given-bound-infix-type"),
+      GrammarRoleId.IntegerLiteral         -> Set("integer-literal-number"),
+      GrammarRoleId.ExpressionPayload      -> Set("annotation-argument-literal-payload"),
+      GrammarRoleId.Modifiers              -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
         "modifiers-keywords",
         "modifiers-annotations-keywords",
         "modifiers-absent"
       ),
-      GrammarRoleId.AccessModifier      -> Set("modifier-access-private", "modifier-access-protected"),
-      GrammarRoleId.KeywordModifier     -> Set(
+      GrammarRoleId.AccessModifier         -> Set("modifier-access-private", "modifier-access-protected"),
+      GrammarRoleId.KeywordModifier        -> Set(
         "modifier-keyword-abstract",
         "modifier-keyword-final",
         "modifier-keyword-sealed",
@@ -749,30 +749,37 @@ final class Scala3PsiProductionCatalogTest:
         "modifier-keyword-opaque",
         "modifier-keyword-given"
       ),
-      GrammarRoleId.Annotations         -> Set(
+      GrammarRoleId.Annotations            -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
         "modifiers-annotations-keywords"
       ),
-      GrammarRoleId.Annotation          -> Set(
+      GrammarRoleId.Annotation             -> Set(
         "annotation-apply-simple",
         "annotation-apply-arguments",
         "annotation-constructor-select",
         "annotation-constructor-new"
       ),
-      GrammarRoleId.AnnotationArguments -> Set("annotation-apply-arguments"),
-      GrammarRoleId.ClassDefinition     -> Set("template-class-definition"),
-      GrammarRoleId.TraitDefinition     -> Set("template-trait-definition"),
-      GrammarRoleId.ObjectDefinition    -> Set("template-object-definition"),
-      GrammarRoleId.EnumDefinition      -> Set("template-enum-definition"),
-      GrammarRoleId.EnumCase            -> Set("enum-singleton-case", "enum-class-case"),
-      GrammarRoleId.Template            -> Set("template-template"),
-      GrammarRoleId.TemplateConstructor -> Set(
+      GrammarRoleId.AnnotationArguments    -> Set("annotation-apply-arguments"),
+      GrammarRoleId.ClassDefinition        -> Set("template-class-definition"),
+      GrammarRoleId.TraitDefinition        -> Set("template-trait-definition"),
+      GrammarRoleId.ObjectDefinition       -> Set("template-object-definition"),
+      GrammarRoleId.EnumDefinition         -> Set("template-enum-definition"),
+      GrammarRoleId.EnumCase               -> Set("enum-singleton-case", "enum-class-case"),
+      GrammarRoleId.Template               -> Set("template-template"),
+      GrammarRoleId.TemplateConstructor    -> Set(
         "template-constructor-synthetic",
-        "template-constructor-explicit-empty"
+        "template-constructor-explicit-empty",
+        "template-constructor-unbounded-type-parameters"
       ),
-      GrammarRoleId.TemplateSelf        -> Set("template-self-absent"),
-      GrammarRoleId.TemplateTypeTree    -> Set("template-type-tree-synthetic")
+      GrammarRoleId.TypeParameterClause    -> Set("template-unbounded-type-bounds"),
+      GrammarRoleId.UnboundedTypeParameter -> Set(
+        "template-unbounded-type-parameter-invariant",
+        "template-unbounded-type-parameter-covariant",
+        "template-unbounded-type-parameter-contravariant"
+      ),
+      GrammarRoleId.TemplateSelf           -> Set("template-self-absent"),
+      GrammarRoleId.TemplateTypeTree       -> Set("template-type-tree-synthetic")
     )
     val actual   = catalog.productions
       .flatMap(production => production.grammarRoleIds.map(_ -> production.id))

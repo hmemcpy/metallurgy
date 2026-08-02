@@ -15,12 +15,19 @@ import com.intellij.psi.stubs.{
   StubTree
 }
 import com.intellij.psi.util.PsiTreeUtil
-import org.jetbrains.plugins.scala.lang.psi.api.base.ScEnd
+import org.jetbrains.plugins.scala.lang.psi.api.base.{ScAnnotations, ScEnd, ScModifierList}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScEnumCase,
   ScEnumCases,
   ScEnumClassCase,
   ScEnumSingletonCase
+}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{
+  ScClassParameter,
+  ScParameter,
+  ScParameters,
+  ScTypeParam,
+  ScTypeParamClause
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScConstructorOwner, ScEnum, ScTypeDefinition}
 import org.jetbrains.plugins.scala.lang.psi.stubs.{ScExtendsBlockStub, ScTemplateDefinitionStub}
@@ -31,18 +38,90 @@ import scala.jdk.CollectionConverters.*
 
 final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
 
+  def testClassUnboundedTypeParametersExposeExactNativePsi(): Unit =
+    val source = "class C[A, +B, -C]()()\n"
+    val file   = physical("TypeParams1.scala", source)
+    val owner  = PsiTreeUtil.findChildOfType(file, classOf[ScClass])
+    val clause = PsiTreeUtil.findChildOfType(file, classOf[ScTypeParamClause])
+    val params = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParam]).asScala.toVector
+
+    assertEquals("[A, +B, -C]", clause.getText)
+    assertSame(owner, clause.getParent)
+    assertEquals(Vector("A", "+B", "-C"), params.map(_.getText))
+    assertEquals(Vector("A", "B", "C"), params.map(_.name))
+    assertEquals(Vector("invariant", "covariant", "contravariant"), params.map(_.variance.toString))
+    assertEquals(
+      Vector((8, 9), (11, 13), (15, 17)),
+      params.map(value => (value.getTextRange.getStartOffset, value.getTextRange.getEndOffset))
+    )
+    assertEquals((7, 18), (clause.getTextRange.getStartOffset, clause.getTextRange.getEndOffset))
+    assertEquals(Vector(0, 1, 2), params.map(clause.getTypeParameterIndex))
+    assertTrue(params.forall(param => param.owner == owner && param.getParent == clause))
+    assertTrue(params.forall(param => param.lowerTypeElement.isEmpty && param.upperTypeElement.isEmpty))
+    assertEquals(Vector("[", "A", ",", "+", "B", ",", "-", "C", "]"), significantLeafTexts(clause))
+    assertEquals(Vector("A", "+", "B", "-", "C"), params.flatMap(significantLeafTexts))
+    assertEquals(Vector("()", "()"), owner.constructor.get.parameterList.clauses.map(_.getText).toVector)
+    assertEquals(
+      Vector("(", ")", "(", ")"),
+      owner.constructor.get.parameterList.clauses.flatMap(significantLeafTexts).toVector
+    )
+    assertEquals(
+      Vector("ScAnnotations", "ScModifierList", "ScParameters"),
+      owner.constructor.get.getChildren.toVector.map:
+        case _: ScAnnotations  => "ScAnnotations"
+        case _: ScModifierList => "ScModifierList"
+        case _: ScParameters   => "ScParameters"
+        case other             => other.getClass.getName
+    )
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScClassParameter]).isEmpty)
+
+  def testNestedClassUnboundedTypeParametersExposeEquivalentNativePsi(): Unit =
+    val file    = physical("TypeParams2.scala", "class Outer[A]()():\n  class Inner[+B, -C]()()\n")
+    val classes =
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector.sortBy(_.getTextRange.getStartOffset)
+    val clauses = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeParamClause])
+      .asScala
+      .toVector
+      .sortBy(_.getTextRange.getStartOffset)
+
+    assertEquals(Vector("Outer", "Inner"), classes.map(_.name))
+    assertEquals(Vector("[A]", "[+B, -C]"), clauses.map(_.getText))
+    assertEquals(Vector(Vector("A"), Vector("B", "C")), clauses.map(_.typeParameters.map(_.name).toVector))
+    assertEquals(
+      Vector("()", "()", "()", "()"),
+      classes.flatMap(_.constructor.get.parameterList.clauses.map(_.getText))
+    )
+
+  def testEmptyConstructorClausesPreserveInteriorTrivia(): Unit =
+    val source      = "class Spaced[A]( /* first */ )(\n  )\n"
+    val file        = physical("TypeParams3.scala", source)
+    val owner       = PsiTreeUtil.findChildOfType(file, classOf[ScClass])
+    val constructor = owner.constructor.get
+    val clauses     = constructor.parameterList.clauses.toVector
+
+    assertEquals("( /* first */ )(\n  )", constructor.getText)
+    assertEquals(Vector("( /* first */ )", "(\n  )"), clauses.map(_.getText))
+    assertEquals(Vector("(", "/* first */", ")"), significantLeafTexts(clauses.head))
+    assertEquals(Vector("(", ")"), significantLeafTexts(clauses.last))
+    assertTrue(clauses.forall(_.hasParenthesis))
+    assertTrue(clauses.forall(_.parameters.isEmpty))
+    clauses.foreach(clause => assertSame(constructor, clause.owner))
+
   def testAbsentAndExplicitEmptyOwnersExposeExactNativeAccessors(): Unit =
     val source =
       """class C
         |trait T
         |object O
         |class EC()
+        |class RC()()
         |trait ET()
         |""".stripMargin
     val file   = physical("Case1.scala", source)
     val owners = definitions(file)
 
-    assertEquals(Vector("C", "T", "O", "EC", "ET"), owners.map(_.name))
+    assertEquals(Vector("C", "T", "O", "EC", "RC", "ET"), owners.map(_.name))
     owners.foreach: owner =>
       assertEquals(owner.name, owner.nameId.getText)
       assertSame(owner, owner.nameId.getParent)
@@ -52,6 +131,8 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       assertTrue(owner.extendsBlock.templateBody.isEmpty)
     assertConstructor(owners.find(_.name == "C").get.asInstanceOf[ScConstructorOwner], "")
     assertConstructor(owners.find(_.name == "EC").get.asInstanceOf[ScConstructorOwner], "()")
+    val repeated = owners.find(_.name == "RC").get.asInstanceOf[ScConstructorOwner].constructor.get
+    assertEquals(Vector("()", "()"), repeated.parameterList.clauses.map(_.getText).toVector)
     assertConstructor(owners.find(_.name == "ET").get.asInstanceOf[ScConstructorOwner], "()")
     assertTrue(owners.find(_.name == "T").get.asInstanceOf[ScConstructorOwner].constructor.isEmpty)
 
@@ -129,27 +210,46 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       "class C:\n  self: C =>\n",
       "enum E:\n  case A, B\n",
       "class C:\n  def value = 1\n",
-      "class C:\n  given Int = 1\n"
+      "class C:\n  given Int = 1\n",
+      "class C(val value: Int)\n",
+      "class C(value: Int)\n",
+      "class C[A <: Any]\n",
+      "class C[A: Ordering]\n",
+      "class C[A <% Any]\n",
+      "class C[A = Any]\n",
+      "class C[[A] =>> List[A]]\n",
+      "def method[A](value: A): A = value\n",
+      "type Alias[A] = A\n"
     ).zipWithIndex.foreach: (source, index) =>
-      val pending = myFixture.addFileToProject(s"src/Unsupported${index + 1}.scala", source)
-      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      val pending       = myFixture.addFileToProject(s"src/Unsupported${index + 1}.scala", source)
+      val file          = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
       assertEquals(source, file.getText)
       file.getChildren
-      val failure = Scala3SyntaxCapabilityService
+      val failure       = Scala3SyntaxCapabilityService
         .get(getProject)
         .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
       assertTrue(source, failure.nonEmpty)
-      assertEquals(source, Scala3SyntaxCapabilityStage.Catalog, failure.get.stage)
+      val expectedStage =
+        if Set("class C[A = Any]\n", "class C[[A] =>> List[A]]\n")(source) then Scala3SyntaxCapabilityStage.Planner
+        else Scala3SyntaxCapabilityStage.Catalog
+      assertEquals(source, expectedStage, failure.get.stage)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParamClause]).isEmpty)
+      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParam]).isEmpty)
 
   def testCopiesPointersAndIncrementalReparsePreservePhysicalTemplatePsi(): Unit =
-    val source   = "class Before {}\n"
+    val source   = "class Before[A]()() {}\n"
     val file     = physical("Case5.scala", source)
     val original = PsiTreeUtil.findChildOfType(file, classOf[ScClass])
     val pointer  = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(original)
     val copy     = file.copy()
 
-    assertEquals("Before", PsiTreeUtil.findChildOfType(copy, classOf[ScClass]).name)
-    val document = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    assertEquals("[A]", PsiTreeUtil.findChildOfType(copy, classOf[ScTypeParamClause]).getText)
+    val parameterPointer = SmartPointerManager
+      .getInstance(getProject)
+      .createSmartPsiElementPointer(
+        PsiTreeUtil.findChildOfType(file, classOf[ScTypeParam])
+      )
+    val document         = PsiDocumentManager.getInstance(getProject).getDocument(file)
     assertNotNull(document)
     WriteCommandAction.runWriteCommandAction(
       getProject,
@@ -159,24 +259,34 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     )
     PsiDocumentManager.getInstance(getProject).commitDocument(document)
     assertEquals("After", pointer.getElement.name)
-    assertEquals("class After {}\n", file.getText)
+    assertEquals("A", parameterPointer.getElement.name)
+    assertEquals("class After[A]()() {}\n", file.getText)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
 
   def testNavigationRenameAndEmptyUsageSearchPreserveOwnerIdentity(): Unit =
-    val file  = physical("Case7.scala", "class Before\n")
-    val owner = definitions(file).head
+    val file        = physical("Case7.scala", "class Before[Element]\n")
+    val owner       = definitions(file).head
+    val param       = PsiTreeUtil.findChildOfType(file, classOf[ScTypeParam])
+    val constructor = owner.asInstanceOf[ScConstructorOwner].constructor.get
 
     assertSame(owner, owner.getNavigationElement)
     assertTrue(myFixture.findUsages(owner).isEmpty)
+    assertSame(param, param.getNavigationElement)
+    assertTrue(myFixture.findUsages(param).isEmpty)
+    assertEquals("", constructor.getText)
+    assertEquals(constructor.getTextRange, constructor.parameterList.getTextRange)
+    assertEquals(constructor.getTextRange.getStartOffset, constructor.getTextRange.getEndOffset)
+    assertTrue(constructor.parameterList.clauses.isEmpty)
+    myFixture.renameElement(param, "Renamed")
     myFixture.renameElement(owner, "After")
-    assertEquals("class After\n", file.getText)
+    assertEquals("class After[Renamed]\n", file.getText)
     assertEquals("After", definitions(file).head.name)
 
   def testTemplateStubPreorderAndIndexInputsSurviveAstReload(): Unit =
     val source =
       """package p122c
-        |class C
-        |trait T
+        |class C[A, +B, -C]()()
+        |trait T[T]()()
         |object O
         |enum E:
         |  case A
@@ -189,21 +299,43 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
 
     assertEquals(6, stubs.count(_.isInstanceOf[ScTemplateDefinitionStub[?]]))
     assertEquals(
+      2,
+      stubs.count(stub => Option(stub.getStubSerializer).exists(_.getExternalId == "scala.type parameter clause"))
+    )
+    assertEquals(
+      4,
+      stubs.count(stub => Option(stub.getStubSerializer).exists(_.getExternalId == "scala.type parameter"))
+    )
+    assertEquals(
       6,
       stubs.count(stub => Option(stub.getStubSerializer).exists(_.getExternalId == "scala.extends block"))
     )
     assertEquals(2, stubs.count(stub => Option(stub.getStubSerializer).exists(_.getExternalId == "scala.ScEnumCases")))
     assertTrue(stubs.collect { case value: ScExtendsBlockStub => value.baseClasses.toVector }.forall(_.nonEmpty))
-    val externalIds = stubs.flatMap(stub => Option(stub.getStubSerializer).map(_.getExternalId)).toSet
+    stubs
+      .filter(stub => Option(stub.getStubSerializer).exists(_.getExternalId == "scala.primary constructor"))
+      .foreach: constructor =>
+        assertEquals(
+          Vector("scala.annotations", "scala.modifiers", "scala.parameter clauses"),
+          constructor.getChildrenStubs.asScala.toVector.flatMap(child =>
+            Option(child.getStubSerializer).map(_.getExternalId)
+          )
+        )
+    val externalIds          = stubs.flatMap(stub => Option(stub.getStubSerializer).map(_.getExternalId)).toSet
     assertTrue(TemplatePersistenceSurfaces.ExternalIds.values.toSet.subsetOf(externalIds))
-    val output      = new ByteArrayOutputStream
+    val output               = new ByteArrayOutputStream
     SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
-    val restored    = new StubTree(
+    val restored             = new StubTree(
       SerializationManagerEx.getInstanceEx
         .deserialize(new ByteArrayInputStream(output.toByteArray))
         .asInstanceOf[PsiFileStub[?]]
     )
-    val beforeIndex = indexShape(stubs)
+    val beforeIndex          = indexShape(stubs)
+    val typeParameterStubIds = Set("scala.type parameter clause", "scala.type parameter")
+    val typeParameterStubs   = stubs.filter(stub =>
+      Option(stub.getStubSerializer).exists(serializer => typeParameterStubIds(serializer.getExternalId))
+    )
+    assertTrue(indexShape(typeParameterStubs).isEmpty)
     assertEquals(stubShape(stubs), stubShape(restored.getPlainList.asScala))
     assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala))
     assertTrue(Vector("C", "T", "O", "E", "A", "B").forall(name => beforeIndex.contains(s"sc.class.shortName|$name")))
@@ -223,6 +355,7 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     file.setTreeElementPointer(null)
     assertEquals(null, file.getTreeElement)
     assertEquals(6, file.getStubTree.getPlainList.asScala.count(_.isInstanceOf[ScTemplateDefinitionStub[?]]))
+    assertEquals(stubShape(stubs), stubShape(file.getStubTree.getPlainList.asScala))
 
   private def stubShape(stubs: Iterable[Stub]): Vector[String] = stubs.iterator
     .flatMap(stub =>
@@ -260,6 +393,12 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       .asScala
       .toVector
       .sortBy(_.getTextRange.getStartOffset)
+
+  private def significantLeafTexts(element: PsiElement): Vector[String] =
+    PsiTreeUtil
+      .collectElements(element, child => child.getFirstChild == null && !child.getText.trim.isEmpty)
+      .toVector
+      .map(_.getText)
 
   private def assertConstructor(owner: ScConstructorOwner, text: String): Unit =
     val constructor = owner.constructor.get

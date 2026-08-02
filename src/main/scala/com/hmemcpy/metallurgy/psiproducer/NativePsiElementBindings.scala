@@ -26,7 +26,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.{
   ScStableCodeReference
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScEnumCases, ScEnumClassCase, ScEnumSingletonCase}
-import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScParameterClause, ScParameters}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScParameterClause, ScParameters, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{ScExtendsBlock, ScTemplateBody}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScExpression}
@@ -193,6 +193,7 @@ private[metallurgy] object NativePsiElementBindings:
           |private[scope] abstract class AnnotatedProbe:
           |  protected[this] final inline def member = 1
           |class EmptyConstructor()
+          |class Generic[+A, -B, C]()
           |trait TraitProbe
           |object ObjectProbe
           |enum EnumProbe:
@@ -311,6 +312,12 @@ private[metallurgy] object NativePsiElementBindings:
     val primaryConstructors    = PsiTreeUtil.findChildrenOfType(file, classOf[ScPrimaryConstructor]).asScala.toVector
     val parameterClauses       = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameters]).asScala.toVector
     val parameterClause        = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterClause]).asScala.toVector
+    val typeParameterClauses   = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeParamClause])
+      .asScala
+      .filter(_.getText == "[+A, -B, C]")
+      .toVector
+    val typeParameters         = typeParameterClauses.flatMap(_.typeParameters)
     val annotationPayloads     =
       annotationExpressions.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).asScala)
     val manager                = PsiManager.getInstance(project)
@@ -352,7 +359,8 @@ private[metallurgy] object NativePsiElementBindings:
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
-        extendsBlocks ++ templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause
+        extendsBlocks ++ templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause ++
+        typeParameterClauses ++ typeParameters
     if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
       innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
     then Left("native package PSI probe is incomplete")
@@ -486,19 +494,35 @@ private[metallurgy] object NativePsiElementBindings:
       enumSingletonCases.size != 1 || enumClassCases.size != 1 || extendsBlocks.isEmpty || templateBodies.isEmpty ||
       primaryConstructors.isEmpty || parameterClauses.isEmpty || parameterClause.isEmpty
     then Left("native template PSI probe is incomplete")
+    else if typeParameterClauses.size != 1 || typeParameters.map(_.name) != Vector("A", "B", "C") ||
+      typeParameterClauses.head.typeParameters.toVector != typeParameters ||
+      typeParameters.map(typeParameterClauses.head.getTypeParameterIndex) != Vector(0, 1, 2) ||
+      !typeParameters.head.isCovariant || typeParameters(1).isCovariant || !typeParameters(1).isContravariant ||
+      typeParameters(2).isCovariant || typeParameters(2).isContravariant ||
+      typeParameters.exists(value =>
+        value.nameId.getText != value.name || value.lowerTypeElement.nonEmpty ||
+          value.upperTypeElement.nonEmpty ||
+          value.viewTypeElement.nonEmpty || value.contextBounds.nonEmpty || value.owner != classes
+            .find(_.name == "Generic")
+            .orNull ||
+          value.getNavigationElement != value
+      )
+    then Left("native type parameter PSI accessors are inconsistent")
     else if Vector(
-        PsiOutputRoleId.ClassDefinition    -> classes.head,
-        PsiOutputRoleId.TraitDefinition    -> traits.head,
-        PsiOutputRoleId.ObjectDefinition   -> objects.head,
-        PsiOutputRoleId.EnumDefinition     -> enums.head,
-        PsiOutputRoleId.EnumCases          -> enumCases.head,
-        PsiOutputRoleId.EnumSingletonCase  -> enumSingletonCases.head,
-        PsiOutputRoleId.EnumClassCase      -> enumClassCases.head,
-        PsiOutputRoleId.ExtendsBlock       -> extendsBlocks.head,
-        PsiOutputRoleId.TemplateBody       -> templateBodies.head,
-        PsiOutputRoleId.PrimaryConstructor -> primaryConstructors.head,
-        PsiOutputRoleId.ParameterClauses   -> parameterClauses.head,
-        PsiOutputRoleId.ParameterClause    -> parameterClause.head
+        PsiOutputRoleId.ClassDefinition     -> classes.head,
+        PsiOutputRoleId.TraitDefinition     -> traits.head,
+        PsiOutputRoleId.ObjectDefinition    -> objects.head,
+        PsiOutputRoleId.EnumDefinition      -> enums.head,
+        PsiOutputRoleId.EnumCases           -> enumCases.head,
+        PsiOutputRoleId.EnumSingletonCase   -> enumSingletonCases.head,
+        PsiOutputRoleId.EnumClassCase       -> enumClassCases.head,
+        PsiOutputRoleId.ExtendsBlock        -> extendsBlocks.head,
+        PsiOutputRoleId.TemplateBody        -> templateBodies.head,
+        PsiOutputRoleId.PrimaryConstructor  -> primaryConstructors.head,
+        PsiOutputRoleId.ParameterClauses    -> parameterClauses.head,
+        PsiOutputRoleId.ParameterClause     -> parameterClause.head,
+        PsiOutputRoleId.TypeParameterClause -> typeParameterClauses.head,
+        PsiOutputRoleId.TypeParameter       -> typeParameters.head
       ).exists: (role, element) =>
         element.getNode.getElementType match
           case stub: IStubElementType[?, ?] =>
@@ -600,9 +624,8 @@ private[metallurgy] object NativePsiElementBindings:
         )
       then Left("native stub-bearing PSI element type cannot produce stubs")
       else if (classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++ extendsBlocks ++
-          templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause).exists(value =>
-          !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
-        )
+          templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause ++ typeParameterClauses ++
+          typeParameters).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
       then Left("native template stub-bearing PSI element type cannot produce stubs")
       else if (Vector(annotatedModifiers, annotationContainer) ++ accessModifiers ++ annotations).exists(value =>
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
@@ -684,7 +707,9 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TemplateBody          -> templateBodies.head.getNode.getElementType,
               PsiOutputRoleId.PrimaryConstructor    -> primaryConstructors.head.getNode.getElementType,
               PsiOutputRoleId.ParameterClauses      -> parameterClauses.head.getNode.getElementType,
-              PsiOutputRoleId.ParameterClause       -> parameterClause.head.getNode.getElementType
+              PsiOutputRoleId.ParameterClause       -> parameterClause.head.getNode.getElementType,
+              PsiOutputRoleId.TypeParameterClause   -> typeParameterClauses.head.getNode.getElementType,
+              PsiOutputRoleId.TypeParameter         -> typeParameters.head.getNode.getElementType
             ),
             Map(
               PsiOutputRoleId.PackageStatement      -> surfaceId(packaging.getClass),
@@ -721,7 +746,9 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TemplateBody          -> surfaceId(templateBodies.head.getClass),
               PsiOutputRoleId.PrimaryConstructor    -> surfaceId(primaryConstructors.head.getClass),
               PsiOutputRoleId.ParameterClauses      -> surfaceId(parameterClauses.head.getClass),
-              PsiOutputRoleId.ParameterClause       -> surfaceId(parameterClause.head.getClass)
+              PsiOutputRoleId.ParameterClause       -> surfaceId(parameterClause.head.getClass),
+              PsiOutputRoleId.TypeParameterClause   -> surfaceId(typeParameterClauses.head.getClass),
+              PsiOutputRoleId.TypeParameter         -> surfaceId(typeParameters.head.getClass)
             ),
             Vector(
               ScalaPsiSurfaceRow(

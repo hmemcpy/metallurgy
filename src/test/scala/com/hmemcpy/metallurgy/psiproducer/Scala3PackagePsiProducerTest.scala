@@ -473,11 +473,11 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 5),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 6),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "9897fcab436b8bbd4b028cb1fd8bcbac6ec90069f2c553ec8692ddc7a45bb235",
+      "00a765845a7f6621fe905ee972d3749a9685fa6860ca3356a6c6f41b8427a578",
       Scala3DotcFileElementType.SchemaFingerprint
     )
 

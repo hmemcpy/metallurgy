@@ -7,12 +7,11 @@ import com.hmemcpy.metallurgy.psiproducer.{
   CatalogValuePattern,
   CompilerRuntimeInventory,
   ContextPattern,
-  ExportPersistenceSurfaces,
   FactStatus,
   GrammarRoleId,
   ImportPersistenceSurfaces,
+  InventoryKind,
   NativePsiElementBindings,
-  PackagePersistenceSurfaces,
   PersistenceObligations,
   PhysicalLeafOwner,
   InventoryFieldObservation,
@@ -1395,14 +1394,17 @@ final class Scala3ParserVerticalSliceTest:
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("1b6e004ef8fdc017735811c8fa15cff18c710659614b36c7ce4501891090a834", aggregate.fingerprint)
+      assertEquals("0881955fc251cd91ec67d9377fe894ce383c7f2d13054177fd4dcb4a611efaa1", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,
         aggregate,
         surfaces
       )
+      val catalogProducts                                                                          = Scala3PsiProductionCatalog.Reviewed.productions.collect:
+        case production if production.pattern.kind == InventoryKind.Product => production.pattern.prefix
       val expectedUncovered                                                                        = aggregate.productions
+        .filter(row => row.kind != InventoryKind.Product || catalogProducts.contains(row.prefix))
         .flatMap(row =>
           row.occurrences.collect:
             case occurrence
@@ -1420,6 +1422,25 @@ final class Scala3ParserVerticalSliceTest:
       val actualUncovered                                                                          = catalogErrors.collect:
         case error: CatalogValidationError.UncoveredCompilerShape => error
       assertEquals(expectedUncovered, actualUncovered.toSet)
+      val expectedAmbiguous                                                                        = aggregate.productions
+        .filter(row => row.kind != InventoryKind.Product || catalogProducts.contains(row.prefix))
+        .flatMap(row =>
+          row.occurrences.flatMap: occurrence =>
+            val selected = CatalogShapeMatcher.selectAggregated(Scala3PsiProductionCatalog.Reviewed, row, occurrence)
+            Option.when(selected.size > 1)(
+              CatalogValidationError.AmbiguousCompilerShape(
+                row.kind,
+                row.prefix,
+                occurrence.context,
+                occurrence.sourceClassification,
+                selected.map(_.id).sorted
+              )
+            )
+        )
+        .toSet
+      val actualAmbiguous                                                                          = catalogErrors.collect:
+        case error: CatalogValidationError.AmbiguousCompilerShape => error
+      assertEquals(expectedAmbiguous, actualAmbiguous.toSet)
       val accounted                                                                                = Scala3PsiProductionCatalog.Reviewed.productions
         .flatMap(_.effectiveOutputRealizations)
         .flatMap(_.template.composites)
@@ -1455,6 +1476,7 @@ final class Scala3ParserVerticalSliceTest:
         catalogErrors.toString,
         catalogErrors.exists(error =>
           !error.isInstanceOf[CatalogValidationError.UncoveredCompilerShape] &&
+            !error.isInstanceOf[CatalogValidationError.AmbiguousCompilerShape] &&
             !error.isInstanceOf[CatalogValidationError.UnaccountedSyntaxSurface] &&
             !error.isInstanceOf[CatalogValidationError.UnrepresentedCatalogProduction]
         )
@@ -1620,18 +1642,20 @@ final class Scala3ParserVerticalSliceTest:
   private val PackageSource = "package example.syntax\n"
 
   private def withImportTokenSurfaces(inventory: ScalaPsiSurfaceInventory): ScalaPsiSurfaceInventory =
-    val tokens = Vector(
-      NativePsiElementBindings.EndKeywordTokenSurface,
-      NativePsiElementBindings.ImportWildcardTokenSurface,
-      NativePsiElementBindings.ImportLegacyWildcardTokenSurface,
-      NativePsiElementBindings.ImportAliasAsTokenSurface,
-      NativePsiElementBindings.ImportAliasArrowTokenSurface,
-      NativePsiElementBindings.WildcardQuestionTokenSurface,
-      NativePsiElementBindings.LowerTypeBoundTokenSurface,
-      NativePsiElementBindings.UpperTypeBoundTokenSurface
+    val catalog = Scala3PsiProductionCatalog.Reviewed
+    val tokens  = catalog.productions.flatMap(_.terminals.collect {
+      case TerminalDeclaration(_, _, TerminalLeafTarget.Token(surfaceId, _), _, _, _) => surfaceId
+    })
+    val indices = catalog.productions.flatMap(
+      _.effectiveOutputRealizations
+        .flatMap(_.template.composites)
+        .flatMap(_.persistence match
+          case PersistenceObligations.Required(_, _, values, _) => values
+          case PersistenceObligations.NotApplicable             => Vector.empty
+        )
     )
     inventory.copy(rows =
-      inventory.rows ++ tokens.map(id =>
+      inventory.rows ++ tokens.distinct.map(id =>
         ScalaPsiSurfaceRow(
           id,
           SurfaceFactKind.Token,
@@ -1639,28 +1663,15 @@ final class Scala3ParserVerticalSliceTest:
           FactStatus.Available,
           SurfaceClassification.SyntaxContract
         )
-      ) ++ Vector(
+      ) ++ indices.distinct.map(id =>
         ScalaPsiSurfaceRow(
-          ImportPersistenceSurfaces.AliasedImportIndex,
+          id,
           SurfaceFactKind.Index,
           None,
           FactStatus.Available,
           SurfaceClassification.SyntaxContract
-        ),
-        ScalaPsiSurfaceRow(
-          ExportPersistenceSurfaces.TopLevelPackageIndex,
-          SurfaceFactKind.Index,
-          None,
-          FactStatus.Available,
-          SurfaceClassification.SyntaxContract
-        ),
-        ScalaPsiSurfaceRow(
-          PackagePersistenceSurfaces.FqnIndex,
-          SurfaceFactKind.Index,
-          None,
-          FactStatus.Available,
-          SurfaceClassification.SyntaxContract
-        ),
+        )
+      ) :+
         ScalaPsiSurfaceRow(
           ImportPersistenceSurfaces.SelfNavigation,
           SurfaceFactKind.Navigation,
@@ -1668,7 +1679,6 @@ final class Scala3ParserVerticalSliceTest:
           FactStatus.Available,
           SurfaceClassification.SyntaxContract
         )
-      )
     )
 
   private val ScalaVersion = "3.7.4"

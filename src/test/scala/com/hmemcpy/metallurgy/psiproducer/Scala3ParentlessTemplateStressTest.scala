@@ -4,6 +4,7 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
 import com.intellij.psi.{PsiErrorElement, PsiManager}
 import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
 import org.junit.Assert.{assertEquals, assertTrue}
 
@@ -24,6 +25,33 @@ final class Scala3ParentlessTemplateStressTest extends Scala3CompatTestCase:
     val ownerSource = (0 until count).map(index => s"class C$index\n").mkString
     val owners      = physical("Case8.scala", ownerSource)
     assertEquals(count, PsiTreeUtil.findChildrenOfType(owners, classOf[ScClass]).size)
+
+  def testTenThousandUnboundedTypeParametersAndRepeatedEmptyClausesHaveNoFiniteCountCap(): Unit =
+    val count  = 10000
+    val source = (0 until count).map(index => s"class Generic$index[T$index]()()\n").mkString
+    val file   = physical("Case9.scala", source)
+
+    val classes = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass])
+    assertEquals(count, classes.size)
+    assertEquals(count, classes.stream().mapToInt(owner => owner.typeParameters.size).sum())
+    assertTrue(
+      classes
+        .stream()
+        .allMatch(owner => owner.constructor.get.parameterList.clauses.map(_.getText).toVector == Vector("()", "()"))
+    )
+
+  def testDeepAlreadyAdmittedOwnersRetainUnboundedTypeParametersAndRepeatedEmptyClauses(): Unit =
+    val depth  = 256
+    val source = (0 until depth)
+      .map: index =>
+        val suffix = if index == depth - 1 then "\n" else ":\n"
+        s"  " * index + s"class Generic$index[T$index]()()$suffix"
+      .mkString
+    val file   = physical("Case10.scala", source)
+
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).size)
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParamClause]).size)
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParam]).size)
 
   private def physical(name: String, source: String): com.intellij.psi.PsiFile =
     val pending = myFixture.addFileToProject(s"src/$name", source)
