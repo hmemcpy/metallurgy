@@ -16,11 +16,16 @@ import com.intellij.psi.stubs.{
 }
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.{ScAnnotations, ScEnd, ScModifierList}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScEnumCase,
   ScEnumCases,
   ScEnumClassCase,
-  ScEnumSingletonCase
+  ScEnumSingletonCase,
+  ScFunctionDefinition,
+  ScPatternDefinition,
+  ScTypeAliasDeclaration,
+  ScVariableDefinition
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{
   ScClassParameter,
@@ -30,6 +35,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{
   ScTypeParamClause
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScConstructorOwner, ScEnum, ScTypeDefinition}
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 import org.jetbrains.plugins.scala.lang.psi.stubs.{ScExtendsBlockStub, ScTemplateDefinitionStub}
 import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertSame, assertTrue}
 
@@ -37,6 +43,134 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import scala.jdk.CollectionConverters.*
 
 final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
+
+  def testUntypedDefinitionShellsExposeExactNativePsiAndGenericExpressionIslands(): Unit =
+    val source    =
+      """def f = List(1).head
+        |val x = 1
+        |var y = f
+        |trait T:
+        |  type A
+        |  def nested = (x, y)
+        |""".stripMargin
+    val file      = physical("Definitions1.scala", source)
+    val functions = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunctionDefinition])
+      .asScala
+      .toVector
+      .sortBy(_.getTextRange.getStartOffset)
+    val values    = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).asScala.toVector
+    val variables = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).asScala.toVector
+    val aliases   = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector
+    val payloads  = PsiTreeUtil
+      .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
+      .asScala
+      .toVector
+      .sortBy(value => (value.getTextRange.getStartOffset, -value.getTextLength))
+
+    assertEquals(Vector("f", "nested"), functions.map(_.name))
+    assertSame(file, functions.head.getParent)
+    assertEquals(Some("List(1).head"), functions.head.body.map(_.getText))
+    assertEquals(Some("(x, y)"), functions.last.body.map(_.getText))
+    assertTrue(functions.forall(_.hasAssign))
+    assertEquals(Vector("x"), values.flatMap(_.bindings.map(_.name)))
+    assertEquals(Vector("y"), variables.flatMap(_.bindings.map(_.name)))
+    assertEquals(Vector("1"), values.flatMap(_.expr.map(_.getText)))
+    assertEquals(Vector("f"), variables.flatMap(_.expr.map(_.getText)))
+    assertEquals(Vector("A"), aliases.map(_.name))
+    assertTrue(aliases.forall(alias => alias.lowerTypeElement.isEmpty && alias.upperTypeElement.isEmpty))
+    assertEquals(
+      Vector("List(1).head", "List(1)", "List", "1", "1", "f", "(x, y)", "x", "y"),
+      payloads.map(_.getText)
+    )
+    assertTrue(
+      payloads.forall(payload =>
+        PsiTreeUtil
+          .findChildrenOfType(payload, classOf[ScExpression])
+          .asScala
+          .forall(
+            _.isInstanceOf[MetallurgyExpressionPayload]
+          )
+      )
+    )
+    assertEquals("List(1)", payloads.find(_.getText == "List(1)").get.copy().getText)
+
+    val tree        = file.asInstanceOf[PsiFileImpl].calcStubTree
+    val stubs       = tree.getPlainList.asScala.toVector
+    val externalIds = stubs.flatMap(stub => Option(stub.getStubSerializer).map(_.getExternalId)).toSet
+    assertTrue(
+      externalIds.toVector.sorted.mkString(","),
+      Set(
+        "scala.function definition",
+        "scala.value definition",
+        "scala.variable definition",
+        "scala.pattern list",
+        "scala.reference pattern",
+        "scala.type alias declaration"
+      ).subsetOf(externalIds)
+    )
+    val beforeIndex = indexShape(stubs)
+    Vector(
+      "sc.method.name|f",
+      "sc.method.name|nested",
+      "sc.property.name|x",
+      "sc.property.name|y",
+      "sc.type.alias.name|A"
+    ).foreach(entry => assertEquals(entry, 1, beforeIndex.count(_ == entry)))
+    val output      = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
+    val restored    = new StubTree(
+      SerializationManagerEx.getInstanceEx
+        .deserialize(new ByteArrayInputStream(output.toByteArray))
+        .asInstanceOf[PsiFileStub[?]]
+    )
+    assertEquals(stubShape(stubs), stubShape(restored.getPlainList.asScala))
+    assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala))
+
+  def testBlockLocalDefinitionsAreOutputFreeWhileTheirExactRhsPayloadsRemainPhysical(): Unit =
+    val source   =
+      """def block =
+        |  val local = List(1)
+        |  var mutable = local
+        |  (local, mutable)
+        |""".stripMargin
+    val file     = physical("Definitions2.scala", source)
+    val payloads = PsiTreeUtil
+      .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
+      .asScala
+      .toVector
+      .sortBy(value => (value.getTextRange.getStartOffset, -value.getTextLength))
+
+    assertEquals(
+      Vector("block"),
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).asScala.map(_.name).toVector
+    )
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).isEmpty)
+    assertTrue(payloads.exists(_.getText == "List(1)"))
+    assertTrue(payloads.exists(_.getText == "local"))
+    assertTrue(payloads.exists(_.getText == "(local, mutable)"))
+    assertEquals(1, payloads.count(_.getText.startsWith("val ")))
+    assertTrue(payloads.exists(_.getText == source.substring(source.indexOf("val local"), source.length - 1)))
+    assertFalse(payloads.exists(_.getText == "val local = List(1)"))
+    assertFalse(payloads.exists(_.getText == "var mutable = local"))
+    assertTrue(payloads.forall(payload => payload.getTextRange.getEndOffset <= source.length))
+
+  def testExactParserErrorProducesOnlyNeutralPsiAtItsExactZeroWidthRange(): Unit =
+    val source = ")\nval result = 1\n"
+    val added  = myFixture.addFileToProject("src/RecoveredDefinition.scala", source)
+    val file   = PsiManager.getInstance(getProject).findFile(added.getVirtualFile)
+    val errors = PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).asScala.toVector
+
+    assertEquals(source, file.getText)
+    assertEquals(1, errors.size)
+    assertEquals("eof expected, but ')' found", errors.head.getErrorDescription)
+    assertEquals((0, 0), (errors.head.getTextRange.getStartOffset, errors.head.getTextRange.getEndOffset))
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScExpression]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).isEmpty)
 
   def testClassUnboundedTypeParametersExposeExactNativePsi(): Unit =
     val source = "class C[A, +B, -C]()()\n"
@@ -209,7 +343,6 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       "class C(x: Int)\n",
       "class C:\n  self: C =>\n",
       "enum E:\n  case A, B\n",
-      "class C:\n  def value = 1\n",
       "class C:\n  given Int = 1\n",
       "class C(val value: Int)\n",
       "class C(value: Int)\n",

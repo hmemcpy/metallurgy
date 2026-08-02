@@ -1,10 +1,11 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
+import com.hmemcpy.metallurgy.pc.{ParserDiagnostic, ParserDiagnosticSeverity, ParserSyntaxSnapshot}
 import com.intellij.lang.{PsiBuilder, WhitespacesBinders}
 import com.intellij.psi.tree.IElementType
 
 import java.util.ArrayDeque
+import scala.collection.mutable.ArrayBuffer
 
 /** Emits a previously validated whole-file plan without interpreting compiler productions. */
 private[metallurgy] object DotcPsiProducer:
@@ -31,6 +32,7 @@ private[metallurgy] object DotcPsiProducer:
                 _
               ) =>
             owner -> outputRoleId
+        val targetRoles          = targets.toMap
         val remaps               = plan.physicalLeafOwnership.collect:
           case PlannedPhysicalLeaf(_, start, _, _, _, _, TerminalLeafTarget.Token(surfaceId, _)) =>
             start -> bindings.elementTypes(surfaceId)
@@ -43,6 +45,7 @@ private[metallurgy] object DotcPsiProducer:
             case leaf @ PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.Composite(owner), _, _, _) => owner -> leaf
           .groupMap(_._1)(_._2)
         val trailingTriviaOwners = plan.composites.iterator
+          .filter(composite => targetRoles.get(composite.instance).forall(_ != PsiOutputRoleId.ExpressionPayload))
           .filter: composite =>
             lexicalAtomsByEnd
               .get(composite.range.endOffset)
@@ -58,7 +61,6 @@ private[metallurgy] object DotcPsiProducer:
           .toSet
         val roots                = plan.composites.filterNot(value => byParent.contains(value.instance))
         val byId                 = plan.composites.map(value => value.instance -> value).toMap
-        val targetRoles          = targets.toMap
         val tokenRemaps          = remaps.toMap
         val root                 = builder.mark()
         roots
@@ -69,10 +71,103 @@ private[metallurgy] object DotcPsiProducer:
         Right(())
       case Some(reason) => Left(reason)
 
-  def emitClosedFile(fileElementType: IElementType, builder: PsiBuilder): Unit =
-    val root = builder.mark()
-    advanceTo(builder.getOriginalText.length, builder)
-    root.done(fileElementType)
+  def emitClosedFile(
+      fileElementType: IElementType,
+      builder: PsiBuilder,
+      diagnostics: Iterable[ParserDiagnostic] = Vector.empty
+  ): Either[String, Unit] =
+    val sourceLength = builder.getOriginalText.length
+    val errors       = diagnostics.zipWithIndex.foldLeft[Either[String, Vector[ClosedDiagnostic]]](Right(Vector.empty)):
+      case (failure @ Left(_), _)                                                                              => failure
+      case (Right(values), (ParserDiagnostic(ParserDiagnosticSeverity.Error, message, Some(position)), index)) =>
+        Right(values :+ ClosedDiagnostic(position.range.startOffset, position.range.endOffset, index, message))
+      case (Right(_), (ParserDiagnostic(ParserDiagnosticSeverity.Error, message, None), index))                =>
+        Left(s"parser diagnostic $index has no exact source range: $message")
+      case (result, _)                                                                                         => result
+    val forest       = errors.flatMap(validateClosedDiagnostics(_, sourceLength))
+    forest match
+      case Right(roots) =>
+        val root = builder.mark()
+        emitDiagnostics(roots, builder)
+        advanceTo(sourceLength, builder)
+        root.done(fileElementType)
+        Right(())
+      case Left(reason) =>
+        val root = builder.mark()
+        advanceTo(sourceLength, builder)
+        root.done(fileElementType)
+        Left(reason)
+
+  private[psiproducer] def validateClosedDiagnostics(
+      diagnostics: Vector[ClosedDiagnostic],
+      sourceLength: Int
+  ): Either[String, Vector[DiagnosticNode]] =
+    diagnostics
+      .find(value => value.start < 0 || value.start > value.end || value.end > sourceLength)
+      .toLeft(())
+      .left
+      .map(value => s"invalid parser diagnostic range ${value.range} for source length $sourceLength")
+      .flatMap(_ => nestedDiagnostics(diagnostics))
+
+  private[psiproducer] def nestedDiagnostics(
+      diagnostics: Vector[ClosedDiagnostic]
+  ): Either[String, Vector[DiagnosticNode]] =
+    val roots                   = ArrayBuffer.empty[DiagnosticNode]
+    val stack                   = ArrayBuffer.empty[DiagnosticNode]
+    val sorted                  = diagnostics.sortBy(value => (value.start, -value.end, value.index))
+    var index                   = 0
+    var failure: Option[String] = None
+    while index < sorted.size && failure.isEmpty do
+      val diagnostic = sorted(index)
+      while stack.nonEmpty && !stack.last.contains(diagnostic) do
+        val previous = stack.remove(stack.size - 1)
+        if diagnostic.start < previous.diagnostic.end then
+          failure = Some(s"crossing parser diagnostic ranges: ${previous.range} and ${diagnostic.range}")
+      if failure.isEmpty then
+        val current = DiagnosticNode(diagnostic, ArrayBuffer.empty)
+        stack.lastOption match
+          case Some(parent) => parent.children += current; ()
+          case None         => roots += current; ()
+        if diagnostic.start < diagnostic.end then stack += current
+      index += 1
+    failure.toLeft(roots.toVector)
+
+  private def emitDiagnostics(roots: Vector[DiagnosticNode], builder: PsiBuilder): Unit =
+    val pending = new ArrayDeque[DiagnosticEmitEvent]()
+    roots.reverseIterator.foreach(root => pending.addFirst(DiagnosticEmitEvent.Enter(root)))
+    while !pending.isEmpty do
+      pending.removeFirst() match
+        case DiagnosticEmitEvent.Enter(node)                =>
+          val diagnostic = node.diagnostic
+          advanceTo(diagnostic.start, builder)
+          val marker     = builder.mark()
+          if diagnostic.start == diagnostic.end then marker.error(diagnostic.message)
+          else
+            pending.addFirst(DiagnosticEmitEvent.Exit(marker, diagnostic.end, diagnostic.message))
+            node.children.reverseIterator.foreach(child => pending.addFirst(DiagnosticEmitEvent.Enter(child)))
+        case DiagnosticEmitEvent.Exit(marker, end, message) =>
+          advanceTo(end, builder)
+          marker.error(message)
+
+  private[psiproducer] final case class ClosedDiagnostic(
+      start: Int,
+      end: Int,
+      index: Int,
+      message: String
+  ):
+    def range: String = s"[$start,$end)"
+
+  private[psiproducer] final case class DiagnosticNode(
+      diagnostic: ClosedDiagnostic,
+      children: ArrayBuffer[DiagnosticNode]
+  ):
+    def contains(other: ClosedDiagnostic): Boolean =
+      diagnostic.start <= other.start && other.end <= diagnostic.end
+    def range: String                              = diagnostic.range
+
+  private enum DiagnosticEmitEvent:
+    case Enter(node: DiagnosticNode)
+    case Exit(marker: PsiBuilder.Marker, end: Int, message: String)
 
   private[psiproducer] def emit(
       composite: PlannedComposite,

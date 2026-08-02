@@ -473,11 +473,11 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 6),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 7),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "00a765845a7f6621fe905ee972d3749a9685fa6860ca3356a6c6f41b8427a578",
+      "34fbcfaf6a0d6daf99f30ceb9e5cc949fb562cbd10c8ffb3115ff49585e8ebd8",
       Scala3DotcFileElementType.SchemaFingerprint
     )
 
@@ -1241,8 +1241,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       "package a:\n  import b.c\nend wrong\n",
       "package unsupported { import a.b; class Definition extends Parent }\n",
       "package unsupported:\n  import a.b\n  object Template extends Parent\n",
-      "package unsupported:\n  extension (value: Int) def increment = value + 1\n",
-      "package unsupported:\n  val expression = 1\n"
+      "package unsupported:\n  extension (value: Int) def increment = value + 1\n"
     ).zipWithIndex.foreach: (invalid, index) =>
       val recovered = myFixture.addFileToProject(s"src/RecoveredPackageLayout$index.scala", invalid)
       val psi       = PsiManager.getInstance(getProject).findFile(recovered.getVirtualFile).asInstanceOf[PsiFileImpl]
@@ -1344,7 +1343,6 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
   private def assertUnsupportedExportsFailClosedWithoutPartialPersistence(): Unit =
     val sources = Vector(
       "object Owner:\n  export scala.Predef.identity\n",
-      "def local =\n  export scala.Predef.identity\n",
       "extension (value: Int)\n  export scala.Predef.identity\n",
       "export scala.Predef.{given (A, B)}\n"
     )
@@ -1374,14 +1372,24 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     )
     val sources = types.flatMap(bound => Vector(s"import a.b.given $bound\n", s"export a.b.{given $bound}\n"))
     sources.zipWithIndex.foreach: (source, index) =>
-      val pending = myFixture.addFileToProject(s"src/UnsupportedGivenTypeCase$index.scala", source)
-      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      val pending      = myFixture.addFileToProject(s"src/UnsupportedGivenTypeCase$index.scala", source)
+      val file         = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
       assertEquals(source, file.getText)
       assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).isEmpty)
       assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).isEmpty)
-      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      val parserErrors = PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).asScala.toVector
+      assertTrue(
+        parserErrors.forall(error =>
+          error.getTextRange.getStartOffset >= 0 && error.getTextRange.getStartOffset <= source.length &&
+            error.getTextRange.getEndOffset <= source.length && error.getErrorDescription.nonEmpty
+        )
+      )
+      assertEquals(
+        parserErrors.size,
+        parserErrors.map(error => error.getTextRange -> error.getErrorDescription).distinct.size
+      )
       assertTrue(file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
-      val failure = Scala3SyntaxCapabilityService
+      val failure      = Scala3SyntaxCapabilityService
         .get(getProject)
         .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
       assertTrue(s"$source: $failure", failure.nonEmpty)

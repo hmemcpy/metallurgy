@@ -10,6 +10,7 @@ import com.hmemcpy.metallurgy.compilerbackend.{
 import com.hmemcpy.metallurgy.feature.compilertype.TypeRenderer
 import com.hmemcpy.metallurgy.feature.diagnostics.{PcDiagnosticSetCache, SnapshotState}
 import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
+import com.hmemcpy.metallurgy.psiproducer.{ParserPreparationState, Scala3ParserPreparationLifecycle}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -45,6 +46,21 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
 
   override protected def defaultVersionOverride: Option[ScalaVersion] =
     Some(testScalaVersion)
+
+  def testExactParserDiagnosticRemainsTheOnlyOwnerOfAnEquivalentCompilerFinding(): Unit =
+    val range       = TextRange(0, 0)
+    val parserOwned = Set(range -> "eof expected, but ')' found")
+    val diagnostics = Seq(
+      PcDiagnostic(range, isError = true, "eof expected, but ')' found"),
+      PcDiagnostic(range, isError = true, "different compiler finding"),
+      PcDiagnostic(range, isError = false, "eof expected, but ')' found"),
+      PcDiagnostic(TextRange(1, 1), isError = true, "eof expected, but ')' found")
+    )
+
+    assertEquals(
+      diagnostics.tail,
+      PcSessionManager.excludeParserOwnedDiagnostics(diagnostics, parserOwned)
+    )
 
   def testPublicCoursierResolverLoadsAWorkingPresentationCompiler(): Unit =
     val temporaryDirectory = Files.createTempDirectory("metallurgy-real-pc")
@@ -686,6 +702,20 @@ final class PcSessionManagerTest extends ScalaLightCodeInsightFixtureTestCase:
       settings.setEnabled(getModule, enabled = true)
       setCompilerBasedHighlighting(enabled = true)
       val session    = manager.sessionForAsync(getModule).get(5, TimeUnit.SECONDS).get
+      val lifecycle  = Scala3ParserPreparationLifecycle.get(getProject)
+      PlatformTestUtil.waitWithEventsDispatching(
+        "exact Scala 3 parser preparation",
+        () =>
+          lifecycle.stateFor(getModule) match
+            case ParserPreparationState.Ready(_)          => true
+            case ParserPreparationState.Unavailable(_, _) => true
+            case _                                        => false,
+        TimeUnit.SECONDS.toMillis(120).toInt
+      )
+      lifecycle.stateFor(getModule) match
+        case ParserPreparationState.Ready(_)               => ()
+        case ParserPreparationState.Unavailable(_, detail) => fail(s"Exact Scala 3 parser is unavailable: $detail")
+        case state                                         => fail(s"Exact Scala 3 parser did not settle: $state")
       val sourceFile = myFixture.configureByText("SessionRetirement.scala", "val value = List(1).head")
       val expression = PsiTreeUtil
         .findChildrenOfType(sourceFile, classOf[ScExpression])

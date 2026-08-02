@@ -53,6 +53,18 @@ private object PlannedScala3Lexer:
 
   def closed: PlannedScala3Lexer = new PlannedScala3Lexer(None)
 
+  def recovery(source: String, boundaries: Vector[Int]): Either[LexerPlanFailure, PlannedScala3Lexer] =
+    val ordered = (Vector(0, source.length) ++ boundaries).distinct.sorted
+    ordered.find(offset => offset < 0 || offset > source.length) match
+      case Some(offset) => Left(LexerPlanFailure.InvalidTargetRange(offset, offset, source.length))
+      case None         =>
+        val recoveryTokens = ordered
+          .sliding(2)
+          .collect:
+            case Vector(start, end) if start < end => Token(start, end, TokenType.BAD_CHARACTER)
+          .toVector
+        Right(new PlannedScala3Lexer(Some(Compiled(source, recoveryTokens))))
+
   def compile(
       source: String,
       plan: WholeFileProductionPlan,

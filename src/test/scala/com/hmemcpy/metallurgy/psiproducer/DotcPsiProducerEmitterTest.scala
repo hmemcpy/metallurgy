@@ -5,7 +5,7 @@ import com.intellij.lang.{ASTFactory, ASTNode, PsiBuilder, PsiBuilderFactory}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.{CommandProcessor, WriteCommandAction}
 import com.intellij.openapi.util.TextRange
-import com.intellij.psi.{PsiDocumentManager, PsiFile, SmartPointerManager}
+import com.intellij.psi.{PsiDocumentManager, PsiErrorElement, PsiFile, SmartPointerManager}
 import com.intellij.psi.impl.source.PsiFileImpl
 import com.intellij.psi.impl.source.tree.TreeElement
 import com.intellij.psi.util.PsiTreeUtil
@@ -14,6 +14,7 @@ import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.api.base.{ScAnnotation, ScAnnotations, ScModifierList}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScFunction, ScPatternDefinition, ScVariableDefinition}
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 import org.jetbrains.plugins.scala.lang.psi.stubs.{
   ScAccessModifierStub,
@@ -133,6 +134,222 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
 
     assertTrue(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, plan, nativeBindings))
     assertEquals(source.length, builder.getCurrentOffset)
+
+  def testFailClosedTreePreservesExactZeroWidthParserErrorAndNeutralSource(): Unit =
+    val source      = ")\nval result = 1\n"
+    val diagnostics = Vector(
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "eof expected, but ')' found",
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 0), 0))
+      )
+    )
+    val lexer       = PlannedScala3Lexer
+      .recovery(source, Vector(0, 0))
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val chameleon   = myFixture.configureByText("RecoveredError.scala", source).getNode
+    val builder     = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, source)
+
+    assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, builder, diagnostics).isRight)
+    val tree     = builder.getTreeBuilt
+    val elements = descendantNodes(tree).map(_.getPsi)
+    val errors   = elements.collect { case error: PsiErrorElement => error }
+
+    assertEquals(source, tree.getText)
+    assertEquals(1, errors.size)
+    assertEquals("eof expected, but ')' found", errors.head.getErrorDescription)
+    assertEquals(new TextRange(0, 0), errors.head.getTextRange)
+    assertTrue(elements.collect { case _: ScExpression => () }.isEmpty)
+    assertTrue(elements.collect { case _: ScFunction => () }.isEmpty)
+    assertTrue(elements.collect { case _: ScPatternDefinition => () }.isEmpty)
+    assertTrue(elements.collect { case _: ScVariableDefinition => () }.isEmpty)
+
+  def testFailClosedTreePreservesNestedDuplicateAndCoincidentParserDiagnosticIdentities(): Unit =
+    val source      = "abcdef"
+    val diagnostics = Vector(
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "outer-first",
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "outer-second",
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "inner",
+        Some(ParserDiagnosticPosition(PcSourceRange(1, 3), 1))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "point-first",
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "point-second",
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Warning,
+        "warning",
+        Some(ParserDiagnosticPosition(PcSourceRange(4, 5), 4))
+      )
+    )
+    val boundaries  =
+      diagnostics.flatMap(_.position.toVector.flatMap(value => Vector(value.range.startOffset, value.range.endOffset)))
+    val lexer       = PlannedScala3Lexer
+      .recovery(source, boundaries)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val chameleon   = myFixture.configureByText("NestedRecoveredErrors.scala", source).getNode
+    val builder     = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, source)
+
+    assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, builder, diagnostics).isRight)
+    val tree   = builder.getTreeBuilt
+    val errors = descendantNodes(tree).map(_.getPsi).collect { case error: PsiErrorElement => error }
+
+    assertEquals(source, tree.getText)
+    assertEquals(
+      Set(
+        "outer-first"  -> new TextRange(0, 6),
+        "outer-second" -> new TextRange(0, 6),
+        "inner"        -> new TextRange(1, 3),
+        "point-first"  -> new TextRange(2, 2),
+        "point-second" -> new TextRange(2, 2)
+      ),
+      errors.map(error => error.getErrorDescription -> error.getTextRange).toSet
+    )
+    assertEquals(5, errors.size)
+
+  def testFailClosedTreeRejectsCrossingAndInvalidDiagnosticRangesWithoutRelocation(): Unit =
+    val source      = "abcdef"
+    val diagnostics = Vector(
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "first",
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 3), 0))
+      ),
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "crossing",
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 5), 2))
+      )
+    )
+    val lexer       = PlannedScala3Lexer
+      .recovery(source, Vector(0, 2, 3, 5))
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val chameleon   = myFixture.configureByText("CrossingRecoveredErrors.scala", source).getNode
+    val builder     = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, source)
+
+    assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, builder, diagnostics).isLeft)
+    val crossingTree = builder.getTreeBuilt
+    assertEquals(source, crossingTree.getText)
+    assertTrue(descendantNodes(crossingTree).map(_.getPsi).collect { case _: PsiErrorElement => () }.isEmpty)
+
+    val invalidBuilder = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(
+        getProject,
+        myFixture.configureByText("InvalidRecoveredError.scala", source).getNode,
+        PlannedScala3Lexer.closed,
+        Scala3DotcLanguage.INSTANCE,
+        source
+      )
+    val invalid        = Vector(
+      ParserDiagnostic(
+        ParserDiagnosticSeverity.Error,
+        "outside",
+        Some(ParserDiagnosticPosition(PcSourceRange(0, source.length + 1), 0))
+      )
+    )
+    assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, invalidBuilder, invalid).isLeft)
+    val invalidTree    = invalidBuilder.getTreeBuilt
+    assertEquals(source, invalidTree.getText)
+    assertTrue(descendantNodes(invalidTree).map(_.getPsi).collect { case _: PsiErrorElement => () }.isEmpty)
+
+    val unpositionedBuilder = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(
+        getProject,
+        myFixture.configureByText("UnpositionedRecoveredError.scala", source).getNode,
+        PlannedScala3Lexer.closed,
+        Scala3DotcLanguage.INSTANCE,
+        source
+      )
+    val unpositioned        = Vector(ParserDiagnostic(ParserDiagnosticSeverity.Error, "unpositioned", None))
+    assertTrue(
+      DotcPsiProducer
+        .emitClosedFile(Scala3DotcParserDefinition.FileNodeType, unpositionedBuilder, unpositioned)
+        .left
+        .exists(_.contains("has no exact source range"))
+    )
+    val unpositionedTree    = unpositionedBuilder.getTreeBuilt
+    assertEquals(source, unpositionedTree.getText)
+    assertTrue(descendantNodes(unpositionedTree).map(_.getPsi).collect { case _: PsiErrorElement => () }.isEmpty)
+
+    def assertPreflightBeforeMutation(expectedReason: String, values: Vector[ParserDiagnostic]): Unit =
+      val events      = scala.collection.mutable.ArrayBuffer.empty[String]
+      val diagnostics = new Iterable[ParserDiagnostic]:
+        override def iterator: Iterator[ParserDiagnostic] =
+          values.iterator.map(value =>
+            events += "diagnostic"
+            value
+          )
+      val result      = DotcPsiProducer.emitClosedFile(
+        Scala3DotcParserDefinition.FileNodeType,
+        recordingEmitterBuilder(source, events),
+        diagnostics
+      )
+      assertTrue(result.left.exists(_.contains(expectedReason)))
+      assertEquals(Vector.fill(values.size)("diagnostic") :+ "mark", events.take(values.size + 1).toVector)
+
+    assertPreflightBeforeMutation("invalid parser diagnostic range", invalid)
+    assertPreflightBeforeMutation("crossing parser diagnostic ranges", diagnostics)
+    assertTrue(
+      DotcPsiProducer
+        .validateClosedDiagnostics(Vector(DotcPsiProducer.ClosedDiagnostic(-1, 0, 0, "negative")), source.length)
+        .isLeft
+    )
+    assertTrue(
+      DotcPsiProducer
+        .validateClosedDiagnostics(Vector(DotcPsiProducer.ClosedDiagnostic(3, 2, 0, "reversed")), source.length)
+        .isLeft
+    )
+
+  def testFailClosedTreeEmitsDeeplyNestedDiagnosticsWithoutJvmRecursion(): Unit =
+    val depth       = 4096
+    val source      = "x" * (depth * 2)
+    val diagnostics = (0 until depth)
+      .map(index =>
+        ParserDiagnostic(
+          ParserDiagnosticSeverity.Error,
+          s"nested-$index",
+          Some(ParserDiagnosticPosition(PcSourceRange(index, source.length - index), index))
+        )
+      )
+      .toVector
+    val boundaries  =
+      diagnostics.flatMap(_.position.toVector.flatMap(value => Vector(value.range.startOffset, value.range.endOffset)))
+    val lexer       = PlannedScala3Lexer
+      .recovery(source, boundaries)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val chameleon   = myFixture.configureByText("DeepRecoveredErrors.scala", source).getNode
+    val builder     = PsiBuilderFactory
+      .getInstance()
+      .createBuilder(getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, source)
+
+    assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, builder, diagnostics).isRight)
+    val tree = builder.getTreeBuilt
+    assertEquals(source, tree.getText)
+    assertEquals(depth, descendantNodes(tree).map(_.getPsi).count(_.isInstanceOf[PsiErrorElement]))
 
   def testCompatibilityExpressionKeepsOneExactFlatRangeWithoutBundledInference(): Unit =
     val file       = myFixture.configureByText("PayloadCase.scala", "val value = \"m\"")
@@ -670,7 +887,10 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
     assertFalse(DotcPsiProducer.parse(Scala3DotcParserDefinition.FileNodeType, builder, malformed, nativeBindings))
     assertEquals(0, builder.getCurrentOffset)
 
-  private def recordingEmitterBuilder(source: String): PsiBuilder =
+  private def recordingEmitterBuilder(
+      source: String,
+      events: scala.collection.mutable.ArrayBuffer[String] = scala.collection.mutable.ArrayBuffer.empty
+  ): PsiBuilder =
     val offset = new AtomicInteger(0)
     val marker = Proxy
       .newProxyInstance(
@@ -690,10 +910,10 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
               case "rawLookup"         =>
                 if arguments(0).asInstanceOf[Int] < source.length then ScalaElementType.PACKAGING else null
               case "rawTokenTypeStart" => Integer.valueOf(arguments(0).asInstanceOf[Int])
-              case "mark"              => marker
+              case "mark"              => events += "mark"; marker
               case "eof"               => java.lang.Boolean.valueOf(offset.get() >= source.length)
               case "getCurrentOffset"  => Integer.valueOf(offset.get())
-              case "advanceLexer"      => offset.incrementAndGet(); null
+              case "advanceLexer"      => events += "advance"; offset.incrementAndGet(); null
               case "toString"          => "recording emitter builder"
               case "hashCode"          => Integer.valueOf(System.identityHashCode(proxy))
               case "equals"            => java.lang.Boolean.valueOf(proxy eq arguments(0))

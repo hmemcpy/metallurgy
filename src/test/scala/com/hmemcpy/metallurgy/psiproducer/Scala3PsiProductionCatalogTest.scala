@@ -725,7 +725,6 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.WildcardType           -> Set("import-selector-given-bound-wildcard-type"),
       GrammarRoleId.InfixType              -> Set("import-selector-given-bound-infix-type"),
       GrammarRoleId.IntegerLiteral         -> Set("integer-literal-number"),
-      GrammarRoleId.ExpressionPayload      -> Set("annotation-argument-literal-payload"),
       GrammarRoleId.Modifiers              -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
@@ -779,7 +778,30 @@ final class Scala3PsiProductionCatalogTest:
         "template-unbounded-type-parameter-contravariant"
       ),
       GrammarRoleId.TemplateSelf           -> Set("template-self-absent"),
-      GrammarRoleId.TemplateTypeTree       -> Set("template-type-tree-synthetic")
+      GrammarRoleId.TemplateTypeTree       -> Set("template-type-tree-synthetic"),
+      GrammarRoleId.FunctionDefinition     -> Set("definition-function-untyped"),
+      GrammarRoleId.PropertyDefinition     -> Set("definition-val-untyped", "definition-var-untyped"),
+      GrammarRoleId.ReferenceBinding       -> Set("definition-val-untyped", "definition-var-untyped"),
+      GrammarRoleId.TypeAliasDeclaration   -> Set("definition-unbounded-type-alias"),
+      GrammarRoleId.InferredTypeAbsence    -> Set("definition-inferred-type-absence"),
+      GrammarRoleId.OutputFreeExpression   -> Set("payload-descendant-val", "payload-descendant-var"),
+      GrammarRoleId.ExpressionPayload      -> Set(
+        "annotation-argument-literal-payload",
+        "definition-payload-number",
+        "definition-payload-ident",
+        "definition-payload-apply",
+        "definition-payload-select",
+        "definition-payload-tuple",
+        "definition-payload-block",
+        "definition-payload-infix",
+        "payload-descendant-ident",
+        "payload-descendant-number",
+        "payload-descendant-apply",
+        "payload-descendant-select",
+        "payload-descendant-tuple",
+        "payload-descendant-block",
+        "payload-descendant-infix"
+      )
     )
     val actual   = catalog.productions
       .flatMap(production => production.grammarRoleIds.map(_ -> production.id))
@@ -837,7 +859,10 @@ final class Scala3PsiProductionCatalogTest:
         "template-class-definition",
         "template-trait-definition",
         "template-object-definition",
-        "template-enum-definition"
+        "template-enum-definition",
+        "definition-function-untyped",
+        "definition-val-untyped",
+        "definition-var-untyped"
       ),
       packageStatements.productionIds
     )
@@ -910,6 +935,18 @@ final class Scala3PsiProductionCatalogTest:
       Set("import-selector-direct", "import-selector-braced"),
       exportProduction.children.find(_.roleId == "selectors").get.productionIds
     )
+
+  @Test def definitionExternalIdsParticipateInThePersistenceSchemaFingerprint(): Unit =
+    val catalog = Scala3PsiProductionCatalog.Reviewed
+    val ids     = TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds
+    val current = Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog, ids)
+
+    DefinitionPersistenceSurfaces.ExternalIds.foreach: (role, externalId) =>
+      assertNotEquals(
+        role.value,
+        current,
+        Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog, ids.updated(role, s"$externalId.changed"))
+      )
 
   @Test def syntheticDefinitionRoutePlansExactModifierAnnotationAndOpaquePayloadRanges(): Unit =
     val value            = annotationModifierSnapshot

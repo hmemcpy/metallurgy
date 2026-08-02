@@ -4,9 +4,13 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
 import com.intellij.psi.{PsiErrorElement, PsiManager}
 import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.plugins.scala.lang.psi.api.statements.ScPatternDefinition
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 import org.junit.Assert.{assertEquals, assertTrue}
+
+import scala.jdk.CollectionConverters.*
 
 final class Scala3ParentlessTemplateStressTest extends Scala3CompatTestCase:
 
@@ -52,6 +56,35 @@ final class Scala3ParentlessTemplateStressTest extends Scala3CompatTestCase:
     assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).size)
     assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParamClause]).size)
     assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeParam]).size)
+
+  def testDeepExactExpressionPayloadsHaveNoFiniteDepthCap(): Unit =
+    val depth  = 1024
+    val rhs    = "root" + ".next" * depth
+    val source = s"def deep = $rhs\n"
+    val file   = physical("Case11.scala", source)
+
+    val payloads = PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).asScala.toVector
+    assertEquals(depth + 1, payloads.size)
+    assertEquals(rhs, payloads.maxBy(_.getTextLength).getText)
+    assertTrue(
+      payloads.forall: payload =>
+        val range = payload.getTextRange
+        source.substring(range.getStartOffset, range.getEndOffset) == payload.getText
+    )
+
+  def testTenThousandRepeatedRhsPayloadsHaveNoFiniteOccurrenceCap(): Unit =
+    val count  = 10000
+    val source = (0 until count).map(index => s"val value$index = $index\n").mkString
+    val file   = physical("Case12.scala", source)
+
+    val payloads = PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).asScala.toVector
+    assertEquals(count, payloads.size)
+    assertEquals(count, PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).size)
+    assertTrue(
+      payloads.forall: payload =>
+        val range = payload.getTextRange
+        source.substring(range.getStartOffset, range.getEndOffset) == payload.getText
+    )
 
   private def physical(name: String, source: String): com.intellij.psi.PsiFile =
     val pending = myFixture.addFileToProject(s"src/$name", source)

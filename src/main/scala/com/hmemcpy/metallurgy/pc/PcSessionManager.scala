@@ -20,8 +20,10 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.{Module, ModuleUtilCore}
 import com.intellij.openapi.project.{ModuleListener, Project}
 import com.intellij.openapi.roots.{ModuleRootEvent, ModuleRootListener}
-import com.intellij.openapi.util.Computable
+import com.intellij.openapi.util.{Computable, TextRange}
 import com.intellij.openapi.vfs.{VirtualFile, VirtualFileManager}
+import com.intellij.psi.{PsiErrorElement, PsiManager}
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
@@ -336,8 +338,12 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
             CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
         session.diagnostics(snapshot) match
           case Some(diagnostics) =>
-            cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, diagnostics)
-            renderer.render(snapshot.fileUri, snapshot.documentVersion, diagnostics)
+            val visible = PcSessionManager.excludeParserOwnedDiagnostics(
+              diagnostics,
+              parserOwnedDiagnostics(snapshot)
+            )
+            cache.publishSuccess(snapshot.fileUri, snapshot.documentVersion, visible)
+            renderer.render(snapshot.fileUri, snapshot.documentVersion, visible)
           case None              =>
             cache.publishFailed(snapshot.fileUri, snapshot.documentVersion)
             renderer.blank(snapshot.fileUri, snapshot.documentVersion)
@@ -348,6 +354,26 @@ final class PcSessionManager private[pc] (project: Project, fetcher: MtagsFetche
         renderer.blank(snapshot.fileUri, snapshot.documentVersion)
         CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
       case RetypecheckOutcome.Superseded => CompletableFuture.completedFuture(CompilerBackendCommit.Rejected)
+
+  private def parserOwnedDiagnostics(snapshot: PcSnapshot): Set[(TextRange, String)] =
+    readAction(
+      new Computable[Set[(TextRange, String)]]:
+        override def compute(): Set[(TextRange, String)] =
+          Option(VirtualFileManager.getInstance.findFileByUrl(snapshot.fileUri))
+            .filter(file =>
+              Option(FileDocumentManager.getInstance.getDocument(file))
+                .exists(_.getModificationStamp == snapshot.documentVersion)
+            )
+            .flatMap(file => Option(PsiManager.getInstance(project).findFile(file)))
+            .map(file =>
+              PsiTreeUtil
+                .findChildrenOfType(file, classOf[PsiErrorElement])
+                .asScala
+                .map(error => error.getTextRange -> error.getErrorDescription)
+                .toSet
+            )
+            .getOrElse(Set.empty)
+    )
 
   private def trackFile(module: Module, fileUrl: String): Unit =
     val _ = moduleFiles.computeIfAbsent(module, _ => ConcurrentHashMap.newKeySet[String]()).add(fileUrl)
@@ -535,6 +561,14 @@ private final case class BackendPreparationKey(module: Module, fileUri: String, 
 
 object PcSessionManager:
   def get(project: Project): PcSessionManager = project.getService(classOf[PcSessionManager])
+
+  private[pc] def excludeParserOwnedDiagnostics(
+      diagnostics: Seq[PcDiagnostic],
+      parserOwned: Set[(TextRange, String)]
+  ): Seq[PcDiagnostic] =
+    diagnostics.filterNot(diagnostic =>
+      diagnostic.isError && parserOwned.contains(diagnostic.range -> diagnostic.message)
+    )
 
   /** `.betasty` must sit at a classpath root to be read by `-Ywith-best-effort-tasty`. For each directory root that
     * carries a `META-INF/best-effort` subdir — an upstream module compiled with `-Ybest-effort` while broken — expose

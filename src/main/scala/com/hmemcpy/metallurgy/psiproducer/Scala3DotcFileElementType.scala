@@ -1,6 +1,14 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.{ParserSourceUri, ParserSyntaxSnapshot, Scala3ParserCancellation, Scala3ParserRequest}
+import com.hmemcpy.metallurgy.pc.{
+  ParserDiagnostic,
+  ParserDiagnosticSeverity,
+  ParserSourceUri,
+  ParserSyntaxSnapshot,
+  Scala3ParserCompilerIdentity,
+  Scala3ParserCancellation,
+  Scala3ParserRequest
+}
 import com.intellij.lang.{ASTNode, PsiBuilderFactory}
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.progress.ProgressManager
@@ -66,6 +74,8 @@ final class Scala3DotcFileElementType
     val capabilityService                                                                       = Scala3SyntaxCapabilityService
       .get(psi.getProject)
     val priorFailure                                                                            = sourceFile.flatMap(file => capabilityService.failureFor(file, digest))
+    var exactDiagnostics                                                                        = Vector.empty[ParserDiagnostic]
+    var exactCompilerIdentity                                                                   = Option.empty[Scala3ParserCompilerIdentity]
     def failure(stage: Scala3SyntaxCapabilityStage, detail: Any): Scala3SyntaxCapabilityFailure =
       Scala3SyntaxCapabilityFailure.from(digest, stage, detail, preparationEpoch, None)
     val planned                                                                                 = for
@@ -86,6 +96,8 @@ final class Scala3DotcFileElementType
                           )
                           .left
                           .map(failure(Scala3SyntaxCapabilityStage.Parser, _))
+      _               = exactDiagnostics = snapshot.diagnostics
+      _               = exactCompilerIdentity = Some(snapshot.compilerIdentity)
       snapshotFailure = (stage: Scala3SyntaxCapabilityStage, detail: Any) =>
                           Scala3SyntaxCapabilityFailure.from(
                             digest,
@@ -119,7 +131,14 @@ final class Scala3DotcFileElementType
                           .left
                           .map(snapshotFailure(Scala3SyntaxCapabilityStage.Lexer, _))
     yield (plan, prepared.bindings, lexer, snapshot.compilerIdentity)
-    val lexer                                                                                   = planned.fold(_ => PlannedScala3Lexer.closed, _._3)
+    val diagnosticBoundaries                                                                    = exactDiagnostics.collect:
+      case ParserDiagnostic(ParserDiagnosticSeverity.Error, _, Some(position)) =>
+        Vector(position.range.startOffset, position.range.endOffset)
+    val flattenedDiagnosticBoundaries                                                           = diagnosticBoundaries.flatten
+    val lexer                                                                                   = planned.fold(
+      _ => PlannedScala3Lexer.recovery(source, flattenedDiagnosticBoundaries).getOrElse(PlannedScala3Lexer.closed),
+      _._3
+    )
     val builder                                                                                 = PsiBuilderFactory
       .getInstance()
       .createBuilder(psi.getProject, chameleon, lexer, Scala3DotcLanguage.INSTANCE, chameleon.getChars)
@@ -144,8 +163,19 @@ final class Scala3DotcFileElementType
           )
         )
       case Left(reason) =>
-        sourceFile.foreach(file => capabilityService.publish(file, module, reason))
-        DotcPsiProducer.emitClosedFile(this, builder)
+        val emittedClosed = DotcPsiProducer.emitClosedFile(this, builder, exactDiagnostics)
+        val published     = emittedClosed.left
+          .map(detail =>
+            Scala3SyntaxCapabilityFailure.from(
+              digest,
+              Scala3SyntaxCapabilityStage.Emitter,
+              detail,
+              preparationEpoch,
+              exactCompilerIdentity
+            )
+          )
+          .fold(identity, _ => reason)
+        sourceFile.foreach(file => capabilityService.publish(file, module, published))
     builder.getTreeBuilt.getFirstChildNode
 
   private def sourceUri(psi: PsiElement, digest: String): String =
@@ -157,6 +187,6 @@ final class Scala3DotcFileElementType
 private[metallurgy] object Scala3DotcFileElementType:
   val ExternalId                     = "metallurgy.scala3.file"
   val DebugName                      = "METALLURGY_SCALA3_FILE"
-  val SchemaVersion                  = 6
+  val SchemaVersion                  = 7
   lazy val SchemaFingerprint: String =
     Scala3PsiProductionCatalog.persistenceSchemaFingerprint(Scala3PsiProductionCatalog.Reviewed)

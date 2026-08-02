@@ -135,6 +135,7 @@ private[metallurgy] object NeutralNameClass:
 
 private[metallurgy] enum CatalogValuePattern:
   case Node
+  case NodePrefix(prefix: String)
   case Positioned
   case Optional(value: CatalogValuePattern)
   case EmptyOptional(value: CatalogValuePattern)
@@ -602,6 +603,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   private def writePattern(value: CatalogValuePattern, e: CanonicalByteEncoder): Unit = value match
     case CatalogValuePattern.Node                                   => e.tag(1)
+    case CatalogValuePattern.NodePrefix(prefix)                     => e.tag(16); e.string(prefix)
     case CatalogValuePattern.Positioned                             => e.tag(2)
     case CatalogValuePattern.Optional(inner)                        => e.tag(3); writePattern(inner, e)
     case CatalogValuePattern.EmptyOptional(inner)                   => e.tag(12); writePattern(inner, e)
@@ -1274,6 +1276,12 @@ private[metallurgy] object GrammarRoleId:
   val UnboundedTypeParameter = GrammarRoleId("scala.type-parameter.unbounded")
   val TemplateSelf           = GrammarRoleId("scala.template.self")
   val TemplateTypeTree       = GrammarRoleId("scala.template.type-tree")
+  val FunctionDefinition     = GrammarRoleId("scala.definition.function")
+  val PropertyDefinition     = GrammarRoleId("scala.definition.property")
+  val ReferenceBinding       = GrammarRoleId("scala.pattern.reference-binding")
+  val TypeAliasDeclaration   = GrammarRoleId("scala.definition.type-alias-declaration")
+  val InferredTypeAbsence    = GrammarRoleId("scala.type.inferred-absence")
+  val OutputFreeExpression   = GrammarRoleId("scala.expression.output-free-descendant")
 private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
   case Repeated(minimum: Int, maximum: Option[Int])
@@ -1290,6 +1298,7 @@ private[metallurgy] final case class ChildDeclaration(
 private[metallurgy] enum TerminalIntervalSelector:
   case FieldBounds(startField: String, endField: String)
   case ChildGap(startRole: String, endRole: String)
+  case BeforeChild(roleId: String)
   case CompilerEndMarkerKeyword
   case LocalOutput(outputId: String)
   case RootOutsideLocalOutput(outputId: String)
@@ -1412,6 +1421,12 @@ private[metallurgy] object PsiOutputRoleId:
   val ParameterClause       = PsiOutputRoleId("scala.template.parameter-clause")
   val TypeParameterClause   = PsiOutputRoleId("scala.type-parameter.clause")
   val TypeParameter         = PsiOutputRoleId("scala.type-parameter")
+  val FunctionDefinition    = PsiOutputRoleId("scala.definition.function")
+  val PatternDefinition     = PsiOutputRoleId("scala.definition.pattern")
+  val VariableDefinition    = PsiOutputRoleId("scala.definition.variable")
+  val PatternList           = PsiOutputRoleId("scala.pattern.list")
+  val ReferencePattern      = PsiOutputRoleId("scala.pattern.reference")
+  val TypeAliasDeclaration  = PsiOutputRoleId("scala.definition.type-alias-declaration")
 private[metallurgy] final case class StableRoleInventory(
     grammarRoles: Set[GrammarRoleId],
     outputRoles: Set[PsiOutputRoleId]
@@ -1452,7 +1467,13 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.TypeParameterClause,
       GrammarRoleId.UnboundedTypeParameter,
       GrammarRoleId.TemplateSelf,
-      GrammarRoleId.TemplateTypeTree
+      GrammarRoleId.TemplateTypeTree,
+      GrammarRoleId.FunctionDefinition,
+      GrammarRoleId.PropertyDefinition,
+      GrammarRoleId.ReferenceBinding,
+      GrammarRoleId.TypeAliasDeclaration,
+      GrammarRoleId.InferredTypeAbsence,
+      GrammarRoleId.OutputFreeExpression
     ),
     Set(
       PsiOutputRoleId.SourceTerminal,
@@ -1492,7 +1513,13 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.ParameterClauses,
       PsiOutputRoleId.ParameterClause,
       PsiOutputRoleId.TypeParameterClause,
-      PsiOutputRoleId.TypeParameter
+      PsiOutputRoleId.TypeParameter,
+      PsiOutputRoleId.FunctionDefinition,
+      PsiOutputRoleId.PatternDefinition,
+      PsiOutputRoleId.VariableDefinition,
+      PsiOutputRoleId.PatternList,
+      PsiOutputRoleId.ReferencePattern,
+      PsiOutputRoleId.TypeAliasDeclaration
     )
   )
 private[metallurgy] object ImportPersistenceSurfaces:
@@ -1593,6 +1620,39 @@ private[metallurgy] object TemplatePersistenceSurfaces:
     PsiOutputRoleId.ParameterClause     -> "scala.parameter clause",
     PsiOutputRoleId.TypeParameterClause -> "scala.type parameter clause",
     PsiOutputRoleId.TypeParameter       -> "scala.type parameter"
+  )
+private[metallurgy] object DefinitionPersistenceSurfaces:
+  val FunctionStub           = "org/jetbrains/plugins/scala/lang/psi/stubs/ScFunctionStub"
+  val FunctionSerializer     =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScFunctionElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScFunctionStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val PropertyStub           = "org/jetbrains/plugins/scala/lang/psi/stubs/ScPropertyStub"
+  val PropertySerializer     =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScPropertyElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScPropertyStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val PatternListStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScPatternListStub"
+  val PatternListSerializer  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScPatternListElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScPatternListStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val BindingStub            = "org/jetbrains/plugins/scala/lang/psi/stubs/ScBindingPatternStub"
+  val BindingSerializer      =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScBindingPatternElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScBindingPatternStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val TypeAliasStub          = "org/jetbrains/plugins/scala/lang/psi/stubs/ScTypeAliasStub"
+  val TypeAliasSerializer    =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScTypeAliasElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScTypeAliasStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val MethodNameIndex        = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#METHOD_NAME_KEY"
+  val TopLevelFunctionIndex  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#TOP_LEVEL_FUNCTION_BY_PKG_KEY"
+  val PropertyNameIndex      = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#PROPERTY_NAME_KEY"
+  val TopLevelPropertyIndex  =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#TOP_LEVEL_VAL_OR_VAR_BY_PKG_KEY"
+  val TypeAliasNameIndex     = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#TYPE_ALIAS_NAME_KEY"
+  val TopLevelTypeAliasIndex =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#TOP_LEVEL_TYPE_ALIAS_BY_PKG_KEY"
+  val ExternalIds            = Map(
+    PsiOutputRoleId.FunctionDefinition   -> "scala.function definition",
+    PsiOutputRoleId.PatternDefinition    -> "scala.value definition",
+    PsiOutputRoleId.VariableDefinition   -> "scala.variable definition",
+    PsiOutputRoleId.PatternList          -> "scala.pattern list",
+    PsiOutputRoleId.ReferencePattern     -> "scala.reference pattern",
+    PsiOutputRoleId.TypeAliasDeclaration -> "scala.type alias declaration"
   )
 private[metallurgy] enum OutputCompositeRealization:
   case Once
@@ -1707,7 +1767,16 @@ private[metallurgy] enum CatalogCapabilityFailure:
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty, StableRoleInventory.Empty)
 
+  private val PersistenceExternalIds =
+    TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds
+
   def persistenceSchemaFingerprint(catalog: Scala3PsiProductionCatalog): String =
+    persistenceSchemaFingerprint(catalog, PersistenceExternalIds)
+
+  private[psiproducer] def persistenceSchemaFingerprint(
+      catalog: Scala3PsiProductionCatalog,
+      externalIds: Map[PsiOutputRoleId, String]
+  ): String =
     val encoder = CanonicalByteEncoder()
     encoder.sequence(catalog.stableRoles.outputRoles.toVector.sortBy(_.value))(role => encoder.string(role.value))
     encoder.sequence(catalog.productions.sortBy(_.id)): production =>
@@ -1744,7 +1813,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           encoder.string(output.range.toString)
           encoder.string(output.outputRoleId.value)
           encoder.string(output.targetSurfaceId)
-          encoder.string(TemplatePersistenceSurfaces.ExternalIds.getOrElse(output.outputRoleId, ""))
+          encoder.string(externalIds.getOrElse(output.outputRoleId, ""))
           encoder.string(output.targetRequirement.toString)
           encoder.sequence(output.accessors.sortBy(_.toString))(accessor => encoder.string(accessor.toString))
           encoder.string(output.navigation.toString)
@@ -1764,72 +1833,83 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           encoder.string(parent.getOrElse(""))
     CanonicalByteEncoder.sha256Hex(encoder.result())
 
-  private val PackageSurface             =
+  private val PackageSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
-  private val EndSurface                 = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
-  private val ImportStatementSurface     =
+  private val EndSurface                  = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
+  private val ImportStatementSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
-  private val ExportStatementSurface     =
+  private val ExportStatementSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScExportStmtImpl"
-  private val ExportStatementApi         =
+  private val ExportStatementApi          =
     "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScExportStmt"
-  private val ImportExpressionSurface    =
+  private val ImportExpressionSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportExprImpl"
-  private val ImportSelectorsSurface     =
+  private val ImportSelectorsSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorsImpl"
-  private val ImportSelectorSurface      =
+  private val ImportSelectorSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorImpl"
-  private val StableReferenceSurface     =
+  private val StableReferenceSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl"
-  private val SimpleTypeSurface          =
+  private val SimpleTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSimpleTypeElementImpl"
-  private val ParameterizedTypeSurface   =
+  private val ParameterizedTypeSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
-  private val TypeArgumentsSurface       =
+  private val TypeArgumentsSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeArgsImpl"
-  private val WildcardTypeSurface        =
+  private val WildcardTypeSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScWildcardTypeElementImpl"
-  private val InfixTypeSurface           =
+  private val InfixTypeSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScInfixTypeElementImpl"
-  private val ModifierListSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
-  private val AccessModifierSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
-  private val AnnotationsSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
-  private val AnnotationSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl"
-  private val AnnotationExprSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl"
-  private val ConstructorSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl"
-  private val AnnotationArgumentsSurface =
+  private val ModifierListSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
+  private val AccessModifierSurface       = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
+  private val AnnotationsSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
+  private val AnnotationSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl"
+  private val AnnotationExprSurface       = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl"
+  private val ConstructorSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl"
+  private val AnnotationArgumentsSurface  =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
-  private val ExpressionPayloadSurface   =
+  private val ExpressionPayloadSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
-  private val ExpressionSurface          = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
-  private val ClassDefinitionSurface     =
+  private val ExpressionSurface           = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
+  private val ClassDefinitionSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScClassImpl"
-  private val TraitDefinitionSurface     =
+  private val TraitDefinitionSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScTraitImpl"
-  private val ObjectDefinitionSurface    =
+  private val ObjectDefinitionSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScObjectImpl"
-  private val EnumDefinitionSurface      =
+  private val EnumDefinitionSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScEnumImpl"
-  private val EnumCasesSurface           =
+  private val EnumCasesSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumCasesImpl"
-  private val EnumSingletonCaseSurface   =
+  private val EnumSingletonCaseSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumSingletonCaseImpl"
-  private val EnumClassCaseSurface       =
+  private val EnumClassCaseSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumClassCaseImpl"
-  private val ExtendsBlockSurface        =
+  private val ExtendsBlockSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScExtendsBlockImpl"
-  private val TemplateBodySurface        =
+  private val TemplateBodySurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScTemplateBodyImpl"
-  private val PrimaryConstructorSurface  =
+  private val PrimaryConstructorSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPrimaryConstructorImpl"
-  private val ParameterClausesSurface    =
+  private val ParameterClausesSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParametersImpl"
-  private val ParameterClauseSurface     =
+  private val ParameterClauseSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterClauseImpl"
-  private val TypeParameterClauseSurface =
+  private val TypeParameterClauseSurface  =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScTypeParamClauseImpl"
-  private val TypeParameterSurface       =
+  private val TypeParameterSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScTypeParamImpl"
+  private val FunctionDefinitionSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScFunctionDefinitionImpl"
+  private val PatternDefinitionSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScPatternDefinitionImpl"
+  private val VariableDefinitionSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScVariableDefinitionImpl"
+  private val PatternListSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPatternListImpl"
+  private val ReferencePatternSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScReferencePatternImpl"
+  private val TypeAliasDeclarationSurface =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScTypeAliasDeclarationImpl"
 
   private def outputComposite(
       id: String,
@@ -1841,70 +1921,70 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       requirement: TargetRequirement = TargetRequirement.Native
   ): OutputCompositeDeclaration =
     val persistence = role match
-      case PsiOutputRoleId.PackageStatement    =>
+      case PsiOutputRoleId.PackageStatement                                       =>
         PersistenceObligations.Required(
           PackagePersistenceSurfaces.Stub,
           PackagePersistenceSurfaces.Serializer,
           Vector(PackagePersistenceSurfaces.FqnIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportStatement     =>
+      case PsiOutputRoleId.ImportStatement                                        =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.StatementStub,
           ImportPersistenceSurfaces.StatementSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ExportStatement     =>
+      case PsiOutputRoleId.ExportStatement                                        =>
         PersistenceObligations.Required(
           ExportPersistenceSurfaces.StatementStub,
           ExportPersistenceSurfaces.StatementSerializer,
           Vector(ExportPersistenceSurfaces.TopLevelPackageIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportExpression    =>
+      case PsiOutputRoleId.ImportExpression                                       =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.ExpressionStub,
           ImportPersistenceSurfaces.ExpressionSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportSelectorSet   =>
+      case PsiOutputRoleId.ImportSelectorSet                                      =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.SelectorSetStub,
           ImportPersistenceSurfaces.SelectorSetSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportSelector      =>
+      case PsiOutputRoleId.ImportSelector                                         =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.SelectorStub,
           ImportPersistenceSurfaces.SelectorSerializer,
           Vector(ImportPersistenceSurfaces.AliasedImportIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ModifierList        =>
+      case PsiOutputRoleId.ModifierList                                           =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.ModifierStub,
           ModifierAnnotationPersistenceSurfaces.ModifierSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.AccessModifier      =>
+      case PsiOutputRoleId.AccessModifier                                         =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AccessStub,
           ModifierAnnotationPersistenceSurfaces.AccessSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.Annotations         =>
+      case PsiOutputRoleId.Annotations                                            =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AnnotationsStub,
           ModifierAnnotationPersistenceSurfaces.AnnotationsSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.Annotation          =>
+      case PsiOutputRoleId.Annotation                                             =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AnnotationStub,
           ModifierAnnotationPersistenceSurfaces.AnnotationSerializer,
@@ -1919,63 +1999,101 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           TemplatePersistenceSurfaces.DefinitionIndices,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.TypeParameterClause =>
+      case PsiOutputRoleId.TypeParameterClause                                    =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.TypeParameterClauseStub,
           TemplatePersistenceSurfaces.TypeParameterClauseSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.TypeParameter       =>
+      case PsiOutputRoleId.TypeParameter                                          =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.TypeParameterStub,
           TemplatePersistenceSurfaces.TypeParameterSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.EnumCases           =>
+      case PsiOutputRoleId.EnumCases                                              =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.EnumCasesStub,
           TemplatePersistenceSurfaces.GenericSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ExtendsBlock        =>
+      case PsiOutputRoleId.ExtendsBlock                                           =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.ExtendsBlockStub,
           TemplatePersistenceSurfaces.ExtendsBlockSerializer,
           Vector(TemplatePersistenceSurfaces.SuperClassNameIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.TemplateBody        =>
+      case PsiOutputRoleId.TemplateBody                                           =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.TemplateBodyStub,
           TemplatePersistenceSurfaces.GenericSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.PrimaryConstructor  =>
+      case PsiOutputRoleId.PrimaryConstructor                                     =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.PrimaryConstructorStub,
           TemplatePersistenceSurfaces.GenericSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ParameterClauses    =>
+      case PsiOutputRoleId.ParameterClauses                                       =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.ParameterClausesStub,
           TemplatePersistenceSurfaces.GenericSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ParameterClause     =>
+      case PsiOutputRoleId.ParameterClause                                        =>
         PersistenceObligations.Required(
           TemplatePersistenceSurfaces.ParameterClauseStub,
           TemplatePersistenceSurfaces.GenericSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case _                                   => PersistenceObligations.NotApplicable
+      case PsiOutputRoleId.FunctionDefinition                                     =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.FunctionStub,
+          DefinitionPersistenceSurfaces.FunctionSerializer,
+          Vector(DefinitionPersistenceSurfaces.MethodNameIndex, DefinitionPersistenceSurfaces.TopLevelFunctionIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.PatternDefinition | PsiOutputRoleId.VariableDefinition =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.PropertyStub,
+          DefinitionPersistenceSurfaces.PropertySerializer,
+          Vector(DefinitionPersistenceSurfaces.PropertyNameIndex, DefinitionPersistenceSurfaces.TopLevelPropertyIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.PatternList                                            =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.PatternListStub,
+          DefinitionPersistenceSurfaces.PatternListSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ReferencePattern                                       =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.BindingStub,
+          DefinitionPersistenceSurfaces.BindingSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.TypeAliasDeclaration                                   =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.TypeAliasStub,
+          DefinitionPersistenceSurfaces.TypeAliasSerializer,
+          Vector(
+            DefinitionPersistenceSurfaces.TypeAliasNameIndex,
+            DefinitionPersistenceSurfaces.TopLevelTypeAliasIndex
+          ),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case _                                                                      => PersistenceObligations.NotApplicable
     OutputCompositeDeclaration(
       id,
       parentId,
@@ -1988,17 +2106,17 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Some(NavigationObligation.Self)
     )
 
-  private val ImportStatementAccessors     = Vector(
+  private val ImportStatementAccessors      = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportOrExportStmt#importExprs()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  private val ExportStatementAccessors     = ImportStatementAccessors ++ Vector(
+  private val ExportStatementAccessors      = ImportStatementAccessors ++ Vector(
     AccessorObligation(
       s"$ExportStatementApi#isTopLevel()Z",
       required = true,
-      SurfaceFactKind.Method
+      surfaceKind = SurfaceFactKind.Method
     ),
     AccessorObligation(
       s"$ExportStatementApi#topLevelQualifier()Lscala/Option;",
@@ -2006,7 +2124,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       SurfaceFactKind.Method
     )
   )
-  private val PackageAccessors             = Vector(
+  private val PackageAccessors              = Vector(
     AccessorObligation(s"$PackageSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(
@@ -2029,7 +2147,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$PackageSurface#isEnclosedByColon()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$PackageSurface#end()Lscala/Option;", required = true)
   )
-  private val EndAccessors                 = Vector(
+  private val EndAccessors                  = Vector(
     AccessorObligation(s"$EndSurface#begin()Lscala/Option;", required = true),
     AccessorObligation(s"$EndSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(s"$EndSurface#tag()Lcom/intellij/psi/PsiElement;", required = true),
@@ -2045,18 +2163,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$EndSurface#isSoft()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$EndSurface#getCanonicalText()Ljava/lang/String;", required = true, SurfaceFactKind.Method)
   )
-  private val ImportExpressionAccessors    = Vector(
+  private val ImportExpressionAccessors     = Vector(
     AccessorObligation(s"$ImportExpressionSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#selectorSet()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#qualifier()Lscala/Option;", required = true)
   )
-  private val ImportSelectorsAccessors     = Vector(
+  private val ImportSelectorsAccessors      = Vector(
     AccessorObligation(
       s"$ImportSelectorsSurface#selectors()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  private val ImportSelectorAccessors      = Vector(
+  private val ImportSelectorAccessors       = Vector(
     AccessorObligation(
       s"$ImportSelectorSurface#parentImportExpression()Lorg/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportExpr;",
       required = true
@@ -2064,17 +2182,17 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$ImportSelectorSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportSelectorSurface#givenTypeElement()Lscala/Option;", required = true)
   )
-  private val StableReferenceAccessors     = Vector(
+  private val StableReferenceAccessors      = Vector(
     AccessorObligation(s"$StableReferenceSurface#qualifier()Lscala/Option;", required = true),
     AccessorObligation(
       s"$StableReferenceSurface#nameId()Lcom/intellij/psi/PsiElement;",
       required = true
     )
   )
-  private val SimpleTypeAccessors          = Vector(
+  private val SimpleTypeAccessors           = Vector(
     AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true)
   )
-  private val ParameterizedTypeAccessors   = Vector(
+  private val ParameterizedTypeAccessors    = Vector(
     AccessorObligation(
       s"$ParameterizedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -2084,14 +2202,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
-  private val TypeArgumentsAccessors       = Vector(
+  private val TypeArgumentsAccessors        = Vector(
     AccessorObligation(s"$TypeArgumentsSurface#typeArgs()Lscala/collection/immutable/Seq;", required = true)
   )
-  private val WildcardTypeAccessors        = Vector(
+  private val WildcardTypeAccessors         = Vector(
     AccessorObligation(s"$WildcardTypeSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$WildcardTypeSurface#upperTypeElement()Lscala/Option;", required = true)
   )
-  private val InfixTypeAccessors           = Vector(
+  private val InfixTypeAccessors            = Vector(
     AccessorObligation(
       s"$InfixTypeSurface#left()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -2102,7 +2220,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
-  private val ModifierListAccessors        = Vector(
+  private val ModifierListAccessors         = Vector(
     AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
     AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
     AccessorObligation(
@@ -2111,20 +2229,20 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       SurfaceFactKind.Method
     )
   )
-  private val AccessModifierAccessors      = Vector(
+  private val AccessModifierAccessors       = Vector(
     AccessorObligation(s"$AccessModifierSurface#idText()Lscala/Option;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isPrivate()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isProtected()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isThis()Z", required = true, SurfaceFactKind.Method)
   )
-  private val AnnotationsAccessors         = Vector(
+  private val AnnotationsAccessors          = Vector(
     AccessorObligation(
       s"$AnnotationsSurface#getAnnotations()[Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotation;",
       required = true,
       SurfaceFactKind.Method
     )
   )
-  private val AnnotationAccessors          = Vector(
+  private val AnnotationAccessors           = Vector(
     AccessorObligation(
       s"$AnnotationSurface#annotationExpr()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotationExpr;",
       required = true
@@ -2138,7 +2256,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
-  private val AnnotationExprAccessors      = Vector(
+  private val AnnotationExprAccessors       = Vector(
     AccessorObligation(
       s"$AnnotationExprSurface#constructorInvocation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScConstructorInvocation;",
       required = true
@@ -2149,7 +2267,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
-  private val ConstructorAccessors         = Vector(
+  private val ConstructorAccessors          = Vector(
     AccessorObligation(
       s"$ConstructorSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -2160,15 +2278,49 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     AccessorObligation(s"$ConstructorSurface#arguments()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$ConstructorSurface#reference()Lscala/Option;", required = true)
   )
-  private val AnnotationArgumentsAccessors = Vector(
+  private val AnnotationArgumentsAccessors  = Vector(
     AccessorObligation(s"$AnnotationArgumentsSurface#exprs()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$AnnotationArgumentsSurface#isUsing()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#isArgsInParens()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#getArgsCount()I", required = true, SurfaceFactKind.Method)
   )
-  private val ExpressionPayloadAccessors   = Vector(
+  private val ExpressionPayloadAccessors    = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)
+  )
+  private val FunctionDefinitionAccessors   = Vector(
+    AccessorObligation(s"$FunctionDefinitionSurface#body()Lscala/Option;", required = true),
+    AccessorObligation(s"$FunctionDefinitionSurface#hasAssign()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/statements/ScFunction#paramClauses()Lorg/jetbrains/plugins/scala/lang/psi/api/statements/params/ScParameters;",
+      required = true
+    )
+  )
+  private val PropertyDefinitionAccessors   = Vector(
+    AccessorObligation(
+      s"$PatternDefinitionSurface#pList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPatternList;",
+      required = true
+    ),
+    AccessorObligation(s"$PatternDefinitionSurface#expr()Lscala/Option;", required = true)
+  )
+  private val VariableDefinitionAccessors   = Vector(
+    AccessorObligation(
+      s"$VariableDefinitionSurface#pList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPatternList;",
+      required = true
+    ),
+    AccessorObligation(s"$VariableDefinitionSurface#expr()Lscala/Option;", required = true)
+  )
+  private val PatternListAccessors          = Vector(
+    AccessorObligation(s"$PatternListSurface#bindings()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$PatternListSurface#simplePatterns()Z", required = true, SurfaceFactKind.Method)
+  )
+  private val ReferencePatternAccessors     = Vector(
+    AccessorObligation(s"$ReferencePatternSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
+  )
+  private val TypeAliasDeclarationAccessors = Vector(
+    AccessorObligation(s"$TypeAliasDeclarationSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(s"$TypeAliasDeclarationSurface#lowerTypeElement()Lscala/Option;", required = true),
+    AccessorObligation(s"$TypeAliasDeclarationSurface#upperTypeElement()Lscala/Option;", required = true)
   )
 
   private val GivenSelectorBoundAnchor        = InventoryAncestor(
@@ -2711,7 +2863,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "template-class-definition",
       "template-trait-definition",
       "template-object-definition",
-      "template-enum-definition"
+      "template-enum-definition",
+      "definition-function-untyped",
+      "definition-val-untyped",
+      "definition-var-untyped"
     )
     val children         = Vector(
       ChildDeclaration(
@@ -3856,7 +4011,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         prefix,
         Vector(
           CompilerFieldPattern("name", CatalogValuePattern.Name),
-          CompilerFieldPattern(templateField, CatalogValuePattern.Node),
+          CompilerFieldPattern(templateField, CatalogValuePattern.NodePrefix("Template")),
           CompilerFieldPattern("mods", emptyModifiers(flags))
         ),
         occurrences
@@ -4027,7 +4182,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           "template-object-definition",
           "template-enum-definition",
           "enum-singleton-case",
-          "enum-class-case"
+          "enum-class-case",
+          "definition-function-untyped",
+          "definition-val-untyped",
+          "definition-var-untyped",
+          "definition-unbounded-type-alias"
         )
       ),
       ChildDeclaration("template-modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
@@ -4447,7 +4606,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Vector.empty,
       Vector(
         CompilerProductionContextPattern(
-          ContextPattern.Parent(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("tpt"))),
+          ContextPattern.ParentWithAncestor(
+            InventoryKind.Node,
+            "DefDef",
+            Vector(CatalogPathSegment.NamedField("tpt")),
+            InventoryAncestor(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("constr")))
+          ),
           SourceClassification.Synthetic
         )
       )
@@ -4554,6 +4718,746 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     outputRoleId = None
   )
 
+  private def definitionOccurrences(owner: String, field: String = "stats") = Vector(
+    CompilerProductionContextPattern(
+      ContextPattern.Parent(
+        InventoryKind.Node,
+        owner,
+        Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private def definitionChildOccurrences(field: String) =
+    Vector("DefDef", "ValDef").flatMap(owner =>
+      Vector("PackageDef" -> "stats", "Template" -> "preBody").map((ancestor, ancestorField) =>
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestor(
+            InventoryKind.Node,
+            owner,
+            Vector(CatalogPathSegment.NamedField(field)),
+            InventoryAncestor(
+              InventoryKind.Node,
+              ancestor,
+              Vector(CatalogPathSegment.NamedField(ancestorField), CatalogPathSegment.RepeatedElement)
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    )
+
+  private def localDefinitionChildOccurrences(field: String, sourceClassification: SourceClassification) =
+    Vector("DefDef", "ValDef").map(anchor =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentUnderAnchor(
+          InventoryKind.Node,
+          "ValDef",
+          Vector(CatalogPathSegment.NamedField(field)),
+          InventoryAncestor(
+            InventoryKind.Node,
+            anchor,
+            Vector(CatalogPathSegment.NamedField("preRhs"))
+          )
+        ),
+        sourceClassification
+      )
+    )
+
+  private val inferredDefinitionType = Scala3PsiProduction(
+    id = "definition-inferred-type-absence",
+    grammarRoleId = GrammarRoleId.InferredTypeAbsence,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "TypeTree",
+      Vector.empty,
+      definitionChildOccurrences("tpt") ++
+        localDefinitionChildOccurrences("tpt", SourceClassification.Synthetic)
+    ),
+    dispositions = Vector.empty,
+    children = Vector.empty,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ExpressionPayloadSurface,
+    targetRequirement = TargetRequirement.Compatible,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate()),
+    outputRoleId = None
+  )
+
+  private val payloadExpressionProductionIds = Set(
+    "definition-payload-number",
+    "definition-payload-ident",
+    "definition-payload-apply",
+    "definition-payload-select",
+    "definition-payload-tuple",
+    "definition-payload-block",
+    "definition-payload-infix",
+    "payload-descendant-number",
+    "payload-descendant-ident",
+    "payload-descendant-apply",
+    "payload-descendant-select",
+    "payload-descendant-tuple",
+    "payload-descendant-block",
+    "payload-descendant-infix"
+  )
+
+  private val payloadRootIds            = payloadExpressionProductionIds.filter(_.startsWith("definition-payload-"))
+  private val payloadLocalDefinitionIds = Set("payload-descendant-val", "payload-descendant-var")
+
+  private def payloadRoot(
+      id: String,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      children: Vector[ChildDeclaration]
+  ) = Scala3PsiProduction(
+    id,
+    GrammarRoleId.ExpressionPayload,
+    CompilerProductionPattern(
+      InventoryKind.Node,
+      prefix,
+      fields,
+      definitionChildOccurrences("preRhs").map(_.copy(sourceClassification = SourceClassification.SourceReachable)) ++
+        localDefinitionChildOccurrences("preRhs", SourceClassification.SourceReachable)
+    ),
+    fields.map(field =>
+      FieldDisposition(
+        field.name,
+        if children.exists(_.fieldName == field.name) then FieldDispositionKind.Child
+        else FieldDispositionKind.TerminalOrLayout
+      )
+    ),
+    children,
+    Vector(
+      TerminalDeclaration(
+        "payload-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    Vector(LayoutAlternative.None),
+    RecoveryPolicy.Reject,
+    ExpressionPayloadSurface,
+    TargetRequirement.Compatible,
+    ExpressionPayloadAccessors,
+    PersistenceObligations.NotApplicable,
+    Some(NavigationObligation.Self),
+    Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "payload",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.ExpressionPayload,
+            ExpressionPayloadSurface,
+            ExpressionPayloadAccessors,
+            TargetRequirement.Compatible
+          )
+        ),
+        children.map(_.roleId -> Some("payload")).toMap
+      )
+    ),
+    Vector.empty,
+    None
+  )
+
+  private val definitionPayloadProductions = Vector(
+    payloadRoot(
+      "definition-payload-number",
+      "Number",
+      Vector(
+        CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+        CompilerFieldPattern(
+          "kind",
+          CatalogValuePattern
+            .Product("Whole", Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer"))))
+        )
+      ),
+      Vector.empty
+    ),
+    payloadRoot(
+      "definition-payload-ident",
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector.empty
+    ),
+    payloadRoot(
+      "definition-payload-apply",
+      "Apply",
+      Vector(
+        CompilerFieldPattern("fun", CatalogValuePattern.Node),
+        CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+      ),
+      Vector(
+        ChildDeclaration(
+          "fun",
+          "fun",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "args",
+          "args",
+          ChildCardinality.Repeated(0, None),
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadRoot(
+      "definition-payload-select",
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      Vector(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadRoot(
+      "definition-payload-tuple",
+      "Tuple",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      Vector(
+        ChildDeclaration(
+          "trees",
+          "trees",
+          ChildCardinality.Repeated(1, None),
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadRoot(
+      "definition-payload-block",
+      "Block",
+      Vector(
+        CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("expr", CatalogValuePattern.Node)
+      ),
+      Vector(
+        ChildDeclaration(
+          "stats",
+          "stats",
+          ChildCardinality.Repeated(0, None),
+          payloadLocalDefinitionIds.head,
+          payloadLocalDefinitionIds.tail
+        ),
+        ChildDeclaration(
+          "expr",
+          "expr",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadRoot(
+      "definition-payload-infix",
+      "InfixOp",
+      Vector(
+        CompilerFieldPattern("left", CatalogValuePattern.Node),
+        CompilerFieldPattern("op", CatalogValuePattern.Node),
+        CompilerFieldPattern("right", CatalogValuePattern.Node)
+      ),
+      Vector(
+        ChildDeclaration(
+          "left",
+          "left",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "op",
+          "op",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "right",
+          "right",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    )
+  )
+
+  private def payloadDescendant(
+      id: String,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      dispositions: Vector[FieldDisposition],
+      children: Vector[ChildDeclaration],
+      grammarRoleId: GrammarRoleId = GrammarRoleId.ExpressionPayload
+  ) =
+    val anchors = Vector("DefDef", "ValDef").map(owner =>
+      InventoryAncestor(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("preRhs")))
+    )
+    val parents = Vector(
+      "Apply"   -> Vector(CatalogPathSegment.NamedField("fun")),
+      "Apply"   -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+      "Select"  -> Vector(CatalogPathSegment.NamedField("qualifier")),
+      "Tuple"   -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+      "Block"   -> Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement),
+      "Block"   -> Vector(CatalogPathSegment.NamedField("expr")),
+      "InfixOp" -> Vector(CatalogPathSegment.NamedField("left")),
+      "InfixOp" -> Vector(CatalogPathSegment.NamedField("op")),
+      "InfixOp" -> Vector(CatalogPathSegment.NamedField("right"))
+    )
+    Scala3PsiProduction(
+      id,
+      grammarRoleId,
+      CompilerProductionPattern(
+        InventoryKind.Node,
+        prefix,
+        fields,
+        anchors.flatMap(anchor =>
+          parents.map((parent, path) =>
+            CompilerProductionContextPattern(
+              ContextPattern.ParentUnderAnchor(InventoryKind.Node, parent, path, anchor),
+              SourceClassification.SourceReachable
+            )
+          )
+        )
+      ),
+      dispositions,
+      children,
+      Vector(
+        TerminalDeclaration(
+          "payload-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      Vector(LayoutAlternative.None),
+      RecoveryPolicy.Reject,
+      ExpressionPayloadSurface,
+      TargetRequirement.Compatible,
+      ExpressionPayloadAccessors,
+      PersistenceObligations.NotApplicable,
+      Some(NavigationObligation.Self),
+      Some(
+        LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "payload",
+              None,
+              OutputRangeDeclaration.CompilerPosition,
+              PsiOutputRoleId.ExpressionPayload,
+              ExpressionPayloadSurface,
+              ExpressionPayloadAccessors,
+              TargetRequirement.Compatible
+            )
+          ),
+          children.map(_.roleId -> Some("payload")).toMap
+        )
+      ),
+      Vector.empty,
+      None
+    )
+
+  private val payloadDescendantProductions = Vector(
+    payloadDescendant(
+      "payload-descendant-ident",
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+      Vector.empty
+    ),
+    payloadDescendant(
+      "payload-descendant-number",
+      "Number",
+      Vector(
+        CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+        CompilerFieldPattern(
+          "kind",
+          CatalogValuePattern
+            .Product("Whole", Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer"))))
+        )
+      ),
+      Vector(
+        FieldDisposition("digits", FieldDispositionKind.SemanticOnly),
+        FieldDisposition("kind", FieldDispositionKind.SemanticOnly)
+      ),
+      Vector.empty
+    ),
+    payloadDescendant(
+      "payload-descendant-apply",
+      "Apply",
+      Vector(
+        CompilerFieldPattern("fun", CatalogValuePattern.Node),
+        CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+      ),
+      Vector(FieldDisposition("fun", FieldDispositionKind.Child), FieldDisposition("args", FieldDispositionKind.Child)),
+      Vector(
+        ChildDeclaration(
+          "fun",
+          "fun",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "args",
+          "args",
+          ChildCardinality.Repeated(0, None),
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadDescendant(
+      "payload-descendant-select",
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      Vector(
+        FieldDisposition("qualifier", FieldDispositionKind.Child),
+        FieldDisposition("name", FieldDispositionKind.SemanticOnly)
+      ),
+      Vector(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadDescendant(
+      "payload-descendant-tuple",
+      "Tuple",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      Vector(FieldDisposition("trees", FieldDispositionKind.Child)),
+      Vector(
+        ChildDeclaration(
+          "trees",
+          "trees",
+          ChildCardinality.Repeated(1, None),
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadDescendant(
+      "payload-descendant-block",
+      "Block",
+      Vector(
+        CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("expr", CatalogValuePattern.Node)
+      ),
+      Vector(
+        FieldDisposition("stats", FieldDispositionKind.Child),
+        FieldDisposition("expr", FieldDispositionKind.Child)
+      ),
+      Vector(
+        ChildDeclaration(
+          "stats",
+          "stats",
+          ChildCardinality.Repeated(0, None),
+          payloadLocalDefinitionIds.head,
+          payloadLocalDefinitionIds.tail
+        ),
+        ChildDeclaration(
+          "expr",
+          "expr",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadDescendant(
+      "payload-descendant-infix",
+      "InfixOp",
+      Vector(
+        CompilerFieldPattern("left", CatalogValuePattern.Node),
+        CompilerFieldPattern("op", CatalogValuePattern.Node),
+        CompilerFieldPattern("right", CatalogValuePattern.Node)
+      ),
+      Vector(
+        FieldDisposition("left", FieldDispositionKind.Child),
+        FieldDisposition("op", FieldDispositionKind.Child),
+        FieldDisposition("right", FieldDispositionKind.Child)
+      ),
+      Vector(
+        ChildDeclaration(
+          "left",
+          "left",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "op",
+          "op",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        ),
+        ChildDeclaration(
+          "right",
+          "right",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail
+        )
+      )
+    ),
+    payloadLocalDefinition("payload-descendant-val", 0L, mutable = false),
+    payloadLocalDefinition("payload-descendant-var", 4097L, mutable = true)
+  )
+
+  private def payloadLocalDefinition(id: String, flags: Long, mutable: Boolean): Scala3PsiProduction =
+    val modifiers =
+      if mutable then
+        CatalogValuePattern.Product(
+          "Modifiers",
+          Vector(
+            CompilerFieldPattern("flags", CatalogValuePattern.ExactScalar("LongInteger", s"LongInteger($flags)")),
+            CompilerFieldPattern("privateWithin", CatalogValuePattern.ClassifiedName(NeutralNameClass.Empty)),
+            CompilerFieldPattern("annotations", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+            CompilerFieldPattern("mods", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Positioned))
+          )
+        )
+      else emptyModifiers(flags)
+    payloadDescendant(
+      id,
+      "ValDef",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+        CompilerFieldPattern("preRhs", CatalogValuePattern.Node),
+        CompilerFieldPattern("mods", modifiers)
+      ),
+      Vector(
+        FieldDisposition("name", FieldDispositionKind.SemanticOnly),
+        FieldDisposition("tpt", FieldDispositionKind.Child),
+        FieldDisposition("preRhs", FieldDispositionKind.Child),
+        FieldDisposition("mods", FieldDispositionKind.SemanticOnly)
+      ),
+      Vector(
+        ChildDeclaration("inferred-type", "tpt", ChildCardinality.ExactlyOne, "definition-inferred-type-absence"),
+        ChildDeclaration(
+          "payload",
+          "preRhs",
+          ChildCardinality.ExactlyOne,
+          payloadRootIds.head,
+          payloadRootIds.tail
+        )
+      ),
+      GrammarRoleId.OutputFreeExpression
+    ).copy(outputTemplate = Some(transparentTemplate("inferred-type", "payload")))
+
+  private def definitionShell(
+      id: String,
+      prefix: String,
+      role: PsiOutputRoleId,
+      surface: String,
+      accessors: Vector[AccessorObligation],
+      flags: Long
+  ) =
+    val function       = prefix == "DefDef"
+    val variable       = role == PsiOutputRoleId.VariableDefinition
+    val modifiersShape =
+      if variable then
+        CatalogValuePattern.Product(
+          "Modifiers",
+          Vector(
+            CompilerFieldPattern("flags", CatalogValuePattern.ExactScalar("LongInteger", s"LongInteger($flags)")),
+            CompilerFieldPattern("privateWithin", CatalogValuePattern.ClassifiedName(NeutralNameClass.Empty)),
+            CompilerFieldPattern("annotations", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+            CompilerFieldPattern("mods", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Positioned))
+          )
+        )
+      else emptyModifiers(flags)
+    val children       = Vector(
+      ChildDeclaration("inferred-type", "tpt", ChildCardinality.ExactlyOne, "definition-inferred-type-absence"),
+      ChildDeclaration("payload", "preRhs", ChildCardinality.ExactlyOne, payloadRootIds.head, payloadRootIds.tail),
+      ChildDeclaration(
+        "modifiers",
+        "mods",
+        ChildCardinality.ExactlyOne,
+        "modifiers-absent",
+        Option.when(variable)("modifiers-keywords").toSet
+      )
+    )
+    val root           = outputComposite("definition", None, OutputRangeDeclaration.CompilerPosition, role, surface, accessors)
+    val extras         =
+      if function then
+        Vector(
+          zeroOutput(
+            "parameters",
+            "definition",
+            PsiOutputRoleId.ParameterClauses,
+            ParameterClausesSurface,
+            OutputBoundary.ProductionNameEnd
+          )
+        )
+      else
+        Vector(
+          outputComposite(
+            "patterns",
+            Some("definition"),
+            OutputRangeDeclaration.BoundaryDerived(OutputBoundary.ProductionPoint, OutputBoundary.ProductionNameEnd),
+            PsiOutputRoleId.PatternList,
+            PatternListSurface,
+            PatternListAccessors
+          ),
+          outputComposite(
+            "binding",
+            Some("patterns"),
+            OutputRangeDeclaration.BoundaryDerived(OutputBoundary.ProductionPoint, OutputBoundary.ProductionNameEnd),
+            PsiOutputRoleId.ReferencePattern,
+            ReferencePatternSurface,
+            ReferencePatternAccessors
+          )
+        )
+    Scala3PsiProduction(
+      id,
+      if function then GrammarRoleId.FunctionDefinition else GrammarRoleId.PropertyDefinition,
+      CompilerProductionPattern(
+        InventoryKind.Node,
+        prefix,
+        (if function then
+           Vector(
+             CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)),
+             CompilerFieldPattern("paramss", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))
+           )
+         else
+           Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)))
+        ) ++ Vector(
+          CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+          CompilerFieldPattern("preRhs", CatalogValuePattern.Node),
+          CompilerFieldPattern("mods", modifiersShape)
+        ),
+        definitionOccurrences("PackageDef") ++ definitionOccurrences("Template", "preBody")
+      ),
+      (if function then
+         Vector(
+           FieldDisposition("name", FieldDispositionKind.TerminalOrLayout),
+           FieldDisposition("paramss", FieldDispositionKind.Synthetic)
+         )
+       else Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout))) ++ Vector(
+        FieldDisposition("tpt", FieldDispositionKind.Child),
+        FieldDisposition("preRhs", FieldDispositionKind.Child),
+        FieldDisposition("mods", FieldDispositionKind.Child)
+      ),
+      children,
+      Vector(
+        TerminalDeclaration(
+          "definition-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "assignment",
+          TerminalIntervalSelector.BeforeChild("payload"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.AssignmentTokenSurface, Some("=")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      Vector(LayoutAlternative.None),
+      RecoveryPolicy.Reject,
+      surface,
+      TargetRequirement.Native,
+      accessors,
+      PersistenceObligations.NotApplicable,
+      Some(NavigationObligation.Self),
+      Some(
+        LocalOutputCompositeTemplate(
+          root +: extras,
+          Map("inferred-type" -> None, "payload" -> Some("definition"), "modifiers" -> Some("definition"))
+        )
+      ),
+      Vector.empty,
+      None,
+      Option.when(!function)(GrammarRoleId.ReferenceBinding).toSet
+    )
+
+  private val abstractTypeAlias = Scala3PsiProduction(
+    "definition-unbounded-type-alias",
+    GrammarRoleId.TypeAliasDeclaration,
+    CompilerProductionPattern(
+      InventoryKind.Node,
+      "TypeDef",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)),
+        CompilerFieldPattern("rhs", CatalogValuePattern.NodePrefix("TypeBoundsTree")),
+        CompilerFieldPattern("mods", emptyModifiers(0L))
+      ),
+      definitionOccurrences("Template", "preBody")
+    ),
+    Vector(
+      FieldDisposition("name", FieldDispositionKind.TerminalOrLayout),
+      FieldDisposition("rhs", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.Child)
+    ),
+    Vector(
+      ChildDeclaration("bounds", "rhs", ChildCardinality.ExactlyOne, "template-unbounded-type-bounds"),
+      ChildDeclaration("modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
+    ),
+    Vector(
+      TerminalDeclaration(
+        "alias-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    Vector(LayoutAlternative.None),
+    RecoveryPolicy.Reject,
+    TypeAliasDeclarationSurface,
+    TargetRequirement.Native,
+    TypeAliasDeclarationAccessors,
+    PersistenceObligations.NotApplicable,
+    Some(NavigationObligation.Self),
+    Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "alias",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.TypeAliasDeclaration,
+            TypeAliasDeclarationSurface,
+            TypeAliasDeclarationAccessors
+          )
+        ),
+        Map("bounds" -> None, "modifiers" -> Some("alias"))
+      )
+    ),
+    Vector.empty,
+    None
+  )
+
   private def templateProductions: Vector[Scala3PsiProduction] = Vector(
     templateOwnerProduction(
       "template-class-definition",
@@ -4628,8 +5532,34 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     unboundedTypeBoundsProduction,
     templateTypeTreeProduction,
     templateSelfProduction,
-    templateAbsentTreeProduction
-  )
+    templateAbsentTreeProduction,
+    inferredDefinitionType,
+    definitionShell(
+      "definition-function-untyped",
+      "DefDef",
+      PsiOutputRoleId.FunctionDefinition,
+      FunctionDefinitionSurface,
+      FunctionDefinitionAccessors,
+      129L
+    ),
+    definitionShell(
+      "definition-val-untyped",
+      "ValDef",
+      PsiOutputRoleId.PatternDefinition,
+      PatternDefinitionSurface,
+      PropertyDefinitionAccessors,
+      0L
+    ),
+    definitionShell(
+      "definition-var-untyped",
+      "ValDef",
+      PsiOutputRoleId.VariableDefinition,
+      VariableDefinitionSurface,
+      VariableDefinitionAccessors,
+      4097L
+    ),
+    abstractTypeAlias
+  ) ++ definitionPayloadProductions ++ payloadDescendantProductions
 
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
@@ -4664,7 +5594,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               "template-class-definition",
               "template-trait-definition",
               "template-object-definition",
-              "template-enum-definition"
+              "template-enum-definition",
+              "definition-function-untyped",
+              "definition-val-untyped",
+              "definition-var-untyped"
             )
           )
         ),
@@ -6391,6 +7324,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
 
   private def render(pattern: CatalogValuePattern): String = pattern match
     case CatalogValuePattern.Node                                   => "Node"
+    case CatalogValuePattern.NodePrefix(prefix)                     => s"Node[$prefix]"
     case CatalogValuePattern.Positioned                             => "Positioned"
     case CatalogValuePattern.Optional(value)                        => s"Optional[${render(value)}]"
     case CatalogValuePattern.EmptyOptional(value)                   => s"EmptyOptional[${render(value)}]"
@@ -6412,6 +7346,8 @@ private[metallurgy] object CatalogShapeMatcher:
   def matches(pattern: CatalogValuePattern, observation: InventoryValueObservation): Boolean =
     (pattern, observation) match
       case (CatalogValuePattern.Node, InventoryValueObservation.Node(_, _))                                   => true
+      case (CatalogValuePattern.NodePrefix(expected), InventoryValueObservation.Node(_, observed))            =>
+        expected == observed
       case (CatalogValuePattern.Positioned, InventoryValueObservation.Positioned(_, _))                       => true
       case (CatalogValuePattern.Optional(expected), InventoryValueObservation.Optional(Some(value)))          =>
         matches(expected, value)
@@ -6457,6 +7393,9 @@ private[metallurgy] object CatalogShapeMatcher:
 
   def covers(expected: CatalogValuePattern, observed: CatalogValuePattern): Boolean =
     (expected, observed) match
+      case (CatalogValuePattern.Node, CatalogValuePattern.NodePrefix(_))                                        => true
+      case (CatalogValuePattern.NodePrefix(expected), CatalogValuePattern.NodePrefix(observed))                 =>
+        expected == observed
       case (CatalogValuePattern.Name, CatalogValuePattern.Name | CatalogValuePattern.GeneratedName)             => true
       case (CatalogValuePattern.Name, CatalogValuePattern.ClassifiedName(_))                                    => true
       case (CatalogValuePattern.ClassifiedName(expected), CatalogValuePattern.ClassifiedName(observed))         =>
@@ -7257,6 +8196,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               true
             case TerminalIntervalSelector.FieldBounds(a, b)                                      => a == name || b == name
             case _: TerminalIntervalSelector.ChildGap                                            => false
+            case _: TerminalIntervalSelector.BeforeChild                                         => false
             case TerminalIntervalSelector.CompilerEndMarkerKeyword | TerminalIntervalSelector.LocalOutput(_) |
                 TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
               false
@@ -7271,6 +8211,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.BeforeChild(role) =>
+          if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
         case _                                          => ()
       )
       p.terminals.foreach:
@@ -7933,7 +8875,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                 groupedChildren += (instance -> declaration.roleId) -> groups.result()
               case _                              => ()
           compilerChildren.update(instance, plannedChildren.result())
-      if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
+      snapshot.diagnostics.indexWhere(_.severity == ParserDiagnosticSeverity.Error) match
+        case index if index >= 0 => break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(index)))
+        case _                   => ()
 
       def lexicalSlice(range: PcSourceRange): Vector[ClosedSourceLexicalAtom] =
         val atoms                                        = evidence.lexicalContract.atoms
@@ -9016,6 +9960,19 @@ private[metallurgy] object WholeFileProductionPlanner:
             case _ => Vector.empty
         case TerminalIntervalSelector.ChildGap(startRole, endRole)     =>
           childGapIntervals(instance, startRole, endRole)
+        case TerminalIntervalSelector.BeforeChild(roleId)              =>
+          (
+            position(instance),
+            compilerChildren.getOrElse(instance, Vector.empty).collectFirst { case (`roleId`, _, child) =>
+              position(child)
+            }
+          ) match
+            case (
+                  ParserNodePosition.Positioned(parent, _, ParserPositionProvenance.SourceDerived),
+                  Some(ParserNodePosition.Positioned(child, _, ParserPositionProvenance.SourceDerived))
+                ) if parent.startOffset <= child.startOffset =>
+              Vector(PcSourceRange(parent.startOffset, child.startOffset))
+            case _ => Vector.empty
         case TerminalIntervalSelector.CompilerEndMarkerKeyword         =>
           compilerEndMarker(instance).map(_._2).toVector
         case other                                                     =>

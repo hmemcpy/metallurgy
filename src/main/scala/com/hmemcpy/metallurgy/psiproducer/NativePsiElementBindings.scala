@@ -26,6 +26,14 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.{
   ScStableCodeReference
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScEnumCases, ScEnumClassCase, ScEnumSingletonCase}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{
+  ScFunctionDefinition,
+  ScPatternDefinition,
+  ScTypeAliasDeclaration,
+  ScVariableDefinition
+}
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScReferencePattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScPatternList
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScParameterClause, ScParameters, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{ScExtendsBlock, ScTemplateBody}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
@@ -139,6 +147,7 @@ private[metallurgy] object NativePsiElementBindings:
     "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardTypeQuestionMark"
   val LowerTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
   val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
+  val AssignmentTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
   val AnnotatedMemberIndexSurface      =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
   val ModifierKeywordSurfaceIds        = Map(
@@ -200,6 +209,11 @@ private[metallurgy] object NativePsiElementBindings:
           |  case Singleton
           |  case ClassCase()
           |val probe = 1
+          |def directFunction = 1
+          |val directValue = 1
+          |var directVariable = 1
+          |trait DefinitionOwner:
+          |  type DirectAbstract
           |""".stripMargin
       )
     val packageLayoutFile      = PsiFileFactory
@@ -318,6 +332,18 @@ private[metallurgy] object NativePsiElementBindings:
       .filter(_.getText == "[+A, -B, C]")
       .toVector
     val typeParameters         = typeParameterClauses.flatMap(_.typeParameters)
+    val functionDefinitions    = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).asScala.toVector
+    val patternDefinitions     = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).asScala.toVector
+    val variableDefinitions    = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).asScala.toVector
+    val typeAliasDeclarations  = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector
+    val patternLists           = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternList]).asScala.toVector
+    val referencePatterns      = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferencePattern]).asScala.toVector
+    val directFunction         = functionDefinitions.find(_.name == "directFunction").orNull
+    val directPattern          = patternDefinitions.find(_.bindings.exists(_.name == "directValue")).orNull
+    val directVariable         = variableDefinitions.find(_.bindings.exists(_.name == "directVariable")).orNull
+    val directPatternList      = Option(directPattern).map(_.pList).orNull
+    val directReferencePattern = referencePatterns.find(_.name == "directValue").orNull
+    val directTypeAlias        = typeAliasDeclarations.find(_.name == "DirectAbstract").orNull
     val annotationPayloads     =
       annotationExpressions.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).asScala)
     val manager                = PsiManager.getInstance(project)
@@ -361,6 +387,8 @@ private[metallurgy] object NativePsiElementBindings:
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
         extendsBlocks ++ templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause ++
         typeParameterClauses ++ typeParameters
+        ++ functionDefinitions ++ patternDefinitions ++ variableDefinitions ++ typeAliasDeclarations ++ patternLists ++
+        referencePatterns
     if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
       innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
     then Left("native package PSI probe is incomplete")
@@ -490,10 +518,19 @@ private[metallurgy] object NativePsiElementBindings:
           s"expressions=${annotationExpressions.map(_.getText)}, constructors=${constructorInvocations.map(_.getText)}, " +
           s"arguments=${argumentLists.map(_.getText)}"
       )
-    else if classes.isEmpty || traits.size != 1 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
+    else if classes.isEmpty || traits.size != 2 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
       enumSingletonCases.size != 1 || enumClassCases.size != 1 || extendsBlocks.isEmpty || templateBodies.isEmpty ||
       primaryConstructors.isEmpty || parameterClauses.isEmpty || parameterClause.isEmpty
     then Left("native template PSI probe is incomplete")
+    else if directFunction == null || directPattern == null || directVariable == null || directPatternList == null ||
+      directReferencePattern == null || directTypeAlias == null
+    then Left("native definition PSI probe is incomplete")
+    else if !directFunction.hasAssign || directFunction.paramClauses == null || !directPatternList.simplePatterns ||
+      directPattern.bindings.toVector != Vector(directReferencePattern) ||
+      directVariable.bindings.map(_.name).toVector != Vector(
+        "directVariable"
+      ) || directTypeAlias.lowerTypeElement.nonEmpty || directTypeAlias.upperTypeElement.nonEmpty
+    then Left("native definition PSI accessors are inconsistent")
     else if typeParameterClauses.size != 1 || typeParameters.map(_.name) != Vector("A", "B", "C") ||
       typeParameterClauses.head.typeParameters.toVector != typeParameters ||
       typeParameters.map(typeParameterClauses.head.getTypeParameterIndex) != Vector(0, 1, 2) ||
@@ -509,26 +546,34 @@ private[metallurgy] object NativePsiElementBindings:
       )
     then Left("native type parameter PSI accessors are inconsistent")
     else if Vector(
-        PsiOutputRoleId.ClassDefinition     -> classes.head,
-        PsiOutputRoleId.TraitDefinition     -> traits.head,
-        PsiOutputRoleId.ObjectDefinition    -> objects.head,
-        PsiOutputRoleId.EnumDefinition      -> enums.head,
-        PsiOutputRoleId.EnumCases           -> enumCases.head,
-        PsiOutputRoleId.EnumSingletonCase   -> enumSingletonCases.head,
-        PsiOutputRoleId.EnumClassCase       -> enumClassCases.head,
-        PsiOutputRoleId.ExtendsBlock        -> extendsBlocks.head,
-        PsiOutputRoleId.TemplateBody        -> templateBodies.head,
-        PsiOutputRoleId.PrimaryConstructor  -> primaryConstructors.head,
-        PsiOutputRoleId.ParameterClauses    -> parameterClauses.head,
-        PsiOutputRoleId.ParameterClause     -> parameterClause.head,
-        PsiOutputRoleId.TypeParameterClause -> typeParameterClauses.head,
-        PsiOutputRoleId.TypeParameter       -> typeParameters.head
+        PsiOutputRoleId.ClassDefinition      -> classes.head,
+        PsiOutputRoleId.TraitDefinition      -> traits.head,
+        PsiOutputRoleId.ObjectDefinition     -> objects.head,
+        PsiOutputRoleId.EnumDefinition       -> enums.head,
+        PsiOutputRoleId.EnumCases            -> enumCases.head,
+        PsiOutputRoleId.EnumSingletonCase    -> enumSingletonCases.head,
+        PsiOutputRoleId.EnumClassCase        -> enumClassCases.head,
+        PsiOutputRoleId.ExtendsBlock         -> extendsBlocks.head,
+        PsiOutputRoleId.TemplateBody         -> templateBodies.head,
+        PsiOutputRoleId.PrimaryConstructor   -> primaryConstructors.head,
+        PsiOutputRoleId.ParameterClauses     -> parameterClauses.head,
+        PsiOutputRoleId.ParameterClause      -> parameterClause.head,
+        PsiOutputRoleId.TypeParameterClause  -> typeParameterClauses.head,
+        PsiOutputRoleId.TypeParameter        -> typeParameters.head,
+        PsiOutputRoleId.FunctionDefinition   -> directFunction,
+        PsiOutputRoleId.PatternDefinition    -> directPattern,
+        PsiOutputRoleId.VariableDefinition   -> directVariable,
+        PsiOutputRoleId.PatternList          -> directPatternList,
+        PsiOutputRoleId.ReferencePattern     -> directReferencePattern,
+        PsiOutputRoleId.TypeAliasDeclaration -> directTypeAlias
       ).exists: (role, element) =>
         element.getNode.getElementType match
           case stub: IStubElementType[?, ?] =>
-            TemplatePersistenceSurfaces.ExternalIds.get(role).forall(_ != stub.getExternalId)
+            (TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds)
+              .get(role)
+              .forall(_ != stub.getExternalId)
           case _                            => true
-    then Left("native template PSI external IDs are inconsistent")
+    then Left("native PSI external IDs are inconsistent")
     else if annotatedModifiers.getNode.getElementType != ScalaElementType.MODIFIERS ||
       accessModifiers.exists(_.getNode.getElementType != ScalaElementType.ACCESS_MODIFIER) ||
       annotationContainer.getNode.getElementType != ScalaElementType.ANNOTATIONS ||
@@ -575,6 +620,9 @@ private[metallurgy] object NativePsiElementBindings:
       ScalaIndexKeys.CLASS_FQN_KEY == null || ScalaIndexKeys.CLASS_NAME_IN_PACKAGE_KEY == null ||
       ScalaIndexKeys.JAVA_CLASS_NAME_IN_PACKAGE_KEY == null || ScalaIndexKeys.NOT_VISIBLE_IN_JAVA_SHORT_NAME_KEY == null ||
       ScalaIndexKeys.ALL_CLASS_NAMES == null || ScalaIndexKeys.SUPER_CLASS_NAME_KEY == null ||
+      ScalaIndexKeys.METHOD_NAME_KEY == null || ScalaIndexKeys.TOP_LEVEL_FUNCTION_BY_PKG_KEY == null ||
+      ScalaIndexKeys.PROPERTY_NAME_KEY == null || ScalaIndexKeys.TOP_LEVEL_VAL_OR_VAR_BY_PKG_KEY == null ||
+      ScalaIndexKeys.TYPE_ALIAS_NAME_KEY == null || ScalaIndexKeys.TOP_LEVEL_TYPE_ALIAS_BY_PKG_KEY == null ||
       JavaStubIndexKeys.CLASS_SHORT_NAMES == null || JavaStubIndexKeys.CLASS_FQN == null
     then Left("native import or export index is unavailable")
     else if persistenceFailure.nonEmpty then Left(persistenceFailure.get)
@@ -627,6 +675,15 @@ private[metallurgy] object NativePsiElementBindings:
           templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause ++ typeParameterClauses ++
           typeParameters).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
       then Left("native template stub-bearing PSI element type cannot produce stubs")
+      else if Vector(
+          directFunction,
+          directPattern,
+          directVariable,
+          directPatternList,
+          directReferencePattern,
+          directTypeAlias
+        ).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
+      then Left("native definition stub-bearing PSI element type cannot produce stubs")
       else if (Vector(annotatedModifiers, annotationContainer) ++ accessModifiers ++ annotations).exists(value =>
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         ) || annotationExpressions.exists(value => value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
@@ -656,6 +713,7 @@ private[metallurgy] object NativePsiElementBindings:
               (WildcardQuestionTokenSurface                                                       -> wildcardQuestion.getNode.getElementType) +
               (LowerTypeBoundTokenSurface                                                         -> lowerBoundToken.getNode.getElementType) +
               (UpperTypeBoundTokenSurface                                                         -> upperBoundToken.getNode.getElementType) ++
+              Map(AssignmentTokenSurface -> ScalaTokenTypes.tASSIGN) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -709,7 +767,13 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ParameterClauses      -> parameterClauses.head.getNode.getElementType,
               PsiOutputRoleId.ParameterClause       -> parameterClause.head.getNode.getElementType,
               PsiOutputRoleId.TypeParameterClause   -> typeParameterClauses.head.getNode.getElementType,
-              PsiOutputRoleId.TypeParameter         -> typeParameters.head.getNode.getElementType
+              PsiOutputRoleId.TypeParameter         -> typeParameters.head.getNode.getElementType,
+              PsiOutputRoleId.FunctionDefinition    -> directFunction.getNode.getElementType,
+              PsiOutputRoleId.PatternDefinition     -> directPattern.getNode.getElementType,
+              PsiOutputRoleId.VariableDefinition    -> directVariable.getNode.getElementType,
+              PsiOutputRoleId.PatternList           -> directPatternList.getNode.getElementType,
+              PsiOutputRoleId.ReferencePattern      -> directReferencePattern.getNode.getElementType,
+              PsiOutputRoleId.TypeAliasDeclaration  -> directTypeAlias.getNode.getElementType
             ),
             Map(
               PsiOutputRoleId.PackageStatement      -> surfaceId(packaging.getClass),
@@ -748,7 +812,13 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ParameterClauses      -> surfaceId(parameterClauses.head.getClass),
               PsiOutputRoleId.ParameterClause       -> surfaceId(parameterClause.head.getClass),
               PsiOutputRoleId.TypeParameterClause   -> surfaceId(typeParameterClauses.head.getClass),
-              PsiOutputRoleId.TypeParameter         -> surfaceId(typeParameters.head.getClass)
+              PsiOutputRoleId.TypeParameter         -> surfaceId(typeParameters.head.getClass),
+              PsiOutputRoleId.FunctionDefinition    -> surfaceId(directFunction.getClass),
+              PsiOutputRoleId.PatternDefinition     -> surfaceId(directPattern.getClass),
+              PsiOutputRoleId.VariableDefinition    -> surfaceId(directVariable.getClass),
+              PsiOutputRoleId.PatternList           -> surfaceId(directPatternList.getClass),
+              PsiOutputRoleId.ReferencePattern      -> surfaceId(directReferencePattern.getClass),
+              PsiOutputRoleId.TypeAliasDeclaration  -> surfaceId(directTypeAlias.getClass)
             ),
             Vector(
               ScalaPsiSurfaceRow(
@@ -814,6 +884,14 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native upper type-bound token")
+              ),
+              ScalaPsiSurfaceRow(
+                AssignmentTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native assignment token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(
@@ -864,6 +942,22 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed self navigation identity")
+              )
+            ) ++ Vector(
+              DefinitionPersistenceSurfaces.MethodNameIndex,
+              DefinitionPersistenceSurfaces.TopLevelFunctionIndex,
+              DefinitionPersistenceSurfaces.PropertyNameIndex,
+              DefinitionPersistenceSurfaces.TopLevelPropertyIndex,
+              DefinitionPersistenceSurfaces.TypeAliasNameIndex,
+              DefinitionPersistenceSurfaces.TopLevelTypeAliasIndex
+            ).map(id =>
+              ScalaPsiSurfaceRow(
+                id,
+                SurfaceFactKind.Index,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native definition index")
               )
             ) ++ TemplatePersistenceSurfaces.DefinitionIndices
               .appended(TemplatePersistenceSurfaces.SuperClassNameIndex)

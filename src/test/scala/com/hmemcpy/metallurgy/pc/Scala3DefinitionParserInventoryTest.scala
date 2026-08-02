@@ -116,6 +116,40 @@ final class Scala3DefinitionParserInventoryTest:
     finally bridge.close()
 
   @Test
+  def simpleDefinitionShellsHaveExactParserProductsAndFlags(): Unit =
+    val source =
+      """def f = List(1).head
+        |val x = 1
+        |var y = f
+        |trait T:
+        |  type A
+        |  def nested = (x, y)
+        |""".stripMargin
+    Vector("3.5.2", ScalaVersion).foreach: version =>
+      val bridge = openBridge(version)
+      try
+        val snapshot      = parse(bridge, source, s"file:///SimpleDefinitionShellInventory-$version.scala")
+        val definitions   = snapshot.nodes
+          .filter(node => Set("DefDef", "ValDef", "TypeDef")(node.production))
+          .flatMap(node =>
+            node.fields
+              .collectFirst { case ParserSyntaxField("name", ParserFieldValue.Name(name), _) => name }
+              .map(name => name -> node)
+          )
+          .toMap
+        val admittedNames = Set("f", "x", "y", "T", "A", "nested")
+
+        assertEquals(admittedNames, definitions.keySet.intersect(admittedNames))
+        assertEquals("TypeBoundsTree", snapshot.nodes.find(_.id == nodeField(definitions("A"), "rhs")).get.production)
+        assertEquals(
+          Map("f" -> 129L, "x" -> 0L, "y" -> 4097L, "nested" -> 129L),
+          Vector("f", "x", "y", "nested").map(name => name -> modifierFlags(definitions(name))).toMap
+        )
+        assertTrue(snapshot.diagnostics.toString, snapshot.diagnostics.isEmpty)
+        assertNoUnsupportedValues(snapshot)
+      finally bridge.close()
+
+  @Test
   def definitionModifiersAndSyntacticModifierProductsHaveAnExactInventory(): Unit =
     val bridge = openBridge()
     try
@@ -564,6 +598,15 @@ final class Scala3DefinitionParserInventoryTest:
       case Some(id) => id
       case None     => throw new AssertionError(s"${node.production}.$name is not a node")
 
+  private def modifierFlags(node: ParserSyntaxNode): Long =
+    node.fields.collectFirst:
+      case ParserSyntaxField("mods", ParserFieldValue.Product("Modifiers", fields), _) =>
+        fields.collectFirst:
+          case ParserSyntaxField("flags", ParserFieldValue.Scalar(ParserScalar.LongInteger(flags)), _) => flags
+    match
+      case Some(Some(flags)) => flags
+      case _                 => throw new AssertionError(s"${node.production}.mods.flags is missing")
+
   private def nestedProducts(snapshot: ParserSyntaxSnapshot): Vector[(String, Vector[ParserSyntaxField])] =
     val pending = collection.mutable.Stack.from(
       snapshot.nodes.flatMap(_.fields).map(_.value) ++ snapshot.positioned.flatMap(_.fields).map(_.value)
@@ -821,16 +864,19 @@ final class Scala3DefinitionParserInventoryTest:
     s"$opening val leaf: Int = 1 $closing"
 
   private def openBridge(): Scala3ParserBridge =
+    openBridge(ScalaVersion)
+
+  private def openBridge(version: String): Scala3ParserBridge =
     Scala3ParserBridge
       .open(
-        Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", ScalaVersion),
-        compilerDistribution().map(_.toFile)
+        Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", version),
+        compilerDistribution(version).map(_.toFile)
       )
       .fold(error => throw new AssertionError(error.toString), identity)
 
-  private def compilerDistribution(): Seq[Path] =
+  private def compilerDistribution(version: String): Seq[Path] =
     Scala3CompilerResolver.publicCoursier
-      .resolve(ScalaVersion)
+      .resolve(version)
       .fold(error => throw error.toException, identity)
 
   private def parse(bridge: Scala3ParserBridge, source: String, uri: String): ParserSyntaxSnapshot =
