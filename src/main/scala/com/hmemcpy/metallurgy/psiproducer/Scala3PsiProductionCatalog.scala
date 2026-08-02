@@ -144,6 +144,7 @@ private[metallurgy] enum CatalogValuePattern:
   case Name, GeneratedName
   case ClassifiedName(nameClass: NeutralNameClass)
   case Scalar(kind: String)
+  case ExactScalar(kind: String, rendered: String)
   case Unsupported(runtimeType: String)
 private[metallurgy] enum InventoryValueObservation:
   case Node(id: Long, prefix: String)
@@ -387,18 +388,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     val observations                                                                                    = fields.map(_.value)
     val declarations                                                                                    = fields.flatMap(_.declaredPattern).distinct
     def validate(result: CatalogValuePattern): Either[InventoryAggregationFailure, CatalogValuePattern] =
-      if declarations.forall(declaration =>
-          declaration == result ||
-            (declaration == CatalogValuePattern.Name && result == CatalogValuePattern.GeneratedName) ||
-            (declaration == CatalogValuePattern.Name && result.isInstanceOf[CatalogValuePattern.ClassifiedName]) ||
-            ((declaration, result) match
-              case (CatalogValuePattern.Repeated(expected), CatalogValuePattern.EmptyRepeated(actual)) =>
-                expected == actual
-              case (CatalogValuePattern.Optional(expected), CatalogValuePattern.EmptyOptional(actual)) =>
-                expected == actual
-              case _                                                                                   => false
-            )
-        )
+      if declarations.forall(CatalogShapeMatcher.covers(_, result))
       then Right(result)
       else incompatible(path)
     observations.headOption match
@@ -497,12 +487,17 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
           validate(result)
         else incompatible(path)
       case Some(InventoryValueObservation.Scalar(value))                                        =>
-        val kind = value.productPrefix
-        if observations.forall {
+        val kind     = value.productPrefix
+        val rendered = observations.collect { case InventoryValueObservation.Scalar(candidate) => candidate.toString }
+        if rendered.size == observations.size && observations.forall {
             case InventoryValueObservation.Scalar(candidate) => candidate.productPrefix == kind
             case _                                           => false
           }
-        then validate(CatalogValuePattern.Scalar(kind))
+        then
+          val pattern =
+            if rendered.distinct.size == 1 then CatalogValuePattern.ExactScalar(kind, rendered.head)
+            else CatalogValuePattern.Scalar(kind)
+          validate(pattern)
         else incompatible(path)
       case Some(InventoryValueObservation.Unsupported(runtimeType))                             =>
         if observations.forall {
@@ -604,18 +599,19 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     e.string(field.name); writePattern(field.value, e)
 
   private def writePattern(value: CatalogValuePattern, e: CanonicalByteEncoder): Unit = value match
-    case CatalogValuePattern.Node                    => e.tag(1)
-    case CatalogValuePattern.Positioned              => e.tag(2)
-    case CatalogValuePattern.Optional(inner)         => e.tag(3); writePattern(inner, e)
-    case CatalogValuePattern.EmptyOptional(inner)    => e.tag(12); writePattern(inner, e)
-    case CatalogValuePattern.Repeated(inner)         => e.tag(4); writePattern(inner, e)
-    case CatalogValuePattern.EmptyRepeated(inner)    => e.tag(10); writePattern(inner, e)
-    case CatalogValuePattern.Product(prefix, fields) => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
-    case CatalogValuePattern.Name                    => e.tag(6)
-    case CatalogValuePattern.GeneratedName           => e.tag(7)
-    case CatalogValuePattern.ClassifiedName(value)   => e.tag(11); e.string(value.toString)
-    case CatalogValuePattern.Scalar(kind)            => e.tag(8); e.string(kind)
-    case CatalogValuePattern.Unsupported(runtime)    => e.tag(9); e.string(runtime)
+    case CatalogValuePattern.Node                     => e.tag(1)
+    case CatalogValuePattern.Positioned               => e.tag(2)
+    case CatalogValuePattern.Optional(inner)          => e.tag(3); writePattern(inner, e)
+    case CatalogValuePattern.EmptyOptional(inner)     => e.tag(12); writePattern(inner, e)
+    case CatalogValuePattern.Repeated(inner)          => e.tag(4); writePattern(inner, e)
+    case CatalogValuePattern.EmptyRepeated(inner)     => e.tag(10); writePattern(inner, e)
+    case CatalogValuePattern.Product(prefix, fields)  => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
+    case CatalogValuePattern.Name                     => e.tag(6)
+    case CatalogValuePattern.GeneratedName            => e.tag(7)
+    case CatalogValuePattern.ClassifiedName(value)    => e.tag(11); e.string(value.toString)
+    case CatalogValuePattern.Scalar(kind)             => e.tag(8); e.string(kind)
+    case CatalogValuePattern.ExactScalar(kind, value) => e.tag(13); e.string(kind); e.string(value)
+    case CatalogValuePattern.Unsupported(runtime)     => e.tag(9); e.string(runtime)
 
   private def writeContext(context: InventoryContext, e: CanonicalByteEncoder): Unit =
     e.tag(context.ownerKind.ordinal); e.string(context.ownerPrefix); e.sequence(context.path)(writePath(_, e))
@@ -1262,6 +1258,15 @@ private[metallurgy] object GrammarRoleId:
   val Annotations         = GrammarRoleId("scala.annotations")
   val Annotation          = GrammarRoleId("scala.annotation")
   val AnnotationArguments = GrammarRoleId("scala.annotation.arguments")
+  val ClassDefinition     = GrammarRoleId("scala.definition.class")
+  val TraitDefinition     = GrammarRoleId("scala.definition.trait")
+  val ObjectDefinition    = GrammarRoleId("scala.definition.object")
+  val EnumDefinition      = GrammarRoleId("scala.definition.enum")
+  val EnumCase            = GrammarRoleId("scala.definition.enum.case")
+  val Template            = GrammarRoleId("scala.template")
+  val TemplateConstructor = GrammarRoleId("scala.template.constructor")
+  val TemplateSelf        = GrammarRoleId("scala.template.self")
+  val TemplateTypeTree    = GrammarRoleId("scala.template.type-tree")
 private[metallurgy] enum ChildCardinality:
   case ExactlyOne, Optional
   case Repeated(minimum: Int, maximum: Option[Int])
@@ -1329,6 +1334,10 @@ private[metallurgy] enum ChildOccurrenceSelector:
 private[metallurgy] enum OutputBoundary:
   case ProductionStart(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
   case ProductionEnd(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
+  case ProductionPoint
+  case ProductionNameEnd
+  case ParentProductionEnd
+  case TemplateLayoutStart
   case ChildStart(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
   case ChildEnd(roleId: String, occurrence: ChildOccurrenceSelector, policy: PositionProvenancePolicy)
   case EvidenceBoundaryAfterChild(
@@ -1382,6 +1391,18 @@ private[metallurgy] object PsiOutputRoleId:
   val AnnotationExpr        = PsiOutputRoleId("scala.annotation.expression")
   val ConstructorInvocation = PsiOutputRoleId("scala.annotation.constructor")
   val AnnotationArguments   = PsiOutputRoleId("scala.annotation.arguments")
+  val ClassDefinition       = PsiOutputRoleId("scala.definition.class")
+  val TraitDefinition       = PsiOutputRoleId("scala.definition.trait")
+  val ObjectDefinition      = PsiOutputRoleId("scala.definition.object")
+  val EnumDefinition        = PsiOutputRoleId("scala.definition.enum")
+  val EnumCases             = PsiOutputRoleId("scala.definition.enum.cases")
+  val EnumSingletonCase     = PsiOutputRoleId("scala.definition.enum.case.singleton")
+  val EnumClassCase         = PsiOutputRoleId("scala.definition.enum.case.class")
+  val ExtendsBlock          = PsiOutputRoleId("scala.template.extends-block")
+  val TemplateBody          = PsiOutputRoleId("scala.template.body")
+  val PrimaryConstructor    = PsiOutputRoleId("scala.template.constructor.primary")
+  val ParameterClauses      = PsiOutputRoleId("scala.template.parameter-clauses")
+  val ParameterClause       = PsiOutputRoleId("scala.template.parameter-clause")
 private[metallurgy] final case class StableRoleInventory(
     grammarRoles: Set[GrammarRoleId],
     outputRoles: Set[PsiOutputRoleId]
@@ -1411,7 +1432,16 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.KeywordModifier,
       GrammarRoleId.Annotations,
       GrammarRoleId.Annotation,
-      GrammarRoleId.AnnotationArguments
+      GrammarRoleId.AnnotationArguments,
+      GrammarRoleId.ClassDefinition,
+      GrammarRoleId.TraitDefinition,
+      GrammarRoleId.ObjectDefinition,
+      GrammarRoleId.EnumDefinition,
+      GrammarRoleId.EnumCase,
+      GrammarRoleId.Template,
+      GrammarRoleId.TemplateConstructor,
+      GrammarRoleId.TemplateSelf,
+      GrammarRoleId.TemplateTypeTree
     ),
     Set(
       PsiOutputRoleId.SourceTerminal,
@@ -1437,7 +1467,19 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.Annotation,
       PsiOutputRoleId.AnnotationExpr,
       PsiOutputRoleId.ConstructorInvocation,
-      PsiOutputRoleId.AnnotationArguments
+      PsiOutputRoleId.AnnotationArguments,
+      PsiOutputRoleId.ClassDefinition,
+      PsiOutputRoleId.TraitDefinition,
+      PsiOutputRoleId.ObjectDefinition,
+      PsiOutputRoleId.EnumDefinition,
+      PsiOutputRoleId.EnumCases,
+      PsiOutputRoleId.EnumSingletonCase,
+      PsiOutputRoleId.EnumClassCase,
+      PsiOutputRoleId.ExtendsBlock,
+      PsiOutputRoleId.TemplateBody,
+      PsiOutputRoleId.PrimaryConstructor,
+      PsiOutputRoleId.ParameterClauses,
+      PsiOutputRoleId.ParameterClause
     )
   )
 private[metallurgy] object ImportPersistenceSurfaces:
@@ -1480,6 +1522,57 @@ private[metallurgy] object ModifierAnnotationPersistenceSurfaces:
   val AnnotationStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/ScAnnotationStub"
   val AnnotationSerializer  =
     "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScAnnotationElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScAnnotationStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+private[metallurgy] object TemplatePersistenceSurfaces:
+  val DefinitionStub              = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScTemplateDefinitionStubImpl"
+  val DefinitionSerializer        =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScTemplateDefinitionElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScTemplateDefinitionStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val EnumCasesStub               = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScEnumCasesStubImpl"
+  val ExtendsBlockStub            = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScExtendsBlockStubImpl"
+  val ExtendsBlockSerializer      =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScExtendsBlockElementType#serialize(Lorg/jetbrains/plugins/scala/lang/psi/stubs/ScExtendsBlockStub;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val TemplateBodyStub            = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScTemplateBodyStubImpl"
+  val PrimaryConstructorStub      = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScPrimaryConstructorStubImpl"
+  val ParameterClausesStub        = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScParamClausesStubImpl"
+  val ParameterClauseStub         = "org/jetbrains/plugins/scala/lang/psi/stubs/impl/ScParamClauseStubImpl"
+  val GenericSerializer           =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/elements/ScStubElementType#serialize(Lcom/intellij/psi/stubs/StubElement;Lcom/intellij/psi/stubs/StubOutputStream;)V"
+  val ShortNameIndex              = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#SHORT_NAME_KEY"
+  val ClassFqnIndex               = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#CLASS_FQN_KEY"
+  val ClassNameInPackageIndex     =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#CLASS_NAME_IN_PACKAGE_KEY"
+  val JavaClassShortNameIndex     = "com/intellij/psi/impl/java/stubs/index/JavaStubIndexKeys#CLASS_SHORT_NAMES"
+  val JavaClassFqnIndex           = "com/intellij/psi/impl/java/stubs/index/JavaStubIndexKeys#CLASS_FQN"
+  val NotVisibleInJavaIndex       =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#NOT_VISIBLE_IN_JAVA_SHORT_NAME_KEY"
+  val AllClassNamesIndex          = "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ALL_CLASS_NAMES"
+  val SuperClassNameIndex         =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#SUPER_CLASS_NAME_KEY"
+  val JavaClassNameInPackageIndex =
+    "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#JAVA_CLASS_NAME_IN_PACKAGE_KEY"
+  val DefinitionIndices           = Vector(
+    ShortNameIndex,
+    ClassFqnIndex,
+    ClassNameInPackageIndex,
+    JavaClassShortNameIndex,
+    JavaClassFqnIndex,
+    NotVisibleInJavaIndex,
+    AllClassNamesIndex,
+    JavaClassNameInPackageIndex
+  )
+  val ExternalIds                 = Map(
+    PsiOutputRoleId.ClassDefinition    -> "scala.ScClass",
+    PsiOutputRoleId.TraitDefinition    -> "scala.ScTrait",
+    PsiOutputRoleId.ObjectDefinition   -> "scala.ScObject",
+    PsiOutputRoleId.EnumDefinition     -> "scala.ScEnum",
+    PsiOutputRoleId.EnumCases          -> "scala.ScEnumCases",
+    PsiOutputRoleId.EnumSingletonCase  -> "scala.ScEnumSingletonCase",
+    PsiOutputRoleId.EnumClassCase      -> "scala.ScEnumClassCase",
+    PsiOutputRoleId.ExtendsBlock       -> "scala.extends block",
+    PsiOutputRoleId.TemplateBody       -> "scala.template body",
+    PsiOutputRoleId.PrimaryConstructor -> "scala.primary constructor",
+    PsiOutputRoleId.ParameterClauses   -> "scala.parameter clauses",
+    PsiOutputRoleId.ParameterClause    -> "scala.parameter clause"
+  )
 private[metallurgy] final case class OutputCompositeDeclaration(
     id: String,
     parentId: Option[String],
@@ -1505,10 +1598,13 @@ private[metallurgy] final case class ChildOutcomeCondition(
     occurrence: ChildOccurrenceSelector,
     expected: ChildOutcomeExpectation
 )
+private[metallurgy] enum EvidenceCondition:
+  case TemplateBodyLayout(present: Boolean)
 private[metallurgy] final case class OutputRealization(
     id: String,
     conditions: Vector[ChildOutcomeCondition],
-    template: LocalOutputCompositeTemplate
+    template: LocalOutputCompositeTemplate,
+    evidenceConditions: Vector[EvidenceCondition] = Vector.empty
 )
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
@@ -1568,6 +1664,62 @@ private[metallurgy] enum CatalogCapabilityFailure:
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty, StableRoleInventory.Empty)
 
+  def persistenceSchemaFingerprint(catalog: Scala3PsiProductionCatalog): String =
+    val encoder = CanonicalByteEncoder()
+    encoder.sequence(catalog.stableRoles.outputRoles.toVector.sortBy(_.value))(role => encoder.string(role.value))
+    encoder.sequence(catalog.productions.sortBy(_.id)): production =>
+      encoder.string(production.id)
+      encoder.string(production.pattern.kind.toString)
+      encoder.string(production.pattern.prefix)
+      encoder.sequence(production.pattern.fields): field =>
+        encoder.string(field.name)
+        encoder.string(field.value.toString)
+      encoder.sequence(production.pattern.occurrences.sortBy(_.toString))(occurrence =>
+        encoder.string(occurrence.toString)
+      )
+      encoder.sequence(production.grammarRoleIds.toVector.sortBy(_.value))(role => encoder.string(role.value))
+      encoder.sequence(production.children.sortBy(_.roleId)): child =>
+        encoder.string(child.roleId)
+        encoder.string(child.fieldName)
+        encoder.sequence(child.productionIds.toVector.sorted)(encoder.string)
+        encoder.string(child.cardinality.toString)
+      encoder.sequence(production.terminals): terminal =>
+        encoder.string(terminal.id)
+        encoder.string(terminal.selector.toString)
+        encoder.string(terminal.target.toString)
+        encoder.string(terminal.cardinality.toString)
+        encoder.string(terminal.outputRoleId.value)
+      encoder.sequence(production.effectiveOutputRealizations.sortBy(_.id)): realization =>
+        encoder.string(realization.id)
+        encoder.sequence(realization.conditions.sortBy(_.toString))(condition => encoder.string(condition.toString))
+        encoder.sequence(realization.evidenceConditions.sortBy(_.toString))(condition =>
+          encoder.string(condition.toString)
+        )
+        encoder.sequence(realization.template.composites): output =>
+          encoder.string(output.id)
+          encoder.string(output.parentId.getOrElse(""))
+          encoder.string(output.range.toString)
+          encoder.string(output.outputRoleId.value)
+          encoder.string(output.targetSurfaceId)
+          encoder.string(TemplatePersistenceSurfaces.ExternalIds.getOrElse(output.outputRoleId, ""))
+          encoder.string(output.targetRequirement.toString)
+          encoder.sequence(output.accessors.sortBy(_.toString))(accessor => encoder.string(accessor.toString))
+          encoder.string(output.navigation.toString)
+          encoder.string(output.ownsStructuralEvidence.toString)
+          encoder.string(output.requiresCompilerEndMarker.toString)
+          output.persistence match
+            case PersistenceObligations.NotApplicable                                   => encoder.tag(0)
+            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+              encoder.tag(1)
+              encoder.string(stub)
+              encoder.string(serializer)
+              encoder.sequence(indices.sorted)(encoder.string)
+              encoder.string(navigation)
+        encoder.sequence(realization.template.childMounts.toVector.sortBy(_._1)): (role, parent) =>
+          encoder.string(role)
+          encoder.string(parent.getOrElse(""))
+    CanonicalByteEncoder.sha256Hex(encoder.result())
+
   private val PackageSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
   private val EndSurface                 = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
@@ -1606,6 +1758,30 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   private val ExpressionPayloadSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
   private val ExpressionSurface          = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
+  private val ClassDefinitionSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScClassImpl"
+  private val TraitDefinitionSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScTraitImpl"
+  private val ObjectDefinitionSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScObjectImpl"
+  private val EnumDefinitionSurface      =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScEnumImpl"
+  private val EnumCasesSurface           =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumCasesImpl"
+  private val EnumSingletonCaseSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumSingletonCaseImpl"
+  private val EnumClassCaseSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumClassCaseImpl"
+  private val ExtendsBlockSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScExtendsBlockImpl"
+  private val TemplateBodySurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScTemplateBodyImpl"
+  private val PrimaryConstructorSurface  =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPrimaryConstructorImpl"
+  private val ParameterClausesSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParametersImpl"
+  private val ParameterClauseSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterClauseImpl"
 
   private def outputComposite(
       id: String,
@@ -1617,77 +1793,127 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       requirement: TargetRequirement = TargetRequirement.Native
   ): OutputCompositeDeclaration =
     val persistence = role match
-      case PsiOutputRoleId.PackageStatement  =>
+      case PsiOutputRoleId.PackageStatement   =>
         PersistenceObligations.Required(
           PackagePersistenceSurfaces.Stub,
           PackagePersistenceSurfaces.Serializer,
           Vector(PackagePersistenceSurfaces.FqnIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportStatement   =>
+      case PsiOutputRoleId.ImportStatement    =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.StatementStub,
           ImportPersistenceSurfaces.StatementSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ExportStatement   =>
+      case PsiOutputRoleId.ExportStatement    =>
         PersistenceObligations.Required(
           ExportPersistenceSurfaces.StatementStub,
           ExportPersistenceSurfaces.StatementSerializer,
           Vector(ExportPersistenceSurfaces.TopLevelPackageIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportExpression  =>
+      case PsiOutputRoleId.ImportExpression   =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.ExpressionStub,
           ImportPersistenceSurfaces.ExpressionSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportSelectorSet =>
+      case PsiOutputRoleId.ImportSelectorSet  =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.SelectorSetStub,
           ImportPersistenceSurfaces.SelectorSetSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ImportSelector    =>
+      case PsiOutputRoleId.ImportSelector     =>
         PersistenceObligations.Required(
           ImportPersistenceSurfaces.SelectorStub,
           ImportPersistenceSurfaces.SelectorSerializer,
           Vector(ImportPersistenceSurfaces.AliasedImportIndex),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.ModifierList      =>
+      case PsiOutputRoleId.ModifierList       =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.ModifierStub,
           ModifierAnnotationPersistenceSurfaces.ModifierSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.AccessModifier    =>
+      case PsiOutputRoleId.AccessModifier     =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AccessStub,
           ModifierAnnotationPersistenceSurfaces.AccessSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.Annotations       =>
+      case PsiOutputRoleId.Annotations        =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AnnotationsStub,
           ModifierAnnotationPersistenceSurfaces.AnnotationsSerializer,
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case PsiOutputRoleId.Annotation        =>
+      case PsiOutputRoleId.Annotation         =>
         PersistenceObligations.Required(
           ModifierAnnotationPersistenceSurfaces.AnnotationStub,
           ModifierAnnotationPersistenceSurfaces.AnnotationSerializer,
           Vector(NativePsiElementBindings.AnnotatedMemberIndexSurface),
           ImportPersistenceSurfaces.SelfNavigation
         )
-      case _                                 => PersistenceObligations.NotApplicable
+      case PsiOutputRoleId.ClassDefinition | PsiOutputRoleId.TraitDefinition | PsiOutputRoleId.ObjectDefinition |
+          PsiOutputRoleId.EnumDefinition | PsiOutputRoleId.EnumSingletonCase | PsiOutputRoleId.EnumClassCase =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.DefinitionStub,
+          TemplatePersistenceSurfaces.DefinitionSerializer,
+          TemplatePersistenceSurfaces.DefinitionIndices,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.EnumCases          =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.EnumCasesStub,
+          TemplatePersistenceSurfaces.GenericSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ExtendsBlock       =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.ExtendsBlockStub,
+          TemplatePersistenceSurfaces.ExtendsBlockSerializer,
+          Vector(TemplatePersistenceSurfaces.SuperClassNameIndex),
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.TemplateBody       =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.TemplateBodyStub,
+          TemplatePersistenceSurfaces.GenericSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.PrimaryConstructor =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.PrimaryConstructorStub,
+          TemplatePersistenceSurfaces.GenericSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ParameterClauses   =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.ParameterClausesStub,
+          TemplatePersistenceSurfaces.GenericSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.ParameterClause    =>
+        PersistenceObligations.Required(
+          TemplatePersistenceSurfaces.ParameterClauseStub,
+          TemplatePersistenceSurfaces.GenericSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case _                                  => PersistenceObligations.NotApplicable
     OutputCompositeDeclaration(
       id,
       parentId,
@@ -2418,8 +2644,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   )
 
   private def packageProduction(id: String, body: Boolean): Scala3PsiProduction =
-    val packageIds = Set("file-package", "file-package-top-statements")
-    val children   = Vector(
+    val packageIds       = Set("file-package", "file-package-top-statements")
+    val templateOwnerIds = Set(
+      "template-class-definition",
+      "template-trait-definition",
+      "template-object-definition",
+      "template-enum-definition"
+    )
+    val children         = Vector(
       ChildDeclaration(
         "package-reference",
         "pid",
@@ -2433,7 +2665,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "stats",
         ChildCardinality.Grouped(1, None),
         "import-statement",
-        Set("export-statement") ++ packageIds
+        Set("export-statement") ++ packageIds ++ templateOwnerIds
       )
     )
     Scala3PsiProduction(
@@ -3338,6 +3570,718 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       annotationLiteralPayloadProduction
     )
 
+  private def emptyModifiers(flags: Long): CatalogValuePattern = CatalogValuePattern.Product(
+    "Modifiers",
+    Vector(
+      CompilerFieldPattern("flags", CatalogValuePattern.ExactScalar("LongInteger", s"LongInteger($flags)")),
+      CompilerFieldPattern("privateWithin", CatalogValuePattern.ClassifiedName(NeutralNameClass.Empty)),
+      CompilerFieldPattern("annotations", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+      CompilerFieldPattern("mods", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Positioned))
+    )
+  )
+
+  private val TemplateOwnerOccurrences = Vector(
+    CompilerProductionContextPattern(
+      ContextPattern.Parent(
+        InventoryKind.Node,
+        "PackageDef",
+        Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+      ),
+      SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.Parent(
+        InventoryKind.Node,
+        "Template",
+        Vector(CatalogPathSegment.NamedField("preBody"), CatalogPathSegment.RepeatedElement)
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private def zeroOutput(
+      id: String,
+      parentId: String,
+      role: PsiOutputRoleId,
+      surface: String,
+      boundary: OutputBoundary
+  ): OutputCompositeDeclaration =
+    val accessors = role match
+      case PsiOutputRoleId.Annotations  => AnnotationsAccessors
+      case PsiOutputRoleId.ModifierList => ModifierListAccessors
+      case _                            => Vector.empty
+    outputComposite(
+      id,
+      Some(parentId),
+      OutputRangeDeclaration.BoundaryDerived(boundary, boundary),
+      role,
+      surface,
+      accessors
+    )
+
+  private def definitionTemplate(
+      role: PsiOutputRoleId,
+      surface: String,
+      implicitConstructor: Boolean,
+      wrapper: Boolean
+  ): LocalOutputCompositeTemplate =
+    val definitionId   = if wrapper then "case-definition" else "definition"
+    val definitionRoot =
+      if wrapper then
+        Vector(
+          outputComposite(
+            "enum-cases",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.EnumCases,
+            EnumCasesSurface,
+            Vector.empty
+          ),
+          zeroOutput(
+            "annotations",
+            "enum-cases",
+            PsiOutputRoleId.Annotations,
+            AnnotationsSurface,
+            OutputBoundary.ProductionStart()
+          ),
+          zeroOutput(
+            "modifiers",
+            "enum-cases",
+            PsiOutputRoleId.ModifierList,
+            ModifierListSurface,
+            OutputBoundary.ProductionStart()
+          ),
+          outputComposite(
+            definitionId,
+            Some("enum-cases"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.ProductionPoint,
+              OutputBoundary.ProductionEnd()
+            ),
+            role,
+            surface,
+            Vector.empty
+          )
+        )
+      else
+        Vector(
+          outputComposite(
+            definitionId,
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            role,
+            surface,
+            Vector.empty
+          ),
+          zeroOutput(
+            "annotations",
+            definitionId,
+            PsiOutputRoleId.Annotations,
+            AnnotationsSurface,
+            OutputBoundary.ProductionStart()
+          ),
+          zeroOutput(
+            "modifiers",
+            definitionId,
+            PsiOutputRoleId.ModifierList,
+            ModifierListSurface,
+            OutputBoundary.ProductionStart()
+          )
+        )
+    val constructor    = Option
+      .when(implicitConstructor)(
+        Vector(
+          zeroOutput(
+            "constructor",
+            definitionId,
+            PsiOutputRoleId.PrimaryConstructor,
+            PrimaryConstructorSurface,
+            OutputBoundary.ProductionNameEnd
+          ),
+          zeroOutput(
+            "constructor-annotations",
+            "constructor",
+            PsiOutputRoleId.Annotations,
+            AnnotationsSurface,
+            OutputBoundary.ProductionNameEnd
+          ),
+          zeroOutput(
+            "constructor-modifiers",
+            "constructor",
+            PsiOutputRoleId.ModifierList,
+            ModifierListSurface,
+            OutputBoundary.ProductionNameEnd
+          ),
+          zeroOutput(
+            "parameter-clauses",
+            "constructor",
+            PsiOutputRoleId.ParameterClauses,
+            ParameterClausesSurface,
+            OutputBoundary.ProductionNameEnd
+          )
+        )
+      )
+      .getOrElse(Vector.empty)
+    LocalOutputCompositeTemplate(
+      definitionRoot ++ constructor,
+      Map(
+        "template"  -> Some(definitionId),
+        "modifiers" -> Some(if wrapper then "enum-cases" else definitionId)
+      )
+    )
+
+  private def ownerRealizations(
+      role: PsiOutputRoleId,
+      surface: String,
+      constructorOwner: Boolean,
+      allowed: Vector[(String, Boolean)],
+      wrapper: Boolean
+  ): Vector[OutputRealization] = allowed.map: (templateRealization, implicitConstructor) =>
+    OutputRealization(
+      templateRealization,
+      Vector(
+        ChildOutcomeCondition(
+          "template",
+          ChildOccurrenceSelector.First,
+          ChildOutcomeExpectation.Realization(templateRealization)
+        )
+      ),
+      definitionTemplate(role, surface, constructorOwner && implicitConstructor, wrapper)
+    )
+
+  private def templateOwnerProduction(
+      id: String,
+      prefix: String,
+      templateField: String,
+      flags: Long,
+      grammarRole: GrammarRoleId,
+      outputRole: PsiOutputRoleId,
+      surface: String,
+      constructorOwner: Boolean,
+      enumCase: Boolean = false,
+      classCase: Boolean = false
+  ): Scala3PsiProduction =
+    val occurrences =
+      if enumCase then
+        Vector(
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(
+              InventoryKind.Node,
+              "Template",
+              Vector(CatalogPathSegment.NamedField("preBody"), CatalogPathSegment.RepeatedElement)
+            ),
+            SourceClassification.SourceReachable
+          )
+        )
+      else TemplateOwnerOccurrences
+    val allowed     =
+      if classCase then Vector("absent-explicit" -> false)
+      else if enumCase then Vector("absent-synthetic" -> false)
+      else
+        Vector(
+          "layout-synthetic"                          -> true,
+          "layout-explicit"                           -> false,
+          "absent-synthetic"                          -> true,
+          "absent-explicit"                           -> false
+        )
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = grammarRole,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        prefix,
+        Vector(
+          CompilerFieldPattern("name", CatalogValuePattern.Name),
+          CompilerFieldPattern(templateField, CatalogValuePattern.Node),
+          CompilerFieldPattern("mods", emptyModifiers(flags))
+        ),
+        occurrences
+      ),
+      dispositions = Vector(
+        FieldDisposition("name", FieldDispositionKind.TerminalOrLayout),
+        FieldDisposition(templateField, FieldDispositionKind.Child),
+        FieldDisposition("mods", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        ChildDeclaration("template", templateField, ChildCardinality.ExactlyOne, "template-template"),
+        ChildDeclaration("modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "definition-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = surface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRealizations = ownerRealizations(
+        outputRole,
+        surface,
+        constructorOwner,
+        allowed,
+        wrapper = enumCase
+      ),
+      outputRoleId = None
+    )
+
+  private def templateOutputTemplate(body: Boolean): LocalOutputCompositeTemplate =
+    val end        = Option
+      .when(body)(
+        outputComposite(
+          "end",
+          Some("body"),
+          OutputRangeDeclaration.CompilerEndMarker,
+          PsiOutputRoleId.EndStatement,
+          EndSurface,
+          EndAccessors
+        ).copy(requiresCompilerEndMarker = true)
+      )
+      .toVector
+    val composites =
+      if body then
+        Vector(
+          outputComposite(
+            "extends",
+            None,
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.TemplateLayoutStart,
+              OutputBoundary.ParentProductionEnd
+            ),
+            PsiOutputRoleId.ExtendsBlock,
+            ExtendsBlockSurface,
+            Vector.empty
+          ),
+          outputComposite(
+            "body",
+            Some("extends"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.TemplateLayoutStart,
+              OutputBoundary.ParentProductionEnd
+            ),
+            PsiOutputRoleId.TemplateBody,
+            TemplateBodySurface,
+            Vector.empty
+          )
+        ) ++ end
+      else
+        Vector(
+          outputComposite(
+            "extends",
+            None,
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.ParentProductionEnd,
+              OutputBoundary.ParentProductionEnd
+            ),
+            PsiOutputRoleId.ExtendsBlock,
+            ExtendsBlockSurface,
+            Vector.empty
+          )
+        )
+    LocalOutputCompositeTemplate(
+      composites,
+      Map(
+        "constructor"        -> None,
+        "self"               -> None,
+        "statements"         -> Option.when(body)("body"),
+        "template-modifiers" -> None
+      )
+    )
+
+  private def templateRealization(
+      id: String,
+      constructorId: String,
+      body: Boolean
+  ): OutputRealization = OutputRealization(
+    id,
+    Vector(
+      ChildOutcomeCondition(
+        "constructor",
+        ChildOccurrenceSelector.First,
+        ChildOutcomeExpectation.Production(constructorId)
+      )
+    ),
+    templateOutputTemplate(body),
+    Vector(EvidenceCondition.TemplateBodyLayout(body))
+  )
+
+  private val templateTemplateProduction = Scala3PsiProduction(
+    id = "template-template",
+    grammarRoleId = GrammarRoleId.Template,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Template",
+      Vector(
+        CompilerFieldPattern("constr", CatalogValuePattern.Node),
+        CompilerFieldPattern("preParentsOrDerived", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("self", CatalogValuePattern.Node),
+        CompilerFieldPattern("preBody", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("mods", emptyModifiers(0L))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "TypeDef", Vector(CatalogPathSegment.NamedField("rhs"))),
+          SourceClassification.Synthetic
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "ModuleDef", Vector(CatalogPathSegment.NamedField("impl"))),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("constr", FieldDispositionKind.Child),
+      FieldDisposition("preParentsOrDerived", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("self", FieldDispositionKind.Child),
+      FieldDisposition("preBody", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "constructor",
+        "constr",
+        ChildCardinality.ExactlyOne,
+        "template-constructor-synthetic",
+        Set("template-constructor-explicit-empty")
+      ),
+      ChildDeclaration("self", "self", ChildCardinality.ExactlyOne, "template-self-absent"),
+      ChildDeclaration(
+        "statements",
+        "preBody",
+        ChildCardinality.Grouped(0, None),
+        "template-absent-tree",
+        Set(
+          "template-class-definition",
+          "template-trait-definition",
+          "template-object-definition",
+          "template-enum-definition",
+          "enum-singleton-case",
+          "enum-class-case"
+        )
+      ),
+      ChildDeclaration("template-modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "end-keyword",
+        TerminalIntervalSelector.CompilerEndMarkerKeyword,
+        TerminalLeafTarget.Token(NativePsiElementBindings.EndKeywordTokenSurface, Some("end")),
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.EndKeyword
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ExtendsBlockSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRealizations = Vector(
+      templateRealization("layout-synthetic", "template-constructor-synthetic", body = true),
+      templateRealization("layout-explicit", "template-constructor-explicit-empty", body = true),
+      templateRealization("absent-synthetic", "template-constructor-synthetic", body = false),
+      templateRealization("absent-explicit", "template-constructor-explicit-empty", body = false)
+    ),
+    outputRoleId = None
+  )
+
+  private val templateConstructorSyntheticProduction = Scala3PsiProduction(
+    id = "template-constructor-synthetic",
+    grammarRoleId = GrammarRoleId.TemplateConstructor,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "DefDef",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.Name),
+        CompilerFieldPattern("paramss", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+        CompilerFieldPattern("preRhs", CatalogValuePattern.Node),
+        CompilerFieldPattern("mods", emptyModifiers(0L))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("constr"))),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("paramss", FieldDispositionKind.Synthetic),
+      FieldDisposition("tpt", FieldDispositionKind.Child),
+      FieldDisposition("preRhs", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration("type-tree", "tpt", ChildCardinality.ExactlyOne, "template-type-tree-synthetic"),
+      ChildDeclaration("rhs", "preRhs", ChildCardinality.ExactlyOne, "template-absent-tree"),
+      ChildDeclaration("constructor-modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = PrimaryConstructorSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate("type-tree", "rhs", "constructor-modifiers")),
+    outputRoleId = None
+  )
+
+  private val templateConstructorExplicitProduction = templateConstructorSyntheticProduction.copy(
+    id = "template-constructor-explicit-empty",
+    pattern = templateConstructorSyntheticProduction.pattern.copy(
+      fields = templateConstructorSyntheticProduction.pattern.fields.updated(
+        1,
+        CompilerFieldPattern(
+          "paramss",
+          CatalogValuePattern.Repeated(CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))
+        )
+      ),
+      occurrences = templateConstructorSyntheticProduction.pattern.occurrences.map(
+        _.copy(sourceClassification = SourceClassification.SourceReachable)
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "constructor-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "constructor",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.PrimaryConstructor,
+            PrimaryConstructorSurface,
+            Vector.empty
+          ),
+          zeroOutput(
+            "annotations",
+            "constructor",
+            PsiOutputRoleId.Annotations,
+            AnnotationsSurface,
+            OutputBoundary.ProductionStart()
+          ),
+          zeroOutput(
+            "modifiers",
+            "constructor",
+            PsiOutputRoleId.ModifierList,
+            ModifierListSurface,
+            OutputBoundary.ProductionStart()
+          ),
+          outputComposite(
+            "parameter-clauses",
+            Some("constructor"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.ParameterClauses,
+            ParameterClausesSurface,
+            Vector.empty
+          ),
+          outputComposite(
+            "parameter-clause",
+            Some("parameter-clauses"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.ParameterClause,
+            ParameterClauseSurface,
+            Vector.empty
+          )
+        ),
+        Map("type-tree" -> None, "rhs" -> None, "constructor-modifiers" -> None)
+      )
+    )
+  )
+
+  private val templateTypeTreeProduction = Scala3PsiProduction(
+    id = "template-type-tree-synthetic",
+    grammarRoleId = GrammarRoleId.TemplateTypeTree,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "TypeTree",
+      Vector.empty,
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("tpt"))),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector.empty,
+    children = Vector.empty,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = PrimaryConstructorSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate()),
+    outputRoleId = None
+  )
+
+  private val templateSelfProduction = Scala3PsiProduction(
+    id = "template-self-absent",
+    grammarRoleId = GrammarRoleId.TemplateSelf,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "ValDef",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard)),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+        CompilerFieldPattern("preRhs", CatalogValuePattern.Node),
+        CompilerFieldPattern("mods", emptyModifiers(8199L))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("self"))),
+          SourceClassification.Absent
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("tpt", FieldDispositionKind.Child),
+      FieldDisposition("preRhs", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration("type-tree", "tpt", ChildCardinality.ExactlyOne, "template-absent-tree"),
+      ChildDeclaration("rhs", "preRhs", ChildCardinality.ExactlyOne, "template-absent-tree"),
+      ChildDeclaration("self-modifiers", "mods", ChildCardinality.ExactlyOne, "modifiers-absent")
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ModifierListSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate("type-tree", "rhs", "self-modifiers")),
+    outputRoleId = None
+  )
+
+  private val templateAbsentTreeProduction = Scala3PsiProduction(
+    id = "template-absent-tree",
+    grammarRoleId = GrammarRoleId.AbsentProduct,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Thicket",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
+      Vector(
+        "DefDef"   -> "preRhs",
+        "ValDef"   -> "tpt",
+        "ValDef"   -> "preRhs",
+        "Template" -> "preBody"
+      ).map: (owner, field) =>
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            owner,
+            Vector(CatalogPathSegment.NamedField(field)) ++
+              Option.when(owner == "Template")(CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.Absent
+        )
+    ),
+    dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Synthetic)),
+    children = Vector.empty,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ModifierListSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate()),
+    outputRoleId = None
+  )
+
+  private def templateProductions: Vector[Scala3PsiProduction] = Vector(
+    templateOwnerProduction(
+      "template-class-definition",
+      "TypeDef",
+      "rhs",
+      0L,
+      GrammarRoleId.ClassDefinition,
+      PsiOutputRoleId.ClassDefinition,
+      ClassDefinitionSurface,
+      constructorOwner = true
+    ),
+    templateOwnerProduction(
+      "template-trait-definition",
+      "TypeDef",
+      "rhs",
+      1026L,
+      GrammarRoleId.TraitDefinition,
+      PsiOutputRoleId.TraitDefinition,
+      TraitDefinitionSurface,
+      constructorOwner = false
+    ),
+    templateOwnerProduction(
+      "template-object-definition",
+      "ModuleDef",
+      "impl",
+      32771L,
+      GrammarRoleId.ObjectDefinition,
+      PsiOutputRoleId.ObjectDefinition,
+      ObjectDefinitionSurface,
+      constructorOwner = false
+    ),
+    templateOwnerProduction(
+      "template-enum-definition",
+      "TypeDef",
+      "rhs",
+      1099511627779L,
+      GrammarRoleId.EnumDefinition,
+      PsiOutputRoleId.EnumDefinition,
+      EnumDefinitionSurface,
+      constructorOwner = true
+    ),
+    templateOwnerProduction(
+      "enum-singleton-case",
+      "ModuleDef",
+      "impl",
+      1099511758851L,
+      GrammarRoleId.EnumCase,
+      PsiOutputRoleId.EnumSingletonCase,
+      EnumSingletonCaseSurface,
+      constructorOwner = false,
+      enumCase = true
+    ),
+    templateOwnerProduction(
+      "enum-class-case",
+      "TypeDef",
+      "rhs",
+      1099511758851L,
+      GrammarRoleId.EnumCase,
+      PsiOutputRoleId.EnumClassCase,
+      EnumClassCaseSurface,
+      constructorOwner = false,
+      enumCase = true,
+      classCase = true
+    ),
+    templateTemplateProduction,
+    templateConstructorSyntheticProduction,
+    templateConstructorExplicitProduction,
+    templateTypeTreeProduction,
+    templateSelfProduction,
+    templateAbsentTreeProduction
+  )
+
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
       packageProduction("file-package", body = false),
@@ -3364,7 +4308,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "stats",
             ChildCardinality.Grouped(1, None),
             "import-statement",
-            Set("export-statement", "file-package", "file-package-top-statements")
+            Set(
+              "export-statement",
+              "file-package",
+              "file-package-top-statements",
+              "template-class-definition",
+              "template-trait-definition",
+              "template-object-definition",
+              "template-enum-definition"
+            )
           )
         ),
         terminals = Vector(
@@ -4845,7 +5797,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         navigation = Some(NavigationObligation.Self),
         outputRoleId = Some(PsiOutputRoleId.IntegerLiteral)
       )
-    ) ++ modifierAnnotationProductions,
+    ) ++ modifierAnnotationProductions ++ templateProductions,
     StableRoleInventory.Reviewed
   )
 
@@ -5101,6 +6053,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.GeneratedName            => "GeneratedName"
     case CatalogValuePattern.ClassifiedName(value)    => s"Name[$value]"
     case CatalogValuePattern.Scalar(kind)             => s"Scalar[$kind]"
+    case CatalogValuePattern.ExactScalar(kind, value) => s"ExactScalar[$kind,$value]"
     case CatalogValuePattern.Unsupported(runtimeType) => s"Unsupported[$runtimeType]"
 
 private[metallurgy] object CatalogShapeMatcher:
@@ -5128,6 +6081,8 @@ private[metallurgy] object CatalogShapeMatcher:
         expected == NeutralNameClass.classify(value)
       case (CatalogValuePattern.Scalar(kind), InventoryValueObservation.Scalar(value))                        =>
         kind == value.productPrefix
+      case (CatalogValuePattern.ExactScalar(kind, rendered), InventoryValueObservation.Scalar(value))         =>
+        kind == value.productPrefix && rendered == value.toString
       case (CatalogValuePattern.Unsupported(runtimeType), InventoryValueObservation.Unsupported(actual))      =>
         runtimeType == actual
       case _                                                                                                  => false
@@ -5155,6 +6110,8 @@ private[metallurgy] object CatalogShapeMatcher:
         covers(expectedValue, observedValue)
       case (CatalogValuePattern.Repeated(expectedValue), CatalogValuePattern.Repeated(observedValue))           =>
         covers(expectedValue, observedValue)
+      case (CatalogValuePattern.Repeated(expectedValue), CatalogValuePattern.EmptyRepeated(observedValue))      =>
+        covers(expectedValue, observedValue)
       case (CatalogValuePattern.EmptyRepeated(expectedValue), CatalogValuePattern.EmptyRepeated(observedValue)) =>
         covers(expectedValue, observedValue)
       case (
@@ -5162,6 +6119,13 @@ private[metallurgy] object CatalogShapeMatcher:
             CatalogValuePattern.Product(observedPrefix, observedFields)
           ) =>
         expectedPrefix == observedPrefix && coversFields(expectedFields, observedFields)
+      case (CatalogValuePattern.Scalar(expected), CatalogValuePattern.ExactScalar(observed, _))                 =>
+        expected == observed
+      case (
+            CatalogValuePattern.ExactScalar(expectedKind, expectedValue),
+            CatalogValuePattern.ExactScalar(observedKind, observedValue)
+          ) =>
+        expectedKind == observedKind && expectedValue == observedValue
       case _                                                                                                    => expected == observed
 
   def coversFields(
@@ -5275,6 +6239,11 @@ private[metallurgy] object CatalogShapeMatcher:
                 InventoryFieldObservation(_, InventoryValueObservation.Optional(None), _)
               ) =>
             true
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.ExactScalar(kind, rendered)),
+                InventoryFieldObservation(_, InventoryValueObservation.Scalar(value), _)
+              ) =>
+            kind == value.productPrefix && rendered == value.toString
           case _ => false
       production -> specificity
     val highest = scored.map(_._2).maxOption.getOrElse(0)
@@ -5524,7 +6493,17 @@ private[metallurgy] object RuntimeRealizationSelector:
             values.flatten.distinct.sorted
           )
 
-    val resolved = collection.mutable.Map.empty[ProductionInstanceId, OutputRealization]
+    val resolved                                                                      = collection.mutable.Map.empty[ProductionInstanceId, Vector[OutputRealization]]
+    def mutuallyExclusive(left: OutputRealization, right: OutputRealization): Boolean =
+      left.conditions.exists(leftCondition =>
+        right.conditions.exists(rightCondition =>
+          leftCondition.roleId == rightCondition.roleId &&
+            leftCondition.occurrence == rightCondition.occurrence &&
+            leftCondition.expected != rightCondition.expected
+        )
+      ) || left.evidenceConditions.exists:
+        case EvidenceCondition.TemplateBodyLayout(leftPresent) =>
+          right.evidenceConditions.contains(EvidenceCondition.TemplateBodyLayout(!leftPresent))
     discovered.toVector.reverse.foreach: key =>
       selected
         .get(key)
@@ -5551,21 +6530,28 @@ private[metallurgy] object RuntimeRealizationSelector:
               child.exists(candidate =>
                 condition.expected match
                   case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
-                  case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.id == id)
+                  case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.exists(_.id == id))
               )
           val matches       = matching match
             case Vector() => Vector.empty
             case values   =>
-              val mostSpecific = values.map(_.conditions.size).max
-              values.filter(_.conditions.size == mostSpecific)
+              val mostSpecific = values.map(value => value.conditions.size + value.evidenceConditions.size).max
+              values.filter(value => value.conditions.size + value.evidenceConditions.size == mostSpecific)
           matches match
-            case Vector(realization) => resolved += key -> realization
-            case Vector()            =>
+            case Vector() =>
               errors += CatalogValidationError.UnknownScenarioRealization(
                 production.id,
                 production.effectiveOutputRealizations.map(_.id).sorted
               )
-            case many                =>
+            case many
+                if many
+                  .combinations(2)
+                  .forall:
+                    case Vector(left, right) => mutuallyExclusive(left, right)
+                    case _                   => true
+                =>
+              resolved += key -> many
+            case many     =>
               errors += CatalogValidationError.AmbiguousScenarioRealization(
                 production.id,
                 many.map(_.id).sorted
@@ -6480,12 +7466,17 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
 
-      val active           = collection.mutable.LinkedHashSet(root)
-      val incoming         = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Vector[ProductionInstanceId]]
-      val compilerChildren = collection.mutable.LinkedHashMap
+      val active                                                          = collection.mutable.LinkedHashSet(root)
+      val incoming                                                        = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Vector[ProductionInstanceId]]
+      val compilerChildren                                                = collection.mutable.LinkedHashMap
         .empty[ProductionInstanceId, Vector[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)]]
-      val groupedChildren  = collection.mutable.LinkedHashMap
+      val groupedChildren                                                 = collection.mutable.LinkedHashMap
         .empty[(ProductionInstanceId, String), Vector[Vector[ProductionInstanceId]]]
+      def isSharedTemplateAbsent(instance: ProductionInstanceId): Boolean =
+        selected(instance).id == "template-absent-tree" &&
+          instance.kind == InventoryKind.Node &&
+          rows(instance.kind -> instance.valueId).prefix == "Thicket" &&
+          rows(instance.kind -> instance.valueId).sourceClassification == SourceClassification.Absent
       ordered.foreach: instance =>
         val production = selected(instance)
         production.dispositions.collectFirst:
@@ -6522,7 +7513,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             found.foreach: (child, path) =>
-              val actual = selected(child)
+              val actual         = selected(child)
               if !declaration.productionIds(actual.id) then
                 break(
                   Left(
@@ -6535,9 +7526,15 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 )
-              val owners = incoming.getOrElse(child, Vector.empty) :+ instance
+              val previousOwners = incoming.getOrElse(child, Vector.empty)
+              val owners         =
+                if selected(instance).id == "template-self-absent" && previousOwners.exists(owner =>
+                    owner != instance && owner.kind == instance.kind && owner.valueId == instance.valueId
+                  )
+                then previousOwners
+                else previousOwners :+ instance
               incoming.update(child, owners)
-              if owners.size > 1 then
+              if owners.size > 1 && !isSharedTemplateAbsent(child) then
                 break(Left(WholeFilePlanningFailure.MultiplyConsumedChildReference(child, owners)))
               active += child
               plannedChildren += ((declaration.roleId, path, child))
@@ -6546,29 +7543,80 @@ private[metallurgy] object WholeFileProductionPlanner:
                 val groups  = Vector.newBuilder[Vector[ProductionInstanceId]]
                 var current = Vector.empty[ProductionInstanceId]
                 found.foreach: (child, _) =>
-                  val continues = position(child) match
-                    case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived)
-                        if point >= range.startOffset && point <= range.endOffset =>
-                      point == range.startOffset
-                    case _ =>
-                      break(
-                        Left(
-                          WholeFilePlanningFailure.InvalidGroupedChildPosition(
-                            instance,
-                            declaration.roleId,
-                            child
+                  if !isSharedTemplateAbsent(child) then
+                    val continues = position(child) match
+                      case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived)
+                          if point >= range.startOffset && point <= range.endOffset =>
+                        point == range.startOffset
+                      case _ =>
+                        break(
+                          Left(
+                            WholeFilePlanningFailure.InvalidGroupedChildPosition(
+                              instance,
+                              declaration.roleId,
+                              child
+                            )
                           )
                         )
-                      )
-                  if current.nonEmpty && !continues then
-                    groups += current
-                    current = Vector.empty
-                  current :+= child
+                    if current.nonEmpty && !continues then
+                      groups += current
+                      current = Vector.empty
+                    current :+= child
                 if current.nonEmpty then groups += current
                 groupedChildren += (instance -> declaration.roleId) -> groups.result()
               case _                              => ()
           compilerChildren.update(instance, plannedChildren.result())
       if snapshot.diagnostics.nonEmpty then break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(0)))
+
+      def parentOwner(instance: ProductionInstanceId): Either[String, ProductionInstanceId] =
+        instance.occurrence
+          .flatMap(occurrence =>
+            active.find(candidate =>
+              candidate.kind == InventoryKind.Node && candidate.valueId == occurrence.ownerNodeId
+            )
+          )
+          .toRight("parent owner is absent")
+
+      def templateLayoutStart(instance: ProductionInstanceId): Either[String, Option[Int]] =
+        parentOwner(instance).flatMap: owner =>
+          position(owner) match
+            case ParserNodePosition.Positioned(ownerRange, point, ParserPositionProvenance.SourceDerived) =>
+              val lexical   = evidence.lexicalContract.atoms
+                .filter(atom => ownerRange.startOffset <= atom.start && atom.end <= ownerRange.endOffset)
+              val nameIndex = lexical.indexWhere(atom =>
+                atom.start == point &&
+                  (atom.kind == ClosedSourceLexicalKind.Identifier ||
+                    atom.kind == ClosedSourceLexicalKind.QuotedIdentifier)
+              )
+              if nameIndex < 0 then Left("owner point is not one closed lexical identifier")
+              else
+                def trivia(atom: ClosedSourceLexicalAtom): Boolean = atom.kind match
+                  case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                      ClosedSourceLexicalKind.BlockComment =>
+                    true
+                  case _ => false
+                def nextSignificant(after: Int): Option[Int]       =
+                  lexical.indices.find(index => index > after && !trivia(lexical(index)))
+                val afterName                                      = nextSignificant(nameIndex)
+                val afterConstructor                               = afterName match
+                  case Some(openIndex) if lexical(openIndex).kind == ClosedSourceLexicalKind.LeftParenthesis =>
+                    lexical.lift(openIndex + 1) match
+                      case Some(close)
+                          if close.kind == ClosedSourceLexicalKind.RightParenthesis &&
+                            lexical(openIndex).end == close.start =>
+                        Right(nextSignificant(openIndex + 1))
+                      case _ => Left("owner constructor is not admitted empty parentheses")
+                  case other                                                                                 => Right(other)
+                afterConstructor.flatMap:
+                  case None        => Right(None)
+                  case Some(index) =>
+                    lexical(index).kind match
+                      case ClosedSourceLexicalKind.LeftBrace | ClosedSourceLexicalKind.Colon =>
+                        Right(Some(lexical(index).start))
+                      case _                                                                 =>
+                        Left("owner header has an unsupported token after its name or empty constructor")
+            case _                                                                                        =>
+              Left("parent owner has no source-derived position")
 
       val resolvedRealizations = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, OutputRealization]
       active.toVector.reverse.foreach: instance =>
@@ -6580,19 +7628,37 @@ private[metallurgy] object WholeFileProductionPlanner:
             case ChildOccurrenceSelector.Last         => values.lastOption
             case ChildOccurrenceSelector.Exact(index) => values.lift(index)
         val matching                                                                   = selected(instance).effectiveOutputRealizations.filter(realization =>
-          realization.conditions.forall(condition =>
+          val childConditions    = realization.conditions.forall(condition =>
             occurrence(condition).exists(child =>
               condition.expected match
                 case ChildOutcomeExpectation.Production(id)  => selected(child).id == id
                 case ChildOutcomeExpectation.Realization(id) => resolvedRealizations(child).id == id
             )
           )
+          val evidenceConditions = realization.evidenceConditions.forall:
+            case EvidenceCondition.TemplateBodyLayout(present) =>
+              templateLayoutStart(instance)
+                .fold(
+                  reason =>
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                          instance,
+                          realization.id,
+                          OutputBoundary.TemplateLayoutStart,
+                          reason
+                        )
+                      )
+                    ),
+                  _.nonEmpty == present
+                )
+          childConditions && evidenceConditions
         )
         val matches                                                                    = matching match
           case Vector() => Vector.empty
           case values   =>
-            val mostSpecific = values.map(_.conditions.size).max
-            values.filter(_.conditions.size == mostSpecific)
+            val mostSpecific = values.map(value => value.conditions.size + value.evidenceConditions.size).max
+            values.filter(value => value.conditions.size + value.evidenceConditions.size == mostSpecific)
         matches match
           case Vector(value) => resolvedRealizations += instance -> value
           case Vector()      =>
@@ -6624,9 +7690,16 @@ private[metallurgy] object WholeFileProductionPlanner:
       )(using
           scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
       ): Option[(PcSourceRange, PcSourceRange)] =
-        if instance.kind != InventoryKind.Node then None
+        val markerOwner =
+          if selected(instance).grammarRoleId == GrammarRoleId.Template then
+            parentOwner(instance).fold(
+              reason => break(Left(WholeFilePlanningFailure.InvalidCompilerEndMarker(instance, reason))),
+              identity
+            )
+          else instance
+        if markerOwner.kind != InventoryKind.Node then None
         else
-          endMarkersByOwner.get(instance.valueId) match
+          endMarkersByOwner.get(markerOwner.valueId) match
             case None          => None
             case Some(markers) =>
               if markers.size != 1 then
@@ -6682,15 +7755,22 @@ private[metallurgy] object WholeFileProductionPlanner:
         while mergedOutputRoots.contains(current) do current = mergedOutputRoots(current)
         current
       snapshot.endMarkers.foreach: marker =>
-        val owners = active.toVector.filter(instance =>
+        val owners           = active.toVector.filter(instance =>
           instance.kind == InventoryKind.Node && instance.valueId == marker.ownerNodeId
         )
-        if owners.size != 1 || selected(owners.head).grammarRoleId != GrammarRoleId.PackageClause then
+        val markerOwnerRoles = Set(
+          GrammarRoleId.PackageClause,
+          GrammarRoleId.ClassDefinition,
+          GrammarRoleId.TraitDefinition,
+          GrammarRoleId.ObjectDefinition,
+          GrammarRoleId.EnumDefinition
+        )
+        if owners.size != 1 || !markerOwnerRoles(selected(owners.head).grammarRoleId) then
           break(
             Left(
               WholeFilePlanningFailure.InvalidCompilerEndMarker(
                 owners.headOption.getOrElse(ProductionInstanceId(InventoryKind.Node, marker.ownerNodeId, None)),
-                "marker owner is not one active package clause"
+                "marker owner is not one active end-marker owner"
               )
             )
           )
@@ -6725,6 +7805,82 @@ private[metallurgy] object WholeFileProductionPlanner:
             positionedRange(instance, policy, value, outputId).startOffset
           case value @ OutputBoundary.ProductionEnd(policy)              =>
             positionedRange(instance, policy, value, outputId).endOffset
+          case OutputBoundary.ProductionPoint                            =>
+            position(instance) match
+              case ParserNodePosition.Positioned(_, point, ParserPositionProvenance.SourceDerived) => point
+              case _                                                                               =>
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      boundary,
+                      "production point is absent or synthetic"
+                    )
+                  )
+                )
+          case OutputBoundary.ProductionNameEnd                          =>
+            val point = resolve(OutputBoundary.ProductionPoint, outputId)
+            evidence.lexicalContract.atoms
+              .find(atom =>
+                atom.start == point &&
+                  (atom.kind == ClosedSourceLexicalKind.Identifier ||
+                    atom.kind == ClosedSourceLexicalKind.QuotedIdentifier)
+              )
+              .map(_.end)
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      boundary,
+                      "production point is not one closed lexical identifier"
+                    )
+                  )
+                )
+              )
+          case OutputBoundary.ParentProductionEnd                        =>
+            parentOwner(instance)
+              .map(owner =>
+                positionedRange(
+                  owner,
+                  PositionProvenancePolicy.SourceDerivedOnly,
+                  boundary,
+                  outputId
+                ).endOffset
+              )
+              .fold(
+                reason =>
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                        instance,
+                        outputId,
+                        boundary,
+                        reason
+                      )
+                    )
+                  ),
+                identity
+              )
+          case OutputBoundary.TemplateLayoutStart                        =>
+            templateLayoutStart(instance)
+              .flatMap(_.toRight("template body layout is absent"))
+              .fold(
+                reason =>
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                        instance,
+                        outputId,
+                        boundary,
+                        reason
+                      )
+                    )
+                  ),
+                identity
+              )
           case value @ OutputBoundary.ChildStart(role, selector, policy) =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
@@ -6906,7 +8062,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         val ranges     = template.composites
           .filter(declaration => !declaration.requiresCompilerEndMarker || compilerEndMarker(instance).nonEmpty)
           .map { declaration =>
-            val range       = declaration.range match
+            val range         = declaration.range match
               case OutputRangeDeclaration.CompilerPosition                                     =>
                 position(instance) match
                   case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
@@ -7110,18 +8266,55 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 withTrailingBalancedBrackets(PcSourceRange(start, end), declaration.id)
-            val ownerRange  = positionedRange(
+            val ownerRange    = positionedRange(
               instance,
               PositionProvenancePolicy.PositionedIncludingSynthetic,
               OutputBoundary.ProductionStart(PositionProvenancePolicy.PositionedIncludingSynthetic),
               declaration.id
             )
-            val validExtent = declaration.range match
+            val parentDerived = declaration.range match
+              case OutputRangeDeclaration.BoundaryDerived(start, end) =>
+                Set(start, end).exists:
+                  case OutputBoundary.ParentProductionEnd | OutputBoundary.TemplateLayoutStart => true
+                  case _                                                                       => false
+              case OutputRangeDeclaration.CompilerEndMarker
+                  if selected(instance).grammarRoleId == GrammarRoleId.Template =>
+                true
+              case _                                                  => false
+            val extentRange   =
+              if parentDerived then
+                parentOwner(instance)
+                  .map(owner =>
+                    positionedRange(
+                      owner,
+                      PositionProvenancePolicy.SourceDerivedOnly,
+                      OutputBoundary.ParentProductionEnd,
+                      declaration.id
+                    )
+                  )
+                  .fold(
+                    reason =>
+                      break(
+                        Left(
+                          WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                            instance,
+                            declaration.id,
+                            OutputBoundary.ParentProductionEnd,
+                            reason
+                          )
+                        )
+                      ),
+                    identity
+                  )
+              else ownerRange
+            val validExtent   = declaration.range match
               case OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker(_, _, _, _, _) |
                   OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(_) |
                   OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(_, _) =>
                 range.startOffset >= ownerRange.startOffset && range.endOffset <= snapshot.sourceLength
-              case _ =>
+              case _ if parentDerived =>
+                range.startOffset >= extentRange.startOffset && range.endOffset <= extentRange.endOffset
+              case _                  =>
                 range.startOffset >= ownerRange.startOffset && range.endOffset <= ownerRange.endOffset
             if !validExtent || range.startOffset > range.endOffset || !evidenceBoundaries.contains(
                 range.startOffset
@@ -7192,6 +8385,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             if mount.isEmpty then outputRoots.getOrElse(child, Vector.empty).map(canonicalOutput) else Vector.empty
         outputRoots.update(instance, (localRoots.map(canonicalOutput) ++ exported).distinct)
 
+      val outputRangesById                                      = outputRows.valuesIterator.flatten.map(row => row._2 -> row._3).toMap
       val rawComposites                                         = active.toVector.flatMap: instance =>
         val production = selected(instance)
         val template   = resolvedRealizations(instance).template
@@ -7218,9 +8412,8 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case None                                     => Vector.empty
                 case _                                        => Vector.empty
           val children      = localChildren ++ mounted
-          val childRanges   = outputRows.valuesIterator.flatten.map(row => row._2 -> row._3).toMap
           val normalized    = children.sortBy: child =>
-            val childRange = childRanges(child.child)
+            val childRange = outputRangesById(child.child)
             (childRange.startOffset, childRange.endOffset, child.child.toString)
           PlannedComposite(id, production.id, range, normalized, production.dispositions)
       val rawById                                               = rawComposites.map(value => value.instance -> value).toMap
@@ -7396,22 +8589,13 @@ private[metallurgy] object WholeFileProductionPlanner:
         .groupBy(_._1)
         .toVector
         .sortBy(_._1.id.toString)
-        .flatMap: (atom, requests) =>
-          val cutsByRole = requests.groupMap(_._2)(_._3).view.mapValues(_.toSet).toVector
-          val roleOrder  = requests.map(_._2).distinct.zipWithIndex.toMap
-          val maximal    = cutsByRole.filterNot: (role, cuts) =>
-            cutsByRole.exists: (otherRole, otherCuts) =>
-              otherRole != role && cuts.subsetOf(otherCuts) && cuts != otherCuts
-          val unique     = maximal.groupBy(_._2).values.map(_.minBy((role, _) => roleOrder(role))).toVector
-          unique
-            .sortBy(_._1.value)
-            .map: (role, cuts) =>
-              val boundaries = (Vector(atom.start, atom.end) ++ cuts).distinct.sorted
-              SourceAtomRefinement(
-                SourceAtomReference(atom.id, atom.start, atom.end),
-                role,
-                boundaries.sliding(2).collect { case Vector(start, end) => PcSourceRange(start, end) }.toVector
-              )
+        .map: (atom, requests) =>
+          val boundaries = (Vector(atom.start, atom.end) ++ requests.map(_._3)).distinct.sorted
+          SourceAtomRefinement(
+            SourceAtomReference(atom.id, atom.start, atom.end),
+            requests.map(_._2).distinct.sortBy(_.value),
+            boundaries.sliding(2).collect { case Vector(start, end) => PcSourceRange(start, end) }.toVector
+          )
       val refinedEvidence = SourceEvidenceRefinementPlanner
         .refine(evidence, knownEvidenceRoles, refinements)
         .fold(
@@ -7426,19 +8610,21 @@ private[metallurgy] object WholeFileProductionPlanner:
         .groupMap(_._1)(_._2)
       val ownershipEntry                                                                                  = collection.mutable.Map.empty[ProductionInstanceId, Int]
       val ownershipExit                                                                                   = collection.mutable.Map.empty[ProductionInstanceId, Int]
-      val ownershipTraversal                                                                              = collection.mutable.Stack((root, false))
+      val ownershipParent                                                                                 = collection.mutable.Map.empty[ProductionInstanceId, ProductionInstanceId]
+      val ownershipTraversal                                                                              = collection.mutable.Stack((root, false, Option.empty[ProductionInstanceId]))
       var ownershipOrder                                                                                  = 0
       while ownershipTraversal.nonEmpty do
-        val (instance, exiting) = ownershipTraversal.pop()
+        val (instance, exiting, parent) = ownershipTraversal.pop()
         if exiting then ownershipExit += instance -> ownershipOrder
         else
+          parent.foreach(ownershipParent.update(instance, _))
           ownershipEntry += instance -> ownershipOrder
           ownershipOrder += 1
-          ownershipTraversal.push(instance -> true)
+          ownershipTraversal.push((instance, true, parent))
           ownershipChildren
             .getOrElse(instance, Vector.empty)
             .reverseIterator
-            .foreach(child => ownershipTraversal.push(child -> false))
+            .foreach(child => ownershipTraversal.push((child, false, Some(instance))))
       def isAncestor(ancestor: ProductionInstanceId, descendant: ProductionInstanceId): Boolean           =
         ownershipEntry
           .get(ancestor)
@@ -7448,6 +8634,14 @@ private[metallurgy] object WholeFileProductionPlanner:
           )
       val activeClaimOwners                                                                               = active.toVector
         .groupMap(instance => instance.kind -> instance.valueId)(identity)
+      val activeOrder                                                                                     = active.toVector.zipWithIndex.toMap
+      def ancestorsIncluding(instance: ProductionInstanceId): Vector[ProductionInstanceId]                =
+        val ancestors = Vector.newBuilder[ProductionInstanceId]
+        var current   = Option(instance)
+        while current.nonEmpty do
+          ancestors += current.get
+          current = ownershipParent.get(current.get)
+        ancestors.result()
       val outputClaimOwners                                                                               = activeClaimOwners.view
         .mapValues(_.filter(instance => localOutputRoots(instance).nonEmpty))
         .toMap
@@ -7483,7 +8677,14 @@ private[metallurgy] object WholeFileProductionPlanner:
           case (declaration, _, range)
               if declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker] ||
                 declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets] ||
-                declaration.range.isInstanceOf[OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets] =>
+                declaration.range.isInstanceOf[OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets] ||
+                (declaration.range match
+                  case OutputRangeDeclaration.BoundaryDerived(start, end) =>
+                    Set(start, end).exists:
+                      case OutputBoundary.ParentProductionEnd | OutputBoundary.TemplateLayoutStart => true
+                      case _                                                                       => false
+                  case _                                                  => false
+                ) =>
             range
         )
         .toMap
@@ -7611,8 +8812,18 @@ private[metallurgy] object WholeFileProductionPlanner:
           SourceEvidenceOwner(role, s"${leaf.sourceOwner}:${leaf.terminalId}")
         )
       val eventOwnership                                                                                  = refinedEvidence.structural.flatMap: event =>
-        val sources    = active.toVector.filter(instance => claims(instance, event.claim))
-        val candidates = active.toVector.flatMap: instance =>
+        val sources    = event.claim match
+          case SourceClaim.Node(id, _)       => activeClaimOwners.getOrElse(InventoryKind.Node -> id, Vector.empty)
+          case SourceClaim.Positioned(id, _) =>
+            activeClaimOwners.getOrElse(InventoryKind.Positioned -> id, Vector.empty)
+          case SourceClaim.Diagnostic(_)     => Vector.empty
+        val owners     =
+          if sources.isEmpty then Vector(root)
+          else
+            ancestorsIncluding(sources.head)
+              .filter(instance => sources.forall(source => source == instance || isAncestor(instance, source)))
+              .sortBy(activeOrder)
+        val candidates = owners.flatMap: instance =>
           val ownsClaim =
             if sources.isEmpty then instance == root
             else sources.forall(source => source == instance || isAncestor(instance, source))

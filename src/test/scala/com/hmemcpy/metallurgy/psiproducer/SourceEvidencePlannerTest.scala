@@ -117,7 +117,7 @@ final class SourceEvidencePlannerTest:
     val contracts = evidence.atoms.map: original =>
       SourceAtomRefinement(
         SourceAtomReference(original.id, original.start, original.end),
-        role,
+        Vector(role),
         evidence.lexicalContract.atoms
           .filter(atom => original.start <= atom.start && atom.end <= original.end)
           .map(atom => PcSourceRange(atom.start, atom.end))
@@ -193,7 +193,7 @@ final class SourceEvidencePlannerTest:
         replacement: Vector[PcSourceRange],
         atomReference: SourceAtomReference = reference,
         requestingRole: PsiOutputRoleId = role
-    ) = SourceAtomRefinement(atomReference, requestingRole, replacement)
+    ) = SourceAtomRefinement(atomReference, Vector(requestingRole), replacement)
 
     assertTrue(
       failures(Vector(contract(Vector(PcSourceRange(0, 6)), reference.copy(id = SourceAtomId(99, 0)))))

@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.psi.impl.source.PsiFileImpl
+import com.intellij.psi.impl.java.stubs.index.JavaStubIndexKeys
 import com.intellij.psi.stubs.*
 import com.intellij.psi.{PsiFileFactory, PsiManager}
 import com.intellij.psi.tree.IElementType
@@ -21,8 +22,13 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.{
   ScConstructorInvocation,
   ScEnd,
   ScModifierList,
+  ScPrimaryConstructor,
   ScStableCodeReference
 }
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScEnumCases, ScEnumClassCase, ScEnumSingletonCase}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScParameterClause, ScParameters}
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{ScExtendsBlock, ScTemplateBody}
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
@@ -37,13 +43,15 @@ import org.jetbrains.plugins.scala.lang.psi.stubs.{
   ScAccessModifierStub,
   ScAnnotationStub,
   ScAnnotationsStub,
+  ScExtendsBlockStub,
   ScExportStmtStub,
   ScImportExprStub,
   ScImportSelectorStub,
   ScImportSelectorsStub,
   ScImportStmtStub,
   ScModifiersStub,
-  ScPackagingStub
+  ScPackagingStub,
+  ScTemplateDefinitionStub
 }
 import org.jetbrains.plugins.scala.lang.psi.stubs.index.ScalaIndexKeys
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.{MetallurgyExpressionPayload, MetallurgyIntegerLiteral}
@@ -184,6 +192,12 @@ private[metallurgy] object NativePsiElementBindings:
           |@ann @pkg.ann @deprecated("m", "1")
           |private[scope] abstract class AnnotatedProbe:
           |  protected[this] final inline def member = 1
+          |class EmptyConstructor()
+          |trait TraitProbe
+          |object ObjectProbe
+          |enum EnumProbe:
+          |  case Singleton
+          |  case ClassCase()
           |val probe = 1
           |""".stripMargin
       )
@@ -285,6 +299,18 @@ private[metallurgy] object NativePsiElementBindings:
     val deprecatedAnnotation   = annotations.find(_.getText == "@deprecated(\"m\", \"1\")").orNull
     val constructorInvocations = PsiTreeUtil.findChildrenOfType(file, classOf[ScConstructorInvocation]).asScala.toVector
     val argumentLists          = PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).asScala.toVector
+    val classes                = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector
+    val traits                 = PsiTreeUtil.findChildrenOfType(file, classOf[ScTrait]).asScala.toVector
+    val objects                = PsiTreeUtil.findChildrenOfType(file, classOf[ScObject]).asScala.toVector
+    val enums                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnum]).asScala.toVector
+    val enumCases              = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumCases]).asScala.toVector
+    val enumSingletonCases     = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumSingletonCase]).asScala.toVector
+    val enumClassCases         = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumClassCase]).asScala.toVector
+    val extendsBlocks          = PsiTreeUtil.findChildrenOfType(file, classOf[ScExtendsBlock]).asScala.toVector
+    val templateBodies         = PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateBody]).asScala.toVector
+    val primaryConstructors    = PsiTreeUtil.findChildrenOfType(file, classOf[ScPrimaryConstructor]).asScala.toVector
+    val parameterClauses       = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameters]).asScala.toVector
+    val parameterClause        = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterClause]).asScala.toVector
     val annotationPayloads     =
       annotationExpressions.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).asScala)
     val manager                = PsiManager.getInstance(project)
@@ -325,6 +351,8 @@ private[metallurgy] object NativePsiElementBindings:
       ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
+        ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
+        extendsBlocks ++ templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause
     if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
       innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
     then Left("native package PSI probe is incomplete")
@@ -454,6 +482,29 @@ private[metallurgy] object NativePsiElementBindings:
           s"expressions=${annotationExpressions.map(_.getText)}, constructors=${constructorInvocations.map(_.getText)}, " +
           s"arguments=${argumentLists.map(_.getText)}"
       )
+    else if classes.isEmpty || traits.size != 1 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
+      enumSingletonCases.size != 1 || enumClassCases.size != 1 || extendsBlocks.isEmpty || templateBodies.isEmpty ||
+      primaryConstructors.isEmpty || parameterClauses.isEmpty || parameterClause.isEmpty
+    then Left("native template PSI probe is incomplete")
+    else if Vector(
+        PsiOutputRoleId.ClassDefinition    -> classes.head,
+        PsiOutputRoleId.TraitDefinition    -> traits.head,
+        PsiOutputRoleId.ObjectDefinition   -> objects.head,
+        PsiOutputRoleId.EnumDefinition     -> enums.head,
+        PsiOutputRoleId.EnumCases          -> enumCases.head,
+        PsiOutputRoleId.EnumSingletonCase  -> enumSingletonCases.head,
+        PsiOutputRoleId.EnumClassCase      -> enumClassCases.head,
+        PsiOutputRoleId.ExtendsBlock       -> extendsBlocks.head,
+        PsiOutputRoleId.TemplateBody       -> templateBodies.head,
+        PsiOutputRoleId.PrimaryConstructor -> primaryConstructors.head,
+        PsiOutputRoleId.ParameterClauses   -> parameterClauses.head,
+        PsiOutputRoleId.ParameterClause    -> parameterClause.head
+      ).exists: (role, element) =>
+        element.getNode.getElementType match
+          case stub: IStubElementType[?, ?] =>
+            TemplatePersistenceSurfaces.ExternalIds.get(role).forall(_ != stub.getExternalId)
+          case _                            => true
+    then Left("native template PSI external IDs are inconsistent")
     else if annotatedModifiers.getNode.getElementType != ScalaElementType.MODIFIERS ||
       accessModifiers.exists(_.getNode.getElementType != ScalaElementType.ACCESS_MODIFIER) ||
       annotationContainer.getNode.getElementType != ScalaElementType.ANNOTATIONS ||
@@ -496,7 +547,11 @@ private[metallurgy] object NativePsiElementBindings:
           s"parameters=${deprecatedAnnotation.annotationExpr.getAnnotationParameters.map(_.getText).toVector}"
       )
     else if ScalaIndexKeys.ALIASED_IMPORT_KEY == null || ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY == null ||
-      ScalaIndexKeys.ANNOTATED_MEMBER_KEY == null
+      ScalaIndexKeys.ANNOTATED_MEMBER_KEY == null || ScalaIndexKeys.SHORT_NAME_KEY == null ||
+      ScalaIndexKeys.CLASS_FQN_KEY == null || ScalaIndexKeys.CLASS_NAME_IN_PACKAGE_KEY == null ||
+      ScalaIndexKeys.JAVA_CLASS_NAME_IN_PACKAGE_KEY == null || ScalaIndexKeys.NOT_VISIBLE_IN_JAVA_SHORT_NAME_KEY == null ||
+      ScalaIndexKeys.ALL_CLASS_NAMES == null || ScalaIndexKeys.SUPER_CLASS_NAME_KEY == null ||
+      JavaStubIndexKeys.CLASS_SHORT_NAMES == null || JavaStubIndexKeys.CLASS_FQN == null
     then Left("native import or export index is unavailable")
     else if persistenceFailure.nonEmpty then Left(persistenceFailure.get)
     else if reference.getParent != packaging || qualifier.getParent != reference then
@@ -544,6 +599,11 @@ private[metallurgy] object NativePsiElementBindings:
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
       then Left("native stub-bearing PSI element type cannot produce stubs")
+      else if (classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++ extendsBlocks ++
+          templateBodies ++ primaryConstructors ++ parameterClauses ++ parameterClause).exists(value =>
+          !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
+        )
+      then Left("native template stub-bearing PSI element type cannot produce stubs")
       else if (Vector(annotatedModifiers, annotationContainer) ++ accessModifiers ++ annotations).exists(value =>
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         ) || annotationExpressions.exists(value => value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
@@ -612,7 +672,19 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.AnnotationExpr        -> annotationExpressions.head.getNode.getElementType,
               PsiOutputRoleId.ConstructorInvocation -> constructorInvocations.head.getNode.getElementType,
               PsiOutputRoleId.AnnotationArguments   -> argumentLists.head.getNode.getElementType,
-              PsiOutputRoleId.ExpressionPayload     -> MetallurgyExpressionPayload.ElementType
+              PsiOutputRoleId.ExpressionPayload     -> MetallurgyExpressionPayload.ElementType,
+              PsiOutputRoleId.ClassDefinition       -> classes.head.getNode.getElementType,
+              PsiOutputRoleId.TraitDefinition       -> traits.head.getNode.getElementType,
+              PsiOutputRoleId.ObjectDefinition      -> objects.head.getNode.getElementType,
+              PsiOutputRoleId.EnumDefinition        -> enums.head.getNode.getElementType,
+              PsiOutputRoleId.EnumCases             -> enumCases.head.getNode.getElementType,
+              PsiOutputRoleId.EnumSingletonCase     -> enumSingletonCases.head.getNode.getElementType,
+              PsiOutputRoleId.EnumClassCase         -> enumClassCases.head.getNode.getElementType,
+              PsiOutputRoleId.ExtendsBlock          -> extendsBlocks.head.getNode.getElementType,
+              PsiOutputRoleId.TemplateBody          -> templateBodies.head.getNode.getElementType,
+              PsiOutputRoleId.PrimaryConstructor    -> primaryConstructors.head.getNode.getElementType,
+              PsiOutputRoleId.ParameterClauses      -> parameterClauses.head.getNode.getElementType,
+              PsiOutputRoleId.ParameterClause       -> parameterClause.head.getNode.getElementType
             ),
             Map(
               PsiOutputRoleId.PackageStatement      -> surfaceId(packaging.getClass),
@@ -637,7 +709,19 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ConstructorInvocation -> surfaceId(constructorInvocations.head.getClass),
               PsiOutputRoleId.AnnotationArguments   -> surfaceId(argumentLists.head.getClass),
               PsiOutputRoleId.ExpressionPayload     ->
-                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
+                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload",
+              PsiOutputRoleId.ClassDefinition       -> surfaceId(classes.head.getClass),
+              PsiOutputRoleId.TraitDefinition       -> surfaceId(traits.head.getClass),
+              PsiOutputRoleId.ObjectDefinition      -> surfaceId(objects.head.getClass),
+              PsiOutputRoleId.EnumDefinition        -> surfaceId(enums.head.getClass),
+              PsiOutputRoleId.EnumCases             -> surfaceId(enumCases.head.getClass),
+              PsiOutputRoleId.EnumSingletonCase     -> surfaceId(enumSingletonCases.head.getClass),
+              PsiOutputRoleId.EnumClassCase         -> surfaceId(enumClassCases.head.getClass),
+              PsiOutputRoleId.ExtendsBlock          -> surfaceId(extendsBlocks.head.getClass),
+              PsiOutputRoleId.TemplateBody          -> surfaceId(templateBodies.head.getClass),
+              PsiOutputRoleId.PrimaryConstructor    -> surfaceId(primaryConstructors.head.getClass),
+              PsiOutputRoleId.ParameterClauses      -> surfaceId(parameterClauses.head.getClass),
+              PsiOutputRoleId.ParameterClause       -> surfaceId(parameterClause.head.getClass)
             ),
             Vector(
               ScalaPsiSurfaceRow(
@@ -754,7 +838,20 @@ private[metallurgy] object NativePsiElementBindings:
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed self navigation identity")
               )
-            )
+            ) ++ TemplatePersistenceSurfaces.DefinitionIndices
+              .appended(TemplatePersistenceSurfaces.SuperClassNameIndex)
+              .distinct
+              .sorted
+              .map(id =>
+                ScalaPsiSurfaceRow(
+                  id,
+                  SurfaceFactKind.Index,
+                  None,
+                  FactStatus.Available,
+                  SurfaceClassification.SyntaxContract,
+                  Vector("capability-probed native template index")
+                )
+              )
           )
         )
 
@@ -762,32 +859,129 @@ private[metallurgy] object NativePsiElementBindings:
 
   private def probePersistence(file: com.intellij.psi.PsiFile): Either[String, Unit] =
     try
-      val stubs                                               = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala
-      val packaging                                           = stubs.collectFirst { case value: ScPackagingStub => value }
-      val statement                                           = stubs.collectFirst { case value: ScImportStmtStub => value }
-      val exportStatement                                     = stubs.collectFirst { case value: ScExportStmtStub => value }
-      val expression                                          = stubs.collectFirst { case value: ScImportExprStub if value.hasWildcardSelector => value }
-      val selectorSet                                         = stubs.collectFirst { case value: ScImportSelectorsStub if value.hasWildcard => value }
-      val selector                                            = stubs.collectFirst { case value: ScImportSelectorStub if value.isAliasedImport => value }
-      val exportSelector                                      = stubs.collectFirst {
+      val tree                                                               = file.asInstanceOf[PsiFileImpl].calcStubTree
+      val stubs                                                              = tree.getPlainList.asScala
+      val packaging                                                          = stubs.collectFirst { case value: ScPackagingStub => value }
+      val statement                                                          = stubs.collectFirst { case value: ScImportStmtStub => value }
+      val exportStatement                                                    = stubs.collectFirst { case value: ScExportStmtStub => value }
+      val expression                                                         = stubs.collectFirst { case value: ScImportExprStub if value.hasWildcardSelector => value }
+      val selectorSet                                                        = stubs.collectFirst { case value: ScImportSelectorsStub if value.hasWildcard => value }
+      val selector                                                           = stubs.collectFirst { case value: ScImportSelectorStub if value.isAliasedImport => value }
+      val exportSelector                                                     = stubs.collectFirst {
         case value: ScImportSelectorStub if value.isAliasedImport && value.aliasName.contains("Exported") => value
       }
-      val givenSelectorStub                                   = stubs.collectFirst {
+      val givenSelectorStub                                                  = stubs.collectFirst {
         case value: ScImportSelectorStub if value.isGivenSelector && value.typeText.nonEmpty => value
       }
-      val modifierStubs                                       = stubs.collect { case value: ScModifiersStub => value }
-      val privateAccessStub                                   = stubs.collectFirst {
+      val modifierStubs                                                      = stubs.collect { case value: ScModifiersStub => value }
+      val privateAccessStub                                                  = stubs.collectFirst {
         case value: ScAccessModifierStub if value.isPrivate && value.idText.contains("scope") => value
       }
-      val protectedAccessStub                                 = stubs.collectFirst {
+      val protectedAccessStub                                                = stubs.collectFirst {
         case value: ScAccessModifierStub if value.isProtected && value.isThis => value
       }
-      val annotationStubs                                     = stubs.collect { case value: ScAnnotationStub => value }
-      val annotationsStubs                                    = stubs.collect { case value: ScAnnotationsStub => value }
-      val deprecatedAnnotationStub                            = annotationStubs.find(
+      val annotationStubs                                                    = stubs.collect { case value: ScAnnotationStub => value }
+      val annotationsStubs                                                   = stubs.collect { case value: ScAnnotationsStub => value }
+      val deprecatedAnnotationStub                                           = annotationStubs.find(
         _.annotationText == "deprecated(\"m\", \"1\")"
       )
-      val enumerator                                          = new AbstractStringEnumerator:
+      def templateShape(values: Iterable[Stub]): Vector[String]              = values.iterator
+        .flatMap: stub =>
+          Option(stub.getStubSerializer).map: serializer =>
+            val detail = stub match
+              case value: ScTemplateDefinitionStub[?] =>
+                Vector(
+                  value.getName,
+                  value.getQualifiedName,
+                  value.javaName,
+                  value.javaQualifiedName,
+                  value.additionalJavaName.toString,
+                  value.isPackageObject.toString,
+                  value.isDeprecated.toString,
+                  value.isLocal.toString,
+                  value.isVisibleInJava.toString,
+                  value.isImplicitObject.toString,
+                  value.isTopLevel.toString,
+                  value.topLevelQualifier.toString,
+                  value.isGiven.toString,
+                  value.enumClassCaseMentionsParentTypeParams.toString
+                ).map(value => Option(value).getOrElse("<null>")).mkString("[", ",", "]")
+              case value: ScExtendsBlockStub          => value.baseClasses.mkString("[", ",", "]")
+              case _                                  => ""
+            s"${stub.getClass.getName}|${serializer.getExternalId}|$detail"
+        .toVector
+      def indexShape(values: Iterable[Stub]): Vector[String]                 =
+        val result = Vector.newBuilder[String]
+        val sink   = new IndexSink:
+          override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
+              indexKey: StubIndexKey[K, Psi],
+              value: K
+          ): Unit = result += s"${indexKey.toString}|${value.toString}"
+        values.foreach(stub =>
+          Option(stub.getStubSerializer).foreach(
+            _.asInstanceOf[ObjectStubSerializer[Stub, Stub]].indexStub(stub, sink)
+          )
+        )
+        result.result()
+      def templateIndexSurface(indexKey: StubIndexKey[?, ?]): Option[String] =
+        if indexKey == ScalaIndexKeys.SHORT_NAME_KEY then Some(TemplatePersistenceSurfaces.ShortNameIndex)
+        else if indexKey == ScalaIndexKeys.CLASS_FQN_KEY then Some(TemplatePersistenceSurfaces.ClassFqnIndex)
+        else if indexKey == ScalaIndexKeys.CLASS_NAME_IN_PACKAGE_KEY then
+          Some(TemplatePersistenceSurfaces.ClassNameInPackageIndex)
+        else if indexKey == JavaStubIndexKeys.CLASS_SHORT_NAMES then
+          Some(TemplatePersistenceSurfaces.JavaClassShortNameIndex)
+        else if indexKey == JavaStubIndexKeys.CLASS_FQN then Some(TemplatePersistenceSurfaces.JavaClassFqnIndex)
+        else if indexKey == ScalaIndexKeys.NOT_VISIBLE_IN_JAVA_SHORT_NAME_KEY then
+          Some(TemplatePersistenceSurfaces.NotVisibleInJavaIndex)
+        else if indexKey == ScalaIndexKeys.ALL_CLASS_NAMES then Some(TemplatePersistenceSurfaces.AllClassNamesIndex)
+        else if indexKey == ScalaIndexKeys.JAVA_CLASS_NAME_IN_PACKAGE_KEY then
+          Some(TemplatePersistenceSurfaces.JavaClassNameInPackageIndex)
+        else if indexKey == ScalaIndexKeys.SUPER_CLASS_NAME_KEY then
+          Some(TemplatePersistenceSurfaces.SuperClassNameIndex)
+        else None
+      def templateIndexShape(values: Iterable[Stub]): Set[(String, String)]  =
+        val result = Set.newBuilder[(String, String)]
+        val sink   = new IndexSink:
+          override def occurrence[Psi <: com.intellij.psi.PsiElement, K](
+              indexKey: StubIndexKey[K, Psi],
+              value: K
+          ): Unit = templateIndexSurface(indexKey).foreach(surface => result += surface -> value.toString)
+        values.foreach(stub =>
+          Option(stub.getStubSerializer).foreach(
+            _.asInstanceOf[ObjectStubSerializer[Stub, Stub]].indexStub(stub, sink)
+          )
+        )
+        result.result()
+      val serializedTreeOutput                                               = new ByteArrayOutputStream
+      SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, serializedTreeOutput)
+      val restoredTree                                                       = new StubTree(
+        SerializationManagerEx.getInstanceEx
+          .deserialize(new ByteArrayInputStream(serializedTreeOutput.toByteArray))
+          .asInstanceOf[PsiFileStub[?]]
+      )
+      val restoredStubs                                                      = restoredTree.getPlainList.asScala
+      val templateIndices                                                    = templateIndexShape(stubs)
+      val expectedTemplateIndices                                            = Set(
+        TemplatePersistenceSurfaces.ShortNameIndex              -> "EmptyConstructor",
+        TemplatePersistenceSurfaces.ClassFqnIndex               -> "example.syntax.EmptyConstructor",
+        TemplatePersistenceSurfaces.ClassNameInPackageIndex     -> "example.syntax",
+        TemplatePersistenceSurfaces.JavaClassShortNameIndex     -> "EmptyConstructor",
+        TemplatePersistenceSurfaces.JavaClassFqnIndex           -> "example.syntax.EmptyConstructor",
+        TemplatePersistenceSurfaces.NotVisibleInJavaIndex       -> "ObjectProbe",
+        TemplatePersistenceSurfaces.AllClassNamesIndex          -> "EmptyConstructor",
+        TemplatePersistenceSurfaces.JavaClassNameInPackageIndex -> "example.syntax",
+        TemplatePersistenceSurfaces.SuperClassNameIndex         -> "AnyRef"
+      )
+      val templatePersistence                                                =
+        templateShape(stubs) == templateShape(restoredStubs) && indexShape(stubs) == indexShape(restoredStubs) &&
+          templateIndices == templateIndexShape(restoredStubs) &&
+          expectedTemplateIndices.subsetOf(templateIndices) &&
+          templateIndices.map(_._1) ==
+          (TemplatePersistenceSurfaces.DefinitionIndices :+ TemplatePersistenceSurfaces.SuperClassNameIndex).toSet &&
+          TemplatePersistenceSurfaces.ExternalIds.values.toSet.subsetOf(
+            stubs.flatMap(stub => Option(stub.getStubSerializer).map(_.getExternalId)).toSet
+          )
+      val enumerator                                                         = new AbstractStringEnumerator:
         private val values                         = collection.mutable.ArrayBuffer.empty[String]
         override def enumerate(value: String): Int =
           val found = values.indexOf(value)
@@ -797,15 +991,15 @@ private[metallurgy] object NativePsiElementBindings:
         override def force(): Unit                 = ()
         override def markCorrupted(): Unit         = ()
         override def close(): Unit                 = ()
-      def bytes(write: StubOutputStream => Unit): Array[Byte] =
+      def bytes(write: StubOutputStream => Unit): Array[Byte]                =
         val sink   = new ByteArrayOutputStream
         val output = new StubOutputStream(sink, enumerator)
         write(output)
         output.flush()
         sink.toByteArray
-      def input(serialized: Array[Byte]): StubInputStream     =
+      def input(serialized: Array[Byte]): StubInputStream                    =
         new StubInputStream(new ByteArrayInputStream(serialized), enumerator)
-      val actualTypes                                         = packaging.exists(_.getElementType eq ScalaElementType.PACKAGING) &&
+      val actualTypes                                                        = packaging.exists(_.getElementType eq ScalaElementType.PACKAGING) &&
         statement.exists(_.getElementType eq ScalaElementType.ImportStatement) &&
         exportStatement.exists(_.getElementType eq ScalaElementType.ExportStatement) &&
         expression.exists(_.getElementType eq ScalaElementType.IMPORT_EXPR) &&
@@ -816,85 +1010,85 @@ private[metallurgy] object NativePsiElementBindings:
         protectedAccessStub.exists(_.getElementType eq ScalaElementType.ACCESS_MODIFIER) && annotationsStubs.nonEmpty &&
         annotationsStubs.forall(_.getElementType eq ScalaElementType.ANNOTATIONS) && annotationStubs.nonEmpty &&
         annotationStubs.forall(_.getElementType eq ScalaElementType.ANNOTATION)
-      val packagingCopy                                       = packaging.map(stub =>
+      val packagingCopy                                                      = packaging.map(stub =>
         ScalaElementType.PACKAGING.deserialize(
           input(bytes(ScalaElementType.PACKAGING.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val statementCopy                                       = statement.map(stub =>
+      val statementCopy                                                      = statement.map(stub =>
         ScalaElementType.ImportStatement.deserialize(
           input(bytes(ScalaElementType.ImportStatement.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val exportStatementCopy                                 = exportStatement.map(stub =>
+      val exportStatementCopy                                                = exportStatement.map(stub =>
         ScalaElementType.ExportStatement.deserialize(
           input(bytes(ScalaElementType.ExportStatement.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val expressionCopy                                      = expression.map(stub =>
+      val expressionCopy                                                     = expression.map(stub =>
         ScalaElementType.IMPORT_EXPR.deserialize(
           input(bytes(ScalaElementType.IMPORT_EXPR.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val selectorSetCopy                                     = selectorSet.map(stub =>
+      val selectorSetCopy                                                    = selectorSet.map(stub =>
         ScalaElementType.IMPORT_SELECTORS.deserialize(
           input(bytes(ScalaElementType.IMPORT_SELECTORS.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val selectorCopy                                        = selector.map(stub =>
+      val selectorCopy                                                       = selector.map(stub =>
         ScalaElementType.IMPORT_SELECTOR.deserialize(
           input(bytes(ScalaElementType.IMPORT_SELECTOR.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val exportSelectorCopy                                  = exportSelector.map(stub =>
+      val exportSelectorCopy                                                 = exportSelector.map(stub =>
         ScalaElementType.IMPORT_SELECTOR.deserialize(
           input(bytes(ScalaElementType.IMPORT_SELECTOR.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val givenCopy                                           = givenSelectorStub.map(stub =>
+      val givenCopy                                                          = givenSelectorStub.map(stub =>
         ScalaElementType.IMPORT_SELECTOR.deserialize(
           input(bytes(ScalaElementType.IMPORT_SELECTOR.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val modifierCopies                                      = modifierStubs.map(stub =>
+      val modifierCopies                                                     = modifierStubs.map(stub =>
         ScalaElementType.MODIFIERS.deserialize(
           input(bytes(ScalaElementType.MODIFIERS.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val privateAccessCopy                                   = privateAccessStub.map(stub =>
+      val privateAccessCopy                                                  = privateAccessStub.map(stub =>
         ScalaElementType.ACCESS_MODIFIER.deserialize(
           input(bytes(ScalaElementType.ACCESS_MODIFIER.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val protectedAccessCopy                                 = protectedAccessStub.map(stub =>
+      val protectedAccessCopy                                                = protectedAccessStub.map(stub =>
         ScalaElementType.ACCESS_MODIFIER.deserialize(
           input(bytes(ScalaElementType.ACCESS_MODIFIER.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val annotationCopies                                    = annotationStubs.map(stub =>
+      val annotationCopies                                                   = annotationStubs.map(stub =>
         ScalaElementType.ANNOTATION.deserialize(
           input(bytes(ScalaElementType.ANNOTATION.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val annotationsCopies                                   = annotationsStubs.map(stub =>
+      val annotationsCopies                                                  = annotationsStubs.map(stub =>
         ScalaElementType.ANNOTATIONS.deserialize(
           input(bytes(ScalaElementType.ANNOTATIONS.serialize(stub, _))),
           new PsiFileStubImpl(null)
         )
       )
-      val serialized                                          = packaging
+      val serialized                                                         = packaging
         .zip(packagingCopy)
         .exists((before, after) =>
           before.packageName == after.packageName && before.parentPackageName == after.parentPackageName &&
@@ -944,7 +1138,7 @@ private[metallurgy] object NativePsiElementBindings:
         ) && annotationStubs.nonEmpty && annotationStubs
           .zip(annotationCopies)
           .forall((before, after) => before.name == after.name && before.annotationText == after.annotationText)
-      var importAliasIndexed                                  = false
+      var importAliasIndexed                                                 = false
       selectorCopy.foreach(stub =>
         ScalaElementType.IMPORT_SELECTOR.indexStub(
           stub,
@@ -955,7 +1149,7 @@ private[metallurgy] object NativePsiElementBindings:
             ): Unit = importAliasIndexed ||= indexKey == ScalaIndexKeys.ALIASED_IMPORT_KEY && value == "Original"
         )
       )
-      var exportAliasIndexed                                  = false
+      var exportAliasIndexed                                                 = false
       exportSelectorCopy.foreach(stub =>
         ScalaElementType.IMPORT_SELECTOR.indexStub(
           stub,
@@ -966,7 +1160,7 @@ private[metallurgy] object NativePsiElementBindings:
             ): Unit = exportAliasIndexed ||= indexKey == ScalaIndexKeys.ALIASED_IMPORT_KEY && value == "Original"
         )
       )
-      val packages                                            = Vector.newBuilder[String]
+      val packages                                                           = Vector.newBuilder[String]
       packagingCopy.foreach(stub =>
         ScalaElementType.PACKAGING.indexStub(
           stub,
@@ -978,7 +1172,7 @@ private[metallurgy] object NativePsiElementBindings:
               if indexKey == ScalaIndexKeys.PACKAGE_FQN_KEY then packages += value.toString
         )
       )
-      val exportPackages                                      = Vector.newBuilder[String]
+      val exportPackages                                                     = Vector.newBuilder[String]
       exportStatementCopy.foreach(stub =>
         ScalaElementType.ExportStatement.indexStub(
           stub,
@@ -990,8 +1184,8 @@ private[metallurgy] object NativePsiElementBindings:
               if indexKey == ScalaIndexKeys.TOP_LEVEL_EXPORT_BY_PKG_KEY then exportPackages += value.toString
         )
       )
-      var deprecatedAnnotationIndexed                         = false
-      val annotationIndexOccurrences                          = Vector.newBuilder[(String, String)]
+      var deprecatedAnnotationIndexed                                        = false
+      val annotationIndexOccurrences                                         = Vector.newBuilder[(String, String)]
       deprecatedAnnotationStub.foreach(stub =>
         ScalaElementType.ANNOTATION.indexStub(
           stub,
@@ -1006,13 +1200,14 @@ private[metallurgy] object NativePsiElementBindings:
         )
       )
       Either.cond(
-        actualTypes && serialized && importAliasIndexed && exportAliasIndexed &&
+        actualTypes && serialized && templatePersistence && importAliasIndexed && exportAliasIndexed &&
           deprecatedAnnotationIndexed &&
           packages.result() == Vector("example.syntax", "example") &&
           exportPackages.result() == Vector("example.syntax"),
         (),
         s"native package/import/export persistence contracts are inconsistent: actualTypes=$actualTypes, " +
-          s"serialized=$serialized, importAlias=$importAliasIndexed, exportAlias=$exportAliasIndexed, " +
+          s"serialized=$serialized, templatePersistence=$templatePersistence, importAlias=$importAliasIndexed, " +
+          s"exportAlias=$exportAliasIndexed, " +
           s"annotation=$deprecatedAnnotationIndexed, names=${annotationStubs.map(_.name)}, " +
           s"texts=${annotationStubs.map(_.annotationText)}, occurrences=${annotationIndexOccurrences.result()}"
       )

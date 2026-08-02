@@ -55,12 +55,21 @@ final class Scala3ParserLegacyArtifactsTest:
         root.position
       )
 
-      val function = first.nodes.find: node =>
+      val function  = first.nodes.find: node =>
         node.production == "DefDef" &&
           node.fields.exists(field => field.name == "name" && field.value == ParserFieldValue.Name("value"))
       assertEquals(
         Vector("name", "paramss", "tpt", "preRhs", "mods"),
         function.toVector.flatMap(_.fields).map(_.name)
+      )
+      val modifiers = first.nodes
+        .flatMap(_.fields)
+        .collectFirst:
+          case ParserSyntaxField("mods", ParserFieldValue.Product("Modifiers", fields), _) => fields
+        .getOrElse(throw new AssertionError("definition modifiers are absent"))
+      assertEquals(
+        Some(ParserDeclaredShape.Scalar("LongInteger")),
+        modifiers.find(_.name == "flags").flatMap(_.declaredShape)
       )
 
       val recovered = parse(bridge, scalaVersion, "Incomplete", IncompleteSource)

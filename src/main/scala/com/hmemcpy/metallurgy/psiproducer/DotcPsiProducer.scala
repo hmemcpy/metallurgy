@@ -37,35 +37,34 @@ private[metallurgy] object DotcPsiProducer:
         val byParent             = plan.composites
           .flatMap(parent => parent.children.map(child => child.child -> parent.instance))
           .toMap
+        val lexicalAtomsByEnd    = plan.lexicalContract.atoms.groupBy(_.end).view.mapValues(_.head).toMap
+        val physicalByComposite  = plan.physicalLeafOwnership
+          .collect:
+            case leaf @ PlannedPhysicalLeaf(_, _, _, PhysicalLeafOwner.Composite(owner), _, _, _) => owner -> leaf
+          .groupMap(_._1)(_._2)
         val trailingTriviaOwners = plan.composites.iterator
           .filter: composite =>
-            plan.lexicalContract.atoms
-              .find(_.end == composite.range.endOffset)
+            lexicalAtomsByEnd
+              .get(composite.range.endOffset)
               .exists: atom =>
                 (atom.kind == ClosedSourceLexicalKind.Whitespace ||
                   atom.kind == ClosedSourceLexicalKind.LineComment ||
                   atom.kind == ClosedSourceLexicalKind.BlockComment) &&
-                  plan.physicalLeafOwnership.exists:
-                    case PlannedPhysicalLeaf(
-                          _,
-                          start,
-                          end,
-                          PhysicalLeafOwner.Composite(owner),
-                          _,
-                          _,
-                          _
-                        ) =>
-                      owner == composite.instance && start <= atom.start && atom.end <= end
-                    case _ => false
+                  physicalByComposite
+                    .getOrElse(composite.instance, Vector.empty)
+                    .exists: leaf =>
+                      leaf.start <= atom.start && atom.end <= leaf.end
           .map(_.instance)
           .toSet
         val roots                = plan.composites.filterNot(value => byParent.contains(value.instance))
         val byId                 = plan.composites.map(value => value.instance -> value).toMap
+        val targetRoles          = targets.toMap
+        val tokenRemaps          = remaps.toMap
         val root                 = builder.mark()
         roots
           .sortBy(value => (value.range.startOffset, value.range.endOffset, value.instance.toString))
-          .foreach(emit(_, byId, targets.toMap, bindings, builder, remaps.toMap, trailingTriviaOwners))
-        advanceTo(builder.getOriginalText.length, builder, remaps.toMap)
+          .foreach(emit(_, byId, targetRoles, bindings, builder, tokenRemaps, trailingTriviaOwners))
+        advanceTo(builder.getOriginalText.length, builder, tokenRemaps)
         root.done(fileElementType)
         Right(())
       case Some(reason) => Left(reason)
@@ -125,6 +124,12 @@ private[metallurgy] object DotcPsiProducer:
       case value @ PlannedTargetAssertion(TargetAssertionOwner.Terminal(_, _), _, _) => value
     val tokenLeaves                                                     = leaves.collect:
       case leaf @ PlannedPhysicalLeaf(_, _, _, _, _, _, _: TerminalLeafTarget.Token) => leaf
+    val terminalTargetsByOwner                                          = terminalTargets.groupBy(_.owner)
+    val tokenLeavesByOwner                                              =
+      tokenLeaves.groupBy(leaf => TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId))
+    val accessorsByOwner                                                = plan.accessorAssertions.groupBy(_.owner)
+    val stubsByOwner                                                    = plan.stubAssertions.map(assertion => assertion.owner -> assertion).toMap
+    val navigationByOwner                                               = plan.navigationAssertions.map(assertion => assertion.owner -> assertion.obligation).toMap
     val targetRoles                                                     = targets
       .collect:
         case PlannedTargetAssertion(
@@ -142,37 +147,44 @@ private[metallurgy] object DotcPsiProducer:
       case _                                                   => None
     val terminalTargetMismatch                                          =
       terminalTargets.exists(value => value.kind != TargetAssertionKind.Token || terminalSurface(value).isEmpty) ||
-        terminalTargets.groupBy(_.owner).values.exists(_.size != 1) ||
+        terminalTargetsByOwner.values.exists(_.size != 1) ||
         tokenLeaves.exists(leaf =>
-          terminalTargets.count(target =>
-            target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
-              terminalSurface(target).contains(tokenSurface(leaf)) && target.kind == TargetAssertionKind.Token
-          ) != 1
+          terminalTargetsByOwner
+            .getOrElse(
+              TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId),
+              Vector.empty
+            )
+            .count(target =>
+              target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
+                terminalSurface(target).contains(tokenSurface(leaf)) && target.kind == TargetAssertionKind.Token
+            ) != 1
         ) ||
         terminalTargets.exists(target =>
           terminalSurface(target).forall(surfaceId =>
-            !bindings.elementTypes.contains(surfaceId) || !tokenLeaves.exists(leaf =>
-              target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
-                surfaceId == tokenSurface(leaf)
-            )
+            !bindings.elementTypes.contains(surfaceId) || !tokenLeavesByOwner
+              .getOrElse(target.owner, Vector.empty)
+              .exists(leaf =>
+                target.owner == TargetAssertionOwner.Terminal(leaf.sourceOwner, leaf.terminalId) &&
+                  surfaceId == tokenSurface(leaf)
+              )
           )
         )
     val outputContractMismatch                                          = plan.composites.exists: value =>
       targetRoles.get(value.instance).flatMap(bindings.outputContracts.get) match
         case None           => true
         case Some(contract) =>
-          val accessors         = plan.accessorAssertions
-            .filter(_.owner == value.instance)
+          val accessors         = accessorsByOwner
+            .getOrElse(value.instance, Vector.empty)
             .map(assertion => AccessorObligation(assertion.surfaceId, assertion.required, assertion.surfaceKind))
             .sortBy(obligation => (obligation.surfaceId, obligation.required, obligation.surfaceKind.ordinal))
           val expectedAccessors = contract.accessors
             .sortBy(obligation => (obligation.surfaceId, obligation.required, obligation.surfaceKind.ordinal))
-          val stub              = plan.stubAssertions.find(_.owner == value.instance)
+          val stub              = stubsByOwner.get(value.instance)
           val expectedStub      = contract.persistence match
             case PersistenceObligations.NotApplicable                                      => None
             case PersistenceObligations.Required(surface, serializer, indices, navigation) =>
               Some(PlannedStubAssertion(value.instance, surface, serializer, indices, navigation))
-          val navigation        = plan.navigationAssertions.find(_.owner == value.instance).map(_.obligation)
+          val navigation        = navigationByOwner.get(value.instance)
           accessors != expectedAccessors || stub != expectedStub || navigation != contract.navigation
     val edges                                                           = plan.composites.flatMap(parent => parent.children.map(child => parent.instance -> child.child))
     val children                                                        = edges.groupMap(_._1)(_._2)

@@ -19,7 +19,9 @@ import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
 import org.jetbrains.plugins.scala.lang.psi.ScExportsHolder
-import org.jetbrains.plugins.scala.lang.psi.api.base.{ScEnd, ScStableCodeReference}
+import org.jetbrains.plugins.scala.lang.psi.api.base.{ScEnd, ScPrimaryConstructor, ScStableCodeReference}
+import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScEnumCases, ScEnumClassCase, ScEnumSingletonCase}
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.ScTemplateBody
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScInfixTypeElement,
   ScParameterizedTypeElement,
@@ -28,7 +30,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportSelector, ScImportStmt}
-import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScTypeDefinition
+import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait, ScTypeDefinition}
 import org.jetbrains.plugins.scala.lang.psi.stubs.{
   ScExportStmtStub,
   ScImportExprStub,
@@ -471,9 +473,70 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 4),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 5),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
+    assertEquals(
+      "9897fcab436b8bbd4b028cb1fd8bcbac6ec90069f2c553ec8692ddc7a45bb235",
+      Scala3DotcFileElementType.SchemaFingerprint
+    )
+
+  def testParentlessTemplateDefinitionsUseNativePhysicalPsi(): Unit =
+    val source      =
+      """class C
+        |trait T
+        |object O
+        |class Explicit()
+        |class Braced {
+        |  trait Nested
+        |}
+        |enum E:
+        |  case A
+        |  case B()
+        |end E
+        |""".stripMargin
+    val pending     = myFixture.addFileToProject("src/ParentlessTemplateCase.scala", source)
+    val file        = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    val classes     = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScClass])
+      .asScala
+      .filterNot(_.isInstanceOf[ScEnum | ScEnumClassCase])
+      .map(_.name)
+      .toVector
+      .sorted
+    val failure     = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertTrue(failure.toString, failure.isEmpty)
+    assertEquals(source, file.getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    assertEquals(Vector("Braced", "C", "Explicit"), classes)
+    assertEquals(
+      Vector("Nested", "T"),
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScTrait]).asScala.map(_.name).toVector.sorted
+    )
+    assertEquals(
+      Vector("O"),
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScObject])
+        .asScala
+        .filterNot(_.isInstanceOf[ScEnumSingletonCase])
+        .map(_.name)
+        .toVector
+    )
+    val enumeration = PsiTreeUtil.findChildOfType(file, classOf[ScEnum])
+    assertEquals("E", enumeration.name)
+    assertEquals(
+      Vector("A"),
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumSingletonCase]).asScala.map(_.name).toVector
+    )
+    assertEquals(
+      Vector("B"),
+      PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumClassCase]).asScala.map(_.name).toVector
+    )
+    assertEquals(2, PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumCases]).size)
+    assertEquals(5, PsiTreeUtil.findChildrenOfType(file, classOf[ScPrimaryConstructor]).size)
+    assertEquals(2, PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateBody]).size)
 
   private def indexedPackages(fqn: String): Vector[ScPackaging] =
     StubIndex
@@ -625,11 +688,11 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       .get(getProject)
       .failureFor(adjacentPending.getVirtualFile, ParserSyntaxSnapshot.digest(adjacentSource))
     assertTrue(failure.toString, failure.nonEmpty)
-    assertEquals(Scala3SyntaxCapabilityStage.AggregateInventory, failure.get.stage)
+    assertEquals(Scala3SyntaxCapabilityStage.Catalog, failure.get.stage)
     assertTrue(adjacentFile.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
 
   def testUnsupportedCompilerValidProductionFailsClosedWithCapabilityReason(): Unit =
-    val source      = "class Unsupported\n"
+    val source      = "class Parent\nclass Unsupported extends Parent\n"
     val pending     = myFixture.addFileToProject("src/UnsupportedCase.scala", source)
     val file        = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
     assertEquals(source, file.getText)
@@ -641,7 +704,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
     assertTrue("unsupported syntax must publish a file-scoped capability failure", failure.nonEmpty)
     assertEquals(ParserSyntaxSnapshot.digest(source), failure.get.sourceDigest)
-    assertEquals(Scala3SyntaxCapabilityStage.AggregateInventory, failure.get.stage)
+    assertEquals(Scala3SyntaxCapabilityStage.Catalog, failure.get.stage)
     assertTrue(failure.get.detail.nonEmpty)
     assertTrue(failure.get.compilerIdentity.nonEmpty)
     val report      = Scala3SyntaxCapabilityService
@@ -657,7 +720,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     assertEquals(failure.get.compilerIdentity, report.compilerIdentity)
     assertEquals(failure.get.compilerIdentity.map(_.coordinate), report.compilerCoordinate)
     assertEquals(Scala3SyntaxCapabilityEvidenceState.Recorded, report.evidence.state)
-    assertEquals(Scala3SyntaxCapabilityStage.AggregateInventory, report.evidence.stage)
+    assertEquals(Scala3SyntaxCapabilityStage.Catalog, report.evidence.stage)
     assertEquals(Scala3SyntaxCapabilityRemediationState.ImplementationRequired, report.remediation)
     assertEquals(Scala3SyntaxCapabilityService.RetainedOperations, report.retainedOperations)
     assertTrue(report.hostIdentity.ideBuild.nonEmpty)
@@ -1176,8 +1239,8 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       "package a; import b.c; package d\n",
       "package a:\n  import b.c\nend\n",
       "package a:\n  import b.c\nend wrong\n",
-      "package unsupported { import a.b; class Definition }\n",
-      "package unsupported:\n  import a.b\n  object Template\n",
+      "package unsupported { import a.b; class Definition extends Parent }\n",
+      "package unsupported:\n  import a.b\n  object Template extends Parent\n",
       "package unsupported:\n  extension (value: Int) def increment = value + 1\n",
       "package unsupported:\n  val expression = 1\n"
     ).zipWithIndex.foreach: (invalid, index) =>

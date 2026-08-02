@@ -126,7 +126,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
         unavailableTooltip.contains("IDE build=IC-261.26222.65; Scala plugin=org.intellij.scala:2026.1.20")
       )
       assertTrue(unavailableTooltip.contains("ReadVerbatimSource, EditVerbatimSource"))
-      assertTrue(unavailableTooltip.contains("state=Recorded; stage=AggregateInventory"))
+      assertTrue(unavailableTooltip.contains("state=Recorded; stage=Catalog"))
       assertTrue(unavailableTooltip.contains("<b>Remediation and retry:</b> ImplementationRequired"))
       record(timeline, "syntax-capability-finding-visible", s"text=${unavailableStatus("syntaxWidget.text")}")
 

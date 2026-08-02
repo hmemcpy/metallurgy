@@ -6,8 +6,22 @@ import java.lang.reflect.Modifier
 import java.net.URLClassLoader
 import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import java.util.jar.JarFile
 import com.intellij.openapi.diagnostic.ControlFlowException
+import dotty.tools.tasty.TastyFormat.{
+  ANNOTATEDtype,
+  APPLIEDtpt,
+  APPLIEDtype,
+  CASEaccessor,
+  LAMBDAtpt,
+  PARAM,
+  TEMPLATE,
+  TYPEBOUNDS,
+  TYPEDEF
+}
+import org.jetbrains.plugins.scala.tasty.reader.{Node as TastyNode, TreeReader as TastyTreeReader}
 import scala.reflect.Selectable.reflectiveSelectable
+import scala.util.Using
 import scala.util.control.NonFatal
 
 private[pc] object StructuralScala3ParserBridge:
@@ -21,7 +35,7 @@ private[pc] object StructuralScala3ParserBridge:
       Left(Scala3ParserOpenError.InvalidArtifacts("every exact compiler artifact must be a readable file"))
     else
       val loader = new Scala3ParserClassLoader(artifacts.map(_.toURI.toURL).toArray)
-      discover(loader) match
+      discover(loader, artifacts) match
         case Right(runtime) => Right(new StructuralScala3ParserBridge(identity, runtime))
         case Left(message)  =>
           loader.close()
@@ -34,7 +48,7 @@ private[pc] object StructuralScala3ParserBridge:
             )
           )
 
-  private def discover(loader: Scala3ParserClassLoader): Either[String, ParserRuntime] =
+  private def discover(loader: Scala3ParserClassLoader, artifacts: Seq[File]): Either[String, ParserRuntime] =
     try
       val contextBaseClass  = loader.loadClass("dotty.tools.dotc.core.Contexts$ContextBase")
       val contextClass      = loader.loadClass("dotty.tools.dotc.core.Contexts$Context")
@@ -60,6 +74,8 @@ private[pc] object StructuralScala3ParserBridge:
       val nameClass         = loader.loadClass("dotty.tools.dotc.core.Names$Name")
       val uniqueNameKind    = loader.loadClass("dotty.tools.dotc.core.NameKinds$UniqueNameKind")
       val spansModule       = module(loader, "dotty.tools.dotc.util.Spans$Span$")
+      val declaredProducts  =
+        readDeclaredProducts(artifacts).fold(message => throw new IllegalStateException(message), identity)
 
       val sourceFactory    = discoverSourceFactory(sourceModule, sourceFileClass)
       val parserFactory    = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
@@ -125,13 +141,124 @@ private[pc] object StructuralScala3ParserBridge:
         iterableClass,
         nameClass,
         uniqueNameKind,
-        spansModule
+        spansModule,
+        declaredProducts
       )
       Right(runtime)
     catch case NonFatal(error) => Left(errorMessage(error))
 
   private def module(loader: ClassLoader, className: String): AnyRef =
     loader.loadClass(className).getField("MODULE$").get(null)
+
+  private def readDeclaredProducts(artifacts: Seq[File]): Either[String, DeclaredProducts] =
+    val entries    = Vector(
+      "dotty/tools/dotc/ast/Trees.tasty"  -> "Trees$",
+      "dotty/tools/dotc/ast/untpd.tasty"  -> "untpd$",
+      "dotty/tools/dotc/core/Flags.tasty" -> "Flags$"
+    )
+    val candidates = artifacts.flatMap: artifact =>
+      Using.resource(new JarFile(artifact)): jar =>
+        Option.when(entries.forall((entryName, _) => jar.getJarEntry(entryName) != null))(artifact)
+    candidates match
+      case Seq(compilerArtifact) =>
+        try
+          Right(
+            Using.resource(new JarFile(compilerArtifact)): jar =>
+              val declarations = entries.map: (entryName, ownerName) =>
+                val entry = jar.getJarEntry(entryName)
+                Using.resource(jar.getInputStream(entry)): input =>
+                  declaredProductsFrom(TastyTreeReader.treeFrom(input.readAllBytes()), ownerName)
+              DeclaredProducts(
+                declarations
+                  .flatMap(_.products)
+                  .groupMap(_._1)(_._2)
+                  .view
+                  .mapValues(uniqueDeclaration("product"))
+                  .toMap,
+                declarations.flatMap(_.aliases).groupMap(_._1)(_._2).view.mapValues(_.flatten).toMap,
+                declarations.flatMap(_.representationBarriers).groupMapReduce(_._1)(_._2)(_ + _)
+              )
+          )
+        catch
+          case error: StackOverflowError =>
+            Left(s"exact compiler TASTy schema exceeded the reader stack: ${errorMessage(error)}")
+          case NonFatal(error)           => Left(s"exact compiler TASTy schema is unavailable: ${errorMessage(error)}")
+      case Seq()                 => Left(s"the exact compiler artifacts do not contain ${entries.map(_._1).mkString(" and ")}")
+      case _                     => Left(s"more than one exact compiler artifact contains the exact parser TASTy schemas")
+
+  private def declaredProductsFrom(root: TastyNode, ownerName: String): DeclaredProducts =
+    var pending   = List(root)
+    var templates = Vector.empty[TastyNode]
+    while pending.nonEmpty do
+      val current = pending.head
+      pending = current.children.toList.reverse_:::(pending.tail)
+      if current.tag == TYPEDEF && tastyName(current).contains(ownerName) then
+        templates = templates ++ current.children.filter(_.tag == TEMPLATE)
+
+    val declarations = templates match
+      case Vector(template) => template.children.filter(_.tag == TYPEDEF).toVector
+      case _                => throw new IllegalStateException(s"exact compiler TASTy has no unique $ownerName declaration")
+
+    val aliases = declarations.flatMap: declaration =>
+      for
+        name   <- tastyName(declaration)
+        lambda <- declaration.children.find(_.tag == LAMBDAtpt)
+        body   <- lambda.children.lastOption
+        tpe    <- tastyType(body)
+      yield name -> tpe
+
+    val products = declarations.flatMap: declaration =>
+      tastyName(declaration).flatMap: name =>
+        declaration.children
+          .find(_.tag == TEMPLATE)
+          .flatMap: template =>
+            val accessors = template.children.filter: child =>
+              child.tag == PARAM && child.children.exists(_.tag == CASEaccessor)
+            Option.when(accessors.nonEmpty):
+              val fields = accessors.zipWithIndex.map: (child, ordinal) =>
+                val decoded = for
+                  fieldName <- tastyName(child)
+                  fieldType <- child.children.headOption.flatMap(tastyType)
+                yield DeclaredProductField(fieldName, fieldType)
+                decoded.getOrElse:
+                  throw new IllegalStateException(
+                    s"exact compiler TASTy cannot decode $ownerName.$name field ordinal $ordinal: $child"
+                  )
+              DeclaredProductId(ownerName, name) -> fields.toVector
+
+    val representationBarriers = declarations.flatMap: declaration =>
+      tastyName(declaration).filter: _ =>
+        declaration.children.exists(_.tag == TYPEBOUNDS) && descendants(declaration).exists: child =>
+          child.refName.contains("opaques") || child.names.contains("opaques")
+
+    DeclaredProducts(
+      products.groupMap(_._1)(_._2).view.mapValues(uniqueDeclaration("product")).toMap,
+      aliases.groupMap(_._1)(_._2),
+      representationBarriers.groupMapReduce(identity)(_ => 1)(_ + _)
+    )
+
+  private def uniqueDeclaration[A](kind: String)(values: Vector[A]): A =
+    values match
+      case Vector(value) => value
+      case _             => throw new IllegalStateException(s"exact compiler TASTy has ambiguous $kind declarations")
+
+  private def tastyType(node: TastyNode): Option[DeclaredType] =
+    if node.tag == APPLIEDtype || node.tag == APPLIEDtpt then
+      for
+        constructor <- node.children.headOption.flatMap(tastyName)
+        arguments   <- sequence(node.children.tail.map(tastyType).toVector)
+      yield DeclaredType.Applied(constructor, arguments)
+    else if node.tag == ANNOTATEDtype then node.children.headOption.flatMap(tastyType)
+    else tastyName(node).map(DeclaredType.Named.apply)
+
+  private def sequence[A](values: Vector[Option[A]]): Option[Vector[A]] =
+    Option.when(values.forall(_.nonEmpty))(values.flatten)
+
+  private def descendants(root: TastyNode): Iterator[TastyNode] =
+    Iterator.iterate(List(root))(_.flatMap(_.children)).takeWhile(_.nonEmpty).flatMap(_.iterator)
+
+  private def tastyName(node: TastyNode): Option[String] =
+    node.refName.orElse(node.names.headOption).filter(_.nonEmpty)
 
   private def discoverSourceFactory(module: AnyRef, sourceFileClass: Class[?]): SourceFactory =
     val candidates = module.getClass.getMethods.filter: method =>
@@ -270,7 +397,8 @@ private[pc] object StructuralScala3ParserBridge:
       iterableClass: Class[?],
       nameClass: Class[?],
       uniqueNameKindClass: Class[?],
-      spansModule: AnyRef
+      spansModule: AnyRef,
+      declaredProducts: DeclaredProducts
   ):
     def close(): Unit = loader.close()
 
@@ -314,6 +442,20 @@ private[pc] object StructuralScala3ParserBridge:
   private final case class LazyFieldsReader(ownerClass: Class[?], forceFields: Method)
 
   private final case class AttachmentReader(all: Method, keyNames: IdentityHashMap[AnyRef, String])
+
+  private final case class DeclaredProducts(
+      products: Map[DeclaredProductId, Vector[DeclaredProductField]],
+      aliases: Map[String, Vector[DeclaredType]],
+      representationBarriers: Map[String, Int]
+  )
+
+  private final case class DeclaredProductId(ownerName: String, productName: String)
+
+  private final case class DeclaredProductField(name: String, fieldType: DeclaredType)
+
+  private enum DeclaredType:
+    case Named(name: String)
+    case Applied(constructor: String, arguments: Vector[DeclaredType])
 
   private enum ReporterFactory:
     case SingleArgument(constructor: Constructor[?])
@@ -717,7 +859,7 @@ private final class StructuralScala3ParserBridge private (
             val field = ParserSyntaxField(
               fieldName,
               fieldValueResult(result),
-              declaredFieldShape(active, product, product.productElementName(index))
+              declaredFieldShape(active, product, index, product.productElementName(index))
             )
             stack.push(EvaluateProductField(product, arity, ownerNodeId, path, index + 1, fields :+ field))
             result = null
@@ -896,14 +1038,195 @@ private final class StructuralScala3ParserBridge private (
   private def declaredFieldShape(
       active: ParserRuntime,
       product: ProductValue,
+      fieldIndex: Int,
       fieldName: String
   ): Option[ParserDeclaredShape] =
-    val accessors = product.getClass.getMethods.filter(method =>
-      method.getName == fieldName && method.getParameterCount == 0 && !method.isBridge && !method.isSynthetic
-    )
-    accessors.toVector match
-      case Vector(accessor) => declaredShape(active, accessor.getGenericReturnType)
-      case _                => None
+    val runtimeClass: Class[?] = product.getClass
+    val productOwner           = runtimeClass.getMethod("productArity").getDeclaringClass
+    val accessorMethods        = runtimeClass.getMethods.toVector
+      .filter(method =>
+        method.getName == fieldName && method.getParameterCount == 0 && !method.isBridge && !method.isSynthetic
+      )
+    val backingField           =
+      try Some(productOwner.getDeclaredField(fieldName))
+      catch case _: NoSuchFieldException => None
+    val tasty                  = tastyDeclaredType(active, productOwner, product.productArity(), fieldIndex, fieldName)
+    val reflected              = accessorMethods.flatMap(method => declaredShape(active, method.getGenericReturnType))
+    val backing                = backingField.flatMap(field => declaredShape(active, field.getGenericType)).toVector
+    val corroborating          = (reflected ++ backing).distinct
+    tasty match
+      case Some(declaredType) =>
+        val carriers            = accessorMethods.map(_.getReturnType) ++ backingField.map(_.getType)
+        val informativeCarriers = carriers.filterNot(_ == classOf[Object])
+        val resolved            = declaredTypeShape(active, productOwner, declaredType, Set.empty)
+          .orElse(runtimeCarrierShape(active, declaredType, carriers))
+          .orElse:
+            corroborating match
+              case Vector(shape) => Some(shape)
+              case Vector()      => None
+              case conflicts     =>
+                throw new IllegalStateException(
+                  s"exact compiler declarations disagree for ${productOwner.getName}.$fieldName: ${conflicts.mkString(", ")}"
+                )
+        if resolved.isEmpty && informativeCarriers.nonEmpty && informativeCarriers.forall(
+            active.productClass.isAssignableFrom
+          )
+        then None
+        else
+          val shape = resolved.getOrElse:
+            throw new IllegalStateException(
+              s"exact compiler TASTy field type is unsupported for ${productOwner.getName}.$fieldName: $declaredType"
+            )
+          if corroborating.nonEmpty && corroborating.exists(_ != shape) then
+            throw new IllegalStateException(
+              s"exact compiler declarations disagree for ${productOwner.getName}.$fieldName: TASTy=$shape, reflection=${corroborating.mkString(", ")}"
+            )
+          Some(shape)
+      case None               =>
+        corroborating match
+          case Vector(shape) => Some(shape)
+          case Vector()      => None
+          case conflicts     =>
+            throw new IllegalStateException(
+              s"exact compiler declarations disagree for ${productOwner.getName}.$fieldName: ${conflicts.mkString(", ")}"
+            )
+
+  private def tastyDeclaredType(
+      active: ParserRuntime,
+      productOwner: Class[?],
+      productArity: Int,
+      fieldIndex: Int,
+      fieldName: String
+  ): Option[DeclaredType] =
+    val ownerName = Option(productOwner.getEnclosingClass)
+      .map(owner => owner.getSimpleName.stripSuffix("$") + "$")
+      .getOrElse(productOwner.getName.split('.').last.split('$').head + "$")
+    active.declaredProducts.products
+      .get(DeclaredProductId(ownerName, productOwner.getSimpleName))
+      .map: fields =>
+        if fields.size != productArity then
+          throw new IllegalStateException(
+            s"exact compiler TASTy product arity disagrees for ${productOwner.getName}: expected $productArity, found ${fields.size}"
+          )
+        val field = fields
+          .lift(fieldIndex)
+          .getOrElse:
+            throw new IllegalStateException(
+              s"exact compiler TASTy has no field ordinal $fieldIndex for ${productOwner.getName}"
+            )
+        if field.name != fieldName then
+          throw new IllegalStateException(
+            s"exact compiler TASTy product order disagrees for ${productOwner.getName}: expected $fieldName, found ${field.name}"
+          )
+        field.fieldType
+
+  private def runtimeCarrierShape(
+      active: ParserRuntime,
+      declaredType: DeclaredType,
+      carriers: Vector[Class[?]]
+  ): Option[ParserDeclaredShape] =
+    val barrier = declaredType match
+      case DeclaredType.Named(name) => active.declaredProducts.representationBarriers.get(name).contains(1)
+      case _                        => false
+    Option.when(barrier):
+      val informative = carriers
+        .filterNot(_ == classOf[Object])
+        .map: carrier =>
+          scalarShape(carrier).getOrElse:
+            throw new IllegalStateException(s"exact compiler representation carrier is unsupported: ${carrier.getName}")
+      informative.distinct match
+        case Vector(shape) => shape
+        case Vector()      => throw new IllegalStateException("exact compiler representation carrier is absent or erased")
+        case conflicts     =>
+          throw new IllegalStateException(
+            s"exact compiler representation carriers disagree: ${conflicts.mkString(", ")}"
+          )
+
+  private def declaredTypeShape(
+      active: ParserRuntime,
+      productOwner: Class[?],
+      declaredType: DeclaredType,
+      resolvingAliases: Set[String]
+  ): Option[ParserDeclaredShape] =
+    declaredType match
+      case DeclaredType.Named(name)                        =>
+        compilerTreeShape(active, name)
+          .orElse(ownerDeclaredShape(active, productOwner, name))
+          .orElse(
+            declaredLeafShape(active, name)
+          )
+          .orElse:
+            aliasShape(active, productOwner, name, resolvingAliases)
+      case DeclaredType.Applied("|", alternatives)         =>
+        val resolved = alternatives.map(declaredTypeShape(active, productOwner, _, resolvingAliases))
+        resolved.flatten.distinct match
+          case Vector(shape) if resolved.nonEmpty && resolved.forall(_.contains(shape)) => Some(shape)
+          case _                                                                        => None
+      case DeclaredType.Applied("List", Vector(element))   =>
+        declaredTypeShape(active, productOwner, element, resolvingAliases).map(ParserDeclaredShape.Repeated.apply)
+      case DeclaredType.Applied("Option", Vector(element)) =>
+        declaredTypeShape(active, productOwner, element, resolvingAliases).map(ParserDeclaredShape.Optional.apply)
+      case DeclaredType.Applied("Lazy", Vector(value))     =>
+        declaredTypeShape(active, productOwner, value, resolvingAliases)
+      case DeclaredType.Applied(name, _)                   =>
+        compilerTreeShape(active, name).orElse:
+          aliasShape(active, productOwner, name, resolvingAliases)
+
+  private def ownerDeclaredShape(
+      active: ParserRuntime,
+      productOwner: Class[?],
+      simpleName: String
+  ): Option[ParserDeclaredShape] =
+    Option(productOwner.getEnclosingClass).flatMap: owner =>
+      try
+        val declaredClass = active.loader.loadClass(s"${owner.getName}$$$simpleName")
+        if active.treeClass.isAssignableFrom(declaredClass) then Some(ParserDeclaredShape.Node)
+        else if active.positionedClass.isAssignableFrom(declaredClass) then Some(ParserDeclaredShape.Positioned)
+        else if active.nameClass.isAssignableFrom(declaredClass) then Some(ParserDeclaredShape.Name)
+        else scalarShape(declaredClass)
+      catch case _: ClassNotFoundException => None
+
+  private def declaredLeafShape(active: ParserRuntime, name: String): Option[ParserDeclaredShape] =
+    if declaredClassIs(active, active.nameClass, name) then Some(ParserDeclaredShape.Name)
+    else if declaredClassIs(active, active.positionedClass, name) then Some(ParserDeclaredShape.Positioned)
+    else
+      name match
+        case "String"  => Some(ParserDeclaredShape.Scalar("Text"))
+        case "Int"     => Some(ParserDeclaredShape.Scalar("Integer"))
+        case "Long"    => Some(ParserDeclaredShape.Scalar("LongInteger"))
+        case "Double"  => Some(ParserDeclaredShape.Scalar("Decimal"))
+        case "Boolean" => Some(ParserDeclaredShape.Scalar("Logical"))
+        case "Char"    => Some(ParserDeclaredShape.Scalar("Character"))
+        case _         => None
+
+  private def declaredClassIs(active: ParserRuntime, expectedBase: Class[?], simpleName: String): Boolean =
+    if simpleName == expectedBase.getSimpleName then true
+    else
+      val binaryName = expectedBase.getName
+      val ownerEnd   = binaryName.lastIndexOf('$')
+      if ownerEnd < 0 then false
+      else
+        try expectedBase.isAssignableFrom(active.loader.loadClass(s"${binaryName.take(ownerEnd + 1)}$simpleName"))
+        catch case _: ClassNotFoundException => false
+
+  private def aliasShape(
+      active: ParserRuntime,
+      productOwner: Class[?],
+      name: String,
+      resolvingAliases: Set[String]
+  ): Option[ParserDeclaredShape] =
+    Option
+      .when(!resolvingAliases(name))(active.declaredProducts.aliases.getOrElse(name, Vector.empty))
+      .flatMap: aliases =>
+        aliases.flatMap(declaredTypeShape(active, productOwner, _, resolvingAliases + name)).distinct match
+          case Vector(shape) => Some(shape)
+          case _             => None
+
+  private def compilerTreeShape(active: ParserRuntime, simpleName: String): Option[ParserDeclaredShape] =
+    try
+      val declaredClass = active.loader.loadClass(s"dotty.tools.dotc.ast.Trees$$$simpleName")
+      Option.when(active.treeClass.isAssignableFrom(declaredClass))(ParserDeclaredShape.Node)
+    catch case _: ClassNotFoundException => None
 
   private def declaredShape(active: ParserRuntime, fieldType: Type): Option[ParserDeclaredShape] = fieldType match
     case cls: Class[?]                    =>
@@ -976,12 +1299,9 @@ private final class StructuralScala3ParserBridge private (
       throw new IllegalStateException(s"unsupported compiler iterable: $runtimeType")
     val iterator    = iterable.iterator().asInstanceOf[IteratorValue]
     val result      = Vector.newBuilder[AnyRef]
-    var count       = 0
     while iterator.hasNext() do
       cancellation.checkCanceled()
-      if count == 1000000 then throw new IllegalStateException("compiler iterable exceeds traversal limit")
       result += iterator.next()
-      count += 1
     result.result()
 
   private def treePosition(active: ParserRuntime, tree: TreeValue): ParserNodePosition =

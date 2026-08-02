@@ -197,9 +197,10 @@ private[metallurgy] final case class StructuralSourceEvidence(
 
 private[metallurgy] final case class SourceAtomRefinement(
     atom: SourceAtomReference,
-    requestingRole: PsiOutputRoleId,
+    requestingRoles: Vector[PsiOutputRoleId],
     replacement: Vector[PcSourceRange]
-)
+):
+  require(requestingRoles.nonEmpty)
 
 private[metallurgy] enum SourceAtomRefinementFailure:
   case UnknownAtom(atom: SourceAtomReference)
@@ -245,8 +246,9 @@ private[metallurgy] object SourceEvidenceRefinementPlanner:
         case Some(atom) =>
           if atom.start != refinement.atom.start || atom.end != refinement.atom.end then
             failures += SourceAtomRefinementFailure.AtomRangeChanged(refinement.atom, atom.start, atom.end)
-      if !knownRoles(refinement.requestingRole) then
-        failures += SourceAtomRefinementFailure.UnknownRole(refinement.requestingRole)
+      refinement.requestingRoles
+        .filterNot(knownRoles)
+        .foreach(role => failures += SourceAtomRefinementFailure.UnknownRole(role))
       refinement.replacement match
         case Vector() => failures += SourceAtomRefinementFailure.EmptyReplacement(refinement.atom)
         case values   =>
@@ -299,7 +301,7 @@ private[metallurgy] object SourceEvidenceRefinementPlanner:
         if values.size > 1 then
           failures += SourceAtomRefinementFailure.OverlappingRefinements(
             values.head.atom,
-            values.map(_.requestingRole).sortBy(_.value)
+            values.flatMap(_.requestingRoles).distinct.sortBy(_.value)
           )
 
     val found = failures.result()

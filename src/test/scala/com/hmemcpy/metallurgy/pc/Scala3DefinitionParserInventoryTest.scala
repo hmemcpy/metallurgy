@@ -33,7 +33,7 @@ final class Scala3DefinitionParserInventoryTest:
         ParserSyntaxSnapshot.evidenceFingerprint(second)
       )
       assertEquals(
-        "cce29f4a9908b20bdd5dab833d75087e5af6de7e4771231cf859bc29357afd13",
+        "6c2057e49c489a71f7a58797a227d9684b2ab449bde9a100814671e7d5e2e19e",
         ParserSyntaxSnapshot.evidenceFingerprint(first)
       )
       assertEquals(DefinitionSource, first.sourceText)
@@ -94,7 +94,7 @@ final class Scala3DefinitionParserInventoryTest:
       assertEquals(first, second)
       assertTrue(first.diagnostics.toString, first.diagnostics.isEmpty)
       assertEquals(
-        "d13e06273e3e0c89f1e0b6734cb608a66e6c19aa9fc9b4c1c14a371e1a683c2f",
+        "027beb071b288e64f91c866bdbf1157d26b69f37121992ba735bbd5d2c2a57a3",
         ParserSyntaxSnapshot.evidenceFingerprint(first)
       )
       expectedFields.foreach: (production, fields) =>
@@ -126,7 +126,7 @@ final class Scala3DefinitionParserInventoryTest:
 
       assertTrue(snapshot.diagnostics.toString, snapshot.diagnostics.isEmpty)
       assertEquals(
-        "35aa2c8f6ee712e25321954d9d3f9b01acb9dee47ae38f2550f103dc750ae878",
+        "d50a4c56d85d0f061681ae6998702dc20181844af13ca5a6b82265be47d5b7ef",
         ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
       )
       assertTrue(modifiers.nonEmpty)
@@ -203,17 +203,17 @@ final class Scala3DefinitionParserInventoryTest:
         (
           SimpleAnnotationSource,
           "file:///SimpleAnnotationInventory.scala",
-          "545852dfeaf17cc7cf181b3f43a330a5e2801e7a241ce349a594f47f3ed7ed2f"
+          "7b52ae6c76a1ab179d52c3f3775037ab940c6169839f9eadfd29d2634b565445"
         ),
         (
           QualifiedAnnotationSource,
           "file:///QualifiedAnnotationInventory.scala",
-          "625951f8f09bf16a4c5a7f84f7fd3ec3c4e36b13f55a23588107d8ef323d4e27"
+          "65b8856b691af9ac6b17864f7624bb37fa43ed525d55cf2ab268616455b6867b"
         ),
         (
           AppliedAnnotationSource,
           "file:///AppliedAnnotationInventory.scala",
-          "1116438637472597bf239623f4b041581d9876fa28b740d4ba39c01d85def3d2"
+          "62daea9afbbce9f0650c93f6060a9374ea3a86418b2525c62ea701a822006a5e"
         )
       )
       cases.foreach: (source, uri, fingerprint) =>
@@ -244,7 +244,7 @@ final class Scala3DefinitionParserInventoryTest:
     finally bridge.close()
 
   @Test
-  def definitionEvidenceRemainsOutsideThePreparedProductionCatalog(): Unit =
+  def unsupportedDefinitionEvidenceRemainsOutsideThePreparedProductionCatalog(): Unit =
     val bridge = openBridge()
     try
       val snapshot  = parse(bridge, DefinitionSource, "file:///DefinitionCatalogQuarantine.scala")
@@ -264,7 +264,7 @@ final class Scala3DefinitionParserInventoryTest:
       val uncovered = errors.collect:
         case error: CatalogValidationError.UncoveredCompilerShape => error.prefix
 
-      Set("TypeDef", "ModuleDef", "Template", "DefDef", "ValDef", "PatDef", "ExtMethods").foreach: production =>
+      Set("PatDef", "ExtMethods").foreach: production =>
         assertTrue(s"$production was not rejected as uncovered: $errors", uncovered.contains(production))
       assertTrue(snapshot.runtimeSupplements.nonEmpty)
       snapshot.runtimeSupplements.foreach: supplement =>
@@ -489,6 +489,20 @@ final class Scala3DefinitionParserInventoryTest:
       Vector(ParserNodeOccurrence(template.id, Vector(ParserFieldPathSegment.NamedField("constr")))),
       constructor.occurrences
     )
+    assertEquals(
+      Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node))),
+      constructor.fields.find(_.name == "paramss").flatMap(_.declaredShape)
+    )
+    assertEquals(
+      Some(ParserDeclaredShape.Node),
+      constructor.fields.find(_.name == "preRhs").flatMap(_.declaredShape)
+    )
+    Vector("preParentsOrDerived", "preBody").foreach: fieldName =>
+      assertEquals(
+        fieldName,
+        Some(ParserDeclaredShape.Repeated(ParserDeclaredShape.Node)),
+        template.fields.find(_.name == fieldName).flatMap(_.declaredShape)
+      )
     val concrete         = namedNode(snapshot, "DefDef", "concrete")
     val clauses          = concrete.fields.collectFirst:
       case ParserSyntaxField("paramss", ParserFieldValue.Repeated(values), _) => values
@@ -605,6 +619,10 @@ final class Scala3DefinitionParserInventoryTest:
     assertEquals(
       ParserFieldValue.Scalar(ParserScalar.LongInteger(expectedFlags)),
       modifiers.find(_.name == "flags").get.value
+    )
+    assertEquals(
+      Some(ParserDeclaredShape.Scalar("LongInteger")),
+      modifiers.find(_.name == "flags").flatMap(_.declaredShape)
     )
     assertEquals(ParserFieldValue.Name(""), modifiers.find(_.name == "privateWithin").get.value)
     val annotations    = modifiers

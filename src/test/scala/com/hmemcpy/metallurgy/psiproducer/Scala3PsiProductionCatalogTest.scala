@@ -483,7 +483,7 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(
       Set(
         CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Scalar("Integer")),
-        CatalogValuePattern.Repeated(CatalogValuePattern.Scalar("Integer"))
+        CatalogValuePattern.Repeated(CatalogValuePattern.ExactScalar("Integer", "Integer(1)"))
       ),
       aggregate(repeated).productions.map(_.fields.head.value).toSet
     )
@@ -692,7 +692,8 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.AbsentProduct       -> Set(
         "import-expression-absent",
         "import-selector-absent",
-        "import-selector-given-bound-absent"
+        "import-selector-given-bound-absent",
+        "template-absent-tree"
       ),
       GrammarRoleId.StableReference     -> Set(
         "import-path-identifier-reference",
@@ -759,7 +760,19 @@ final class Scala3PsiProductionCatalogTest:
         "annotation-constructor-select",
         "annotation-constructor-new"
       ),
-      GrammarRoleId.AnnotationArguments -> Set("annotation-apply-arguments")
+      GrammarRoleId.AnnotationArguments -> Set("annotation-apply-arguments"),
+      GrammarRoleId.ClassDefinition     -> Set("template-class-definition"),
+      GrammarRoleId.TraitDefinition     -> Set("template-trait-definition"),
+      GrammarRoleId.ObjectDefinition    -> Set("template-object-definition"),
+      GrammarRoleId.EnumDefinition      -> Set("template-enum-definition"),
+      GrammarRoleId.EnumCase            -> Set("enum-singleton-case", "enum-class-case"),
+      GrammarRoleId.Template            -> Set("template-template"),
+      GrammarRoleId.TemplateConstructor -> Set(
+        "template-constructor-synthetic",
+        "template-constructor-explicit-empty"
+      ),
+      GrammarRoleId.TemplateSelf        -> Set("template-self-absent"),
+      GrammarRoleId.TemplateTypeTree    -> Set("template-type-tree-synthetic")
     )
     val actual   = catalog.productions
       .flatMap(production => production.grammarRoleIds.map(_ -> production.id))
@@ -809,7 +822,16 @@ final class Scala3PsiProductionCatalogTest:
     val packageStatements = packageBody.children.find(_.fieldName == "stats").get
     assertEquals(ChildCardinality.Grouped(1, None), packageStatements.cardinality)
     assertEquals(
-      Set("import-statement", "export-statement", "file-package", "file-package-top-statements"),
+      Set(
+        "import-statement",
+        "export-statement",
+        "file-package",
+        "file-package-top-statements",
+        "template-class-definition",
+        "template-trait-definition",
+        "template-object-definition",
+        "template-enum-definition"
+      ),
       packageStatements.productionIds
     )
 
@@ -1569,6 +1591,21 @@ final class Scala3PsiProductionCatalogTest:
           Vector(CompilerFieldPattern("expected", CatalogValuePattern.Name))
         ),
         observed
+      )
+    )
+    val scalar   = InventoryValueObservation.Scalar(ParserScalar.LongInteger(1026L))
+    assertTrue(CatalogShapeMatcher.matches(CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(1026)"), scalar))
+    assertFalse(CatalogShapeMatcher.matches(CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(0)"), scalar))
+    assertTrue(
+      CatalogShapeMatcher.covers(
+        CatalogValuePattern.Scalar("LongInteger"),
+        CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(1026)")
+      )
+    )
+    assertFalse(
+      CatalogShapeMatcher.covers(
+        CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(0)"),
+        CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(1026)")
       )
     )
 
@@ -2798,6 +2835,31 @@ final class Scala3PsiProductionCatalogTest:
           result.toString,
           result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference]
         )
+
+  @Test def wholeFilePlanningDoesNotShareUnrelatedTransparentAbsentProductions(): Unit =
+    val baseValue = sharedDescendantSnapshot
+    val value     = baseValue.copy(nodes = baseValue.nodes.map: node =>
+      if node.id == 3 then node.copy(position = ParserNodePosition.Absent) else node)
+    val compiler  = inventory(value)
+    val base      = completeCatalog(compiler)
+    val catalog   = base.copy(productions = base.productions.map: production =>
+      if production.pattern.prefix == "Leaf" then
+        production.copy(
+          terminals = Vector.empty,
+          outputTemplate = Some(LocalOutputCompositeTemplate(Vector.empty, Map.empty))
+        )
+      else production)
+    val result    = planned(
+      value,
+      ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+      catalog,
+      aggregate(Vector(compiler)),
+      surfaces(catalog)
+    )
+    assertTrue(
+      result.toString,
+      result.left.toOption.get.isInstanceOf[WholeFilePlanningFailure.MultiplyConsumedChildReference]
+    )
 
   @Test def wholeFilePlanningRejectsUnprobedNativeCandidates(): Unit =
     val value     = snapshot("/candidate", 1, Vector.empty)

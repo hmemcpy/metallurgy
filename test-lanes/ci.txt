@@ -6,5 +6,6 @@ com.hmemcpy.metallurgy.pc.PcClassLoaderTest
 com.hmemcpy.metallurgy.pc.PcSnapshotTest
 com.hmemcpy.metallurgy.pc.PresentationCompilerResolverTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
+com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest
 com.hmemcpy.metallurgy.status.MetallurgyStatusBarWidgetTest
 com.hmemcpy.metallurgy.testkit.ExpectedOutputParserTest

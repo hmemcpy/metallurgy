@@ -2,3 +2,4 @@ com.hmemcpy.metallurgy.psiproducer.DialectFileLoadingTest
 com.hmemcpy.metallurgy.psiproducer.DialectProjectReopenTest
 com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
+com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest
