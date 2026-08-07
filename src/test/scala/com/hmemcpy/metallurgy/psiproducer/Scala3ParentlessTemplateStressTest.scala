@@ -4,6 +4,7 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
 import com.intellij.psi.{PsiErrorElement, PsiManager}
 import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParenthesisedTypeElement, ScSimpleTypeElement}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScPatternDefinition
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
@@ -70,6 +71,21 @@ final class Scala3ParentlessTemplateStressTest extends Scala3CompatTestCase:
       payloads.forall: payload =>
         val range = payload.getTextRange
         source.substring(range.getStartOffset, range.getEndOffset) == payload.getText
+    )
+
+  def testDeepParenthesizedSingletonTypeHasNoMetallurgyDepthCap(): Unit =
+    val depth  = 384
+    val atom   = "(" * depth + "x.type" + ")" * depth
+    val source = s"import a.b.given $atom\n"
+    val file   = physical("Case13.scala", source)
+
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScParenthesisedTypeElement]).size)
+    assertEquals(
+      1,
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScSimpleTypeElement])
+        .asScala
+        .count(_.getText == "x.type")
     )
 
   def testTenThousandRepeatedRhsPayloadsHaveNoFiniteOccurrenceCap(): Unit =

@@ -79,6 +79,7 @@ private[pc] object StructuralScala3ParserBridge:
 
       val sourceFactory    = discoverSourceFactory(sourceModule, sourceFileClass)
       val parserFactory    = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
+      val scannerReader    = discoverScannerReader(loader, scannerClass, sourceFileClass, contextClass)
       val reporterFactory  = discoverReporterFactory(storeReporter, reporterClass)
       val diagnosticReader = discoverDiagnosticReader(storeReporter, contextClass)
       val _                = parserClass.getMethod("parse")
@@ -126,6 +127,7 @@ private[pc] object StructuralScala3ParserBridge:
         driverClass.getMethod("setup", classOf[Array[String]], contextClass),
         sourceFactory,
         parserFactory,
+        scannerReader,
         diagnosticReader,
         treeClass,
         defTreeClass,
@@ -302,6 +304,32 @@ private[pc] object StructuralScala3ParserBridge:
             )
       .getOrElse(throw new NoSuchMethodException("Parsers.Parser whole-source or range-source constructor"))
 
+  private def discoverScannerReader(
+      loader: ClassLoader,
+      scannerClass: Class[?],
+      sourceFileClass: Class[?],
+      contextClass: Class[?]
+  ): ScannerReader =
+    val profileClass = loader.loadClass("dotty.tools.dotc.reporting.Profile")
+    val constructor  = scannerClass.getConstructors
+      .find(
+        _.getParameterTypes.sameElements(
+          Array(sourceFileClass, java.lang.Integer.TYPE, profileClass, java.lang.Boolean.TYPE, contextClass)
+        )
+      )
+      .getOrElse(throw new NoSuchMethodException("Scanners.Scanner exact-source constructor"))
+    val tokens       = module(loader, "dotty.tools.dotc.parsing.Tokens$")
+    ScannerReader(
+      constructor,
+      module(loader, "dotty.tools.dotc.reporting.NoProfile$"),
+      scannerClass.getMethod("token"),
+      scannerClass.getMethod("offset"),
+      scannerClass.getMethod("lastOffset"),
+      scannerClass.getMethod("nextToken"),
+      tokens,
+      tokens.getClass.getMethod("showTokenDetailed", java.lang.Integer.TYPE)
+    )
+
   private def discoverDiagnosticReader(
       reporterClass: Class[?],
       contextClass: Class[?]
@@ -347,7 +375,8 @@ private[pc] object StructuralScala3ParserBridge:
       diagnostics = ParserCapabilityStatus.Available,
       positionedSyntax = ParserCapabilityStatus.Available,
       comments = ParserCapabilityStatus.Available,
-      endMarkers = endMarkers
+      endMarkers = endMarkers,
+      scannerTokens = ParserCapabilityStatus.Available
     )
 
   private def unavailableCapabilities(reason: String): Scala3ParserCapabilities =
@@ -364,7 +393,8 @@ private[pc] object StructuralScala3ParserBridge:
       diagnostics = unavailable,
       positionedSyntax = unavailable,
       comments = unavailable,
-      endMarkers = unavailable
+      endMarkers = unavailable,
+      scannerTokens = unavailable
     )
 
   private def errorMessage(error: Throwable): String =
@@ -382,6 +412,7 @@ private[pc] object StructuralScala3ParserBridge:
       driverSetup: Method,
       sourceFactory: SourceFactory,
       parserFactory: ParserFactory,
+      scannerReader: ScannerReader,
       diagnosticReader: DiagnosticReader,
       treeClass: Class[?],
       defTreeClass: Class[?],
@@ -432,6 +463,17 @@ private[pc] object StructuralScala3ParserBridge:
   private enum DiagnosticReader:
     case Partitioned
     case Buffered(method: Method)
+
+  private final case class ScannerReader(
+      constructor: Constructor[?],
+      noProfile: AnyRef,
+      token: Method,
+      offset: Method,
+      lastOffset: Method,
+      nextToken: Method,
+      tokens: AnyRef,
+      showTokenDetailed: Method
+  )
 
   private enum CommentReader(val parserInput: Method, val comments: Method):
     case Modern(input: Method, method: Method) extends CommentReader(input, method)
@@ -615,11 +657,14 @@ private final class StructuralScala3ParserBridge private (
       context: ParserContext
   ): Either[Scala3ParserError, ParserSyntaxSnapshot] =
     request.cancellation.checkCanceled()
-    val source = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
-    val parser = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue]
-    val root   = parser.parse()
+    val source           = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
+    val parser           = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue]
+    val root             = parser.parse()
     request.cancellation.checkCanceled()
-    val nodes  = collectNodes(active, root, context.value, request.sourceText, request.cancellation)
+    val nodes            = collectNodes(active, root, context.value, request.sourceText, request.cancellation)
+    val foundDiagnostics = diagnostics(active, context, request.cancellation)
+    val scannerTokens    =
+      exactScannerTokens(active, source, context.value, request.sourceText.length, request.cancellation)
     nodes.map: collected =>
       ParserSyntaxSnapshot(
         request.sourceUri,
@@ -631,13 +676,65 @@ private final class StructuralScala3ParserBridge private (
         collected.nodes,
         collected.positioned,
         comments(active, parser, request.sourceText, request.cancellation),
-        diagnostics(active, context, request.cancellation),
+        foundDiagnostics,
         capabilities,
         identity,
         collected.endMarkers,
         collected.runtimeSupplements,
-        collected.attachments
+        collected.attachments,
+        scannerTokens
       )
+
+  private def exactScannerTokens(
+      active: ParserRuntime,
+      source: AnyRef,
+      context: AnyRef,
+      sourceLength: Int,
+      cancellation: Scala3ParserCancellation
+  ): Vector[ParserScannerToken] =
+    val reader   = active.scannerReader
+    val scanner  = reader.constructor
+      .newInstance(source, Int.box(0), reader.noProfile, Boolean.box(true), context)
+    val result   = Vector.newBuilder[ParserScannerToken]
+    var ordinal  = 0
+    var complete = false
+    while !complete do
+      cancellation.checkCanceled()
+      val tokenId     = reader.token.invoke(scanner).asInstanceOf[java.lang.Integer].intValue()
+      val runtimeKind = reader.showTokenDetailed.invoke(reader.tokens, Int.box(tokenId)).asInstanceOf[String]
+      if runtimeKind == "eof" then complete = true
+      else
+        val start      = reader.offset.invoke(scanner).asInstanceOf[java.lang.Integer].intValue()
+        val _          = reader.nextToken.invoke(scanner)
+        val rawEnd     = reader.lastOffset.invoke(scanner).asInstanceOf[java.lang.Integer].intValue()
+        if start < 0 || start > sourceLength || rawEnd < 0 || rawEnd > sourceLength then
+          throw new IllegalStateException(s"exact scanner returned invalid token offsets [$start,$rawEnd]")
+        // Inserted layout tokens retain the end of the preceding source token. They are distinct zero-width events.
+        val end        = math.max(start, rawEnd)
+        val provenance =
+          if rawEnd > start then ParserPositionProvenance.SourceDerived else ParserPositionProvenance.Synthetic
+        result += ParserScannerToken(
+          ordinal,
+          tokenId,
+          runtimeKind,
+          scannerTokenKind(runtimeKind),
+          PcSourceRange(start, end),
+          start,
+          provenance
+        )
+        ordinal += 1
+    result.result()
+
+  private def scannerTokenKind(runtimeKind: String): ParserScannerTokenKind = runtimeKind match
+    case "'.'"  => ParserScannerTokenKind.Dot
+    case "#"    => ParserScannerTokenKind.Hash
+    case "'('"  => ParserScannerTokenKind.LeftParenthesis
+    case "')'"  => ParserScannerTokenKind.RightParenthesis
+    case "type" => ParserScannerTokenKind.TypeKeyword
+    case "character literal" | "integer literal" | "number literal" | "number literal with exponent" | "long literal" |
+        "float literal" | "double literal" | "string literal" | "true" | "false" =>
+      ParserScannerTokenKind.Literal
+    case _      => ParserScannerTokenKind.Other
 
   private def collectNodes(
       active: ParserRuntime,
@@ -879,6 +976,8 @@ private final class StructuralScala3ParserBridge private (
                   result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.LongInteger(number.longValue())))
                 case number: java.lang.Double                    =>
                   result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Decimal(number.doubleValue())))
+                case number: java.lang.Float                     =>
+                  result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.FloatDecimal(number.floatValue())))
                 case logical: java.lang.Boolean                  =>
                   result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.Logical(logical.booleanValue())))
                 case character: java.lang.Character              =>
@@ -1024,6 +1123,7 @@ private final class StructuralScala3ParserBridge private (
       case number: java.lang.Integer                  => ParserAttachmentValue.Scalar(ParserScalar.Integer(number.intValue()))
       case number: java.lang.Long                     => ParserAttachmentValue.Scalar(ParserScalar.LongInteger(number.longValue()))
       case number: java.lang.Double                   => ParserAttachmentValue.Scalar(ParserScalar.Decimal(number.doubleValue()))
+      case number: java.lang.Float                    => ParserAttachmentValue.Scalar(ParserScalar.FloatDecimal(number.floatValue()))
       case logical: java.lang.Boolean                 => ParserAttachmentValue.Scalar(ParserScalar.Logical(logical.booleanValue()))
       case character: java.lang.Character             => ParserAttachmentValue.Scalar(ParserScalar.Character(character.charValue()))
       case _ if active.nameClass.isInstance(value)    => ParserAttachmentValue.Name(value.toString)
@@ -1195,6 +1295,7 @@ private final class StructuralScala3ParserBridge private (
         case "Int"     => Some(ParserDeclaredShape.Scalar("Integer"))
         case "Long"    => Some(ParserDeclaredShape.Scalar("LongInteger"))
         case "Double"  => Some(ParserDeclaredShape.Scalar("Decimal"))
+        case "Float"   => Some(ParserDeclaredShape.Scalar("FloatDecimal"))
         case "Boolean" => Some(ParserDeclaredShape.Scalar("Logical"))
         case "Char"    => Some(ParserDeclaredShape.Scalar("Character"))
         case _         => None
@@ -1260,6 +1361,7 @@ private final class StructuralScala3ParserBridge private (
       else if cls == java.lang.Integer.TYPE || cls == classOf[java.lang.Integer] then Some("Integer")
       else if cls == java.lang.Long.TYPE || cls == classOf[java.lang.Long] then Some("LongInteger")
       else if cls == java.lang.Double.TYPE || cls == classOf[java.lang.Double] then Some("Decimal")
+      else if cls == java.lang.Float.TYPE || cls == classOf[java.lang.Float] then Some("FloatDecimal")
       else if cls == java.lang.Boolean.TYPE || cls == classOf[java.lang.Boolean] then Some("Logical")
       else if cls == java.lang.Character.TYPE || cls == classOf[java.lang.Character] then Some("Character")
       else if cls == java.lang.Void.TYPE || cls == classOf[scala.runtime.BoxedUnit] then Some("UnitValue")

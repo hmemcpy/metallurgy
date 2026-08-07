@@ -135,10 +135,24 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     compilerIdentity: Scala3ParserCompilerIdentity,
     endMarkers: Vector[ParserEndMarker],
     runtimeSupplements: Vector[ParserRuntimeSupplement] = Vector.empty,
-    attachments: Vector[ParserTreeAttachment] = Vector.empty
+    attachments: Vector[ParserTreeAttachment] = Vector.empty,
+    scannerTokens: Vector[ParserScannerToken] = Vector.empty
 )
 
 private[metallurgy] final case class ParserEndMarker(ownerNodeId: Long, designatorRange: PcSourceRange)
+
+private[metallurgy] final case class ParserScannerToken(
+    ordinal: Int,
+    tokenId: Int,
+    runtimeKind: String,
+    kind: ParserScannerTokenKind,
+    range: PcSourceRange,
+    point: Int,
+    provenance: ParserPositionProvenance
+)
+
+private[metallurgy] enum ParserScannerTokenKind:
+  case Dot, Hash, LeftParenthesis, RightParenthesis, TypeKeyword, Literal, Other
 
 private[metallurgy] final case class ParserRuntimeSupplement(
     ownerNodeId: Long,
@@ -201,6 +215,20 @@ private[metallurgy] object ParserSyntaxSnapshot:
 
   def evidenceFingerprint(snapshot: ParserSyntaxSnapshot): String =
     CanonicalByteEncoder.sha256Hex(CanonicalByteEncoder.encodeSnapshot(snapshot))
+
+  def scannerEvidenceFingerprint(snapshot: ParserSyntaxSnapshot): String =
+    val encoder = CanonicalByteEncoder()
+    encoder.tag(1)
+    encoder.sequence(snapshot.scannerTokens): token =>
+      encoder.int(token.ordinal)
+      encoder.int(token.tokenId)
+      encoder.string(token.runtimeKind)
+      encoder.tag(token.kind.ordinal)
+      encoder.int(token.range.startOffset)
+      encoder.int(token.range.endOffset)
+      encoder.int(token.point)
+      encoder.tag(token.provenance.ordinal)
+    CanonicalByteEncoder.sha256Hex(encoder.result())
 
 private[metallurgy] final class CanonicalByteEncoder private ():
   private val bytes = new ByteArrayOutputStream()
@@ -328,13 +356,14 @@ private[metallurgy] object CanonicalByteEncoder:
     case ParserDeclaredShape.Scalar(kind)    => e.tag(6); e.string(kind)
 
   private def writeScalar(value: ParserScalar, e: CanonicalByteEncoder): Unit = value match
-    case ParserScalar.Text(v)        => e.tag(1); e.string(v)
-    case ParserScalar.Integer(v)     => e.tag(2); e.int(v)
-    case ParserScalar.LongInteger(v) => e.tag(3); e.long(v)
-    case ParserScalar.Decimal(v)     => e.tag(4); e.double(v)
-    case ParserScalar.Logical(v)     => e.tag(5); e.boolean(v)
-    case ParserScalar.Character(v)   => e.tag(6); e.char(v)
-    case ParserScalar.UnitValue      => e.tag(7)
+    case ParserScalar.Text(v)         => e.tag(1); e.string(v)
+    case ParserScalar.Integer(v)      => e.tag(2); e.int(v)
+    case ParserScalar.LongInteger(v)  => e.tag(3); e.long(v)
+    case ParserScalar.Decimal(v)      => e.tag(4); e.double(v)
+    case ParserScalar.Logical(v)      => e.tag(5); e.boolean(v)
+    case ParserScalar.Character(v)    => e.tag(6); e.char(v)
+    case ParserScalar.UnitValue       => e.tag(7)
+    case ParserScalar.FloatDecimal(v) => e.tag(8); e.int(java.lang.Float.floatToRawIntBits(v))
 
   private def writePosition(value: ParserNodePosition, e: CanonicalByteEncoder): Unit = value match
     case ParserNodePosition.Absent                           => e.tag(0)
@@ -393,6 +422,7 @@ private[metallurgy] enum ParserScalar:
   case Integer(value: Int)
   case LongInteger(value: Long)
   case Decimal(value: Double)
+  case FloatDecimal(value: Float)
   case Logical(value: Boolean)
   case Character(value: Char)
   case UnitValue
@@ -425,7 +455,8 @@ private[metallurgy] final case class Scala3ParserCapabilities(
     diagnostics: ParserCapabilityStatus,
     positionedSyntax: ParserCapabilityStatus,
     comments: ParserCapabilityStatus,
-    endMarkers: ParserCapabilityStatus
+    endMarkers: ParserCapabilityStatus,
+    scannerTokens: ParserCapabilityStatus = ParserCapabilityStatus.Unavailable("exact scanner tokens are unavailable")
 ):
   def requiredUnavailable: Vector[ParserCapabilityFailure] =
     Vector(
@@ -437,7 +468,8 @@ private[metallurgy] final case class Scala3ParserCapabilities(
       "diagnostics"         -> diagnostics,
       "positioned syntax"   -> positionedSyntax,
       "comments"            -> comments,
-      "end markers"         -> endMarkers
+      "end markers"         -> endMarkers,
+      "scanner tokens"      -> scannerTokens
     ).collect { case (name, ParserCapabilityStatus.Unavailable(reason)) =>
       ParserCapabilityFailure(name, reason)
     }

@@ -38,11 +38,22 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScParameterCl
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{ScExtendsBlock, ScTemplateBody}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScExpression}
-import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
+  ScBooleanLiteral,
+  ScCharLiteral,
+  ScDoubleLiteral,
+  ScFloatLiteral,
+  ScIntegerLiteral,
+  ScLongLiteral,
+  ScStringLiteral
+}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScInfixTypeElement,
+  ScLiteralTypeElement,
   ScParameterizedTypeElement,
+  ScParenthesisedTypeElement,
   ScSimpleTypeElement,
+  ScTypeProjection,
   ScWildcardTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
@@ -149,6 +160,11 @@ private[metallurgy] object NativePsiElementBindings:
   val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
   val AssignmentTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
   val ValueKeywordTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
+  val TypePathDotTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
+  val TypeProjectionHashTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
+  val SingletonTypeKeywordTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
+  val TypeLeftParenthesisTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
+  val TypeRightParenthesisTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
   val AnnotatedMemberIndexSurface      =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
   val ModifierKeywordSurfaceIds        = Map(
@@ -215,6 +231,18 @@ private[metallurgy] object NativePsiElementBindings:
           |var directVariable = 1
           |trait DefinitionOwner:
           |  type DirectAbstract
+          |val singletonValue = 1
+          |type TypePathProbe = alpha.gamma.Bound
+          |type TypeProjectionProbe = DefinitionOwner#DirectAbstract
+          |type SingletonTypeProbe = singletonValue.type
+          |type IntegerLiteralTypeProbe = 42
+          |type LongLiteralTypeProbe = 1L
+          |type FloatLiteralTypeProbe = 1.0f
+          |type DoubleLiteralTypeProbe = 1.0
+          |type CharLiteralTypeProbe = 'a'
+          |type StringLiteralTypeProbe = "literal"
+          |type BooleanLiteralTypeProbe = true
+          |type ParenthesizedTypeProbe = (alpha.gamma.Bound)
           |""".stripMargin
       )
     val packageLayoutFile      = PsiFileFactory
@@ -304,6 +332,43 @@ private[metallurgy] object NativePsiElementBindings:
     val infixRight             = Option(infixType).flatMap(_.rightOption).orNull
     val infixOperation         = Option(infixType).map(_.operation).orNull
     val integerLiteral         = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
+    val typeProjection         = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeProjection])
+      .asScala
+      .find(_.getText == "DefinitionOwner#DirectAbstract")
+      .orNull
+    val literalTypes           = PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteralTypeElement]).asScala.toVector
+    val integerLiteralType     = literalTypes.find(_.getText == "42").orNull
+    val longLiteralType        = literalTypes.find(_.getText == "1L").orNull
+    val floatLiteralType       = literalTypes.find(_.getText == "1.0f").orNull
+    val doubleLiteralType      = literalTypes.find(_.getText == "1.0").orNull
+    val charLiteralType        = literalTypes.find(_.getText == "'a'").orNull
+    val stringLiteralType      = literalTypes.find(_.getText == "\"literal\"").orNull
+    val booleanLiteralType     = literalTypes.find(_.getText == "true").orNull
+    val integerLiteralValue    =
+      Option(integerLiteralType).map(_.getLiteral).collect { case value: ScIntegerLiteral => value }.orNull
+    val longLiteralValue       =
+      Option(longLiteralType).map(_.getLiteral).collect { case value: ScLongLiteral => value }.orNull
+    val floatLiteralValue      =
+      Option(floatLiteralType).map(_.getLiteral).collect { case value: ScFloatLiteral => value }.orNull
+    val doubleLiteralValue     =
+      Option(doubleLiteralType).map(_.getLiteral).collect { case value: ScDoubleLiteral => value }.orNull
+    val charLiteralValue       =
+      Option(charLiteralType).map(_.getLiteral).collect { case value: ScCharLiteral => value }.orNull
+    val stringLiteralValue     =
+      Option(stringLiteralType).map(_.getLiteral).collect { case value: ScStringLiteral => value }.orNull
+    val booleanLiteralValue    =
+      Option(booleanLiteralType).map(_.getLiteral).collect { case value: ScBooleanLiteral => value }.orNull
+    val parenthesizedType      = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParenthesisedTypeElement])
+      .asScala
+      .find(_.getText == "(alpha.gamma.Bound)")
+      .orNull
+    val singletonType          = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScSimpleTypeElement])
+      .asScala
+      .find(_.getText == "singletonValue.type")
+      .orNull
     val modifierLists          = PsiTreeUtil.findChildrenOfType(file, classOf[ScModifierList]).asScala.toVector
     val annotatedModifiers     = modifierLists.find(_.getText == "private[scope] abstract").orNull
     val memberModifiers        = modifierLists.find(_.getText.contains("protected[this]")).orNull
@@ -379,6 +444,23 @@ private[metallurgy] object NativePsiElementBindings:
         infixRight,
         infixOperation,
         integerLiteral,
+        typeProjection,
+        integerLiteralType,
+        longLiteralType,
+        floatLiteralType,
+        doubleLiteralType,
+        charLiteralType,
+        stringLiteralType,
+        booleanLiteralType,
+        integerLiteralValue,
+        longLiteralValue,
+        floatLiteralValue,
+        doubleLiteralValue,
+        charLiteralValue,
+        stringLiteralValue,
+        booleanLiteralValue,
+        parenthesizedType,
+        singletonType,
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
@@ -506,6 +588,28 @@ private[metallurgy] object NativePsiElementBindings:
     then Left("native infix given type PSI is inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
+    else if typeProjection == null || integerLiteralType == null || longLiteralType == null || floatLiteralType == null ||
+      doubleLiteralType == null || charLiteralType == null || stringLiteralType == null || booleanLiteralType == null ||
+      integerLiteralValue == null || longLiteralValue == null || floatLiteralValue == null || doubleLiteralValue == null ||
+      charLiteralValue == null || stringLiteralValue == null || booleanLiteralValue == null ||
+      parenthesizedType == null || singletonType == null
+    then Left("native type atom PSI probe is incomplete")
+    else if typeProjection.typeElement.getText != "DefinitionOwner" || typeProjection.nameId.getText != "DirectAbstract" ||
+      typeProjection.qualifier.nonEmpty || typeProjection.typeElement.getParent != typeProjection ||
+      Vector(
+        integerLiteralType -> integerLiteralValue,
+        longLiteralType    -> longLiteralValue,
+        floatLiteralType   -> floatLiteralValue,
+        doubleLiteralType  -> doubleLiteralValue,
+        charLiteralType    -> charLiteralValue,
+        stringLiteralType  -> stringLiteralValue,
+        booleanLiteralType -> booleanLiteralValue
+      ).exists((literalType, literalValue) => literalType.getLiteral != literalValue || !literalType.isSingleton) ||
+      parenthesizedType.innerElement.forall(_.getText != "alpha.gamma.Bound") ||
+      parenthesizedType.innerElement.exists(_.getParent != parenthesizedType) ||
+      singletonType.reference.forall(_.getText != "singletonValue") || !singletonType.isSingleton ||
+      singletonType.pathElement.getText != "singletonValue"
+    then Left("native type atom accessors or direct children are inconsistent")
     else if annotatedModifiers == null || memberModifiers == null || accessModifiers.size != 2 ||
       annotationContainer == null || annotations.map(_.getText) !=
         Vector("@ann", "@pkg.ann", "@deprecated(\"m\", \"1\")") || annotationExpressions.size != 3 ||
@@ -716,6 +820,11 @@ private[metallurgy] object NativePsiElementBindings:
               (UpperTypeBoundTokenSurface                                                         -> upperBoundToken.getNode.getElementType) ++
               Map(AssignmentTokenSurface -> ScalaTokenTypes.tASSIGN) ++
               Map(ValueKeywordTokenSurface -> ScalaTokenTypes.kVAL) ++
+              Map(TypePathDotTokenSurface -> ScalaTokenTypes.tDOT) ++
+              Map(TypeProjectionHashTokenSurface -> ScalaTokenTypes.tINNER_CLASS) ++
+              Map(SingletonTypeKeywordTokenSurface -> ScalaTokenTypes.kTYPE) ++
+              Map(TypeLeftParenthesisTokenSurface -> ScalaTokenTypes.tLPARENTHESIS) ++
+              Map(TypeRightParenthesisTokenSurface -> ScalaTokenTypes.tRPARENTHESIS) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -743,6 +852,17 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ImportSelector        -> selectors.head.getNode.getElementType,
               PsiOutputRoleId.StableReference       -> reference.getNode.getElementType,
               PsiOutputRoleId.SimpleType            -> givenType.getNode.getElementType,
+              PsiOutputRoleId.SingletonType         -> singletonType.getNode.getElementType,
+              PsiOutputRoleId.TypeProjection        -> typeProjection.getNode.getElementType,
+              PsiOutputRoleId.LiteralType           -> integerLiteralType.getNode.getElementType,
+              PsiOutputRoleId.ParenthesizedType     -> parenthesizedType.getNode.getElementType,
+              PsiOutputRoleId.IntegerLiteralValue   -> integerLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.LongLiteralValue      -> longLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.FloatLiteralValue     -> floatLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.DoubleLiteralValue    -> doubleLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.CharLiteralValue      -> charLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.StringLiteralValue    -> stringLiteralValue.getNode.getElementType,
+              PsiOutputRoleId.BooleanLiteralValue   -> booleanLiteralValue.getNode.getElementType,
               PsiOutputRoleId.ParameterizedType     -> parameterizedType.getNode.getElementType,
               PsiOutputRoleId.TypeArguments         -> typeArguments.getNode.getElementType,
               PsiOutputRoleId.WildcardType          -> wildcardType.getNode.getElementType,
@@ -787,6 +907,17 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ImportSelector        -> surfaceId(selectors.head.getClass),
               PsiOutputRoleId.StableReference       -> surfaceId(reference.getClass),
               PsiOutputRoleId.SimpleType            -> surfaceId(givenType.getClass),
+              PsiOutputRoleId.SingletonType         -> surfaceId(singletonType.getClass),
+              PsiOutputRoleId.TypeProjection        -> surfaceId(typeProjection.getClass),
+              PsiOutputRoleId.LiteralType           -> surfaceId(integerLiteralType.getClass),
+              PsiOutputRoleId.ParenthesizedType     -> surfaceId(parenthesizedType.getClass),
+              PsiOutputRoleId.IntegerLiteralValue   -> surfaceId(integerLiteralValue.getClass),
+              PsiOutputRoleId.LongLiteralValue      -> surfaceId(longLiteralValue.getClass),
+              PsiOutputRoleId.FloatLiteralValue     -> surfaceId(floatLiteralValue.getClass),
+              PsiOutputRoleId.DoubleLiteralValue    -> surfaceId(doubleLiteralValue.getClass),
+              PsiOutputRoleId.CharLiteralValue      -> surfaceId(charLiteralValue.getClass),
+              PsiOutputRoleId.StringLiteralValue    -> surfaceId(stringLiteralValue.getClass),
+              PsiOutputRoleId.BooleanLiteralValue   -> surfaceId(booleanLiteralValue.getClass),
               PsiOutputRoleId.ParameterizedType     -> surfaceId(parameterizedType.getClass),
               PsiOutputRoleId.TypeArguments         -> surfaceId(typeArguments.getClass),
               PsiOutputRoleId.WildcardType          -> surfaceId(wildcardType.getClass),
@@ -902,6 +1033,46 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native value keyword token")
+              ),
+              ScalaPsiSurfaceRow(
+                TypePathDotTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type path token")
+              ),
+              ScalaPsiSurfaceRow(
+                TypeProjectionHashTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type projection token")
+              ),
+              ScalaPsiSurfaceRow(
+                SingletonTypeKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native singleton type keyword token")
+              ),
+              ScalaPsiSurfaceRow(
+                TypeLeftParenthesisTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type left parenthesis token")
+              ),
+              ScalaPsiSurfaceRow(
+                TypeRightParenthesisTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type right parenthesis token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(

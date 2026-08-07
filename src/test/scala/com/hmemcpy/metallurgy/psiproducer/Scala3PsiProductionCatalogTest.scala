@@ -407,6 +407,103 @@ final class Scala3PsiProductionCatalogTest:
       )
     ).foreach(context => assertTrue(selected(context).isEmpty))
 
+  @Test def typeAtomSelectionRequiresExactScannerEvidenceAndContext(): Unit =
+    val catalog      = Scala3PsiProductionCatalog.Reviewed
+    val direct       = Some(
+      InventoryContext(
+        InventoryKind.Node,
+        "ImportSelector",
+        Vector(CatalogPathSegment.NamedField("bound"))
+      )
+    )
+    val selectFields = Vector(
+      InventoryFieldObservation("qualifier", InventoryValueObservation.Node(1L, "Ident")),
+      InventoryFieldObservation("name", InventoryValueObservation.Name("A"))
+    )
+    def selected(
+        prefix: String,
+        fields: Vector[InventoryFieldObservation],
+        scanner: Vector[ParserScannerTokenKind],
+        classification: SourceClassification = SourceClassification.SourceReachable
+    ): Vector[String] =
+      CatalogShapeMatcher
+        .select(
+          catalog,
+          InventoryKind.Node,
+          prefix,
+          fields,
+          direct,
+          classification,
+          scanner
+        )
+        .map(_.id)
+
+    assertEquals(
+      Vector("import-selector-given-bound-qualified-type"),
+      selected("Select", selectFields, Vector(ParserScannerTokenKind.Dot))
+    )
+    assertEquals(
+      Vector("type-atom-projection"),
+      selected("Select", selectFields, Vector(ParserScannerTokenKind.Hash))
+    )
+    assertTrue(selected("Select", selectFields, Vector.empty).isEmpty)
+    assertEquals(
+      Vector("type-atom-projection"),
+      selected("Select", selectFields, Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash))
+    )
+
+    val singletonFields = Vector(
+      InventoryFieldObservation("ref", InventoryValueObservation.Node(2L, "Ident"))
+    )
+    assertEquals(
+      Vector("type-atom-singleton-ident"),
+      selected(
+        "SingletonTypeTree",
+        singletonFields,
+        Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.TypeKeyword)
+      )
+    )
+    assertTrue(
+      selected("SingletonTypeTree", singletonFields, Vector(ParserScannerTokenKind.Dot)).isEmpty
+    )
+    assertEquals(
+      Vector("type-atom-singleton-ident"),
+      selected(
+        "SingletonTypeTree",
+        singletonFields,
+        Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.TypeKeyword),
+        SourceClassification.Synthetic
+      )
+    )
+    val literalFields   = Vector(
+      InventoryFieldObservation("ref", InventoryValueObservation.Node(3L, "Literal"))
+    )
+    assertEquals(
+      Vector("type-atom-literal"),
+      selected(
+        "SingletonTypeTree",
+        literalFields,
+        Vector(ParserScannerTokenKind.Literal),
+        SourceClassification.Synthetic
+      )
+    )
+    assertTrue(selected("SingletonTypeTree", literalFields, Vector(ParserScannerTokenKind.Literal)).isEmpty)
+    assertTrue(selected("SingletonTypeTree", literalFields, Vector.empty).isEmpty)
+    val parensFields    = Vector(
+      InventoryFieldObservation("t", InventoryValueObservation.Node(4L, "Ident"))
+    )
+    assertEquals(
+      Vector("type-atom-parenthesized"),
+      selected(
+        "Parens",
+        parensFields,
+        Vector(ParserScannerTokenKind.LeftParenthesis, ParserScannerTokenKind.RightParenthesis)
+      )
+    )
+    assertTrue(
+      selected("Parens", parensFields, Vector(ParserScannerTokenKind.LeftParenthesis)).isEmpty
+    )
+
   @Test def inventoryLineageResolutionIsOrderedIterativeAndFailClosed(): Unit =
     val position                                                                        = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
     val child                                                                           = Vector(ParserFieldPathSegment.NamedField("child"))
@@ -706,7 +803,9 @@ final class Scala3PsiProductionCatalogTest:
         "import-selector-given-bound-qualifier-select",
         "import-selector-given-bound-infix-operator",
         "annotation-designator-qualifier-ident",
-        "annotation-designator-qualifier-select"
+        "annotation-designator-qualifier-select",
+        "type-atom-singleton-reference-ident",
+        "type-atom-singleton-reference-select"
       ),
       GrammarRoleId.ImportSelector         -> Set("import-selector-direct", "import-selector-braced"),
       GrammarRoleId.ImportSelectorName     -> Set(
@@ -720,6 +819,19 @@ final class Scala3PsiProductionCatalogTest:
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
         "annotation-designator-select"
+      ),
+      GrammarRoleId.TypeProjection         -> Set("type-atom-projection"),
+      GrammarRoleId.SingletonType          -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
+      GrammarRoleId.LiteralType            -> Set("type-atom-literal"),
+      GrammarRoleId.ParenthesizedType      -> Set("type-atom-parenthesized"),
+      GrammarRoleId.LiteralValue           -> Set(
+        "type-atom-literal-value-integer",
+        "type-atom-literal-value-long",
+        "type-atom-literal-value-float",
+        "type-atom-literal-value-double",
+        "type-atom-literal-value-char",
+        "type-atom-literal-value-string",
+        "type-atom-literal-value-boolean"
       ),
       GrammarRoleId.AppliedType            -> Set("import-selector-bound-applied-type"),
       GrammarRoleId.WildcardType           -> Set("import-selector-given-bound-wildcard-type"),
@@ -1807,9 +1919,9 @@ final class Scala3PsiProductionCatalogTest:
     val crossed = paired.copy(productions =
       paired.productions.map(row =>
         row.copy(occurrences = row.occurrences.map {
-          case CompilerProductionContext(None, _)          =>
+          case CompilerProductionContext(None, _, _)          =>
             CompilerProductionContext(None, SourceClassification.Synthetic)
-          case CompilerProductionContext(Some(context), _) =>
+          case CompilerProductionContext(Some(context), _, _) =>
             CompilerProductionContext(Some(context), SourceClassification.SourceReachable)
         })
       )

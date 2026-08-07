@@ -18,14 +18,28 @@ import com.intellij.testFramework.{IndexingTestUtil, PlatformTestUtil, ServiceCo
 import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
+import org.jetbrains.plugins.scala.lang.psi.api.{ScalaElementVisitor, ScalaPsiElement}
 import org.jetbrains.plugins.scala.lang.psi.ScExportsHolder
 import org.jetbrains.plugins.scala.lang.psi.api.base.{ScEnd, ScPrimaryConstructor, ScStableCodeReference}
+import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
+  ScBooleanLiteral,
+  ScCharLiteral,
+  ScDoubleLiteral,
+  ScFloatLiteral,
+  ScIntegerLiteral,
+  ScLongLiteral,
+  ScStringLiteral
+}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScEnumCases, ScEnumClassCase, ScEnumSingletonCase}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.ScTemplateBody
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScInfixTypeElement,
+  ScLiteralTypeElement,
   ScParameterizedTypeElement,
+  ScParenthesisedTypeElement,
   ScSimpleTypeElement,
+  ScTypeElement,
+  ScTypeProjection,
   ScWildcardTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.ScPackaging
@@ -47,6 +61,278 @@ import scala.jdk.CollectionConverters.*
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 
 final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
+
+  private def assertTypeAtomsUseNativePhysicalPsi(): Unit =
+    val typeTexts = Vector(
+      "A",
+      "p.A",
+      "T#A",
+      "p.T#A",
+      "x.type",
+      "p.x.type",
+      "42",
+      "-42",
+      "1L",
+      "1.0f",
+      "1.0",
+      "'a'",
+      "\"literal\"",
+      "true",
+      "(A)",
+      "((p.x.type))"
+    )
+    val source    = typeTexts.map(value => s"import a.b.given $value\n").mkString
+    val pending   = myFixture.addFileToProject("src/TypeAtomCase.scala", source)
+    val bindings  = NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+
+    def assertFile(file: com.intellij.psi.PsiFile): Unit =
+      assertEquals(source, file.getText)
+      assertEquals(source, PsiTreeUtil.collectElements(file, _.getFirstChild == null).toVector.map(_.getText).mkString)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      val failure   = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertTrue(failure.toString, failure.isEmpty)
+      val selectors = PsiTreeUtil
+        .findChildrenOfType(file, classOf[ScImportSelector])
+        .asScala
+        .toVector
+        .sortBy(_.getTextRange.getStartOffset)
+      assertEquals(typeTexts, selectors.flatMap(_.givenTypeElement).map(_.getText))
+      val types     = selectors.map(_.givenTypeElement.get)
+      types.foreach: value =>
+        assertSame(value.getParent, selectors(types.indexOf(value)))
+        assertEquals(
+          value.getText,
+          source.substring(value.getTextRange.getStartOffset, value.getTextRange.getEndOffset)
+        )
+        assertSame(file, value.getContainingFile)
+        assertSame(getProject, value.getProject)
+        assertSame(value, value.getNode.getPsi)
+        assertSame(value, value.getNavigationElement)
+        val copy = value.copy()
+        assertEquals(value.getClass, copy.getClass)
+        assertEquals(value.getText, copy.getText)
+
+      val simpleA             = types(0).asInstanceOf[ScSimpleTypeElement]
+      val path                = types(1).asInstanceOf[ScSimpleTypeElement]
+      val projection          = types(2).asInstanceOf[ScTypeProjection]
+      val qualifiedProjection = types(3).asInstanceOf[ScTypeProjection]
+      val singleton           = types(4).asInstanceOf[ScSimpleTypeElement]
+      val selectedSingleton   = types(5).asInstanceOf[ScSimpleTypeElement]
+      val literals            = types.slice(6, 14).map(_.asInstanceOf[ScLiteralTypeElement])
+      val parens              = types(14).asInstanceOf[ScParenthesisedTypeElement]
+      val nestedParens        = types(15).asInstanceOf[ScParenthesisedTypeElement]
+
+      assertEquals(bindings.outputRoles(PsiOutputRoleId.SimpleType), simpleA.getNode.getElementType)
+      assertEquals("A", simpleA.reference.get.getText)
+      assertSame(simpleA, simpleA.reference.get.getParent)
+      assertFalse(simpleA.isSingleton)
+      assertSame(simpleA.reference.get, simpleA.pathElement)
+      assertStablePath(path.reference.get, Vector("p", "A"))
+      assertSame(path, path.reference.get.getParent)
+
+      assertEquals(bindings.outputRoles(PsiOutputRoleId.TypeProjection), projection.getNode.getElementType)
+      assertEquals("T", projection.typeElement.getText)
+      assertSame(projection, projection.typeElement.getParent)
+      assertEquals("A", projection.nameId.getText)
+      assertSame(projection, projection.nameId.getParent)
+      assertTrue(projection.qualifier.isEmpty)
+      assertEquals(
+        Vector("T"),
+        projection.getChildren.toVector.collect { case value: ScTypeElement => value.getText }
+      )
+      assertEquals("p.T", qualifiedProjection.typeElement.getText)
+      assertStablePath(
+        qualifiedProjection.typeElement.asInstanceOf[ScSimpleTypeElement].reference.get,
+        Vector("p", "T")
+      )
+      assertEquals("A", qualifiedProjection.nameId.getText)
+      assertTrue(qualifiedProjection.qualifier.isEmpty)
+
+      assertEquals(bindings.outputRoles(PsiOutputRoleId.SingletonType), singleton.getNode.getElementType)
+      assertTrue(singleton.isSingleton)
+      assertEquals("x", singleton.reference.get.getText)
+      assertSame(singleton, singleton.reference.get.getParent)
+      assertSame(singleton.reference.get, singleton.pathElement)
+      assertTrue(selectedSingleton.isSingleton)
+      assertStablePath(selectedSingleton.reference.get, Vector("p", "x"))
+      assertSame(selectedSingleton, selectedSingleton.reference.get.getParent)
+      assertSame(selectedSingleton.reference.get, selectedSingleton.pathElement)
+
+      assertEquals(
+        Vector(true, true, true, true, true, true, true, true),
+        Vector(
+          literals(0).getLiteral.isInstanceOf[ScIntegerLiteral],
+          literals(1).getLiteral.isInstanceOf[ScIntegerLiteral],
+          literals(2).getLiteral.isInstanceOf[ScLongLiteral],
+          literals(3).getLiteral.isInstanceOf[ScFloatLiteral],
+          literals(4).getLiteral.isInstanceOf[ScDoubleLiteral],
+          literals(5).getLiteral.isInstanceOf[ScCharLiteral],
+          literals(6).getLiteral.isInstanceOf[ScStringLiteral],
+          literals(7).getLiteral.isInstanceOf[ScBooleanLiteral]
+        )
+      )
+      literals.foreach: value =>
+        assertEquals(bindings.outputRoles(PsiOutputRoleId.LiteralType), value.getNode.getElementType)
+        assertTrue(value.isSingleton)
+        assertSame(value, value.getLiteral.getParent)
+        assertEquals(Vector(value.getLiteral), value.getChildren.toVector)
+        assertTrue(value.getLiteral.isSimpleLiteral)
+      assertEquals(Vector(42, -42, 1L, 1.0f, 1.0, 'a', "literal", true), literals.map(_.getLiteral.getValue))
+      assertEquals(
+        Vector("42", "-42", "1L", "1.0f", "1.0", "a", "literal", "true"),
+        literals.map(_.getLiteral.contentText)
+      )
+
+      assertEquals(bindings.outputRoles(PsiOutputRoleId.ParenthesizedType), parens.getNode.getElementType)
+      assertEquals("A", parens.innerElement.get.getText)
+      assertSame(parens, parens.innerElement.get.getParent)
+      assertTrue(parens.sameTreeParent.isEmpty)
+      assertEquals(
+        Vector("(", "A", ")"),
+        PsiTreeUtil.collectElements(parens, _.getFirstChild == null).toVector.map(_.getText)
+      )
+      assertEquals("(p.x.type)", nestedParens.innerElement.get.getText)
+      assertEquals(
+        Vector("(", "(", "p", ".", "x", ".", "type", ")", ")"),
+        PsiTreeUtil.collectElements(nestedParens, _.getFirstChild == null).toVector.map(_.getText)
+      )
+
+      val expectedTokens = Vector(
+        "#"    -> NativePsiElementBindings.TypeProjectionHashTokenSurface,
+        "."    -> NativePsiElementBindings.TypePathDotTokenSurface,
+        "type" -> NativePsiElementBindings.SingletonTypeKeywordTokenSurface,
+        "("    -> NativePsiElementBindings.TypeLeftParenthesisTokenSurface,
+        ")"    -> NativePsiElementBindings.TypeRightParenthesisTokenSurface
+      )
+      expectedTokens.foreach: (text, surface) =>
+        val leaves = PsiTreeUtil
+          .collectElements(file, element => element.getFirstChild == null && element.getText == text)
+          .toVector
+        assertTrue(text, leaves.nonEmpty)
+        leaves.foreach: leaf =>
+          assertEquals(bindings.elementTypes(surface), leaf.getNode.getElementType)
+          assertEquals(text.length, leaf.getTextRange.getLength)
+
+      val visited = collection.mutable.ArrayBuffer.empty[String]
+      val visitor = new ScalaElementVisitor:
+        override def visitSimpleTypeElement(value: ScSimpleTypeElement): Unit               = visited += s"simple:${value.getText}"
+        override def visitTypeProjection(value: ScTypeProjection): Unit                     = visited += s"projection:${value.getText}"
+        override def visitParenthesisedTypeElement(value: ScParenthesisedTypeElement): Unit =
+          visited += s"parenthesized:${value.getText}"
+        override def visitTypeElement(value: ScTypeElement): Unit                           = visited += s"type:${value.getText}"
+        override def visitScalaElement(value: ScalaPsiElement): Unit                        = visited += s"scala:${value.getText}"
+      types.foreach(_.accept(visitor))
+      assertEquals(
+        Vector(
+          "simple:A",
+          "simple:p.A",
+          "projection:T#A",
+          "projection:p.T#A",
+          "simple:x.type",
+          "simple:p.x.type",
+          "scala:42",
+          "scala:-42",
+          "scala:1L",
+          "scala:1.0f",
+          "scala:1.0",
+          "scala:'a'",
+          "scala:\"literal\"",
+          "scala:true",
+          "parenthesized:(A)",
+          "parenthesized:((p.x.type))"
+        ),
+        visited.toVector
+      )
+
+      val stubs         = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.toVector
+      val selectorStubs = stubs.collect { case value: ScImportSelectorStub => value }
+      assertEquals(typeTexts, selectorStubs.flatMap(_.typeText))
+      val enumerator    = new TestStringEnumerator
+      selectorStubs.foreach: stub =>
+        val sink   = new ByteArrayOutputStream
+        val output = new StubOutputStream(sink, enumerator)
+        ScalaElementType.IMPORT_SELECTOR.serialize(stub, output)
+        output.flush()
+        val copy   = ScalaElementType.IMPORT_SELECTOR.deserialize(
+          new StubInputStream(new ByteArrayInputStream(sink.toByteArray), enumerator),
+          new PsiFileStubImpl(null)
+        )
+        assertEquals(stub.typeText, copy.typeText)
+        assertEquals(stub.referenceText, copy.referenceText)
+        assertEquals(stub.isGivenSelector, copy.isGivenSelector)
+
+    val file = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertFile(file)
+    assertFile(file.copy().asInstanceOf[com.intellij.psi.PsiFile])
+
+    val projectionPointer = SmartPointerManager
+      .getInstance(getProject)
+      .createSmartPsiElementPointer(PsiTreeUtil.findChildOfType(file, classOf[ScTypeProjection]))
+    val document          = FileDocumentManager.getInstance.getDocument(pending.getVirtualFile)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.insertString(0, "\n")
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals("T#A", projectionPointer.getElement.getText)
+
+    val beforeStubs = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.map(_.getClass.getName).toVector
+    file.asInstanceOf[PsiFileImpl].setTreeElementPointer(null)
+    assertEquals(null, file.asInstanceOf[PsiFileImpl].getTreeElement)
+    assertEquals(
+      beforeStubs,
+      file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.map(_.getClass.getName).toVector
+    )
+    assertEquals("T#A", projectionPointer.getElement.getText)
+
+    val editPending  = myFixture.addFileToProject("src/TypeAtomEditCase.scala", "import a.b.given A\n")
+    val editDocument = FileDocumentManager.getInstance.getDocument(editPending.getVirtualFile)
+    typeTexts.tail.foreach: replacement =>
+      WriteCommandAction.runWriteCommandAction(
+        getProject,
+        new Runnable:
+          override def run(): Unit =
+            val start = editDocument.getText.indexOf("given") + "given ".length
+            editDocument.replaceString(start, editDocument.getTextLength - 1, replacement)
+      )
+      PsiDocumentManager.getInstance(getProject).commitDocument(editDocument)
+      val reparsed = PsiManager.getInstance(getProject).findFile(editPending.getVirtualFile)
+      val selector = PsiTreeUtil.findChildOfType(reparsed, classOf[ScImportSelector])
+      assertEquals(replacement, selector.givenTypeElement.get.getText)
+      assertTrue(
+        Scala3SyntaxCapabilityService
+          .get(getProject)
+          .failureFor(editPending.getVirtualFile, ParserSyntaxSnapshot.digest(editDocument.getText))
+          .isEmpty
+      )
+
+    val deletePending  = myFixture.addFileToProject("src/TypeAtomDeleteCase.scala", "import a.b.given x.type\n")
+    val deleteFile     = PsiManager.getInstance(getProject).findFile(deletePending.getVirtualFile)
+    val deletePointer  = SmartPointerManager
+      .getInstance(getProject)
+      .createSmartPsiElementPointer(PsiTreeUtil.findChildOfType(deleteFile, classOf[ScSimpleTypeElement]))
+    val deleteDocument = FileDocumentManager.getInstance.getDocument(deletePending.getVirtualFile)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = deleteDocument.deleteString(0, deleteDocument.getTextLength)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(deleteDocument)
+    assertEquals(null, deletePointer.getElement)
+
+    val malformed     = myFixture.addFileToProject("src/TypeAtomMalformedCase.scala", "import a.b.given (A\n")
+    val malformedFile = PsiManager.getInstance(getProject).findFile(malformed.getVirtualFile)
+    assertTrue(PsiTreeUtil.findChildrenOfType(malformedFile, classOf[ScImportStmt]).isEmpty)
+    assertTrue(malformedFile.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
+    assertTrue(
+      Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(malformed.getVirtualFile, ParserSyntaxSnapshot.digest(malformedFile.getText))
+        .nonEmpty
+    )
 
   private def assertQualifiedWildcardAndInfixGivenSelectorsUseNativePhysicalPsi(): Unit =
     val source            =
@@ -396,6 +682,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
         .flatMap(_.importExprs)
         .map(_.getText)
     )
+    assertTypeAtomsUseNativePhysicalPsi()
     assertQualifiedWildcardAndInfixGivenSelectorsUseNativePhysicalPsi()
     assertDeepQualifiedAndInfixGivenSelectorsRemainStackSafe()
 
@@ -477,7 +764,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "1d8185f357c02f8bfb058ee111ec5339fa50ea83e9c13151cf19ebc47cff746a",
+      "fca7c1c121b889b900e4dcd62e8fb8ccc1be6bd8916aaddf710a84073c0b26b5",
       Scala3DotcFileElementType.SchemaFingerprint
     )
 
@@ -1366,7 +1653,6 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       "A match { case _ => B }",
       "A { type X }",
       "A @ann",
-      "a.type",
       "(x: A) => x.B",
       "new A"
     )

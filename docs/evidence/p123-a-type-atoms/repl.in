@@ -1,0 +1,32 @@
+trait T:
+  type A
+object p:
+  type A = Int
+val x = 1
+type Reference = T
+type Path = p.A
+type Projection = T#A
+type Singleton = x.type
+type IntegerLiteral = 42
+type NegativeLiteral = -42
+type LongLiteral = 1L
+type FloatLiteral = 1.0f
+type DoubleLiteral = 1.0
+type CharLiteral = 'a'
+type StringLiteral = "literal"
+type BooleanLiteral = true
+type Parenthesized = (T)
+:type x
+:type null.asInstanceOf[p.A]
+:type null.asInstanceOf[T#A]
+:type null.asInstanceOf[x.type]
+:type null.asInstanceOf[42]
+:type null.asInstanceOf[-42]
+:type null.asInstanceOf[1L]
+:type null.asInstanceOf[1.0f]
+:type null.asInstanceOf[1.0]
+:type null.asInstanceOf['a']
+:type null.asInstanceOf["literal"]
+:type null.asInstanceOf[true]
+:type null.asInstanceOf[(T)]
+:quit

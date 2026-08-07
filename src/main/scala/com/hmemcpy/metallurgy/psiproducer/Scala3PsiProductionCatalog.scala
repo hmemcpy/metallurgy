@@ -165,9 +165,14 @@ private[metallurgy] final case class InventoryFieldObservation(
     declaredPattern: Option[CatalogValuePattern] = None
 )
 private[metallurgy] final case class CompilerFieldPattern(name: String, value: CatalogValuePattern)
+private[metallurgy] final case class ScannerEvidencePattern(
+    required: Set[ParserScannerTokenKind] = Set.empty,
+    forbidden: Set[ParserScannerTokenKind] = Set.empty
+)
 private[metallurgy] final case class CompilerProductionContextPattern(
     context: ContextPattern,
-    sourceClassification: SourceClassification
+    sourceClassification: SourceClassification,
+    scannerEvidence: ScannerEvidencePattern = ScannerEvidencePattern()
 )
 private[metallurgy] final case class CompilerProductionPattern(
     kind: InventoryKind,
@@ -225,7 +230,8 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     patternFields: Vector[CompilerFieldPattern],
     observation: Vector[InventoryFieldObservation],
     contexts: Vector[InventoryContext],
-    sourceClassification: SourceClassification
+    sourceClassification: SourceClassification,
+    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
 )
 private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
@@ -243,7 +249,8 @@ private[metallurgy] final case class ParserProductSyntax(
 )
 private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
-    sourceClassification: SourceClassification
+    sourceClassification: SourceClassification,
+    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
 )
 private[metallurgy] final case class AggregatedCompilerProductionRow(
     kind: InventoryKind,
@@ -288,7 +295,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   def serialize(inventory: AggregatedCompilerProductionInventory): Array[Byte] =
     val e = CanonicalByteEncoder()
-    e.tag(5)
+    e.tag(6)
     writeIdentity(inventory.identity, e)
     e.sequence(inventory.sourceEvidenceFingerprints)(e.string)
     e.sequence(inventory.productions)(writeRow(_, e))
@@ -372,7 +379,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
             canonicalDistinct(
               observations.flatMap: row =>
                 val contexts = if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_))
-                contexts.map(CompilerProductionContext(_, row.sourceClassification))
+                contexts.map(CompilerProductionContext(_, row.sourceClassification, row.scannerTokenKinds))
             )(writeProductionContext)
           )
       Right(
@@ -552,6 +559,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.sequence(row.observation): field =>
         e.string(field.name); writeObservation(field.value, e)
       e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
+      e.sequence(row.scannerTokenKinds)(kind => e.tag(kind.ordinal))
 
   private def writeObservation(value: InventoryValueObservation, e: CanonicalByteEncoder): Unit = value match
     case InventoryValueObservation.Node(id, prefix)                      => e.tag(1); e.long(id); e.string(prefix)
@@ -597,6 +605,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
 
   private def writeProductionContext(context: CompilerProductionContext, e: CanonicalByteEncoder): Unit =
     writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
+    e.sequence(context.scannerTokenKinds)(kind => e.tag(kind.ordinal))
 
   private def writeField(field: CompilerFieldPattern, e: CanonicalByteEncoder): Unit =
     e.string(field.name); writePattern(field.value, e)
@@ -996,18 +1005,24 @@ private[metallurgy] object CompilerRuntimeInventory:
           n.occurrences.map(o => o.ownerNodeId -> o.fieldPath)
         )
       )).map: (kind, id, prefix, fields, position, occurrences) =>
-      val observed       = fields.map(f =>
+      val observed          = fields.map(f =>
         InventoryFieldObservation(
           f.name,
           observe(f.value, kind, id, Vector(ParserFieldPathSegment.NamedField(f.name))),
           f.declaredShape.map(declaredPattern)
         )
       )
-      val classification = position match
+      val classification    = position match
         case ParserNodePosition.Absent                                                   => SourceClassification.Absent
         case ParserNodePosition.Positioned(_, _, ParserPositionProvenance.SourceDerived) =>
           SourceClassification.SourceReachable
         case _                                                                           => SourceClassification.Synthetic
+      val scannerTokenKinds = position match
+        case ParserNodePosition.Positioned(range, _, _) =>
+          snapshot.scannerTokens
+            .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
+            .map(_.kind)
+        case _                                          => Vector.empty
       CompilerShapeInventoryRow(
         kind,
         id,
@@ -1015,7 +1030,8 @@ private[metallurgy] object CompilerRuntimeInventory:
         observed.map(f => CompilerFieldPattern(f.name, f.declaredPattern.getOrElse(pattern(f.value)))),
         observed,
         occurrences.flatMap(contexts(kind, id, _)).distinct,
-        classification
+        classification,
+        scannerTokenKinds
       )
     val found                                                                                                      = failures.result()
     if found.nonEmpty then Left(found.distinct.sortBy(_.toString))
@@ -1254,6 +1270,11 @@ private[metallurgy] object GrammarRoleId:
   val ImportSelector         = GrammarRoleId("scala.import.selector")
   val ImportSelectorName     = GrammarRoleId("scala.import.selector-name")
   val SimpleType             = GrammarRoleId("scala.type.simple")
+  val TypeProjection         = GrammarRoleId("scala.type.projection")
+  val SingletonType          = GrammarRoleId("scala.type.singleton")
+  val LiteralType            = GrammarRoleId("scala.type.literal")
+  val ParenthesizedType      = GrammarRoleId("scala.type.parenthesized")
+  val LiteralValue           = GrammarRoleId("scala.literal.value")
   val AppliedType            = GrammarRoleId("scala.type.applied")
   val WildcardType           = GrammarRoleId("scala.type.wildcard")
   val InfixType              = GrammarRoleId("scala.type.infix")
@@ -1300,9 +1321,15 @@ private[metallurgy] enum TerminalIntervalSelector:
   case ChildGap(startRole: String, endRole: String)
   case BeforeChild(roleId: String)
   case CompilerEndMarkerKeyword
+  case CompilerScannerToken(
+      kind: ParserScannerTokenKind,
+      occurrence: ScannerTokenOccurrence = ScannerTokenOccurrence.All
+  )
   case LocalOutput(outputId: String)
   case RootOutsideLocalOutput(outputId: String)
   case WholeProduction, WholeSource
+private[metallurgy] enum ScannerTokenOccurrence:
+  case All, First, Last
 private[metallurgy] enum TerminalLeafTarget:
   case Token(surfaceId: String, expectedText: Option[String] = None)
   case Trivia, Delimiter, Separator, Parent
@@ -1394,6 +1421,17 @@ private[metallurgy] object PsiOutputRoleId:
   val ImportSelector        = PsiOutputRoleId("scala.import.selector")
   val StableReference       = PsiOutputRoleId("scala.reference.stable")
   val SimpleType            = PsiOutputRoleId("scala.type.simple")
+  val SingletonType         = PsiOutputRoleId("scala.type.singleton")
+  val TypeProjection        = PsiOutputRoleId("scala.type.projection")
+  val LiteralType           = PsiOutputRoleId("scala.type.literal")
+  val ParenthesizedType     = PsiOutputRoleId("scala.type.parenthesized")
+  val IntegerLiteralValue   = PsiOutputRoleId("scala.literal.integer-value")
+  val LongLiteralValue      = PsiOutputRoleId("scala.literal.long-value")
+  val FloatLiteralValue     = PsiOutputRoleId("scala.literal.float-value")
+  val DoubleLiteralValue    = PsiOutputRoleId("scala.literal.double-value")
+  val CharLiteralValue      = PsiOutputRoleId("scala.literal.char-value")
+  val StringLiteralValue    = PsiOutputRoleId("scala.literal.string-value")
+  val BooleanLiteralValue   = PsiOutputRoleId("scala.literal.boolean-value")
   val ParameterizedType     = PsiOutputRoleId("scala.type.parameterized")
   val TypeArguments         = PsiOutputRoleId("scala.type.arguments")
   val WildcardType          = PsiOutputRoleId("scala.type.wildcard")
@@ -1446,6 +1484,11 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.ImportSelector,
       GrammarRoleId.ImportSelectorName,
       GrammarRoleId.SimpleType,
+      GrammarRoleId.TypeProjection,
+      GrammarRoleId.SingletonType,
+      GrammarRoleId.LiteralType,
+      GrammarRoleId.ParenthesizedType,
+      GrammarRoleId.LiteralValue,
       GrammarRoleId.AppliedType,
       GrammarRoleId.WildcardType,
       GrammarRoleId.InfixType,
@@ -1487,6 +1530,17 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.ImportSelector,
       PsiOutputRoleId.StableReference,
       PsiOutputRoleId.SimpleType,
+      PsiOutputRoleId.SingletonType,
+      PsiOutputRoleId.TypeProjection,
+      PsiOutputRoleId.LiteralType,
+      PsiOutputRoleId.ParenthesizedType,
+      PsiOutputRoleId.IntegerLiteralValue,
+      PsiOutputRoleId.LongLiteralValue,
+      PsiOutputRoleId.FloatLiteralValue,
+      PsiOutputRoleId.DoubleLiteralValue,
+      PsiOutputRoleId.CharLiteralValue,
+      PsiOutputRoleId.StringLiteralValue,
+      PsiOutputRoleId.BooleanLiteralValue,
       PsiOutputRoleId.ParameterizedType,
       PsiOutputRoleId.TypeArguments,
       PsiOutputRoleId.WildcardType,
@@ -1852,6 +1906,25 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl"
   private val SimpleTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSimpleTypeElementImpl"
+  private val TypeProjectionSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeProjectionImpl"
+  private val LiteralTypeSurface          =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScLiteralTypeElementImpl"
+  private val ParenthesizedTypeSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParenthesisedTypeElementImpl"
+  private val IntegerLiteralSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl"
+  private val LongLiteralSurface          =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScLongLiteralImpl"
+  private val FloatLiteralSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScFloatLiteralImpl"
+  private val DoubleLiteralSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScDoubleLiteralImpl"
+  private val CharLiteralSurface          =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScCharLiteralImpl"
+  private val StringLiteralSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStringLiteralImpl"
+  private val BooleanLiteralSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScBooleanLiteralImpl"
   private val ParameterizedTypeSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
   private val TypeArgumentsSurface        =
@@ -2190,7 +2263,48 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
   private val SimpleTypeAccessors           = Vector(
-    AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true)
+    AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$SimpleTypeSurface#pathElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPathElement;",
+      required = true
+    ),
+    AccessorObligation(s"$SimpleTypeSurface#isSingleton()Z", required = true, SurfaceFactKind.Method)
+  )
+  private val TypeProjectionAccessors       = Vector(
+    AccessorObligation(
+      s"$TypeProjectionSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(s"$TypeProjectionSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true),
+    AccessorObligation(s"$TypeProjectionSurface#qualifier()Lscala/Option;", required = true)
+  )
+  private val LiteralTypeAccessors          = Vector(
+    AccessorObligation(
+      s"$LiteralTypeSurface#getLiteral()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral;",
+      required = true
+    ),
+    AccessorObligation(s"$LiteralTypeSurface#isSingleton()Z", required = true, SurfaceFactKind.Method)
+  )
+  private val ParenthesizedTypeAccessors    = Vector(
+    AccessorObligation(s"$ParenthesizedTypeSurface#innerElement()Lscala/Option;", required = true),
+    AccessorObligation(s"$ParenthesizedTypeSurface#sameTreeParent()Lscala/Option;", required = true)
+  )
+  private val LiteralValueAccessors         = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#getValue()Ljava/lang/Object;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentText()Ljava/lang/String;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#isSimpleLiteral()Z",
+      required = true,
+      SurfaceFactKind.Method
+    )
   )
   private val ParameterizedTypeAccessors    = Vector(
     AccessorObligation(
@@ -2332,6 +2446,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "import-selector-bound-type",
     "import-selector-bound-applied-type",
     "import-selector-given-bound-qualified-type",
+    "type-atom-projection",
+    "type-atom-singleton-ident",
+    "type-atom-singleton-select",
+    "type-atom-literal",
+    "type-atom-parenthesized",
     "import-selector-given-bound-wildcard-type",
     "import-selector-given-bound-infix-type"
   )
@@ -2358,7 +2477,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "InfixOp"         -> Vector(CatalogPathSegment.NamedField("left")),
       "InfixOp"         -> Vector(CatalogPathSegment.NamedField("right")),
       "TypeBoundsTree"  -> Vector(CatalogPathSegment.NamedField("lo")),
-      "TypeBoundsTree"  -> Vector(CatalogPathSegment.NamedField("hi"))
+      "TypeBoundsTree"  -> Vector(CatalogPathSegment.NamedField("hi")),
+      "Parens"          -> Vector(CatalogPathSegment.NamedField("t"))
     ).map: (owner, path) =>
       CompilerProductionContextPattern(
         ContextPattern.ParentUnderAnchor(InventoryKind.Node, owner, path, GivenSelectorBoundAnchor),
@@ -2385,12 +2505,27 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       accessors: Vector[AccessorObligation],
       childRoles: String*
   ): LocalOutputCompositeTemplate =
+    typeElementTemplateWithRange(
+      outputRole,
+      surface,
+      accessors,
+      OutputRangeDeclaration.CompilerPosition,
+      childRoles*
+    )
+
+  private def typeElementTemplateWithRange(
+      outputRole: PsiOutputRoleId,
+      surface: String,
+      accessors: Vector[AccessorObligation],
+      range: OutputRangeDeclaration,
+      childRoles: String*
+  ): LocalOutputCompositeTemplate =
     LocalOutputCompositeTemplate(
       Vector(
         outputComposite(
           "type",
           None,
-          OutputRangeDeclaration.CompilerPosition,
+          range,
           outputRole,
           surface,
           accessors
@@ -5579,6 +5714,512 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     abstractTypeAlias
   ) ++ definitionPayloadProductions ++ payloadDescendantProductions
 
+  private val SingletonReferenceProductionIds = Set(
+    "type-atom-singleton-reference-ident",
+    "type-atom-singleton-reference-select"
+  )
+  private val LiteralValueProductionIds       = Set(
+    "type-atom-literal-value-integer",
+    "type-atom-literal-value-long",
+    "type-atom-literal-value-float",
+    "type-atom-literal-value-double",
+    "type-atom-literal-value-char",
+    "type-atom-literal-value-string",
+    "type-atom-literal-value-boolean"
+  )
+
+  private val singletonReferenceOccurrence = Vector(
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchor(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CatalogPathSegment.NamedField("ref")),
+        GivenSelectorBoundAnchor
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private val singletonTypeOccurrences = givenTypeOccurrences.flatMap: occurrence =>
+    Vector(occurrence, occurrence.copy(sourceClassification = SourceClassification.Synthetic))
+
+  private val literalTypeOccurrences = givenTypeOccurrences.map:
+    _.copy(sourceClassification = SourceClassification.Synthetic)
+
+  private def literalValueProduction(
+      id: String,
+      scalarKind: String,
+      outputRole: PsiOutputRoleId,
+      surface: String
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id = id,
+    grammarRoleId = GrammarRoleId.LiteralValue,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Literal",
+      Vector(
+        CompilerFieldPattern(
+          "const",
+          CatalogValuePattern.Product("", Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar(scalarKind))))
+        )
+      ),
+      singletonReferenceOccurrence
+    ),
+    dispositions = Vector(FieldDisposition("const", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "literal-value-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = surface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = LiteralValueAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRoleId = Some(outputRole)
+  )
+
+  private val typeAtomProductions = Vector(
+    Scala3PsiProduction(
+      id = "type-atom-projection",
+      grammarRoleId = GrammarRoleId.TypeProjection,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Select",
+        Vector(
+          CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+          CompilerFieldPattern("name", CatalogValuePattern.Name)
+        ),
+        givenTypeOccurrences.map(
+          _.copy(scannerEvidence =
+            ScannerEvidencePattern(
+              required = Set(ParserScannerTokenKind.Hash)
+            )
+          )
+        )
+      ),
+      dispositions = Vector(
+        FieldDisposition("qualifier", FieldDispositionKind.Child),
+        FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+      ),
+      children = Vector(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          "import-selector-given-bound-qualifier-ident",
+          GivenTypeQualifierProductionIds - "import-selector-given-bound-qualifier-ident"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "projection-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "projection-hash",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Hash),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeProjectionHashTokenSurface, Some("#")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = TypeProjectionSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = TypeProjectionAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(
+        LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "projection",
+              None,
+              OutputRangeDeclaration.CompilerPosition,
+              PsiOutputRoleId.TypeProjection,
+              TypeProjectionSurface,
+              TypeProjectionAccessors
+            ),
+            outputComposite(
+              "qualifier-type",
+              Some("projection"),
+              OutputRangeDeclaration.BoundaryDerived(
+                OutputBoundary
+                  .ChildStart("qualifier", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+                OutputBoundary
+                  .ChildEnd("qualifier", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly)
+              ),
+              PsiOutputRoleId.SimpleType,
+              SimpleTypeSurface,
+              SimpleTypeAccessors
+            )
+          ),
+          Map("qualifier" -> Some("qualifier-type"))
+        )
+      )
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-singleton-ident",
+      grammarRoleId = GrammarRoleId.SingletonType,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CompilerFieldPattern("ref", CatalogValuePattern.NodePrefix("Ident"))),
+        singletonTypeOccurrences.map(
+          _.copy(scannerEvidence =
+            ScannerEvidencePattern(
+              required = Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.TypeKeyword),
+              forbidden = Set(ParserScannerTokenKind.Hash)
+            )
+          )
+        )
+      ),
+      dispositions = Vector(FieldDisposition("ref", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "reference",
+          "ref",
+          ChildCardinality.ExactlyOne,
+          "type-atom-singleton-reference-ident",
+          SingletonReferenceProductionIds - "type-atom-singleton-reference-ident"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "singleton-dot",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Dot),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypePathDotTokenSurface, Some(".")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "singleton-type",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.TypeKeyword),
+          TerminalLeafTarget.Token(NativePsiElementBindings.SingletonTypeKeywordTokenSurface, Some("type")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = SimpleTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = SimpleTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(
+        typeElementTemplateWithRange(
+          PsiOutputRoleId.SingletonType,
+          SimpleTypeSurface,
+          SimpleTypeAccessors,
+          OutputRangeDeclaration.CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic),
+          "reference"
+        )
+      )
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-singleton-select",
+      grammarRoleId = GrammarRoleId.SingletonType,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CompilerFieldPattern("ref", CatalogValuePattern.NodePrefix("Select"))),
+        singletonTypeOccurrences.map(
+          _.copy(scannerEvidence =
+            ScannerEvidencePattern(
+              required = Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.TypeKeyword),
+              forbidden = Set(ParserScannerTokenKind.Hash)
+            )
+          )
+        )
+      ),
+      dispositions = Vector(FieldDisposition("ref", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "reference",
+          "ref",
+          ChildCardinality.ExactlyOne,
+          "type-atom-singleton-reference-select",
+          SingletonReferenceProductionIds - "type-atom-singleton-reference-select"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "singleton-dot",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Dot, ScannerTokenOccurrence.Last),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypePathDotTokenSurface, Some(".")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "singleton-type",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.TypeKeyword),
+          TerminalLeafTarget.Token(NativePsiElementBindings.SingletonTypeKeywordTokenSurface, Some("type")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = SimpleTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = SimpleTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(
+        typeElementTemplateWithRange(
+          PsiOutputRoleId.SingletonType,
+          SimpleTypeSurface,
+          SimpleTypeAccessors,
+          OutputRangeDeclaration.CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic),
+          "reference"
+        )
+      )
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-literal",
+      grammarRoleId = GrammarRoleId.LiteralType,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CompilerFieldPattern("ref", CatalogValuePattern.NodePrefix("Literal"))),
+        literalTypeOccurrences.map(
+          _.copy(scannerEvidence =
+            ScannerEvidencePattern(
+              required = Set(ParserScannerTokenKind.Literal),
+              forbidden = Set(ParserScannerTokenKind.Hash, ParserScannerTokenKind.TypeKeyword)
+            )
+          )
+        )
+      ),
+      dispositions = Vector(FieldDisposition("ref", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "literal",
+          "ref",
+          ChildCardinality.ExactlyOne,
+          "type-atom-literal-value-integer",
+          LiteralValueProductionIds - "type-atom-literal-value-integer"
+        )
+      ),
+      terminals = Vector.empty,
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = LiteralTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = LiteralTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(
+        typeElementTemplateWithRange(
+          PsiOutputRoleId.LiteralType,
+          LiteralTypeSurface,
+          LiteralTypeAccessors,
+          OutputRangeDeclaration.CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic),
+          "literal"
+        )
+      )
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-parenthesized",
+      grammarRoleId = GrammarRoleId.ParenthesizedType,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Parens",
+        Vector(CompilerFieldPattern("t", CatalogValuePattern.Node)),
+        givenTypeOccurrences.map(
+          _.copy(scannerEvidence =
+            ScannerEvidencePattern(
+              required = Set(ParserScannerTokenKind.LeftParenthesis, ParserScannerTokenKind.RightParenthesis)
+            )
+          )
+        )
+      ),
+      dispositions = Vector(FieldDisposition("t", FieldDispositionKind.Child)),
+      children = Vector(
+        ChildDeclaration(
+          "inner",
+          "t",
+          ChildCardinality.ExactlyOne,
+          "import-selector-bound-type",
+          GivenTypeProductionIds - "import-selector-bound-type"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "left-parenthesis",
+          TerminalIntervalSelector
+            .CompilerScannerToken(ParserScannerTokenKind.LeftParenthesis, ScannerTokenOccurrence.First),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeLeftParenthesisTokenSurface, Some("(")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "right-parenthesis",
+          TerminalIntervalSelector
+            .CompilerScannerToken(ParserScannerTokenKind.RightParenthesis, ScannerTokenOccurrence.Last),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeRightParenthesisTokenSurface, Some(")")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = ParenthesizedTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = ParenthesizedTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(
+        typeElementTemplate(
+          PsiOutputRoleId.ParenthesizedType,
+          ParenthesizedTypeSurface,
+          ParenthesizedTypeAccessors,
+          "inner"
+        )
+      )
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-singleton-reference-ident",
+      grammarRoleId = GrammarRoleId.StableReference,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Ident",
+        Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+        singletonReferenceOccurrence
+      ),
+      dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "reference-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = StableReferenceSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = StableReferenceAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = Some(PsiOutputRoleId.StableReference)
+    ),
+    Scala3PsiProduction(
+      id = "type-atom-singleton-reference-select",
+      grammarRoleId = GrammarRoleId.StableReference,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Select",
+        Vector(
+          CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+          CompilerFieldPattern("name", CatalogValuePattern.Name)
+        ),
+        singletonReferenceOccurrence
+      ),
+      dispositions = Vector(
+        FieldDisposition("qualifier", FieldDispositionKind.Child),
+        FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+      ),
+      children = Vector(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          "import-selector-given-bound-qualifier-ident",
+          GivenTypeQualifierProductionIds - "import-selector-given-bound-qualifier-ident"
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "reference-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "path-dot",
+          TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Dot),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypePathDotTokenSurface, Some(".")),
+          OccurrenceCardinality.Repeated(1, None),
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = StableReferenceSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = StableReferenceAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRoleId = None,
+      outputTemplate = Some(stableReferenceTemplate("qualifier"))
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-integer",
+      "Integer",
+      PsiOutputRoleId.IntegerLiteralValue,
+      IntegerLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-long",
+      "LongInteger",
+      PsiOutputRoleId.LongLiteralValue,
+      LongLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-float",
+      "FloatDecimal",
+      PsiOutputRoleId.FloatLiteralValue,
+      FloatLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-double",
+      "Decimal",
+      PsiOutputRoleId.DoubleLiteralValue,
+      DoubleLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-char",
+      "Character",
+      PsiOutputRoleId.CharLiteralValue,
+      CharLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-string",
+      "Text",
+      PsiOutputRoleId.StringLiteralValue,
+      StringLiteralSurface
+    ),
+    literalValueProduction(
+      "type-atom-literal-value-boolean",
+      "Logical",
+      PsiOutputRoleId.BooleanLiteralValue,
+      BooleanLiteralSurface
+    )
+  )
+
   val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
       packageProduction("file-package", body = false),
@@ -6478,7 +7119,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
             CompilerFieldPattern("name", CatalogValuePattern.Name)
           ),
-          givenTypeOccurrences
+          givenTypeOccurrences.map(
+            _.copy(scannerEvidence =
+              ScannerEvidencePattern(
+                required = Set(ParserScannerTokenKind.Dot),
+                forbidden = Set(ParserScannerTokenKind.Hash)
+              )
+            )
+          )
         ),
         dispositions = Vector(
           FieldDisposition("qualifier", FieldDispositionKind.Child),
@@ -6499,6 +7147,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             TerminalIntervalSelector.WholeProduction,
             TerminalLeafTarget.Parent,
             OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          ),
+          TerminalDeclaration(
+            "path-dot",
+            TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Dot),
+            TerminalLeafTarget.Token(NativePsiElementBindings.TypePathDotTokenSurface, Some(".")),
+            OccurrenceCardinality.Repeated(1, None),
             PsiOutputRoleId.SourceTerminal
           )
         ),
@@ -7097,7 +7752,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         navigation = Some(NavigationObligation.Self),
         outputRoleId = Some(PsiOutputRoleId.IntegerLiteral)
       )
-    ) ++ modifierAnnotationProductions ++ templateProductions,
+    ) ++ modifierAnnotationProductions ++ templateProductions ++ typeAtomProductions,
     StableRoleInventory.Reviewed
   )
 
@@ -7361,6 +8016,13 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.Unsupported(runtimeType)               => s"Unsupported[$runtimeType]"
 
 private[metallurgy] object CatalogShapeMatcher:
+  private def scannerEvidenceMatches(
+      pattern: ScannerEvidencePattern,
+      observed: Vector[ParserScannerTokenKind]
+  ): Boolean =
+    val kinds = observed.toSet
+    pattern.required.subsetOf(kinds) && pattern.forbidden.intersect(kinds).isEmpty
+
   def matches(pattern: CatalogValuePattern, observation: InventoryValueObservation): Boolean =
     (pattern, observation) match
       case (CatalogValuePattern.Node, InventoryValueObservation.Node(_, _))                                   => true
@@ -7537,12 +8199,14 @@ private[metallurgy] object CatalogShapeMatcher:
       prefix: String,
       fields: Vector[InventoryFieldObservation],
       context: Option[InventoryContext],
-      sourceClassification: SourceClassification
+      sourceClassification: SourceClassification,
+      scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
   ): Vector[Scala3PsiProduction] =
     val matched = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         p.pattern.occurrences.exists(occurrence =>
           contextMatches(occurrence.context, context) && occurrence.sourceClassification == sourceClassification
+            && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
     )
     val scored  = matched.map: production =>
@@ -7578,7 +8242,8 @@ private[metallurgy] object CatalogShapeMatcher:
       p.pattern.kind == row.kind && p.pattern.prefix == row.prefix && coversFields(p.pattern.fields, row.fields) &&
         p.pattern.occurrences.exists(pattern =>
           aggregateContextMatches(pattern.context, occurrence.context) &&
-            pattern.sourceClassification == occurrence.sourceClassification
+            pattern.sourceClassification == occurrence.sourceClassification &&
+            scannerEvidenceMatches(pattern.scannerEvidence, occurrence.scannerTokenKinds)
         )
     )
 
@@ -7782,7 +8447,8 @@ private[metallurgy] object RuntimeRealizationSelector:
             row.prefix,
             row.observation,
             context,
-            row.sourceClassification
+            row.sourceClassification,
+            row.scannerTokenKinds
           )
         )
         .map(_.map(_.id))
@@ -8215,7 +8881,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case TerminalIntervalSelector.FieldBounds(a, b)                                      => a == name || b == name
             case _: TerminalIntervalSelector.ChildGap                                            => false
             case _: TerminalIntervalSelector.BeforeChild                                         => false
-            case TerminalIntervalSelector.CompilerEndMarkerKeyword | TerminalIntervalSelector.LocalOutput(_) |
+            case TerminalIntervalSelector.CompilerEndMarkerKeyword |
+                TerminalIntervalSelector.CompilerScannerToken(_, _) | TerminalIntervalSelector.LocalOutput(_) |
                 TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
               false
           )
@@ -8292,7 +8959,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                        shape.prefix,
                        shape.observation,
                        context,
-                       shape.sourceClassification
+                       shape.sourceClassification,
+                       shape.scannerTokenKinds
                      )
           error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
         yield error
@@ -8322,7 +8990,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 CatalogShapeMatcher.coversFields(production.pattern.fields, row.fields) &&
                 row.occurrences.exists(occurrence =>
                   CatalogShapeMatcher.aggregateContextMatches(pattern.context, occurrence.context) &&
-                    pattern.sourceClassification == occurrence.sourceClassification
+                    pattern.sourceClassification == occurrence.sourceClassification &&
+                    pattern.scannerEvidence.required.subsetOf(occurrence.scannerTokenKinds.toSet) &&
+                    pattern.scannerEvidence.forbidden.intersect(occurrence.scannerTokenKinds.toSet).isEmpty
                 )
             )
           ) =>
@@ -8753,7 +9423,8 @@ private[metallurgy] object WholeFileProductionPlanner:
             row.prefix,
             row.observation,
             context,
-            row.sourceClassification
+            row.sourceClassification,
+            row.scannerTokenKinds
           )
         )
         val distinct   = selections.map(_._2.map(_.id)).distinct
@@ -9943,7 +10614,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           production: Scala3PsiProduction,
           terminal: TerminalDeclaration
       ): Vector[PcSourceRange] = terminal.selector match
-        case TerminalIntervalSelector.WholeSource if instance != root  =>
+        case TerminalIntervalSelector.WholeSource if instance != root        =>
           break(
             Left(
               WholeFilePlanningFailure.UnsupportedTerminalSelector(
@@ -9953,13 +10624,13 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-        case TerminalIntervalSelector.WholeSource                      =>
+        case TerminalIntervalSelector.WholeSource                            =>
           Vector(PcSourceRange(0, snapshot.sourceLength))
-        case TerminalIntervalSelector.LocalOutput(outputId)            =>
+        case TerminalIntervalSelector.LocalOutput(outputId)                  =>
           outputRows
             .getOrElse(instance, Vector.empty)
             .collect { case (declaration, _, range) if declaration.id == outputId => range }
-        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId) =>
+        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)       =>
           if instance != root then Vector.empty
           else
             outputRows
@@ -9970,15 +10641,15 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Vector(PcSourceRange(0, range.startOffset), PcSourceRange(range.endOffset, snapshot.sourceLength))
                   .filter(value => value.startOffset < value.endOffset)
               )
-        case TerminalIntervalSelector.WholeProduction                  =>
+        case TerminalIntervalSelector.WholeProduction                        =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                 if range.startOffset < range.endOffset =>
               Vector(range)
             case _ => Vector.empty
-        case TerminalIntervalSelector.ChildGap(startRole, endRole)     =>
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)           =>
           childGapIntervals(instance, startRole, endRole)
-        case TerminalIntervalSelector.BeforeChild(roleId)              =>
+        case TerminalIntervalSelector.BeforeChild(roleId)                    =>
           (
             position(instance),
             compilerChildren.getOrElse(instance, Vector.empty).collectFirst { case (`roleId`, _, child) =>
@@ -9991,9 +10662,22 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if parent.startOffset <= child.startOffset =>
               Vector(PcSourceRange(parent.startOffset, child.startOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.CompilerEndMarkerKeyword         =>
+        case TerminalIntervalSelector.CompilerEndMarkerKeyword               =>
           compilerEndMarker(instance).map(_._2).toVector
-        case other                                                     =>
+        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence) =>
+          position(instance) match
+            case ParserNodePosition.Positioned(range, _, _) =>
+              val matches = snapshot.scannerTokens
+                .filter(token =>
+                  token.kind == kind && range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset
+                )
+                .map(_.range)
+              occurrence match
+                case ScannerTokenOccurrence.All   => matches
+                case ScannerTokenOccurrence.First => matches.headOption.toVector
+                case ScannerTokenOccurrence.Last  => matches.lastOption.toVector
+            case _                                          => Vector.empty
+        case other                                                           =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
       def terminalTokenRanges(

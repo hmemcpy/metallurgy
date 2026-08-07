@@ -299,7 +299,41 @@ final class Scala3ParserVerticalSliceTest:
           "InfixOp",
           Vector("InfixOp", "InfixOp", "Ident", "Ident", "Ident", "Ident", "Ident"),
           "da041de9f3fae7be61ccab1bfdb2e9e1b32100bae1bf2805640a009c97684763"
-        )
+        ),
+        ("import a.b.given A\n", "Ident", Vector("Ident"), ""),
+        ("import a.b.given p.A\n", "Select", Vector("Select", "Ident"), ""),
+        ("import a.b.given T#A\n", "Select", Vector("Select", "Ident"), ""),
+        (
+          "import a.b.given x.type\n",
+          "SingletonTypeTree",
+          Vector("SingletonTypeTree", "Ident"),
+          ""
+        ),
+        (
+          "import a.b.given p.x.type\n",
+          "SingletonTypeTree",
+          Vector("SingletonTypeTree", "Select", "Ident"),
+          ""
+        ),
+        (
+          "import a.b.given 42\n",
+          "SingletonTypeTree",
+          Vector("SingletonTypeTree", "Literal"),
+          ""
+        ),
+        (
+          "import a.b.given \"literal\"\n",
+          "SingletonTypeTree",
+          Vector("SingletonTypeTree", "Literal"),
+          ""
+        ),
+        (
+          "import a.b.given true\n",
+          "SingletonTypeTree",
+          Vector("SingletonTypeTree", "Literal"),
+          ""
+        ),
+        ("import a.b.given (A)\n", "Parens", Vector("Parens", "Ident"), "")
       )
       def node(snapshot: ParserSyntaxSnapshot, id: Long): ParserSyntaxNode                 = snapshot.nodes.find(_.id == id).get
       def references(value: ParserFieldValue): Vector[Long]                                = value match
@@ -337,7 +371,7 @@ final class Scala3ParserVerticalSliceTest:
         val snapshot                                               = parse(bridge, source, s"file:///BoundedGivenType$index.scala")
         assertEquals(source, snapshot.sourceText)
         assertTrue(snapshot.diagnostics.isEmpty)
-        assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
+        if fingerprint.nonEmpty then assertEquals(fingerprint, ParserSyntaxSnapshot.evidenceFingerprint(snapshot))
         val bound                                                  = node(snapshot, boundId(snapshot))
         assertEquals(rootProduction, bound.production)
         assertEquals(
@@ -433,8 +467,20 @@ final class Scala3ParserVerticalSliceTest:
               val range = byId(child.child).range
               assertTrue(parent.range.startOffset <= range.startOffset)
               assertTrue(range.endOffset <= parent.range.endOffset)
-          if node(snapshot, boundId(snapshot)).production == "Select"
-          then assertTrue(plan.composites.exists(_.productionId == "import-selector-given-bound-qualified-type"))
+          if node(snapshot, boundId(snapshot)).production == "Select" then
+            val expected =
+              if snapshot.sourceText.contains("#") then "type-atom-projection"
+              else "import-selector-given-bound-qualified-type"
+            assertTrue(plan.composites.exists(_.productionId == expected))
+          if snapshot.nodes.exists(_.production == "SingletonTypeTree") then
+            val expected =
+              if snapshot.nodes.exists(_.production == "Literal") then "type-atom-literal"
+              else if subtreeProductions(snapshot, boundId(snapshot)).contains("Select") then
+                "type-atom-singleton-select"
+              else "type-atom-singleton-ident"
+            assertTrue(plan.composites.exists(_.productionId == expected))
+          if node(snapshot, boundId(snapshot)).production == "Parens" then
+            assertTrue(plan.composites.exists(_.productionId == "type-atom-parenthesized"))
           if snapshot.nodes.exists(_.production == "TypeBoundsTree") then
             assertTrue(plan.composites.exists(_.productionId == "import-selector-given-bound-wildcard-type"))
           if snapshot.nodes.exists(_.production == "InfixOp") then
@@ -542,7 +588,7 @@ final class Scala3ParserVerticalSliceTest:
           "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
           "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
           "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
-          "39b5261875e03534e38f0eb974ddc74f732cfe745f85b4b45187480f7dcf8c08"
+          "5519778e278fa2b33303eefefcf25e7dc23118aab85d005fa5f9fbd28c65d34d"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -913,7 +959,7 @@ final class Scala3ParserVerticalSliceTest:
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "7e6fcfdbdf5611129e4d792e50c8baca5af4ccd8c72c6a82181681671e319d0f"
+          "e57d3b4bd47d62eb86aed7ab5f24228a0856c27300332248bde81af957b434c2"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -1079,7 +1125,7 @@ final class Scala3ParserVerticalSliceTest:
         value.nodes
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
-      assertEquals("96d9782ed2920c73cbd6529a4c6ab804ba0b2e97ec8d61de1c67e10c402ef484", aggregate.fingerprint)
+      assertEquals("05957c00ee73910102bd13bcdb1ea6f86e958effc83ae394dfd65e5ccea9ca2e", aggregate.fingerprint)
       val identifierPackage    = parse(bridge, "package example\n", "file:///Scala3IdentifierPackageFamily.scala")
       val identifierInventory  = CompilerRuntimeInventory
         .from(identifierPackage)
@@ -1214,7 +1260,7 @@ final class Scala3ParserVerticalSliceTest:
         ),
         first.nodes.map(_.occurrences)
       )
-      assertEquals("a7f0c41f1d1496860eeb3bc380f2a1ad7aca5706921119d171f465056ff2be62", aggregate.fingerprint)
+      assertEquals("2bf478948266a7b37969ca3d587bfe7702fd92319093b6646ca8fcf1169456a7", aggregate.fingerprint)
       val catalog                = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-package") || production.id.startsWith("package-stable")
@@ -1394,7 +1440,7 @@ final class Scala3ParserVerticalSliceTest:
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("0881955fc251cd91ec67d9377fe894ce383c7f2d13054177fd4dcb4a611efaa1", aggregate.fingerprint)
+      assertEquals("fd3a149fa1dbaf27a73cb4344b66e82a3d76d2e7d0b619c1ffa1f9e91af25764", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,
@@ -1503,7 +1549,7 @@ final class Scala3ParserVerticalSliceTest:
       assertTrue(
         report,
         report.contains(
-          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:integer-literal-number**"
+          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:integer-literal-number,type-atom-literal-value-integer**"
         )
       )
       assertNoUnsupportedValues(first)
