@@ -730,15 +730,22 @@ private final class StructuralScala3ParserBridge private (
     result.result()
 
   private def scannerTokenKind(runtimeKind: String): ParserScannerTokenKind = runtimeKind match
-    case "'.'"  => ParserScannerTokenKind.Dot
-    case "#"    => ParserScannerTokenKind.Hash
-    case "'('"  => ParserScannerTokenKind.LeftParenthesis
-    case "')'"  => ParserScannerTokenKind.RightParenthesis
-    case "type" => ParserScannerTokenKind.TypeKeyword
+    case "'.'"        => ParserScannerTokenKind.Dot
+    case "#"          => ParserScannerTokenKind.Hash
+    case "'('"        => ParserScannerTokenKind.LeftParenthesis
+    case "')'"        => ParserScannerTokenKind.RightParenthesis
+    case "'['"        => ParserScannerTokenKind.LeftBracket
+    case "']'"        => ParserScannerTokenKind.RightBracket
+    case "','"        => ParserScannerTokenKind.Comma
+    case ":"          => ParserScannerTokenKind.Colon
+    case "=>"         => ParserScannerTokenKind.FunctionArrow
+    case "?=>"        => ParserScannerTokenKind.ContextFunctionArrow
+    case "identifier" => ParserScannerTokenKind.Identifier
+    case "type"       => ParserScannerTokenKind.TypeKeyword
     case "character literal" | "integer literal" | "number literal" | "number literal with exponent" | "long literal" |
         "float literal" | "double literal" | "string literal" | "true" | "false" =>
       ParserScannerTokenKind.Literal
-    case _      => ParserScannerTokenKind.Other
+    case _            => ParserScannerTokenKind.Other
 
   private def collectNodes(
       active: ParserRuntime,

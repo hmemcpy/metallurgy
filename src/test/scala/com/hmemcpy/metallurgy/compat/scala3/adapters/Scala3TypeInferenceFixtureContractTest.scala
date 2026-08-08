@@ -1,11 +1,23 @@
 package com.hmemcpy.metallurgy.compat.scala3.adapters
 
+import com.hmemcpy.metallurgy.compilerbackend.ScalaPluginSemanticBridge
 import com.hmemcpy.metallurgy.compat.scala3.BackendUnavailableException
+import com.hmemcpy.metallurgy.psiproducer.{ParserPreparationState, Scala3ParserPreparationLifecycle}
 import com.hmemcpy.metallurgy.settings.MetallurgySettings
 import com.intellij.openapi.util.TextRange
+import org.jetbrains.plugins.scala.ScalaVersion
 import org.junit.Assert.{assertEquals, assertTrue, fail}
 
 final class Scala3TypeInferenceFixtureContractTest extends Scala3TypeInferenceFixture:
+
+  def testUsesExactCapableCompilerAndParserCell(): Unit =
+    val expected = ScalaVersion.fromString("3.7.4").get
+    assertEquals(Some(expected), injectedScalaVersion)
+    assertEquals(expected, version)
+    assertEquals("3.7.4", ScalaPluginSemanticBridge.getScalaVersion(getModule))
+    assertTrue(
+      Scala3ParserPreparationLifecycle.get(getProject).stateFor(getModule).isInstanceOf[ParserPreparationState.Ready]
+    )
 
   def testPreservesSourcePreparationAndExpectedComment(): Unit =
     val source          = "\r\n  val result = /*start*/List(1).head/*end*/\r\n  //Int\r\n"

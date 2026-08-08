@@ -270,8 +270,9 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
     Vector(
       "trait A\ntype Rejected = Map[K = Int, V = String]\n",
       "trait A\ntrait B\ntype Rejected = A & B\n",
-      "trait A\ntrait B\ntype Rejected = A => B\n",
+      "trait A\ntrait B\ntype Rejected = A | B\n",
       "trait A\ntrait B\ntype Rejected = A *: B\n",
+      "type Rejected = (Int => String) throws Exception\n",
       "trait A\ntrait B\ntype Rejected = A match { case A => B }\n",
       "trait A\ntype Rejected = A { type Member }\n",
       "trait A\ntype Rejected = A @unchecked\n",

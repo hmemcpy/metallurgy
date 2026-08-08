@@ -539,6 +539,45 @@ final class Scala3PsiProductionCatalogTest:
       )
     ).foreach(context => assertTrue(selected(context).isEmpty))
 
+  @Test def parentContextThroughTypeAncestorsRejectsAnInterveningExpressionOwner(): Unit =
+    val path                                          = Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)
+    val anchor                                        = InventoryAncestor(
+      InventoryKind.Node,
+      "TypeDef",
+      Vector(CatalogPathSegment.NamedField("rhs"))
+    )
+    val applied                                       = InventoryAncestor(
+      InventoryKind.Node,
+      "AppliedTypeTree",
+      Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    )
+    val function                                      = InventoryAncestor(
+      InventoryKind.Node,
+      "Function",
+      Vector(CatalogPathSegment.NamedField("body"))
+    )
+    val expression                                    = InventoryAncestor(
+      InventoryKind.Node,
+      "DefDef",
+      Vector(CatalogPathSegment.NamedField("preRhs"))
+    )
+    val pattern                                       = ContextPattern.ParentUnderAnchorThrough(
+      InventoryKind.Node,
+      "Tuple",
+      path,
+      Vector(applied, function),
+      anchor
+    )
+    def context(ancestors: Vector[InventoryAncestor]) =
+      Some(InventoryContext(InventoryKind.Node, "Tuple", path, ancestors))
+
+    Vector(Vector(anchor), Vector(applied, anchor), Vector(function, applied, anchor)).foreach: ancestors =>
+      assertTrue(CatalogShapeMatcher.contextMatches(pattern, context(ancestors)))
+      assertTrue(CatalogShapeMatcher.aggregateContextMatches(pattern, context(ancestors)))
+    Vector(Vector(expression, anchor), Vector(applied, expression, anchor)).foreach: ancestors =>
+      assertFalse(CatalogShapeMatcher.contextMatches(pattern, context(ancestors)))
+      assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, context(ancestors)))
+
   @Test def typeAtomSelectionRequiresExactScannerEvidenceAndContext(): Unit =
     val catalog      = Scala3PsiProductionCatalog.Reviewed
     val direct       = Some(
@@ -957,6 +996,15 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
       GrammarRoleId.LiteralType               -> Set("type-atom-literal"),
       GrammarRoleId.ParenthesizedType         -> Set("type-atom-parenthesized"),
+      GrammarRoleId.TupleType                 -> Set("ordinary-tuple-type"),
+      GrammarRoleId.NamedTupleType            -> Set("named-tuple-type"),
+      GrammarRoleId.NamedTupleComponent       -> Set("named-tuple-component"),
+      GrammarRoleId.FunctionType              -> Set("ordinary-function-type"),
+      GrammarRoleId.DependentFunctionType     -> Set("dependent-function-type"),
+      GrammarRoleId.PolyFunctionType          -> Set("polymorphic-function-type"),
+      GrammarRoleId.ByNameParameterType       -> Set("by-name-parameter-type"),
+      GrammarRoleId.RepeatedParameterType     -> Set("repeated-parameter-type"),
+      GrammarRoleId.RepeatedParameterStar     -> Set("repeated-parameter-synthetic-star"),
       GrammarRoleId.LiteralValue              -> Set(
         "type-atom-literal-value-integer",
         "type-atom-literal-value-long",
@@ -1095,7 +1143,8 @@ final class Scala3PsiProductionCatalogTest:
       ),
       GrammarRoleId.TermParameter             -> Set(
         "definition-typed-parameter",
-        "type-definition-term-parameter"
+        "type-definition-term-parameter",
+        "dependent-function-parameter"
       ),
       GrammarRoleId.ClassParameter            -> Set(
         "template-class-parameter",
@@ -1115,6 +1164,9 @@ final class Scala3PsiProductionCatalogTest:
         "definition-simple-literal-type-alias",
         "definition-simple-parenthesized-type-alias",
         "definition-applied-type-alias",
+        "definition-tuple-type-alias",
+        "definition-function-type-alias",
+        "definition-polymorphic-function-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-opaque-bounded-type-alias",
         "definition-type-lambda-alias"
@@ -1233,6 +1285,9 @@ final class Scala3PsiProductionCatalogTest:
         "definition-simple-literal-type-alias",
         "definition-simple-parenthesized-type-alias",
         "definition-applied-type-alias",
+        "definition-tuple-type-alias",
+        "definition-function-type-alias",
+        "definition-polymorphic-function-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-type-lambda-alias",
         "definition-opaque-bounded-type-alias"

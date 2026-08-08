@@ -65,12 +65,17 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScContextBound,
+  ScDependentFunctionTypeElement,
+  ScFunctionalTypeElement,
   ScInfixTypeElement,
   ScLiteralTypeElement,
+  ScNamedTupleTypeElement,
   ScParameterizedTypeElement,
   ScParenthesisedTypeElement,
+  ScPolyFunctionTypeElement,
   ScSelfTypeElement,
   ScSimpleTypeElement,
+  ScTupleTypeElement,
   ScTypeArgs,
   ScTypeElement,
   ScTypeProjection,
@@ -202,6 +207,11 @@ private[metallurgy] object NativePsiElementBindings:
   val SingletonTypeKeywordTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
   val TypeLeftParenthesisTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
   val TypeRightParenthesisTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
+  val TypeCommaTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
+  val TypeColonTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
+  val FunctionArrowTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tFUNTYPE"
+  val ContextFunctionArrowTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitFunctionArrow"
+  val RepeatedParameterStarTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
   val AnnotatedMemberIndexSurface        =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
   val ModifierKeywordSurfaceIds          = Map(
@@ -289,6 +299,13 @@ private[metallurgy] object NativePsiElementBindings:
           |type StringLiteralTypeProbe = "literal"
           |type BooleanLiteralTypeProbe = true
           |type ParenthesizedTypeProbe = (alpha.gamma.Bound)
+          |type TupleTypeProbe = (Lower, Upper)
+          |type NamedTupleTypeProbe = (lower: Lower, upper: Upper)
+          |type FunctionTypeProbe = (Lower, Upper) => Bound
+          |type ContextFunctionTypeProbe = Bound ?=> Lower
+          |type DependentFunctionTypeProbe = (value: Lower) => value.type
+          |type PolyFunctionTypeProbe = [A] => A => A
+          |def ParameterTypeProbe(thunk: => Lower, values: Upper*): Lower = thunk
           |""".stripMargin
       )
     val packageLayoutFile        = PsiFileFactory
@@ -412,6 +429,21 @@ private[metallurgy] object NativePsiElementBindings:
       .asScala
       .find(_.getText == "(alpha.gamma.Bound)")
       .orNull
+    val tupleType                = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTupleTypeElement])
+      .asScala
+      .find(_.getText == "(Lower, Upper)")
+      .orNull
+    val tupleTypes               = Option(tupleType).map(_.typeList).orNull
+    val namedTupleType           = PsiTreeUtil.findChildOfType(file, classOf[ScNamedTupleTypeElement])
+    val namedTupleComponents     = Option(namedTupleType).map(_.components.toVector).getOrElse(Vector.empty)
+    val functionalTypes          = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionalTypeElement]).asScala.toVector
+    val functionType             = functionalTypes.find(_.getText == "(Lower, Upper) => Bound").orNull
+    val contextFunctionType      = functionalTypes.find(_.getText == "Bound ?=> Lower").orNull
+    val dependentFunctionType    = PsiTreeUtil.findChildOfType(file, classOf[ScDependentFunctionTypeElement])
+    val polyFunctionType         = PsiTreeUtil.findChildOfType(file, classOf[ScPolyFunctionTypeElement])
+    val ordinaryFunctionArrow    = Option(functionType).flatMap(leafAtText(_, "=>")).orNull
+    val contextFunctionArrow     = Option(contextFunctionType).flatMap(leafAtText(_, "?=>")).orNull
     val singletonType            = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScSimpleTypeElement])
       .asScala
@@ -527,6 +559,14 @@ private[metallurgy] object NativePsiElementBindings:
         stringLiteralValue,
         booleanLiteralValue,
         parenthesizedType,
+        tupleType,
+        tupleTypes,
+        namedTupleType,
+        namedTupleComponents.headOption.orNull,
+        functionType,
+        contextFunctionType,
+        dependentFunctionType,
+        polyFunctionType,
         singletonType,
         annotatedModifiers,
         memberModifiers,
@@ -668,6 +708,25 @@ private[metallurgy] object NativePsiElementBindings:
       charLiteralValue == null || stringLiteralValue == null || booleanLiteralValue == null ||
       parenthesizedType == null || singletonType == null
     then Left("native type atom PSI probe is incomplete")
+    else if tupleType == null || tupleTypes == null || namedTupleType == null || namedTupleComponents.size != 2 ||
+      functionType == null || contextFunctionType == null || dependentFunctionType == null || polyFunctionType == null ||
+      ordinaryFunctionArrow == null || contextFunctionArrow == null
+    then Left("native tuple or function type PSI probe is incomplete")
+    else if tupleType.components.map(_.getText).toVector != Vector("Lower", "Upper") ||
+      tupleType.typeList != tupleTypes || tupleTypes.types.toVector != tupleType.components.toVector ||
+      namedTupleComponents.map(_.name) != Vector("lower", "upper") ||
+      namedTupleComponents.map(_.typeElement.map(_.getText)) != Vector(Some("Lower"), Some("Upper")) ||
+      namedTupleComponents.exists(_.namedTuple != namedTupleType) ||
+      functionType.paramTypeElement.getText != "(Lower, Upper)" ||
+      functionType.paramTypeElement.getParent != functionType ||
+      functionType.returnTypeElement.map(_.getText) != Some("Bound") ||
+      functionType.isContext || contextFunctionType.paramTypeElement.getText != "Bound" ||
+      contextFunctionType.returnTypeElement.map(_.getText) != Some("Lower") || !contextFunctionType.isContext ||
+      dependentFunctionType.parameterClause.parameters.map(_.name).toVector != Vector("value") ||
+      dependentFunctionType.returnTypeElement.map(_.getText) != Some("value.type") ||
+      polyFunctionType.typeParameters.map(_.name).toVector != Vector("A") ||
+      polyFunctionType.resultTypeElement.map(_.getText) != Some("A => A")
+    then Left("native tuple or function type accessors are inconsistent")
     else if typeProjection.typeElement.getText != "DefinitionOwner" || typeProjection.nameId.getText != "DirectAbstract" ||
       typeProjection.qualifier.nonEmpty || typeProjection.typeElement.getParent != typeProjection ||
       Vector(
@@ -956,6 +1015,11 @@ private[metallurgy] object NativePsiElementBindings:
               Map(SingletonTypeKeywordTokenSurface -> ScalaTokenTypes.kTYPE) ++
               Map(TypeLeftParenthesisTokenSurface -> ScalaTokenTypes.tLPARENTHESIS) ++
               Map(TypeRightParenthesisTokenSurface -> ScalaTokenTypes.tRPARENTHESIS) ++
+              Map(TypeCommaTokenSurface -> ScalaTokenTypes.tCOMMA) ++
+              Map(TypeColonTokenSurface -> ScalaTokenTypes.tCOLON) ++
+              Map(FunctionArrowTokenSurface -> ordinaryFunctionArrow.getNode.getElementType) ++
+              Map(ContextFunctionArrowTokenSurface -> contextFunctionArrow.getNode.getElementType) ++
+              Map(RepeatedParameterStarTokenSurface -> ScalaTokenTypes.tIDENTIFIER) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -987,6 +1051,13 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TypeProjection        -> typeProjection.getNode.getElementType,
               PsiOutputRoleId.LiteralType           -> integerLiteralType.getNode.getElementType,
               PsiOutputRoleId.ParenthesizedType     -> parenthesizedType.getNode.getElementType,
+              PsiOutputRoleId.TupleType             -> tupleType.getNode.getElementType,
+              PsiOutputRoleId.TupleTypes            -> tupleTypes.getNode.getElementType,
+              PsiOutputRoleId.NamedTupleType        -> namedTupleType.getNode.getElementType,
+              PsiOutputRoleId.NamedTupleComponent   -> namedTupleComponents.head.getNode.getElementType,
+              PsiOutputRoleId.FunctionType          -> functionType.getNode.getElementType,
+              PsiOutputRoleId.DependentFunctionType -> dependentFunctionType.getNode.getElementType,
+              PsiOutputRoleId.PolyFunctionType      -> polyFunctionType.getNode.getElementType,
               PsiOutputRoleId.IntegerLiteralValue   -> integerLiteralValue.getNode.getElementType,
               PsiOutputRoleId.LongLiteralValue      -> longLiteralValue.getNode.getElementType,
               PsiOutputRoleId.FloatLiteralValue     -> floatLiteralValue.getNode.getElementType,
@@ -1062,6 +1133,13 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TypeProjection        -> surfaceId(typeProjection.getClass),
               PsiOutputRoleId.LiteralType           -> surfaceId(integerLiteralType.getClass),
               PsiOutputRoleId.ParenthesizedType     -> surfaceId(parenthesizedType.getClass),
+              PsiOutputRoleId.TupleType             -> surfaceId(tupleType.getClass),
+              PsiOutputRoleId.TupleTypes            -> surfaceId(tupleTypes.getClass),
+              PsiOutputRoleId.NamedTupleType        -> surfaceId(namedTupleType.getClass),
+              PsiOutputRoleId.NamedTupleComponent   -> surfaceId(namedTupleComponents.head.getClass),
+              PsiOutputRoleId.FunctionType          -> surfaceId(functionType.getClass),
+              PsiOutputRoleId.DependentFunctionType -> surfaceId(dependentFunctionType.getClass),
+              PsiOutputRoleId.PolyFunctionType      -> surfaceId(polyFunctionType.getClass),
               PsiOutputRoleId.IntegerLiteralValue   -> surfaceId(integerLiteralValue.getClass),
               PsiOutputRoleId.LongLiteralValue      -> surfaceId(longLiteralValue.getClass),
               PsiOutputRoleId.FloatLiteralValue     -> surfaceId(floatLiteralValue.getClass),
@@ -1274,6 +1352,22 @@ private[metallurgy] object NativePsiElementBindings:
                 Vector("capability-probed native singleton type keyword token")
               ),
               ScalaPsiSurfaceRow(
+                TypeArgumentLeftTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type left bracket token")
+              ),
+              ScalaPsiSurfaceRow(
+                TypeArgumentRightTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native type right bracket token")
+              ),
+              ScalaPsiSurfaceRow(
                 TypeLeftParenthesisTokenSurface,
                 SurfaceFactKind.Token,
                 None,
@@ -1288,6 +1382,22 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native type right parenthesis token")
+              ),
+              ScalaPsiSurfaceRow(
+                FunctionArrowTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native function arrow token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextFunctionArrowTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context function arrow token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(

@@ -198,9 +198,6 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
     Vector(
       "import scala.language.experimental.namedTypeArguments\nval mixed = pair[Int, B = String](1, \"text\")\n",
       "import scala.language.experimental.namedTypeArguments\ntype Bad = F[A = Int]\n",
-      "type Bad = (Int, String)\n",
-      "type Bad = Int => String\n",
-      "def bad(values: String*): Unit = ()\n",
       "import scala.language.experimental.namedTypeArguments\nval value = 1\nval bad = pair[A = Int](value, \"text\")\n",
       "import scala.language.experimental.namedTypeArguments\nval bad = target.make[A = Int]\n"
     ).zipWithIndex.foreach: (source, index) =>

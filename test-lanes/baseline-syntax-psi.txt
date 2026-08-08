@@ -7,3 +7,4 @@ com.hmemcpy.metallurgy.psiproducer.Scala3OwnerTypeMountPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
 com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3RepresentativeScalePsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3TupleFunctionTypePsiTest

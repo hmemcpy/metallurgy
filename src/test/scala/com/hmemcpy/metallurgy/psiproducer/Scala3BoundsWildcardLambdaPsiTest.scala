@@ -373,7 +373,6 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
     Vector(
       "type Rejected = Int | String\n",
       "type Rejected = Int & Product\n",
-      "type Rejected = (Int, String)\n",
       "type Rejected = Int match { case Int => String }\n",
       "type Rejected = { type A = Int }\n",
       "type Rejected = Int @unchecked\n",

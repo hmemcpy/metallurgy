@@ -15,7 +15,7 @@
           "localImplementationFiles": [
             {
               "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/adapters/Scala3TypeInferenceFixture.scala",
-              "sha256": "68695fb9e4308c479c6942505295d90ecb86719fa8ab642b5e98bc7f23115fe5"
+              "sha256": "2ae6100579a85e83b9943b6a8bea5016b03005f984e6f9dc46c0c803545ad377"
             },
             {
               "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/Scala3CompatTestCase.scala",
@@ -28,7 +28,7 @@
           ],
           "localContractTest": "com.hmemcpy.metallurgy.compat.scala3.adapters.Scala3TypeInferenceFixtureContractTest",
           "localContractTestPath": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/adapters/Scala3TypeInferenceFixtureContractTest.scala",
-          "localContractTestSha256": "084435901ecef59017a6f8a7573732bc4c02d40ce58d7b447b47017dcb703eb6"
+          "localContractTestSha256": "6e1c779c7d955cc018ff2cb77cee3828e8879b82caa365b3bc4fd82a56c70424"
         }
       ]
     }
