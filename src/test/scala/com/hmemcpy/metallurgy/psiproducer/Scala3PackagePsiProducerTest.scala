@@ -760,12 +760,63 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 7),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 8),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "fca7c1c121b889b900e4dcd62e8fb8ccc1be6bd8916aaddf710a84073c0b26b5",
+      "b5c1dcd9bd23b2897943a55b3777f7f583552bfe32791ce3c6ce7f3b3fecbd79",
       Scala3DotcFileElementType.SchemaFingerprint
+    )
+
+  def testSimpleOwnerTypeMountsUseNativePhysicalPsi(): Unit =
+    val source  =
+      """trait B
+        |class C[A](x: A) extends B:
+        |  self: B =>
+        |  def value: A = x
+        |""".stripMargin
+    val pending = myFixture.addFileToProject("src/OwnerTypeMountCase.scala", source)
+    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertEquals(source, file.getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertTrue(failure.toString, failure.isEmpty)
+    assertEquals(
+      Vector("A"),
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass])
+        .asScala
+        .toVector
+        .filter(_.name == "C")
+        .flatMap(_.parameters)
+        .flatMap(_.typeElement)
+        .map(_.getText)
+    )
+    assertEquals(
+      Vector("B"),
+      PsiTreeUtil
+        .findChildrenOfType(
+          file,
+          classOf[org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.ScTemplateParents]
+        )
+        .asScala
+        .toVector
+        .flatMap(_.typeElements)
+        .map(_.getText)
+    )
+    assertEquals(
+      Vector("B"),
+      PsiTreeUtil
+        .findChildrenOfType(
+          file,
+          classOf[org.jetbrains.plugins.scala.lang.psi.api.base.types.ScSelfTypeElement]
+        )
+        .asScala
+        .toVector
+        .flatMap(_.typeElement)
+        .map(_.getText)
     )
 
   def testParentlessTemplateDefinitionsUseNativePhysicalPsi(): Unit =
@@ -979,7 +1030,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     assertTrue(adjacentFile.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.drop(1).isEmpty)
 
   def testUnsupportedCompilerValidProductionFailsClosedWithCapabilityReason(): Unit =
-    val source      = "class Parent\nclass Unsupported extends Parent\n"
+    val source      = "class Parent(value: Int)\nclass Unsupported extends Parent(1)\n"
     val pending     = myFixture.addFileToProject("src/UnsupportedCase.scala", source)
     val file        = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
     assertEquals(source, file.getText)
@@ -1526,8 +1577,8 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       "package a; import b.c; package d\n",
       "package a:\n  import b.c\nend\n",
       "package a:\n  import b.c\nend wrong\n",
-      "package unsupported { import a.b; class Definition extends Parent }\n",
-      "package unsupported:\n  import a.b\n  object Template extends Parent\n",
+      "package unsupported { class Parent(value: Int); import a.b; class Definition extends Parent(1) }\n",
+      "package unsupported:\n  class Parent(value: Int)\n  import a.b\n  object Template extends Parent(1)\n",
       "package unsupported:\n  extension (value: Int) def increment = value + 1\n"
     ).zipWithIndex.foreach: (invalid, index) =>
       val recovered = myFixture.addFileToProject(s"src/RecoveredPackageLayout$index.scala", invalid)

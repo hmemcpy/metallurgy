@@ -458,28 +458,20 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
 
   def testUnsupportedTemplateShapesFailClosedAtTheCatalog(): Unit =
     Vector(
-      "class Parent\nclass Child extends Parent\n",
-      "class C derives CanEqual\n",
-      "class C(x: Int)\n",
+      "class Parent\nclass Child extends Parent(1)\n",
       "class C(x: Int = 1)\n",
-      "class C:\n  self: C =>\n",
       "enum E:\n  case A, B\n",
       "class C:\n  given Int = 1\n",
       "class C(val value: Int)\n",
-      "class C(value: Int)\n",
       "class C[A <: Any]\n",
       "class C[A: Ordering]\n",
       "class C[A <% Any]\n",
       "class C[A = Any]\n",
       "class C[[A] =>> List[A]]\n",
       "def method[A](value: A): A = value\n",
-      "def typed(value: Int) = value\n",
-      "def returned: Int = 1\n",
-      "val ascribed: Int = 1\n",
       "val expressionAscription = (1: Int)\n",
       "val (left, right) = (1, 2)\n",
       "type Alias[A] = A\n",
-      "type Alias = Int\n",
       "opaque type Hidden = Int\n",
       "extension (value: Int)\n  def doubled = value + value\n",
       "given ordering: Ordering[Int] = Ordering.Int\n",
@@ -627,7 +619,23 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
           )
         )
     val externalIds          = stubs.flatMap(stub => Option(stub.getStubSerializer).map(_.getExternalId)).toSet
-    assertTrue(TemplatePersistenceSurfaces.ExternalIds.values.toSet.subsetOf(externalIds))
+    val expectedExternalIds  = Set(
+      "scala.ScClass",
+      "scala.ScTrait",
+      "scala.ScObject",
+      "scala.ScEnum",
+      "scala.ScEnumCases",
+      "scala.ScEnumSingletonCase",
+      "scala.ScEnumClassCase",
+      "scala.extends block",
+      "scala.template body",
+      "scala.primary constructor",
+      "scala.parameter clauses",
+      "scala.parameter clause",
+      "scala.type parameter clause",
+      "scala.type parameter"
+    )
+    assertTrue(expectedExternalIds.subsetOf(externalIds))
     val output               = new ByteArrayOutputStream
     SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
     val restored             = new StubTree(

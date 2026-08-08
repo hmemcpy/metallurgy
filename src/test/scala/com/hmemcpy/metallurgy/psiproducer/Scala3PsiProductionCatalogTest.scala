@@ -881,6 +881,7 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.TemplateConstructor    -> Set(
         "template-constructor-synthetic",
         "template-constructor-explicit-empty",
+        "template-constructor-typed-parameters",
         "template-constructor-unbounded-type-parameters"
       ),
       GrammarRoleId.TypeParameterClause    -> Set("template-unbounded-type-bounds"),
@@ -889,12 +890,21 @@ final class Scala3PsiProductionCatalogTest:
         "template-unbounded-type-parameter-covariant",
         "template-unbounded-type-parameter-contravariant"
       ),
-      GrammarRoleId.TemplateSelf           -> Set("template-self-absent"),
+      GrammarRoleId.TermParameter          -> Set("definition-typed-parameter"),
+      GrammarRoleId.ClassParameter         -> Set("template-class-parameter", "template-context-class-parameter"),
+      GrammarRoleId.TemplateSelf           -> Set("template-self-absent", "template-self-simple"),
       GrammarRoleId.TemplateTypeTree       -> Set("template-type-tree-synthetic"),
       GrammarRoleId.FunctionDefinition     -> Set("definition-function-untyped"),
       GrammarRoleId.PropertyDefinition     -> Set("definition-val-untyped", "definition-var-untyped"),
       GrammarRoleId.ReferenceBinding       -> Set("definition-val-untyped", "definition-var-untyped"),
       GrammarRoleId.TypeAliasDeclaration   -> Set("definition-unbounded-type-alias"),
+      GrammarRoleId.TypeAliasDefinition    -> Set(
+        "definition-simple-ident-type-alias",
+        "definition-simple-select-type-alias",
+        "definition-simple-singleton-type-alias",
+        "definition-simple-literal-type-alias",
+        "definition-simple-parenthesized-type-alias"
+      ),
       GrammarRoleId.InferredTypeAbsence    -> Set("definition-inferred-type-absence"),
       GrammarRoleId.OutputFreeExpression   -> Set("payload-descendant-val", "payload-descendant-var"),
       GrammarRoleId.ExpressionPayload      -> Set(
@@ -974,7 +984,12 @@ final class Scala3PsiProductionCatalogTest:
         "template-enum-definition",
         "definition-function-untyped",
         "definition-val-untyped",
-        "definition-var-untyped"
+        "definition-var-untyped",
+        "definition-simple-ident-type-alias",
+        "definition-simple-select-type-alias",
+        "definition-simple-singleton-type-alias",
+        "definition-simple-literal-type-alias",
+        "definition-simple-parenthesized-type-alias"
       ),
       packageStatements.productionIds
     )

@@ -203,10 +203,21 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       assertEquals(
         """package dogfood.showcase
           |
+          |trait Base
+          |trait Other
+          |type TopAlias = Base
+          |def typedTop(value: Base): Base = value
+          |val typedValue: Base = ???
+          |var typedVariable: Base = typedValue
           |def topApply = List(1)
           |val topNumber = 1
           |var topIdent = topNumber
-          |class Braced[A, +B, -C]()() {
+          |class Braced[A, +B, -C](value: Base)(using context: Other) extends Base derives CanEqual {
+          |  self: Other =>
+          |  type Alias = Base
+          |  def declared: Base = value
+          |  val declaredValue: Base = value
+          |  var declaredVariable: Base = value
           |  trait NestedTrait[T]():
           |    type Abstract
           |  end NestedTrait
