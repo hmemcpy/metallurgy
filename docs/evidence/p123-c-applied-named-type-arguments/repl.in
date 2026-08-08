@@ -1,0 +1,6 @@
+import scala.language.experimental.namedTypeArguments
+def make[A]: A = ???
+def pair[A, B](first: A, second: B): (A, B) = (first, second)
+:type make[A = Int]
+:type pair[A = Int](1, "text")
+:quit

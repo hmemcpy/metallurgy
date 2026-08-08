@@ -16,7 +16,7 @@ import com.intellij.psi.stubs.{
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiErrorElement, PsiManager, SmartPointerManager}
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScConstructorInvocation
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScSelfTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParameterizedTypeElement, ScSelfTypeElement, ScTypeArgs}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScClassParameter, ScParameter, ScParameterType}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScFunction,
@@ -230,9 +230,44 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
     assertEquals(atoms, classParameters.flatMap(_.typeElement).map(_.getText))
     assertEquals(Vector.fill(atoms.size)("ScClassParameterImpl"), classParameters.map(_.getClass.getSimpleName))
 
-  def testLaterTypeFamiliesAndParentApplicationsRemainFailClosed(): Unit =
+  def testAppliedTypesMountIntoEveryAdmittedStubBearingOwner(): Unit =
+    val source  =
+      """trait Box[A]
+        |type Alias = Box[Int]
+        |def topResult: Box[Int] = ???
+        |val topValue: Box[Int] = topResult
+        |var topVariable: Box[Int] = topValue
+        |trait Members:
+        |  def declared: Box[Int]
+        |  def result(value: Box[Int]): Box[Int] = value
+        |  val value: Box[Int]
+        |  var variable: Box[Int]
+        |class Parameters(value: Box[Int]) extends Box[Int]
+        |""".stripMargin
+    val file    = physical("OwnerAppliedTypeMounts1.scala", source)
+    val applied = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScParameterizedTypeElement])
+      .asScala
+      .toVector
+      .filter(_.getText == "Box[Int]")
+
+    assertEquals(11, applied.size)
+    applied.foreach: value =>
+      assertEquals("Box", value.typeElement.getText)
+      assertEquals("[Int]", value.typeArgList.getText)
+      assertSame(value, value.typeElement.getParent)
+      assertSame(value, value.typeArgList.getParent)
+      assertEquals(Vector("Int"), value.typeArgList.typeArgs.map(_.getText).toVector)
+    val parent = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScConstructorInvocation])
+      .asScala
+      .find(_.getText == "Box[Int]")
+      .get
+    assertEquals(Some("[Int]"), parent.typeArgList.map(_.getText))
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeArgs]).asScala.forall(_.typeArgs.nonEmpty))
+
+  def testLaterTypeFamiliesAndTermParentApplicationsRemainFailClosed(): Unit =
     Vector(
-      "trait A\ntype Rejected = List[Int]\n",
       "trait A\ntype Rejected = Map[K = Int, V = String]\n",
       "trait A\ntype Rejected = List[?]\n",
       "trait A\ntype Rejected >: Nothing <: Any\n",

@@ -636,6 +636,22 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       assertSame(parameterized, parameterized.typeElement.getParent)
       assertSame(parameterized, parameterized.typeArgList.getParent)
       val bindings      = NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+      assertSame(
+        org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyTypeArguments.ElementType,
+        bindings.outputRoles(PsiOutputRoleId.NamedTypeArguments)
+      )
+      assertSame(
+        org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyNamedTypeArgument.ElementType,
+        bindings.outputRoles(PsiOutputRoleId.NamedTypeArgument)
+      )
+      assertEquals(
+        "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyTypeArguments",
+        bindings.outputSurfaces(PsiOutputRoleId.NamedTypeArguments)
+      )
+      assertEquals(
+        "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedTypeArgument",
+        bindings.outputSurfaces(PsiOutputRoleId.NamedTypeArgument)
+      )
       val brackets      = PsiTreeUtil
         .collectElements(file, element => element.getFirstChild == null && Set("[", "]")(element.getText))
         .toVector
@@ -760,11 +776,11 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 8),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 9),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "b5c1dcd9bd23b2897943a55b3777f7f583552bfe32791ce3c6ce7f3b3fecbd79",
+      "ab3075864bb786a5ea43dbd52d39d0ac86dc9583d2478d340994f043af34b0d6",
       Scala3DotcFileElementType.SchemaFingerprint
     )
 

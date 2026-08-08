@@ -39,6 +39,147 @@ import java.nio.file.Path
 final class Scala3ParserVerticalSliceTest:
 
   @Test
+  def appliedAndNamedTypeArgumentsRetainExactCompilerParserEvidence(): Unit =
+    val bridge = openBridge()
+    val source =
+      """import scala.language.experimental.namedTypeArguments
+        |class Coll[Elem]
+        |type One = List[Int]
+        |type Two = Either[Int, String]
+        |type Three[Elem] = Coll[Elem]
+        |def make[A]: A = ???
+        |def pair[A, B](first: A, second: B): A = first
+        |val positional = pair[Int, String](1, "text")
+        |val direct = make[A = Int]
+        |val invoked = pair[A = Int](1, "text")
+        |val allNamed = pair[A = Int, B = String](1, "text")
+        |val trivia = make[A /* left */ = /* right */ Int]
+        |""".stripMargin
+    try
+      val snapshot = parse(bridge, source, "file:///P123CParserEvidence.scala")
+
+      assertTrue(snapshot.diagnostics.isEmpty)
+      assertEquals(source, snapshot.sourceText)
+      assertEquals(ParserSyntaxSnapshot.digest(source), snapshot.sourceDigest)
+      assertEquals(source, ProvisionalSourceEvidencePlanner.plan(snapshot).toOption.get.reconstruct(source))
+
+      def ranged(production: String, text: String, from: Int = 0): ParserSyntaxNode =
+        val start = source.indexOf(text, from)
+        assertTrue(s"missing source text $text", start >= 0)
+        snapshot.nodes
+          .find:
+            case ParserSyntaxNode(_, `production`, _, ParserNodePosition.Positioned(range, _, _), _) =>
+              range == PcSourceRange(start, start + text.length)
+            case _                                                                                   => false
+          .getOrElse(throw new AssertionError(s"missing $production at '$text'"))
+
+      def nodeField(node: ParserSyntaxNode, name: String): ParserFieldValue =
+        node.fields.find(_.name == name).map(_.value).getOrElse(throw new AssertionError(s"missing $name on $node"))
+
+      val one   = ranged("AppliedTypeTree", "List[Int]")
+      val two   = ranged("AppliedTypeTree", "Either[Int, String]")
+      val three = ranged("AppliedTypeTree", "Coll[Elem]", source.indexOf("type Three"))
+      assertTrue(nodeField(one, "tpt").isInstanceOf[ParserFieldValue.Node])
+      assertEquals(1, nodeField(one, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+      assertEquals(2, nodeField(two, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+      assertEquals(1, nodeField(three, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+
+      val positional = ranged("TypeApply", "pair[Int, String]")
+      val direct     = ranged("TypeApply", "make[A = Int]")
+      val invocation = ranged("Apply", "pair[A = Int](1, \"text\")")
+      val nested     = ranged("TypeApply", "pair[A = Int]", source.indexOf("val invoked"))
+      assertEquals(ParserFieldValue.Node(nested.id), nodeField(invocation, "fun"))
+      assertEquals(2, nodeField(invocation, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+      assertEquals(2, nodeField(positional, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+      assertEquals(1, nodeField(direct, "args").asInstanceOf[ParserFieldValue.Repeated].values.size)
+
+      val allNamedStart = source.indexOf("pair[A = Int, B = String]")
+      val allNamed      = ranged("TypeApply", "pair[A = Int, B = String]", allNamedStart)
+      val namedIds      = nodeField(allNamed, "args")
+        .asInstanceOf[ParserFieldValue.Repeated]
+        .values
+        .collect:
+          case ParserFieldValue.Node(id) => id
+      assertEquals(2, namedIds.size)
+      assertEquals(
+        Vector("A", "B"),
+        namedIds.map: id =>
+          val named = snapshot.nodes.find(_.id == id).get
+          assertEquals("NamedArg", named.production)
+          assertTrue(
+            named.occurrences.exists(occurrence =>
+              occurrence.ownerNodeId == allNamed.id && occurrence.fieldPath.nonEmpty
+            )
+          )
+          nodeField(named, "name").asInstanceOf[ParserFieldValue.Name].value
+      )
+
+      val trivia = ranged("NamedArg", "A /* left */ = /* right */ Int")
+      assertEquals(
+        Vector("/* left */", "/* right */"),
+        snapshot.comments.filter(_.range.startOffset >= source.indexOf("val trivia")).map(_.raw)
+      )
+      trivia.position match
+        case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived) =>
+          assertEquals(
+            source.indexOf("A /* left */ = /* right */ Int", source.indexOf("val trivia")),
+            range.startOffset
+          )
+          assertEquals(range.startOffset, point)
+        case other                                                                               => throw new AssertionError(s"unexpected named argument position $other")
+
+      val punctuation = snapshot.scannerTokens.filter: token =>
+        val text = source.substring(token.range.startOffset, token.range.endOffset)
+        text.length == 1 && "[],=".contains(text)
+      assertTrue(punctuation.nonEmpty)
+      assertTrue(punctuation.forall(_.provenance == ParserPositionProvenance.SourceDerived))
+      assertTrue(punctuation.forall(token => token.point == token.range.startOffset))
+      assertTrue(
+        snapshot.nodes
+          .flatMap(_.fields)
+          .exists(field => field.name == "mods" && field.value.isInstanceOf[ParserFieldValue.Product])
+      )
+      assertEquals(snapshot, parse(bridge, source, "file:///P123CParserEvidence.scala"))
+    finally bridge.close()
+
+  @Test
+  def invalidNamedTypeArgumentContextsRetainExactDiagnostics(): Unit =
+    val bridge = openBridge()
+    try
+      val ordinary = parse(
+        bridge,
+        "import scala.language.experimental.namedTypeArguments\ntype Bad = List[A = Int]\n",
+        "file:///P123COrdinaryNamedNegative.scala"
+      )
+      val mixed    = parse(
+        bridge,
+        "import scala.language.experimental.namedTypeArguments\ndef pair[A, B](a: A, b: B) = a\nval bad = pair[A = Int, String](1, \"text\")\n",
+        "file:///P123CMixedNamedNegative.scala"
+      )
+
+      assertTrue(ordinary.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
+      assertTrue(mixed.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
+      assertTrue(
+        ordinary.diagnostics
+          .flatMap(_.position)
+          .forall(position => position.point >= 0 && position.point <= ordinary.sourceLength)
+      )
+      assertTrue(
+        mixed.diagnostics
+          .flatMap(_.position)
+          .forall(position => position.point >= 0 && position.point <= mixed.sourceLength)
+      )
+      assertEquals(
+        ordinary.sourceText,
+        ProvisionalSourceEvidencePlanner.plan(ordinary).toOption.get.reconstruct(ordinary.sourceText)
+      )
+      assertEquals(
+        mixed.sourceText,
+        ProvisionalSourceEvidencePlanner.plan(mixed).toOption.get.reconstruct(mixed.sourceText)
+      )
+    finally bridge.close()
+
+  @Test
   def minimizedCommaImportLowersSiblingCompilerProductsIntoOneStatement(): Unit =
     val bridge = openBridge()
     try
@@ -588,7 +729,7 @@ final class Scala3ParserVerticalSliceTest:
           "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
           "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
           "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
-          "5519778e278fa2b33303eefefcf25e7dc23118aab85d005fa5f9fbd28c65d34d"
+          "e4c0466b2b3d9decc9db686012e49427ef7a4012d3bfbb881b4bfce2f797faca"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -959,7 +1100,7 @@ final class Scala3ParserVerticalSliceTest:
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "e57d3b4bd47d62eb86aed7ab5f24228a0856c27300332248bde81af957b434c2"
+          "14ebbb057ea462f8d803c34eec8cfe1fecde2890fdcfc33293b7cab58f24c05e"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -1125,7 +1266,7 @@ final class Scala3ParserVerticalSliceTest:
         value.nodes
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
-      assertEquals("05957c00ee73910102bd13bcdb1ea6f86e958effc83ae394dfd65e5ccea9ca2e", aggregate.fingerprint)
+      assertEquals("224aea584e5733f182a3835cffde67dae0ed7623187c917855c048ed6551c501", aggregate.fingerprint)
       val identifierPackage    = parse(bridge, "package example\n", "file:///Scala3IdentifierPackageFamily.scala")
       val identifierInventory  = CompilerRuntimeInventory
         .from(identifierPackage)
@@ -1260,7 +1401,7 @@ final class Scala3ParserVerticalSliceTest:
         ),
         first.nodes.map(_.occurrences)
       )
-      assertEquals("2bf478948266a7b37969ca3d587bfe7702fd92319093b6646ca8fcf1169456a7", aggregate.fingerprint)
+      assertEquals("382a14c57a1c15000ed18b8725d9bc4d4bb72ca035fc5de34b0d31683e88bab8", aggregate.fingerprint)
       val catalog                = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-package") || production.id.startsWith("package-stable")
@@ -1440,7 +1581,7 @@ final class Scala3ParserVerticalSliceTest:
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("fd3a149fa1dbaf27a73cb4344b66e82a3d76d2e7d0b619c1ffa1f9e91af25764", aggregate.fingerprint)
+      assertEquals("f72787542f6c3e4a7f3a0e634d3426eddec7f7977fdc793d1d9d3416e94b5abc", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,

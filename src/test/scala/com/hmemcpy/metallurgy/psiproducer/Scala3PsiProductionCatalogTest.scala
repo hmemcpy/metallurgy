@@ -818,7 +818,8 @@ final class Scala3PsiProductionCatalogTest:
         "import-selector-bound-type",
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
-        "annotation-designator-select"
+        "annotation-designator-select",
+        "expression-named-type-argument-type"
       ),
       GrammarRoleId.TypeProjection         -> Set("type-atom-projection"),
       GrammarRoleId.SingletonType          -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
@@ -833,7 +834,26 @@ final class Scala3PsiProductionCatalogTest:
         "type-atom-literal-value-string",
         "type-atom-literal-value-boolean"
       ),
-      GrammarRoleId.AppliedType            -> Set("import-selector-bound-applied-type"),
+      GrammarRoleId.AppliedType            -> Set(
+        "import-selector-bound-applied-type",
+        "ordinary-applied-type",
+        "type-argument-applied"
+      ),
+      GrammarRoleId.TypeArgumentList       -> Set(
+        "import-selector-bound-applied-type",
+        "ordinary-applied-type",
+        "type-argument-applied",
+        "definition-payload-type-apply-positional",
+        "definition-payload-type-apply-named",
+        "payload-descendant-type-apply-positional",
+        "payload-descendant-type-apply-named"
+      ),
+      GrammarRoleId.PositionalTypeArgument -> Set(
+        "type-argument-ident",
+        "type-argument-applied",
+        "expression-type-argument-ident"
+      ),
+      GrammarRoleId.NamedTypeArgument      -> Set("expression-named-type-argument"),
       GrammarRoleId.WildcardType           -> Set("import-selector-given-bound-wildcard-type"),
       GrammarRoleId.InfixType              -> Set("import-selector-given-bound-infix-type"),
       GrammarRoleId.IntegerLiteral         -> Set("integer-literal-number"),
@@ -888,7 +908,8 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.UnboundedTypeParameter -> Set(
         "template-unbounded-type-parameter-invariant",
         "template-unbounded-type-parameter-covariant",
-        "template-unbounded-type-parameter-contravariant"
+        "template-unbounded-type-parameter-contravariant",
+        "function-unbounded-type-parameter"
       ),
       GrammarRoleId.TermParameter          -> Set("definition-typed-parameter"),
       GrammarRoleId.ClassParameter         -> Set("template-class-parameter", "template-context-class-parameter"),
@@ -903,10 +924,24 @@ final class Scala3PsiProductionCatalogTest:
         "definition-simple-select-type-alias",
         "definition-simple-singleton-type-alias",
         "definition-simple-literal-type-alias",
-        "definition-simple-parenthesized-type-alias"
+        "definition-simple-parenthesized-type-alias",
+        "definition-applied-type-alias"
       ),
       GrammarRoleId.InferredTypeAbsence    -> Set("definition-inferred-type-absence"),
-      GrammarRoleId.OutputFreeExpression   -> Set("payload-descendant-val", "payload-descendant-var"),
+      GrammarRoleId.OutputFreeExpression   -> Set(
+        "payload-descendant-val",
+        "payload-descendant-var",
+        "type-application-output-free-ident",
+        "type-application-output-free-number",
+        "type-application-output-free-literal"
+      ),
+      GrammarRoleId.ExpressionTypeApply    -> Set(
+        "definition-payload-type-apply-positional",
+        "definition-payload-type-apply-named",
+        "definition-payload-applied-call",
+        "payload-descendant-type-apply-positional",
+        "payload-descendant-type-apply-named"
+      ),
       GrammarRoleId.ExpressionPayload      -> Set(
         "annotation-argument-literal-payload",
         "definition-payload-number",
@@ -989,7 +1024,8 @@ final class Scala3PsiProductionCatalogTest:
         "definition-simple-select-type-alias",
         "definition-simple-singleton-type-alias",
         "definition-simple-literal-type-alias",
-        "definition-simple-parenthesized-type-alias"
+        "definition-simple-parenthesized-type-alias",
+        "definition-applied-type-alias"
       ),
       packageStatements.productionIds
     )

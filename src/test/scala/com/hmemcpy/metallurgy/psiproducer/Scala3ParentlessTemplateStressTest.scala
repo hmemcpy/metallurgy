@@ -4,11 +4,17 @@ import com.hmemcpy.metallurgy.compat.scala3.Scala3CompatTestCase
 import com.hmemcpy.metallurgy.pc.ParserSyntaxSnapshot
 import com.intellij.psi.{PsiErrorElement, PsiManager}
 import com.intellij.psi.util.PsiTreeUtil
-import org.jetbrains.plugins.scala.lang.psi.api.base.types.{ScParenthesisedTypeElement, ScSimpleTypeElement}
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScParameterizedTypeElement,
+  ScParenthesisedTypeElement,
+  ScSimpleTypeElement,
+  ScTypeArgs
+}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.ScPatternDefinition
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyTypeArguments
 import org.junit.Assert.{assertEquals, assertTrue}
 
 import scala.jdk.CollectionConverters.*
@@ -101,6 +107,33 @@ final class Scala3ParentlessTemplateStressTest extends Scala3CompatTestCase:
         val range = payload.getTextRange
         source.substring(range.getStartOffset, range.getEndOffset) == payload.getText
     )
+
+  def testDeepAppliedTypesHaveNoFiniteDepthCap(): Unit =
+    val depth  = 512
+    val nested = (0 until depth).foldLeft("Leaf")((value, index) => s"F$index[$value]")
+    val file   = physical("Case14.scala", s"type Deep = $nested\n")
+
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterizedTypeElement]).size)
+    assertEquals(depth, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeArgs]).size)
+
+  def testTenThousandPositionalAndNamedTypeArgumentsHaveNoFiniteCountCap(): Unit =
+    val count      = 10000
+    val positional = (0 until count).map(index => s"T$index").mkString(", ")
+    val named      = (0 until count).map(index => s"A$index = T$index").mkString(", ")
+    val source     =
+      s"import scala.language.experimental.namedTypeArguments\ntype Wide = F[$positional]\nval wide = make[$named]\n"
+    val file       = physical("Case15.scala", source)
+
+    val positionalList = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScTypeArgs])
+      .asScala
+      .find(!_.isInstanceOf[MetallurgyTypeArguments])
+      .get
+    val namedList      = PsiTreeUtil.findChildOfType(file, classOf[MetallurgyTypeArguments])
+    assertEquals(count, positionalList.typeArgs.size)
+    assertEquals(count, namedList.logicalTypeArguments.size)
+    assertEquals(count, namedList.namedTypeArguments.size)
+    assertTrue(namedList.typeArgs.isEmpty)
 
   private def physical(name: String, source: String): com.intellij.psi.PsiFile =
     val pending = myFixture.addFileToProject(s"src/$name", source)

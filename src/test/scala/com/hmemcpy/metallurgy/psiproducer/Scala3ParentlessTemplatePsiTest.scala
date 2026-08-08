@@ -468,7 +468,6 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       "class C[A <% Any]\n",
       "class C[A = Any]\n",
       "class C[[A] =>> List[A]]\n",
-      "def method[A](value: A): A = value\n",
       "val expressionAscription = (1: Int)\n",
       "val (left, right) = (1, 2)\n",
       "type Alias[A] = A\n",

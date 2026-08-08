@@ -205,8 +205,12 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
           |
           |trait Base
           |trait Other
+          |import scala.language.experimental.namedTypeArguments
           |type TopAlias = Base
+          |type AppliedAlias = List[Int]
           |def typedTop(value: Base): Base = value
+          |def choose[A]: A = ???
+          |val namedApplication = choose[A = Int]
           |val typedValue: Base = ???
           |var typedVariable: Base = typedValue
           |def topApply = List(1)

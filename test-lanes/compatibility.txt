@@ -21,6 +21,7 @@ com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3DerivingCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ExtensionsCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3ImplicitParametersCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTuplesCompatTest
+com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NamedTypeArgumentInferenceCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3NewTuplesCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3OpaqueTypeAliasCompatTest
 com.hmemcpy.metallurgy.compat.scala3.typeInference.Scala3OpaqueTypeAliasIntegrationCompatTest
