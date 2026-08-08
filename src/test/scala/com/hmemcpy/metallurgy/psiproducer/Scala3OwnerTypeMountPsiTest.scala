@@ -269,9 +269,6 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
   def testLaterTypeFamiliesAndTermParentApplicationsRemainFailClosed(): Unit =
     Vector(
       "trait A\ntype Rejected = Map[K = Int, V = String]\n",
-      "trait A\ntype Rejected = List[?]\n",
-      "trait A\ntype Rejected >: Nothing <: Any\n",
-      "trait A\ntype Rejected = [X] =>> X\n",
       "trait A\ntrait B\ntype Rejected = A & B\n",
       "trait A\ntrait B\ntype Rejected = A => B\n",
       "trait A\ntrait B\ntype Rejected = A *: B\n",
@@ -446,18 +443,38 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
       file.getText
     )
 
-  def testRepeatedAndDeepOwnerMountsHaveNoFinitePlannerCap(): Unit =
-    val parameterCount = 160
-    val depth          = 48
+  def testRepeatedAndDeepOwnerMountsRetainRepresentativeScale(): Unit =
+    val parameterCount = 32
+    val depth          = 16
     val parameters     = Vector.tabulate(parameterCount)(index => s"p$index: Base").mkString(", ")
     val nested         = Vector.tabulate(depth)(index => s"${"  " * index}class Level$index(value: Base):")
     val source         =
       s"trait Base\nclass Many($parameters)\n${nested.mkString("\n")}\n${"  " * depth}def result(value: Base): Base = value\n"
-    val file           = physical("OwnerTypeStress1.scala", source)
+    val file           = physical("OwnerTypeScale1.scala", source)
+    val classes        = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector.sortBy(_.getTextOffset)
+    val many           = classes.head
+    val levels         = classes.tail
+    val function       = PsiTreeUtil.findChildOfType(file, classOf[ScFunction])
     assertEquals(parameterCount + depth + 1, PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).size)
     assertEquals(depth + 1, PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).size)
     assertEquals(1, PsiTreeUtil.findChildrenOfType(file, classOf[ScFunction]).size)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    Vector(0, parameterCount / 2, parameterCount - 1).foreach: index =>
+      val parameter = many.parameters(index)
+      assertEquals(s"p$index: Base", parameter.getText)
+      assertEquals("Base", parameter.typeElement.get.getText)
+      assertTrue(parameter.typeElement.get.getParent.isInstanceOf[ScParameterType])
+      assertSame(parameter, parameter.typeElement.get.getParent.getParent)
+    Vector(0, depth / 2, depth - 1).foreach: index =>
+      assertEquals(s"Level$index", levels(index).name)
+      assertEquals(levels(index).getText, levels(index).getTextRange.substring(source))
+    levels.indices
+      .drop(1)
+      .foreach(index =>
+        assertSame(levels(index - 1), PsiTreeUtil.getParentOfType(levels(index), classOf[ScClass], true))
+      )
+    assertSame(levels.last, PsiTreeUtil.getParentOfType(function, classOf[ScClass], true))
+    assertEquals("Base", function.returnTypeElement.get.getText)
 
   private def stubShape(stubs: Iterable[Stub]): Vector[String] = stubs.iterator
     .flatMap(stub =>

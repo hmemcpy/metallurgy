@@ -265,6 +265,14 @@ final class Scala3PsiProductionCatalogTest:
       qualifier,
       repeated
     )
+    val adjacent                                      = InventoryAncestor(InventoryKind.Node, "Apply", qualifier)
+    val sequence                                      = ContextPattern.ParentWithRepeatedAncestorSequencePrefix(
+      InventoryKind.Node,
+      "Select",
+      qualifier,
+      Vector(repeated, adjacent),
+      Vector(anchor)
+    )
     def context(ancestors: Vector[InventoryAncestor]) =
       Some(InventoryContext(InventoryKind.Node, "Select", qualifier, ancestors))
     val direct                                        = Some(InventoryContext(anchor.ownerKind, anchor.ownerPrefix, anchor.path))
@@ -272,7 +280,7 @@ final class Scala3PsiProductionCatalogTest:
     Vector(
       context(Vector(anchor)),
       context(Vector(repeated, anchor)),
-      context(Vector.fill(10000)(repeated) :+ anchor)
+      context(Vector.fill(32)(repeated) :+ anchor)
     ).foreach: candidate =>
       assertTrue(CatalogShapeMatcher.contextMatches(pattern, candidate))
       assertTrue(CatalogShapeMatcher.aggregateContextMatches(pattern, candidate))
@@ -280,12 +288,18 @@ final class Scala3PsiProductionCatalogTest:
       assertTrue(CatalogShapeMatcher.aggregateContextMatches(anchored, candidate))
     assertTrue(CatalogShapeMatcher.contextMatches(anchored, direct))
     assertTrue(CatalogShapeMatcher.aggregateContextMatches(anchored, direct))
+    Vector(
+      context(Vector(anchor)),
+      context(Vector(repeated, adjacent, anchor)),
+      context(Vector.fill(16)(Vector(repeated, adjacent)).flatten :+ anchor)
+    ).foreach: candidate =>
+      assertTrue(CatalogShapeMatcher.contextMatches(sequence, candidate))
+      assertTrue(CatalogShapeMatcher.aggregateContextMatches(sequence, candidate))
 
-    val adjacent = InventoryAncestor(InventoryKind.Node, "Apply", qualifier)
     Vector(
       None,
       context(Vector.empty),
-      context(Vector.fill(10000)(repeated)),
+      context(Vector.fill(32)(repeated)),
       context(Vector(repeated, adjacent, anchor)),
       Some(
         InventoryContext(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("other")), Vector(anchor))
@@ -295,6 +309,124 @@ final class Scala3PsiProductionCatalogTest:
       assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, candidate))
       assertFalse(CatalogShapeMatcher.contextMatches(anchored, candidate))
       assertFalse(CatalogShapeMatcher.aggregateContextMatches(anchored, candidate))
+    Vector(
+      None,
+      context(Vector.empty),
+      context(Vector.fill(16)(Vector(repeated, adjacent)).flatten),
+      context(Vector(adjacent, repeated, anchor)),
+      context(Vector(repeated, adjacent, repeated, anchor))
+    ).foreach: candidate =>
+      assertFalse(CatalogShapeMatcher.contextMatches(sequence, candidate))
+      assertFalse(CatalogShapeMatcher.aggregateContextMatches(sequence, candidate))
+
+  @Test def sourceOrderedTerminalRangeWorkRetainsExactSelectionsWithNLogNGrowth(): Unit =
+    val sizes = Vector(32, 64, 128, 256, 512)
+    val work  = sizes.map: size =>
+      val tokens         = Vector.tabulate(size)(index => f"t$index%04d")
+      val source         = tokens.mkString(" ")
+      val lexical        = ClosedSourceLexicalContract.from(source)
+      val observer       = new CountingPlanningWorkObserver
+      val lexicalIndex   = new SourceOrderedRangeIndex(
+        lexical.atoms,
+        _.start,
+        _.end,
+        observer.terminalLexicalEntries
+      )
+      val candidateIndex = new SourceOrderedRangeIndex(
+        lexical.atoms,
+        _.start,
+        _.end,
+        observer.terminalCandidateEntries
+      )
+      val tokenAtoms     = lexical.atoms.filter(_.kind == ClosedSourceLexicalKind.Identifier)
+      val selected       = tokenAtoms.zipWithIndex.map: (token, index) =>
+        val range      = PcSourceRange(token.start, token.end)
+        val lexicalAt  = lexicalIndex.within(range)
+        val candidates = candidateIndex.within(range)
+        assertEquals(Vector(token), lexicalAt)
+        assertEquals(Vector(token), candidates)
+        assertEquals(tokens(index), source.substring(token.start, token.end))
+        token
+
+      assertEquals(tokenAtoms, selected)
+      assertEquals(selected.size, selected.distinct.size)
+      assertEquals(
+        source,
+        lexicalIndex
+          .within(PcSourceRange(0, source.length))
+          .map(atom => source.substring(atom.start, atom.end))
+          .mkString
+      )
+      Vector(0, size / 2, size - 1).foreach: index =>
+        val atom = selected(index)
+        assertEquals(tokens(index), source.substring(atom.start, atom.end))
+      val logarithmicCeiling = 32 - Integer.numberOfLeadingZeros(lexical.atoms.size - 1)
+      val envelope           = 8L * size * (logarithmicCeiling + 2L) + 128L
+      assertTrue(
+        s"size=$size lexical=${observer.terminalLexical} candidates=${observer.terminalCandidates} envelope=$envelope",
+        observer.terminalLexical + observer.terminalCandidates <= envelope
+      )
+      observer.terminalLexical + observer.terminalCandidates
+
+    work
+      .sliding(2)
+      .foreach:
+        case Vector(previous, current) =>
+          assertTrue(s"previous=$previous current=$current", current <= 3L * previous + 256L)
+        case _                         => ()
+
+  private final class CountingPlanningWorkObserver extends PlanningWorkObserver:
+    var terminalLexical: Long    = 0L
+    var terminalCandidates: Long = 0L
+
+    override def finalOwnershipEntries(count: Int): Unit    = ()
+    override def terminalLexicalEntries(count: Int): Unit   = terminalLexical += count
+    override def terminalCandidateEntries(count: Int): Unit = terminalCandidates += count
+
+  @Test def boundedTypeParameterSelectionAcceptsNestedLambdaLineageAndRejectsOtherParents(): Unit =
+    val lambdaParameter                                                = InventoryAncestor(
+      InventoryKind.Node,
+      "LambdaTypeTree",
+      Vector(CatalogPathSegment.NamedField("tparams"), CatalogPathSegment.RepeatedElement)
+    )
+    val lambdaBody                                                     = InventoryAncestor(
+      InventoryKind.Node,
+      "LambdaTypeTree",
+      Vector(CatalogPathSegment.NamedField("body"))
+    )
+    val outerAlias                                                     = InventoryAncestor(
+      InventoryKind.Node,
+      "TypeDef",
+      Vector(CatalogPathSegment.NamedField("rhs"))
+    )
+    val fields                                                         = Vector(
+      InventoryFieldObservation("lo", InventoryValueObservation.Node(1L, "Ident")),
+      InventoryFieldObservation("hi", InventoryValueObservation.Node(2L, "Ident")),
+      InventoryFieldObservation("alias", InventoryValueObservation.Node(3L, "Thicket"))
+    )
+    def selected(ancestors: Vector[InventoryAncestor]): Vector[String] = CatalogShapeMatcher
+      .select(
+        Scala3PsiProductionCatalog.Reviewed,
+        InventoryKind.Node,
+        "TypeBoundsTree",
+        fields,
+        Some(
+          InventoryContext(
+            InventoryKind.Node,
+            "TypeDef",
+            Vector(CatalogPathSegment.NamedField("rhs")),
+            ancestors
+          )
+        ),
+        SourceClassification.SourceReachable
+      )
+      .map(_.id)
+
+    assertEquals(
+      Vector("type-parameter-bounds"),
+      selected(lambdaParameter +: Vector.fill(16)(lambdaBody) :+ outerAlias)
+    )
+    assertTrue(selected(lambdaBody +: Vector.fill(16)(lambdaBody) :+ outerAlias).isEmpty)
 
   @Test def parentContextMatchesMixedTypeLineageOnlyUnderItsSelectorAnchor(): Unit =
     val anchor     = InventoryAncestor(
@@ -781,18 +913,18 @@ final class Scala3PsiProductionCatalogTest:
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
-      GrammarRoleId.CompilationUnit        -> Set("file-top-statements"),
-      GrammarRoleId.PackageClause          -> Set("file-package", "file-package-top-statements"),
-      GrammarRoleId.PackageReference       -> Set("file-import-empty-package"),
-      GrammarRoleId.ImportStatement        -> Set("import-statement"),
-      GrammarRoleId.ExportStatement        -> Set("export-statement"),
-      GrammarRoleId.AbsentProduct          -> Set(
+      GrammarRoleId.CompilationUnit           -> Set("file-top-statements"),
+      GrammarRoleId.PackageClause             -> Set("file-package", "file-package-top-statements"),
+      GrammarRoleId.PackageReference          -> Set("file-import-empty-package"),
+      GrammarRoleId.ImportStatement           -> Set("import-statement"),
+      GrammarRoleId.ExportStatement           -> Set("export-statement"),
+      GrammarRoleId.AbsentProduct             -> Set(
         "import-expression-absent",
         "import-selector-absent",
         "import-selector-given-bound-absent",
         "template-absent-tree"
       ),
-      GrammarRoleId.StableReference        -> Set(
+      GrammarRoleId.StableReference           -> Set(
         "import-path-identifier-reference",
         "import-path-reference",
         "import-path-identifier",
@@ -807,25 +939,25 @@ final class Scala3PsiProductionCatalogTest:
         "type-atom-singleton-reference-ident",
         "type-atom-singleton-reference-select"
       ),
-      GrammarRoleId.ImportSelector         -> Set("import-selector-direct", "import-selector-braced"),
-      GrammarRoleId.ImportSelectorName     -> Set(
+      GrammarRoleId.ImportSelector            -> Set("import-selector-direct", "import-selector-braced"),
+      GrammarRoleId.ImportSelectorName        -> Set(
         "import-selector-name",
         "import-selector-hidden-name",
         "import-selector-wildcard-name",
         "import-selector-empty-name"
       ),
-      GrammarRoleId.SimpleType             -> Set(
+      GrammarRoleId.SimpleType                -> Set(
         "import-selector-bound-type",
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
         "annotation-designator-select",
         "expression-named-type-argument-type"
       ),
-      GrammarRoleId.TypeProjection         -> Set("type-atom-projection"),
-      GrammarRoleId.SingletonType          -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
-      GrammarRoleId.LiteralType            -> Set("type-atom-literal"),
-      GrammarRoleId.ParenthesizedType      -> Set("type-atom-parenthesized"),
-      GrammarRoleId.LiteralValue           -> Set(
+      GrammarRoleId.TypeProjection            -> Set("type-atom-projection"),
+      GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
+      GrammarRoleId.LiteralType               -> Set("type-atom-literal"),
+      GrammarRoleId.ParenthesizedType         -> Set("type-atom-parenthesized"),
+      GrammarRoleId.LiteralValue              -> Set(
         "type-atom-literal-value-integer",
         "type-atom-literal-value-long",
         "type-atom-literal-value-float",
@@ -834,12 +966,32 @@ final class Scala3PsiProductionCatalogTest:
         "type-atom-literal-value-string",
         "type-atom-literal-value-boolean"
       ),
-      GrammarRoleId.AppliedType            -> Set(
+      GrammarRoleId.AppliedType               -> Set(
         "import-selector-bound-applied-type",
         "ordinary-applied-type",
         "type-argument-applied"
       ),
-      GrammarRoleId.TypeArgumentList       -> Set(
+      GrammarRoleId.TypeBounds                -> Set(
+        "higher-kinded-result-bounds",
+        "context-bound-base-bounds",
+        "type-parameter-bounds",
+        "type-alias-bounds"
+      ),
+      GrammarRoleId.ContextBounds             -> Set(
+        "template-context-bounded-type-parameter-invariant",
+        "template-context-bounded-type-parameter-covariant",
+        "template-context-bounded-type-parameter-contravariant",
+        "function-context-bounded-type-parameter",
+        "type-parameter-context-bounds"
+      ),
+      GrammarRoleId.ContextBound              -> Set(
+        "type-parameter-context-bound",
+        "type-parameter-named-context-bound",
+        "type-parameter-synthetic-context-bound"
+      ),
+      GrammarRoleId.TypeLambda                -> Set("explicit-type-lambda"),
+      GrammarRoleId.TermLambda                -> Set("type-definition-term-lambda"),
+      GrammarRoleId.TypeArgumentList          -> Set(
         "import-selector-bound-applied-type",
         "ordinary-applied-type",
         "type-argument-applied",
@@ -848,24 +1000,27 @@ final class Scala3PsiProductionCatalogTest:
         "payload-descendant-type-apply-positional",
         "payload-descendant-type-apply-named"
       ),
-      GrammarRoleId.PositionalTypeArgument -> Set(
+      GrammarRoleId.PositionalTypeArgument    -> Set(
         "type-argument-ident",
         "type-argument-applied",
         "expression-type-argument-ident"
       ),
-      GrammarRoleId.NamedTypeArgument      -> Set("expression-named-type-argument"),
-      GrammarRoleId.WildcardType           -> Set("import-selector-given-bound-wildcard-type"),
-      GrammarRoleId.InfixType              -> Set("import-selector-given-bound-infix-type"),
-      GrammarRoleId.IntegerLiteral         -> Set("integer-literal-number"),
-      GrammarRoleId.Modifiers              -> Set(
+      GrammarRoleId.NamedTypeArgument         -> Set("expression-named-type-argument"),
+      GrammarRoleId.WildcardType              -> Set(
+        "import-selector-given-bound-wildcard-type",
+        "ordinary-wildcard-type"
+      ),
+      GrammarRoleId.InfixType                 -> Set("import-selector-given-bound-infix-type"),
+      GrammarRoleId.IntegerLiteral            -> Set("integer-literal-number"),
+      GrammarRoleId.Modifiers                 -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
         "modifiers-keywords",
         "modifiers-annotations-keywords",
         "modifiers-absent"
       ),
-      GrammarRoleId.AccessModifier         -> Set("modifier-access-private", "modifier-access-protected"),
-      GrammarRoleId.KeywordModifier        -> Set(
+      GrammarRoleId.AccessModifier            -> Set("modifier-access-private", "modifier-access-protected"),
+      GrammarRoleId.KeywordModifier           -> Set(
         "modifier-keyword-abstract",
         "modifier-keyword-final",
         "modifier-keyword-sealed",
@@ -880,69 +1035,106 @@ final class Scala3PsiProductionCatalogTest:
         "modifier-keyword-opaque",
         "modifier-keyword-given"
       ),
-      GrammarRoleId.Annotations            -> Set(
+      GrammarRoleId.Annotations               -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
         "modifiers-annotations-keywords"
       ),
-      GrammarRoleId.Annotation             -> Set(
+      GrammarRoleId.Annotation                -> Set(
         "annotation-apply-simple",
         "annotation-apply-arguments",
         "annotation-constructor-select",
         "annotation-constructor-new"
       ),
-      GrammarRoleId.AnnotationArguments    -> Set("annotation-apply-arguments"),
-      GrammarRoleId.ClassDefinition        -> Set("template-class-definition"),
-      GrammarRoleId.TraitDefinition        -> Set("template-trait-definition"),
-      GrammarRoleId.ObjectDefinition       -> Set("template-object-definition"),
-      GrammarRoleId.EnumDefinition         -> Set("template-enum-definition"),
-      GrammarRoleId.EnumCase               -> Set("enum-singleton-case", "enum-class-case"),
-      GrammarRoleId.Template               -> Set("template-template"),
-      GrammarRoleId.TemplateConstructor    -> Set(
+      GrammarRoleId.AnnotationArguments       -> Set("annotation-apply-arguments"),
+      GrammarRoleId.ClassDefinition           -> Set("template-class-definition"),
+      GrammarRoleId.TraitDefinition           -> Set("template-trait-definition"),
+      GrammarRoleId.ObjectDefinition          -> Set("template-object-definition"),
+      GrammarRoleId.EnumDefinition            -> Set("template-enum-definition"),
+      GrammarRoleId.EnumCase                  -> Set("enum-singleton-case", "enum-class-case"),
+      GrammarRoleId.Template                  -> Set("template-template"),
+      GrammarRoleId.TemplateConstructor       -> Set(
         "template-constructor-synthetic",
         "template-constructor-explicit-empty",
         "template-constructor-typed-parameters",
         "template-constructor-unbounded-type-parameters"
       ),
-      GrammarRoleId.TypeParameterClause    -> Set("template-unbounded-type-bounds"),
-      GrammarRoleId.UnboundedTypeParameter -> Set(
+      GrammarRoleId.TypeParameterClause       -> Set(
+        "template-unbounded-type-bounds",
+        "higher-kinded-parameter-lambda",
+        "type-definition-lambda-encoding",
+        "type-definition-ident-lambda-encoding",
+        "type-definition-select-lambda-encoding",
+        "type-definition-singleton-lambda-encoding",
+        "type-definition-literal-lambda-encoding",
+        "type-definition-parenthesized-lambda-encoding",
+        "type-definition-applied-lambda-encoding",
+        "type-definition-nested-lambda-encoding"
+      ),
+      GrammarRoleId.UnboundedTypeParameter    -> Set(
         "template-unbounded-type-parameter-invariant",
         "template-unbounded-type-parameter-covariant",
         "template-unbounded-type-parameter-contravariant",
         "function-unbounded-type-parameter"
       ),
-      GrammarRoleId.TermParameter          -> Set("definition-typed-parameter"),
-      GrammarRoleId.ClassParameter         -> Set("template-class-parameter", "template-context-class-parameter"),
-      GrammarRoleId.TemplateSelf           -> Set("template-self-absent", "template-self-simple"),
-      GrammarRoleId.TemplateTypeTree       -> Set("template-type-tree-synthetic"),
-      GrammarRoleId.FunctionDefinition     -> Set("definition-function-untyped"),
-      GrammarRoleId.PropertyDefinition     -> Set("definition-val-untyped", "definition-var-untyped"),
-      GrammarRoleId.ReferenceBinding       -> Set("definition-val-untyped", "definition-var-untyped"),
-      GrammarRoleId.TypeAliasDeclaration   -> Set("definition-unbounded-type-alias"),
-      GrammarRoleId.TypeAliasDefinition    -> Set(
+      GrammarRoleId.BoundedTypeParameter      -> Set(
+        "template-unbounded-type-parameter-invariant",
+        "template-unbounded-type-parameter-covariant",
+        "template-unbounded-type-parameter-contravariant",
+        "template-context-bounded-type-parameter-invariant",
+        "template-context-bounded-type-parameter-covariant",
+        "template-context-bounded-type-parameter-contravariant",
+        "function-unbounded-type-parameter",
+        "function-context-bounded-type-parameter"
+      ),
+      GrammarRoleId.HigherKindedTypeParameter -> Set(
+        "template-higher-kinded-type-parameter-invariant",
+        "template-higher-kinded-type-parameter-covariant",
+        "template-higher-kinded-type-parameter-contravariant",
+        "higher-kinded-nested-type-parameter"
+      ),
+      GrammarRoleId.TermParameter             -> Set(
+        "definition-typed-parameter",
+        "type-definition-term-parameter"
+      ),
+      GrammarRoleId.ClassParameter            -> Set(
+        "template-class-parameter",
+        "template-enum-class-parameter",
+        "template-context-class-parameter"
+      ),
+      GrammarRoleId.TemplateSelf              -> Set("template-self-absent", "template-self-simple"),
+      GrammarRoleId.TemplateTypeTree          -> Set("template-type-tree-synthetic"),
+      GrammarRoleId.FunctionDefinition        -> Set("definition-function-untyped"),
+      GrammarRoleId.PropertyDefinition        -> Set("definition-val-untyped", "definition-var-untyped"),
+      GrammarRoleId.ReferenceBinding          -> Set("definition-val-untyped", "definition-var-untyped"),
+      GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),
+      GrammarRoleId.TypeAliasDefinition       -> Set(
         "definition-simple-ident-type-alias",
         "definition-simple-select-type-alias",
         "definition-simple-singleton-type-alias",
         "definition-simple-literal-type-alias",
         "definition-simple-parenthesized-type-alias",
-        "definition-applied-type-alias"
+        "definition-applied-type-alias",
+        "definition-opaque-simple-ident-type-alias",
+        "definition-opaque-bounded-type-alias",
+        "definition-type-lambda-alias"
       ),
-      GrammarRoleId.InferredTypeAbsence    -> Set("definition-inferred-type-absence"),
-      GrammarRoleId.OutputFreeExpression   -> Set(
+      GrammarRoleId.InferredTypeAbsence       -> Set("definition-inferred-type-absence"),
+      GrammarRoleId.OutputFreeExpression      -> Set(
         "payload-descendant-val",
         "payload-descendant-var",
         "type-application-output-free-ident",
         "type-application-output-free-number",
         "type-application-output-free-literal"
       ),
-      GrammarRoleId.ExpressionTypeApply    -> Set(
+      GrammarRoleId.ExpressionTypeApply       -> Set(
         "definition-payload-type-apply-positional",
         "definition-payload-type-apply-named",
         "definition-payload-applied-call",
         "payload-descendant-type-apply-positional",
         "payload-descendant-type-apply-named"
       ),
-      GrammarRoleId.ExpressionPayload      -> Set(
+      GrammarRoleId.ExpressionPayload         -> Set(
         "annotation-argument-literal-payload",
         "definition-payload-number",
         "definition-payload-ident",
@@ -975,9 +1167,24 @@ final class Scala3PsiProductionCatalogTest:
       )
     )
 
-    val composites      = catalog.productions.flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
-    val terminals       = catalog.productions.flatMap(_.terminals)
-    val usedRoles       = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
+    val composites            = catalog.productions.flatMap(_.effectiveOutputRealizations.flatMap(_.template.composites))
+    val sourceContextBound    = catalog.productions.find(_.id == "type-parameter-context-bound").get
+    val syntheticContextBound = catalog.productions.find(_.id == "type-parameter-synthetic-context-bound").get
+    assertEquals(
+      Set(SourceClassification.SourceReachable),
+      sourceContextBound.pattern.occurrences.map(_.sourceClassification).toSet
+    )
+    assertEquals(
+      Set(SourceClassification.Synthetic),
+      syntheticContextBound.pattern.occurrences.map(_.sourceClassification).toSet
+    )
+    assertEquals(
+      Vector(PsiOutputRoleId.ContextBound),
+      sourceContextBound.effectiveOutputTemplate.composites.map(_.outputRoleId)
+    )
+    assertTrue(syntheticContextBound.effectiveOutputTemplate.composites.isEmpty)
+    val terminals             = catalog.productions.flatMap(_.terminals)
+    val usedRoles             = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
     assertEquals(catalog.stableRoles.outputRoles, usedRoles)
     assertTrue(composites.forall(output => output.outputRoleId.value != output.targetSurfaceId))
     assertTrue(terminals.forall(terminal => catalog.stableRoles.outputRoles(terminal.outputRoleId)))
@@ -986,19 +1193,19 @@ final class Scala3PsiProductionCatalogTest:
         .filter(production => production.outputTemplate.isEmpty && production.outputRealizations.isEmpty)
         .forall(_.outputRoleId.nonEmpty)
     )
-    val installedErrors = Scala3PsiProductionCatalogValidator.validateExecutable(
+    val installedErrors       = Scala3PsiProductionCatalogValidator.validateExecutable(
       catalog,
       inventory(annotationModifierSnapshot),
       ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
     )
-    val packetMethods   = Set(
+    val packetMethods         = Set(
       "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl#modifiersOrdered()Lscala/collection/immutable/Seq;",
       "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl#idText()Lscala/Option;",
       "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl#getAnnotations()[Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotation;",
       "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression#type()Lscala/util/Either;",
       "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression#innerType()Lscala/util/Either;"
     )
-    val methodFailures  = installedErrors.collect:
+    val methodFailures        = installedErrors.collect:
       case value @ CatalogValidationError.InvalidSurface(_, _, id, _) if packetMethods(id)          => value
       case value @ CatalogValidationError.InvalidSurfaceOwner(_, _, id, _) if packetMethods(id)     => value
       case value @ CatalogValidationError.IncompleteSurfaceStatus(_, _, id, _) if packetMethods(id) => value
@@ -1025,7 +1232,10 @@ final class Scala3PsiProductionCatalogTest:
         "definition-simple-singleton-type-alias",
         "definition-simple-literal-type-alias",
         "definition-simple-parenthesized-type-alias",
-        "definition-applied-type-alias"
+        "definition-applied-type-alias",
+        "definition-opaque-simple-ident-type-alias",
+        "definition-type-lambda-alias",
+        "definition-opaque-bounded-type-alias"
       ),
       packageStatements.productionIds
     )
@@ -1787,7 +1997,7 @@ final class Scala3PsiProductionCatalogTest:
         InventoryValueObservation.Scalar(ParserScalar.Logical(true))
       )
     )
-    val observed = InventoryValueObservation.Product(
+    val observed      = InventoryValueObservation.Product(
       "Pair",
       Vector(InventoryFieldObservation("actual", InventoryValueObservation.Name("x")))
     )
@@ -1800,7 +2010,7 @@ final class Scala3PsiProductionCatalogTest:
         observed
       )
     )
-    val scalar   = InventoryValueObservation.Scalar(ParserScalar.LongInteger(1026L))
+    val scalar        = InventoryValueObservation.Scalar(ParserScalar.LongInteger(1026L))
     assertTrue(CatalogShapeMatcher.matches(CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(1026)"), scalar))
     assertFalse(CatalogShapeMatcher.matches(CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(0)"), scalar))
     assertTrue(
@@ -1813,6 +2023,31 @@ final class Scala3PsiProductionCatalogTest:
       CatalogShapeMatcher.covers(
         CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(0)"),
         CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(1026)")
+      )
+    )
+    val emptyOrValues = CatalogValuePattern.AnyOf(
+      Vector(
+        CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node),
+        CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.NodePrefix("ValDef"))
+      )
+    )
+    assertTrue(CatalogShapeMatcher.matches(emptyOrValues, InventoryValueObservation.Repeated(Vector.empty)))
+    assertTrue(
+      CatalogShapeMatcher.matches(
+        emptyOrValues,
+        InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Node(1L, "ValDef")))
+      )
+    )
+    assertFalse(
+      CatalogShapeMatcher.matches(
+        emptyOrValues,
+        InventoryValueObservation.Repeated(Vector(InventoryValueObservation.Node(1L, "TypeDef")))
+      )
+    )
+    assertTrue(
+      CatalogShapeMatcher.covers(
+        emptyOrValues,
+        CatalogValuePattern.EmptyRepeated(CatalogValuePattern.NodePrefix("ValDef"))
       )
     )
 

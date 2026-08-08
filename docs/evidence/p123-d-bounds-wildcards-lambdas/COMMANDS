@@ -1,0 +1,17 @@
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 BoundsWildcardsLambdas.scala
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 --scalac-option -Xprint:typer BoundsWildcardsLambdas.scala
+gtimeout --kill-after=5s 120s scala-cli repl --server=false --scala 3.7.4 < repl.in
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 --scalac-option=-language:experimental.modularity TermLambdaParserOnly.scala
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 --scalac-option=-language:experimental.modularity TermLambdaArrowNegative.scala
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.5.2 p123d-bounded-alternating-lambda-depth16.scala
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.5.2 --scalac-option -Xprint:typer p123d-bounded-alternating-lambda-depth16.scala
+gtimeout --kill-after=5s 120s scala-cli repl --server=false --scala 3.5.2 < p123d-bounded-alternating-lambda-depth16.scala
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.pc.Scala3BoundsWildcardLambdaParserInventoryTest"
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.psiproducer.Scala3BoundsWildcardLambdaPsiTest"
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.psiproducer.DialectProjectReopenTest"
+scripts/run-test-lane.sh test-lanes/baseline-editor-operations.txt --run-id p123d-editor-20260808T1825Z --timeout-seconds 120
+scripts/run-test-lane.sh test-lanes/baseline-semantics.txt --run-id p123d-semantics-20260808T1833Z --timeout-seconds 120
+scripts/run-test-lane.sh test-lanes/baseline-editor-operations.txt --run-id p123c-control-editor-20260808T1900Z --timeout-seconds 120
+scripts/run-test-lane.sh test-lanes/baseline-semantics.txt --run-id p123c-control-semantics-20260808T1902Z --timeout-seconds 120
+gtimeout --kill-after=5s 120s ideprobe-tests/run-ide-probe.sh "$JAVA_HOME/bin/java" --add-opens=java.base/java.lang=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Xms64m -Xmx300m -cp "$classpath" org.junit.runner.JUnitCore com.hmemcpy.metallurgy.ideprobe.ProjectLifecycleTest
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.psiproducer.Scala3RepresentativeScalePsiTest"

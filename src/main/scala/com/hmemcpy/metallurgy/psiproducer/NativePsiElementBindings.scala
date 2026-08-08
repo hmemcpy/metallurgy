@@ -64,6 +64,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScStringLiteral
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScContextBound,
   ScInfixTypeElement,
   ScLiteralTypeElement,
   ScParameterizedTypeElement,
@@ -73,6 +74,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScTypeArgs,
   ScTypeElement,
   ScTypeProjection,
+  ScTypeLambdaTypeElement,
   ScWildcardTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
@@ -176,27 +178,33 @@ private[metallurgy] object NativePsiElementBindings:
       entry: com.intellij.psi.PsiElement
   )
 
-  val EndKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#EndKeyword"
-  val ImportWildcardTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardStar"
-  val ImportLegacyWildcardTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUNDER"
-  val ImportAliasAsTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasAs"
-  val ImportAliasArrowTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasArrow"
-  val TypeArgumentLeftTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLSQBRACKET"
-  val TypeArgumentRightTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRSQBRACKET"
-  val WildcardQuestionTokenSurface     =
+  val EndKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#EndKeyword"
+  val ImportWildcardTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardStar"
+  val ImportLegacyWildcardTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUNDER"
+  val ImportAliasAsTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasAs"
+  val ImportAliasArrowTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasArrow"
+  val TypeArgumentLeftTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLSQBRACKET"
+  val TypeArgumentRightTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRSQBRACKET"
+  val WildcardQuestionTokenSurface       =
     "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardTypeQuestionMark"
-  val LowerTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
-  val UpperTypeBoundTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
-  val AssignmentTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
-  val ValueKeywordTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
-  val TypePathDotTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
-  val TypeProjectionHashTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
-  val SingletonTypeKeywordTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
-  val TypeLeftParenthesisTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
-  val TypeRightParenthesisTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
-  val AnnotatedMemberIndexSurface      =
+  val LowerTypeBoundTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
+  val UpperTypeBoundTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
+  val VarianceTokenSurface               = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
+  val ContextBoundColonTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
+  val ContextBoundLeftBraceTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLBRACE"
+  val ContextBoundRightBraceTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRBRACE"
+  val ContextBoundCommaTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
+  val ContextBoundAsTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#AsKeyword"
+  val AssignmentTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
+  val ValueKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
+  val TypePathDotTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
+  val TypeProjectionHashTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
+  val SingletonTypeKeywordTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
+  val TypeLeftParenthesisTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
+  val TypeRightParenthesisTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
+  val AnnotatedMemberIndexSurface        =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
-  val ModifierKeywordSurfaceIds        = Map(
+  val ModifierKeywordSurfaceIds          = Map(
     "Abstract"    -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kABSTRACT",
     "Final"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kFINAL",
     "Sealed"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kSEALED",
@@ -211,11 +219,11 @@ private[metallurgy] object NativePsiElementBindings:
     "Opaque"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#OpaqueKeyword",
     "Given"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#GivenKeyword"
   )
-  val AccessModifierKeywordSurfaceIds  = Map(
+  val AccessModifierKeywordSurfaceIds    = Map(
     "Private"   -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPRIVATE",
     "Protected" -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPROTECTED"
   )
-  private val ModifierTokenSurfaceIds  = ModifierKeywordSurfaceIds ++ AccessModifierKeywordSurfaceIds
+  private val ModifierTokenSurfaceIds    = ModifierKeywordSurfaceIds ++ AccessModifierKeywordSurfaceIds
 
   def probe(project: Project): Either[String, NativePsiElementBindings] =
     if ApplicationManager.getApplication.isReadAccessAllowed then probeInReadAction(project)
@@ -249,6 +257,8 @@ private[metallurgy] object NativePsiElementBindings:
           |  protected[this] final inline def member = 1
           |class EmptyConstructor()
           |class Generic[+A, -B, C]()
+          |trait BoundsProbe[+D >: Lower <: Upper, F[_], G: Bound]
+          |type LambdaProbe = [X >: Lower <: Upper] =>> List[X]
           |trait TraitProbe
           |object ObjectProbe
           |enum EnumProbe derives CanEqual:
@@ -354,6 +364,8 @@ private[metallurgy] object NativePsiElementBindings:
     val wildcardType             = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
     val wildcardLower            = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
     val wildcardUpper            = Option(wildcardType).flatMap(_.upperTypeElement).orNull
+    val contextBound             = PsiTreeUtil.findChildOfType(file, classOf[ScContextBound])
+    val typeLambda               = PsiTreeUtil.findChildOfType(file, classOf[ScTypeLambdaTypeElement])
     val wildcardQuestion         = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
     val lowerBoundToken          = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
     val upperBoundToken          = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
@@ -438,6 +450,7 @@ private[metallurgy] object NativePsiElementBindings:
       .filter(_.getText == "[+A, -B, C]")
       .toVector
     val typeParameters           = typeParameterClauses.flatMap(_.typeParameters)
+    val boundsParameters         = traits.find(_.name == "BoundsProbe").toVector.flatMap(_.typeParameters)
     val parameters               = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).asScala.toVector
     val classParameters          = PsiTreeUtil.findChildrenOfType(file, classOf[ScClassParameter]).asScala.toVector
     val parameterTypes           = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterType]).asScala.toVector
@@ -490,6 +503,8 @@ private[metallurgy] object NativePsiElementBindings:
         wildcardType,
         wildcardLower,
         wildcardUpper,
+        contextBound,
+        typeLambda,
         infixType,
         nestedInfixType,
         infixLeft,
@@ -682,10 +697,13 @@ private[metallurgy] object NativePsiElementBindings:
           s"expressions=${annotationExpressions.map(_.getText)}, constructors=${constructorInvocations.map(_.getText)}, " +
           s"arguments=${argumentLists.map(_.getText)}"
       )
-    else if classes.isEmpty || traits.size != 2 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
+    else if classes.isEmpty || traits.size != 3 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
       enumSingletonCases.size != 1 || enumClassCases.size != 1 || extendsBlocks.isEmpty || templateBodies.isEmpty ||
       primaryConstructors.isEmpty || parameterClauses.isEmpty || parameterClause.isEmpty
     then Left("native template PSI probe is incomplete")
+    else if contextBound == null || typeLambda == null || contextBound.typeElement.getText != "Bound" ||
+      typeLambda.resultTypeElement.map(_.getText) != Some("List[X]")
+    then Left("native bounds or type lambda PSI probe is incomplete")
     else if directFunction == null || functionDeclarations.size != 1 || directPattern == null ||
       valueDeclarations.size != 1 || directVariable == null || variableDeclarations.size != 1 ||
       directPatternList == null || directReferencePattern == null || identifierLists.size != 2 || fieldIds.size != 2 ||
@@ -716,6 +734,17 @@ private[metallurgy] object NativePsiElementBindings:
           value.getNavigationElement != value
       )
     then Left("native type parameter PSI accessors are inconsistent")
+    else if boundsParameters.map(_.name) != Vector("D", "F", "G") ||
+      !boundsParameters.head.isCovariant || boundsParameters.head.isContravariant ||
+      boundsParameters.head.lowerTypeElement.map(_.getText) != Some("Lower") ||
+      boundsParameters.head.upperTypeElement.map(_.getText) != Some("Upper") ||
+      boundsParameters(1).typeParameters.map(_.getText).toVector != Vector("_") ||
+      boundsParameters(2).contextBounds.map(_.getText).toVector != Vector("Bound") ||
+      boundsParameters.exists(_.name.matches("_\\$[0-9]+")) ||
+      typeLambda.typeParameters.map(_.name).toVector != Vector("X") ||
+      typeLambda.typeParameters.head.lowerTypeElement.map(_.getText) != Some("Lower") ||
+      typeLambda.typeParameters.head.upperTypeElement.map(_.getText) != Some("Upper")
+    then Left("native bounds PSI accessors are inconsistent")
     else if Vector(
         PsiOutputRoleId.ClassDefinition      -> classes.head,
         PsiOutputRoleId.TraitDefinition      -> traits.head,
@@ -914,6 +943,12 @@ private[metallurgy] object NativePsiElementBindings:
               (WildcardQuestionTokenSurface                                                       -> wildcardQuestion.getNode.getElementType) +
               (LowerTypeBoundTokenSurface                                                         -> lowerBoundToken.getNode.getElementType) +
               (UpperTypeBoundTokenSurface                                                         -> upperBoundToken.getNode.getElementType) ++
+              Map(VarianceTokenSurface -> ScalaTokenTypes.tIDENTIFIER) ++
+              Map(ContextBoundColonTokenSurface -> ScalaTokenTypes.tCOLON) ++
+              Map(ContextBoundLeftBraceTokenSurface -> ScalaTokenTypes.tLBRACE) ++
+              Map(ContextBoundRightBraceTokenSurface -> ScalaTokenTypes.tRBRACE) ++
+              Map(ContextBoundCommaTokenSurface -> ScalaTokenTypes.tCOMMA) ++
+              Map(ContextBoundAsTokenSurface -> ScalaTokenType.AsKeyword) ++
               Map(AssignmentTokenSurface -> ScalaTokenTypes.tASSIGN) ++
               Map(ValueKeywordTokenSurface -> ScalaTokenTypes.kVAL) ++
               Map(TypePathDotTokenSurface -> ScalaTokenTypes.tDOT) ++
@@ -962,6 +997,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ParameterizedType     -> parameterizedType.getNode.getElementType,
               PsiOutputRoleId.TypeArguments         -> typeArguments.getNode.getElementType,
               PsiOutputRoleId.WildcardType          -> wildcardType.getNode.getElementType,
+              PsiOutputRoleId.ContextBound          -> contextBound.getNode.getElementType,
+              PsiOutputRoleId.TypeLambda            -> typeLambda.getNode.getElementType,
               PsiOutputRoleId.InfixType             -> infixType.getNode.getElementType,
               PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
               PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
@@ -1035,6 +1072,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ParameterizedType     -> surfaceId(parameterizedType.getClass),
               PsiOutputRoleId.TypeArguments         -> surfaceId(typeArguments.getClass),
               PsiOutputRoleId.WildcardType          -> surfaceId(wildcardType.getClass),
+              PsiOutputRoleId.ContextBound          -> surfaceId(contextBound.getClass),
+              PsiOutputRoleId.TypeLambda            -> surfaceId(typeLambda.getClass),
               PsiOutputRoleId.InfixType             -> surfaceId(infixType.getClass),
               PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
               PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
@@ -1145,6 +1184,54 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native upper type-bound token")
+              ),
+              ScalaPsiSurfaceRow(
+                VarianceTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native variance token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextBoundColonTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context-bound colon token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextBoundLeftBraceTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context-bound left-brace token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextBoundRightBraceTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context-bound right-brace token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextBoundCommaTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context-bound comma token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextBoundAsTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context-bound as token")
               ),
               ScalaPsiSurfaceRow(
                 AssignmentTokenSurface,

@@ -1,0 +1,12 @@
+trait High
+trait Low extends High
+trait Evidence[A]
+given Evidence[Low] with {}
+type Both[A >: Low <: High] = A
+type Wild[T] = List[? <: T]
+type Lambda = [X >: Low <: High] =>> List[X]
+def named[A: Evidence as evidence](value: A): Evidence[A] = evidence
+:type summon[Lambda[High] =:= List[High]]
+:type (null: Wild[High])
+:type named(new Low {})
+:quit

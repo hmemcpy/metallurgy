@@ -360,6 +360,17 @@ private[metallurgy] final case class FinalSourceEvidencePlan(
 ):
   def reconstruct(source: String): String = evidence.reconstruct(source)
 
+private[metallurgy] trait PlanningWorkObserver:
+  def finalOwnershipEntries(count: Int): Unit
+  def terminalLexicalEntries(count: Int): Unit
+  def terminalCandidateEntries(count: Int): Unit
+
+private[metallurgy] object PlanningWorkObserver:
+  val NoOp: PlanningWorkObserver = new PlanningWorkObserver:
+    override def finalOwnershipEntries(count: Int): Unit    = ()
+    override def terminalLexicalEntries(count: Int): Unit   = ()
+    override def terminalCandidateEntries(count: Int): Unit = ()
+
 private[metallurgy] object FinalSourceEvidencePlanner:
   def plan(
       evidence: RefinedSourceEvidencePlan,
@@ -367,11 +378,22 @@ private[metallurgy] object FinalSourceEvidencePlanner:
       atomOwnership: Vector[SourceAtomOwnership],
       eventOwnership: Vector[SourceEventOwnership]
   ): Either[Vector[FinalSourceEvidenceFailure], FinalSourceEvidencePlan] =
-    val failures = Vector.newBuilder[FinalSourceEvidenceFailure]
-    val atoms    = evidence.atoms.map(atom => SourceAtomReference(atom.id, atom.start, atom.end))
-    val atomSet  = atoms.toSet
-    val events   = evidence.structural.map(_.id)
-    val eventSet = events.toSet
+    plan(evidence, knownRoles, atomOwnership, eventOwnership, PlanningWorkObserver.NoOp)
+
+  def plan(
+      evidence: RefinedSourceEvidencePlan,
+      knownRoles: Set[PsiOutputRoleId],
+      atomOwnership: Vector[SourceAtomOwnership],
+      eventOwnership: Vector[SourceEventOwnership],
+      workObserver: PlanningWorkObserver
+  ): Either[Vector[FinalSourceEvidenceFailure], FinalSourceEvidencePlan] =
+    val failures         = Vector.newBuilder[FinalSourceEvidenceFailure]
+    val atoms            = evidence.atoms.map(atom => SourceAtomReference(atom.id, atom.start, atom.end))
+    val atomSet          = atoms.toSet
+    val events           = evidence.structural.map(_.id)
+    val eventSet         = events.toSet
+    val atomAssignments  = assignmentIndex(atomOwnership, _.atom, workObserver)
+    val eventAssignments = assignmentIndex(eventOwnership, _.eventId, workObserver)
 
     (atomOwnership.map(_.owner.role) ++ eventOwnership.map(_.owner.role)).distinct
       .filterNot(knownRoles)
@@ -383,7 +405,7 @@ private[metallurgy] object FinalSourceEvidencePlanner:
       .filterNot(atomSet)
       .foreach(atom => failures += FinalSourceEvidenceFailure.UnknownAtom(atom))
     atoms.foreach: atom =>
-      atomOwnership.filter(_.atom == atom) match
+      assignmentsFor(atomAssignments, atom, workObserver) match
         case Vector()    => failures += FinalSourceEvidenceFailure.UnownedAtom(atom)
         case Vector(_)   => ()
         case assignments =>
@@ -394,7 +416,7 @@ private[metallurgy] object FinalSourceEvidencePlanner:
       .filterNot(eventSet)
       .foreach(event => failures += FinalSourceEvidenceFailure.UnknownEvent(event))
     events.foreach: event =>
-      eventOwnership.filter(_.eventId == event) match
+      assignmentsFor(eventAssignments, event, workObserver) match
         case Vector()    => failures += FinalSourceEvidenceFailure.UnownedEvent(event)
         case Vector(_)   => ()
         case assignments =>
@@ -405,11 +427,27 @@ private[metallurgy] object FinalSourceEvidencePlanner:
       found.isEmpty,
       FinalSourceEvidencePlan(
         evidence,
-        atoms.flatMap(atom => atomOwnership.find(_.atom == atom)),
-        events.flatMap(event => eventOwnership.find(_.eventId == event))
+        atoms.flatMap(atom => assignmentsFor(atomAssignments, atom, workObserver).headOption),
+        events.flatMap(event => assignmentsFor(eventAssignments, event, workObserver).headOption)
       ),
       found
     )
+
+  private def assignmentIndex[A, K](
+      assignments: Vector[A],
+      key: A => K,
+      workObserver: PlanningWorkObserver
+  ): Map[K, Vector[A]] =
+    workObserver.finalOwnershipEntries(assignments.size)
+    assignments.groupMap(key)(identity)
+
+  private def assignmentsFor[A, K](
+      index: Map[K, Vector[A]],
+      key: K,
+      workObserver: PlanningWorkObserver
+  ): Vector[A] =
+    workObserver.finalOwnershipEntries(1)
+    index.getOrElse(key, Vector.empty)
 
 private[metallurgy] enum SourceEvidenceFailure:
   case SourceLengthMismatch(expected: Int, actual: Int)

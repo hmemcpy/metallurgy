@@ -1,7 +1,7 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 import com.hmemcpy.metallurgy.pc.*
-import org.junit.Assert.{assertEquals, assertTrue}
+import org.junit.Assert.{assertEquals, assertSame, assertTrue}
 import org.junit.Test
 
 final class SourceEvidencePlannerTest:
@@ -264,6 +264,8 @@ final class SourceEvidencePlannerTest:
     assertEquals(Vector(SourceEvidenceEventId.Node(2), SourceEvidenceEventId.Node(3)), events)
     assertEquals(first, second)
     assertEquals(source, first.reconstruct(source))
+    assertSame(atoms.head, first.atomOwnership.head)
+    assertSame(assigned.head, first.eventOwnership.head)
 
     def failures(
         atomOwnership: Vector[SourceAtomOwnership],
@@ -291,6 +293,66 @@ final class SourceEvidencePlannerTest:
     )
     assertTrue(failures(Vector.empty, assigned).exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnownedAtom]))
     assertTrue(failures(atoms, assigned.tail).exists(_.isInstanceOf[FinalSourceEvidenceFailure.UnownedEvent]))
+
+    val otherRole    = PsiOutputRoleId("test.other")
+    val otherOwner   = SourceEvidenceOwner(otherRole, "other")
+    val unknownRole  = PsiOutputRoleId("test.unknown")
+    val unknownOwner = SourceEvidenceOwner(unknownRole, "unknown")
+    val unknownAtom  = atomRef.copy(id = SourceAtomId(99, 0))
+    val unknownEvent = SourceEvidenceEventId.Node(99)
+    assertEquals(
+      Vector(
+        FinalSourceEvidenceFailure.UnknownRole(unknownRole),
+        FinalSourceEvidenceFailure.UnknownAtom(unknownAtom),
+        FinalSourceEvidenceFailure.MultiplyOwnedAtom(atomRef, Vector(owner, otherOwner)),
+        FinalSourceEvidenceFailure.UnknownEvent(unknownEvent),
+        FinalSourceEvidenceFailure.MultiplyOwnedEvent(events.head, Vector(owner, otherOwner)),
+        FinalSourceEvidenceFailure.UnownedEvent(events(1))
+      ),
+      failures(
+        atoms ++ Vector(SourceAtomOwnership(unknownAtom, unknownOwner), SourceAtomOwnership(atomRef, otherOwner)),
+        Vector(assigned.head, SourceEventOwnership(events.head, otherOwner), SourceEventOwnership(unknownEvent, owner)),
+        Set(role, otherRole)
+      )
+    )
+
+  @Test def finalOwnershipWorkScalesLinearlyAndPreservesCanonicalEvidenceOrder(): Unit =
+    val sizes = Vector(64, 128, 256, 512, 1024)
+    val work  = sizes.map: size =>
+      val source   = "x" * size
+      val nodes    = Vector.tabulate(size)(index => node(index + 1L, index, index + 1, index)) ++
+        Vector.tabulate(size)(index => node(size + index + 1L, index, index, index))
+      val refined  = SourceEvidenceRefinementPlanner
+        .refine(planned(fixture(source, nodes)), Set.empty, Vector.empty)
+        .toOption
+        .get
+      val role     = PsiOutputRoleId("test.scale.owner")
+      val atomRefs = refined.atoms.map(atom => SourceAtomReference(atom.id, atom.start, atom.end))
+      val atoms    = atomRefs.zipWithIndex.map: (atom, index) =>
+        SourceAtomOwnership(atom, SourceEvidenceOwner(role, s"atom-$index"))
+      val events   = refined.structural.zipWithIndex.map: (event, index) =>
+        SourceEventOwnership(event.id, SourceEvidenceOwner(role, s"event-$index"))
+      val observer = new CountingPlanningWorkObserver
+      val result   = FinalSourceEvidencePlanner
+        .plan(refined, Set(role), atoms.reverse, events.reverse, observer)
+        .toOption
+        .get
+
+      assertEquals(source, result.reconstruct(source))
+      assertEquals(atomRefs, result.atomOwnership.map(_.atom))
+      assertEquals(refined.structural.map(_.id), result.eventOwnership.map(_.eventId))
+      Vector(0, size / 2, size - 1).foreach: index =>
+        assertEquals(s"atom-$index", result.atomOwnership(index).owner.identity)
+        assertEquals(s"event-$index", result.eventOwnership(index).owner.identity)
+      assertTrue(s"size=$size work=${observer.finalOwnership}", observer.finalOwnership <= 32L * size + 128L)
+      observer.finalOwnership
+
+    work
+      .sliding(2)
+      .foreach:
+        case Vector(previous, current) =>
+          assertTrue(s"previous=$previous current=$current", current <= 3L * previous + 256L)
+        case _                         => ()
 
   @Test
   def malformedSnapshotsReturnStructuredFailures(): Unit =
@@ -339,6 +401,13 @@ final class SourceEvidencePlannerTest:
         )
       ).exists(_.isInstanceOf[SourceEvidenceFailure.EndMarkerOutsideOwner])
     )
+
+  private final class CountingPlanningWorkObserver extends PlanningWorkObserver:
+    var finalOwnership: Long = 0L
+
+    override def finalOwnershipEntries(count: Int): Unit    = finalOwnership += count
+    override def terminalLexicalEntries(count: Int): Unit   = ()
+    override def terminalCandidateEntries(count: Int): Unit = ()
 
   private def planned(snapshot: ParserSyntaxSnapshot): ProvisionalSourceEvidencePlan =
     ProvisionalSourceEvidencePlanner

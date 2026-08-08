@@ -569,6 +569,10 @@ private final class StructuralScala3ParserBridge private (
     def underlying(): AnyRef
   }
 
+  private type TypeNameValue = {
+    def toTermName(): AnyRef
+  }
+
   private type NameInfoValue = {
     def kind(): AnyRef
   }
@@ -1373,14 +1377,18 @@ private final class StructuralScala3ParserBridge private (
       value: AnyRef,
       generated: HashMap[String, java.lang.Integer]
   ): ParserFieldValue =
-    val methods = value.getClass.getMethods.iterator.map(_.getName).toSet
-    if !methods("info") || !methods("underlying") then ParserFieldValue.Name(value.toString)
+    val methods           = value.getClass.getMethods.iterator.map(_.getName).toSet
+    val normalized        =
+      if methods("toTermName") && !methods("info") then value.asInstanceOf[TypeNameValue].toTermName()
+      else value
+    val normalizedMethods = normalized.getClass.getMethods.iterator.map(_.getName).toSet
+    if !normalizedMethods("info") || !normalizedMethods("underlying") then ParserFieldValue.Name(value.toString)
     else
-      val name = value.asInstanceOf[NameValue]
+      val name = normalized.asInstanceOf[NameValue]
       val kind = name.info().asInstanceOf[NameInfoValue].kind()
       if !active.uniqueNameKindClass.isInstance(kind) then ParserFieldValue.Name(value.toString)
       else
-        val runtimeName                = value.toString
+        val runtimeName                = normalized.toString
         val observed                   = Option(generated.get(runtimeName))
         val ordinal: java.lang.Integer = observed.getOrElse:
           val assigned = java.lang.Integer.valueOf(generated.size())

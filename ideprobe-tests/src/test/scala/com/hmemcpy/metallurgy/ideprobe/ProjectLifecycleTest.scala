@@ -206,9 +206,21 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
           |trait Base
           |trait Other
           |import scala.language.experimental.namedTypeArguments
+          |import scala.language.experimental.modularity
+          |trait Lower extends Base
+          |trait Upper
+          |trait Evidence[A]
+          |trait BinaryEvidence[A, B]
           |type TopAlias = Base
           |type AppliedAlias = List[Int]
+          |type BoundedAlias[A >: Lower <: Base, F[_]] = F[A]
+          |type WildcardAlias = List[? >: Lower <: Base]
+          |type LambdaAlias = [A >: Lower <: Base] =>> List[A]
+          |opaque type OpaqueAlias >: Lower <: Base = Base
           |def typedTop(value: Base): Base = value
+          |def bounded[A >: Lower <: Base, F[_]]: A = ???
+          |def namedBound[A: Evidence as evidence](value: A): Evidence[A] = evidence
+          |def aggregateBound[A: {Evidence, [X] =>> BinaryEvidence[X, X]}](value: A): A = value
           |def choose[A]: A = ???
           |val namedApplication = choose[A = Int]
           |val typedValue: Base = ???
@@ -216,9 +228,10 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
           |def topApply = List(1)
           |val topNumber = 1
           |var topIdent = topNumber
-          |class Braced[A, +B, -C](value: Base)(using context: Other) extends Base derives CanEqual {
+          |class Braced[A >: Lower <: Base, +B, -C, F[_]](value: Base)(using context: Other) extends Base derives CanEqual {
           |  self: Other =>
           |  type Alias = Base
+          |  type AbstractAlias >: Lower <: Base
           |  def declared: Base = value
           |  val declaredValue: Base = value
           |  var declaredVariable: Base = value

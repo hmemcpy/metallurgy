@@ -774,17 +774,15 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
     )
     assertTrue(service.currentFailures.isEmpty)
 
-  def testImportStubSchemaInvalidatesEarlierPersistentData(): Unit =
+  def testSimpleOwnerTypeMountsUseNativePhysicalPsi(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 9),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 10),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "ab3075864bb786a5ea43dbd52d39d0ac86dc9583d2478d340994f043af34b0d6",
+      "dd818a97e4c9c32b826dc26d5535c8efcf32eba06e4c01d1a03de46a38692430",
       Scala3DotcFileElementType.SchemaFingerprint
     )
-
-  def testSimpleOwnerTypeMountsUseNativePhysicalPsi(): Unit =
     val source  =
       """trait B
         |class C[A](x: A) extends B:
