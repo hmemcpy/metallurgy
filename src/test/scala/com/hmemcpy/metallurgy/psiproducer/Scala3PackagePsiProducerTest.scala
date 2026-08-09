@@ -780,7 +780,7 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "87f1db3803235457f6f9cc8c04fdd5f46f1ce028ab5ae5fd2879c48c261e52d6",
+      "e3649a7979469c4fc106d226259f006bd32726ea0fb4f1a4b7c89284a72baa41",
       Scala3DotcFileElementType.SchemaFingerprint
     )
     val source  =

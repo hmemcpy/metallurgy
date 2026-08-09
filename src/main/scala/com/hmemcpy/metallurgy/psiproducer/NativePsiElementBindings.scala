@@ -107,6 +107,7 @@ import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.{
   MetallurgyExpressionPayload,
   MetallurgyIntegerLiteral,
   MetallurgyNamedTypeArgument,
+  MetallurgyParameterType,
   MetallurgyTypeArguments
 }
 
@@ -187,41 +188,48 @@ private[metallurgy] object NativePsiElementBindings:
       entry: com.intellij.psi.PsiElement
   )
 
-  val EndKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#EndKeyword"
-  val ImportWildcardTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardStar"
-  val ImportLegacyWildcardTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUNDER"
-  val ImportAliasAsTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasAs"
-  val ImportAliasArrowTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasArrow"
-  val TypeArgumentLeftTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLSQBRACKET"
-  val TypeArgumentRightTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRSQBRACKET"
-  val WildcardQuestionTokenSurface       =
+  val EndKeywordTokenSurface               = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#EndKeyword"
+  val ImportWildcardTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardStar"
+  val ImportLegacyWildcardTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUNDER"
+  val ImportAliasAsTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasAs"
+  val ImportAliasArrowTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImportAliasArrow"
+  val TypeArgumentLeftTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLSQBRACKET"
+  val TypeArgumentRightTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRSQBRACKET"
+  val WildcardQuestionTokenSurface         =
     "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#WildcardTypeQuestionMark"
-  val LowerTypeBoundTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
-  val UpperTypeBoundTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
-  val VarianceTokenSurface               = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
-  val ContextBoundColonTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
-  val ContextBoundLeftBraceTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLBRACE"
-  val ContextBoundRightBraceTokenSurface = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRBRACE"
-  val ContextBoundCommaTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
-  val ContextBoundAsTokenSurface         = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#AsKeyword"
-  val AssignmentTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
-  val ValueKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
-  val TypePathDotTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
-  val TypeProjectionHashTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
-  val SingletonTypeKeywordTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
-  val TypeLeftParenthesisTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
-  val TypeRightParenthesisTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
-  val TypeCommaTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
-  val TypeColonTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
-  val FunctionArrowTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tFUNTYPE"
-  val ContextFunctionArrowTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitFunctionArrow"
-  val RepeatedParameterStarTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
-  val MatchKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kMATCH"
-  val CaseKeywordTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kCASE"
-  val SemicolonTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tSEMICOLON"
-  val AnnotatedMemberIndexSurface        =
+  val LowerTypeBoundTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLOWER_BOUND"
+  val UpperTypeBoundTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tUPPER_BOUND"
+  val VarianceTokenSurface                 = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
+  val ContextBoundColonTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
+  val ContextBoundLeftBraceTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLBRACE"
+  val ContextBoundRightBraceTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRBRACE"
+  val ContextBoundCommaTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
+  val ContextBoundAsTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#AsKeyword"
+  val AssignmentTokenSurface               = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
+  val ValueKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
+  val TypePathDotTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
+  val TypeProjectionHashTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
+  val SingletonTypeKeywordTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
+  val TypeLeftParenthesisTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
+  val TypeRightParenthesisTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
+  val TypeCommaTokenSurface                = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
+  val TypeColonTokenSurface                = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
+  val FunctionArrowTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tFUNTYPE"
+  val ContextFunctionArrowTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitFunctionArrow"
+  val PureFunctionArrowTokenSurface        = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#PureFunctionArrow"
+  val ContextPureFunctionArrowTokenSurface =
+    "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitPureFunctionArrow"
+  val RepeatedParameterStarTokenSurface    = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
+  val MatchKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kMATCH"
+  val CaseKeywordTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kCASE"
+  val SemicolonTokenSurface                = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tSEMICOLON"
+  val CaptureOperatorTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#CaptureOperator"
+  val CaptureReachTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ReachCapabilityStar"
+  val CaptureReadOnlyTokenSurface          =
+    "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ReadOnlyCapabilityKeyword"
+  val AnnotatedMemberIndexSurface          =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
-  val ModifierKeywordSurfaceIds          = Map(
+  val ModifierKeywordSurfaceIds            = Map(
     "Abstract"    -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kABSTRACT",
     "Final"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kFINAL",
     "Sealed"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kSEALED",
@@ -236,11 +244,11 @@ private[metallurgy] object NativePsiElementBindings:
     "Opaque"      -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#OpaqueKeyword",
     "Given"       -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#GivenKeyword"
   )
-  val AccessModifierKeywordSurfaceIds    = Map(
+  val AccessModifierKeywordSurfaceIds      = Map(
     "Private"   -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPRIVATE",
     "Protected" -> "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kPROTECTED"
   )
-  private val ModifierTokenSurfaceIds    = ModifierKeywordSurfaceIds ++ AccessModifierKeywordSurfaceIds
+  private val ModifierTokenSurfaceIds      = ModifierKeywordSurfaceIds ++ AccessModifierKeywordSurfaceIds
 
   def probe(project: Project): Either[String, NativePsiElementBindings] =
     if ApplicationManager.getApplication.isReadAccessAllowed then probeInReadAction(project)
@@ -1077,6 +1085,14 @@ private[metallurgy] object NativePsiElementBindings:
         Right(
           NativePsiElementBindings(
             grouped.view.mapValues(_.head).toMap +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCaptureTypeElementImpl"    ->
+                ScalaElementType.CAPTURE_TYPE) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureSetImpl"         ->
+                ScalaElementType.CAPTURE_SET) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureRefImpl"         ->
+                ScalaElementType.CAPTURE_REF) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl"      ->
+                ScalaElementType.CAPTURE_FILTER) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"    ->
                 MetallurgyIntegerLiteral.ElementType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload" ->
@@ -1085,6 +1101,8 @@ private[metallurgy] object NativePsiElementBindings:
                 namedListType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedTypeArgument" ->
                 namedEntryType) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyParameterType"     ->
+                MetallurgyParameterType.ElementType) +
               (EndKeywordTokenSurface                                                             -> ScalaTokenType.EndKeyword) +
               (ImportWildcardTokenSurface                                                         -> wildcardElement.getNode.getElementType) +
               (ImportLegacyWildcardTokenSurface                                                   -> legacyWildcardElement.getNode.getElementType) +
@@ -1112,10 +1130,15 @@ private[metallurgy] object NativePsiElementBindings:
               Map(TypeColonTokenSurface -> ScalaTokenTypes.tCOLON) ++
               Map(FunctionArrowTokenSurface -> ordinaryFunctionArrow.getNode.getElementType) ++
               Map(ContextFunctionArrowTokenSurface -> contextFunctionArrow.getNode.getElementType) ++
+              Map(PureFunctionArrowTokenSurface -> ScalaTokenType.PureFunctionArrow) ++
+              Map(ContextPureFunctionArrowTokenSurface -> ScalaTokenType.ImplicitPureFunctionArrow) ++
               Map(RepeatedParameterStarTokenSurface -> ScalaTokenTypes.tIDENTIFIER) ++
               Map(MatchKeywordTokenSurface -> matchKeyword.getNode.getElementType) ++
               Map(CaseKeywordTokenSurface -> caseKeyword.getNode.getElementType) ++
               Map(SemicolonTokenSurface -> matchCaseSemicolon.getNode.getElementType) ++
+              Map(CaptureOperatorTokenSurface -> ScalaTokenType.CaptureOperator) ++
+              Map(CaptureReachTokenSurface -> ScalaTokenType.ReachCapabilityStar) ++
+              Map(CaptureReadOnlyTokenSurface -> ScalaTokenType.ReadOnlyCapabilityKeyword) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -1174,6 +1197,10 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.CompoundType          -> compoundType.getNode.getElementType,
               PsiOutputRoleId.Refinement            -> refinement.getNode.getElementType,
               PsiOutputRoleId.AnnotatedType         -> annotatedType.getNode.getElementType,
+              PsiOutputRoleId.CaptureType           -> ScalaElementType.CAPTURE_TYPE,
+              PsiOutputRoleId.CaptureSet            -> ScalaElementType.CAPTURE_SET,
+              PsiOutputRoleId.CaptureReference      -> ScalaElementType.CAPTURE_REF,
+              PsiOutputRoleId.CaptureFilter         -> ScalaElementType.CAPTURE_FILTER,
               PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
               PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
               PsiOutputRoleId.AccessModifier        -> accessModifiers.head.getNode.getElementType,
@@ -1263,6 +1290,14 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.CompoundType          -> surfaceId(compoundType.getClass),
               PsiOutputRoleId.Refinement            -> surfaceId(refinement.getClass),
               PsiOutputRoleId.AnnotatedType         -> surfaceId(annotatedType.getClass),
+              PsiOutputRoleId.CaptureType           ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCaptureTypeElementImpl",
+              PsiOutputRoleId.CaptureSet            ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureSetImpl",
+              PsiOutputRoleId.CaptureReference      ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureRefImpl",
+              PsiOutputRoleId.CaptureFilter         ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl",
               PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
               PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
               PsiOutputRoleId.AccessModifier        -> surfaceId(accessModifiers.head.getClass),
@@ -1510,6 +1545,22 @@ private[metallurgy] object NativePsiElementBindings:
                 Vector("capability-probed native context function arrow token")
               ),
               ScalaPsiSurfaceRow(
+                PureFunctionArrowTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native pure function arrow token")
+              ),
+              ScalaPsiSurfaceRow(
+                ContextPureFunctionArrowTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native context pure function arrow token")
+              ),
+              ScalaPsiSurfaceRow(
                 MatchKeywordTokenSurface,
                 SurfaceFactKind.Token,
                 None,
@@ -1532,6 +1583,30 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native semicolon token")
+              ),
+              ScalaPsiSurfaceRow(
+                CaptureOperatorTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native capture operator token")
+              ),
+              ScalaPsiSurfaceRow(
+                CaptureReachTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native reach capability token")
+              ),
+              ScalaPsiSurfaceRow(
+                CaptureReadOnlyTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native read-only capability token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(

@@ -1001,7 +1001,8 @@ final class Scala3PsiProductionCatalogTest:
         "annotation-designator-qualifier-ident",
         "annotation-designator-qualifier-select",
         "type-atom-singleton-reference-ident",
-        "type-atom-singleton-reference-select"
+        "type-atom-singleton-reference-select",
+        "capture-reference-ident"
       ),
       GrammarRoleId.ImportSelector            -> Set("import-selector-direct", "import-selector-braced"),
       GrammarRoleId.ImportSelectorName        -> Set(
@@ -1016,7 +1017,8 @@ final class Scala3PsiProductionCatalogTest:
         "annotation-designator-ident",
         "annotation-designator-select",
         "match-type-pattern-reference",
-        "expression-named-type-argument-type"
+        "expression-named-type-argument-type",
+        "capture-function-result-ident"
       ),
       GrammarRoleId.TypeProjection            -> Set("type-atom-projection"),
       GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
@@ -1025,10 +1027,21 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.TupleType                 -> Set("ordinary-tuple-type"),
       GrammarRoleId.NamedTupleType            -> Set("named-tuple-type"),
       GrammarRoleId.NamedTupleComponent       -> Set("named-tuple-component"),
-      GrammarRoleId.FunctionType              -> Set("ordinary-function-type"),
+      GrammarRoleId.FunctionType              -> Set(
+        "ordinary-function-type",
+        "pure-nullary-function-type",
+        "pure-function-type",
+        "capture-nullary-function-type",
+        "capture-function-type"
+      ),
       GrammarRoleId.DependentFunctionType     -> Set("dependent-function-type"),
       GrammarRoleId.PolyFunctionType          -> Set("polymorphic-function-type"),
-      GrammarRoleId.ByNameParameterType       -> Set("by-name-parameter-type"),
+      GrammarRoleId.ByNameParameterType       -> Set(
+        "by-name-parameter-type",
+        "impure-by-name-parameter-type",
+        "pure-by-name-parameter-type",
+        "capture-by-name-parameter-type"
+      ),
       GrammarRoleId.RepeatedParameterType     -> Set("repeated-parameter-type"),
       GrammarRoleId.RepeatedParameterStar     -> Set("repeated-parameter-synthetic-star"),
       GrammarRoleId.LiteralValue              -> Set(
@@ -1089,6 +1102,39 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.MatchTypeCase             -> Set("match-type-case"),
       GrammarRoleId.RefinementType            -> Set("ordinary-refinement-type"),
       GrammarRoleId.AnnotatedType             -> Set("ordinary-annotated-type"),
+      GrammarRoleId.CaptureType               -> Set("capture-type-shorthand", "capture-type-explicit-set"),
+      GrammarRoleId.CaptureSet                -> Set(
+        "capture-type-explicit-set",
+        "capture-annotation-apply",
+        "capture-synthetic-select",
+        "capture-synthetic-new",
+        "capture-synthetic-type-apply",
+        "capture-set-group",
+        "capture-synthetic-typed-splice",
+        "capture-synthetic-type-tree",
+        "capture-synthetic-ident",
+        "by-name-captures-and-result",
+        "capture-function-result"
+      ),
+      GrammarRoleId.CaptureReference          -> Set(
+        "capture-reference",
+        "capture-function-reference",
+        "capture-function-qualified-reference",
+        "capture-reference-modifier-reach",
+        "capture-reference-modifier-read-only",
+        "capture-function-reference-modifier-reach",
+        "capture-function-reference-modifier-read-only"
+      ),
+      GrammarRoleId.CaptureFilter             -> Set(
+        "capture-reference-modifier-filter",
+        "capture-function-reference-modifier-filter"
+      ),
+      GrammarRoleId.CaptureSynthetic          -> Set(
+        "by-name-capture-root-select",
+        "by-name-capture-root-middle-select",
+        "by-name-capture-root-inner-select",
+        "by-name-capture-root-ident"
+      ),
       GrammarRoleId.MatchTypePatternVariable  -> Set(
         "match-type-pattern-variable",
         "match-type-pattern-wildcard"
@@ -1431,6 +1477,27 @@ final class Scala3PsiProductionCatalogTest:
         current,
         Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog, ids.updated(role, s"$externalId.changed"))
       )
+
+  @Test def astOnlyCatalogPlansChangeTheFingerprintWithoutChangingTheStubSchema(): Unit =
+    val catalog = Scala3PsiProductionCatalog.Reviewed
+    val astOnly = catalog.productions
+      .find(
+        _.effectiveOutputRealizations.forall(
+          _.template.composites.forall(_.persistence == PersistenceObligations.NotApplicable)
+        )
+      )
+      .get
+      .copy(id = "ast-only-fingerprint-contract")
+    val changed = catalog.copy(productions = catalog.productions :+ astOnly)
+
+    assertNotEquals(
+      Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog),
+      Scala3PsiProductionCatalog.persistenceSchemaFingerprint(changed)
+    )
+    assertEquals(
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 14),
+      Scala3DotcParserDefinition.FileNodeType.getStubVersion
+    )
 
   @Test def syntheticDefinitionRoutePlansExactModifierAnnotationAndOpaquePayloadRanges(): Unit =
     val value            = annotationModifierSnapshot
@@ -2316,9 +2383,9 @@ final class Scala3PsiProductionCatalogTest:
     val crossed = paired.copy(productions =
       paired.productions.map(row =>
         row.copy(occurrences = row.occurrences.map {
-          case CompilerProductionContext(None, _, _)          =>
+          case CompilerProductionContext(None, _, _, _)          =>
             CompilerProductionContext(None, SourceClassification.Synthetic)
-          case CompilerProductionContext(Some(context), _, _) =>
+          case CompilerProductionContext(Some(context), _, _, _) =>
             CompilerProductionContext(Some(context), SourceClassification.SourceReachable)
         })
       )
@@ -3917,7 +3984,18 @@ final class Scala3PsiProductionCatalogTest:
       compilerIdentity = base.compilerIdentity,
       endMarkers = Vector.empty,
       runtimeSupplements = Vector.empty,
-      attachments = Vector.empty
+      attachments = Vector.empty,
+      scannerTokens = Vector(
+        ParserScannerToken(
+          0,
+          0,
+          "'@'",
+          ParserScannerTokenKind.Other,
+          PcSourceRange(0, 1),
+          0,
+          ParserPositionProvenance.SourceDerived
+        )
+      )
     )
 
   private def colocatedProductSnapshot(arity: Int): ParserSyntaxSnapshot =

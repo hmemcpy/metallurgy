@@ -59,23 +59,39 @@ private[metallurgy] final case class InventoryAncestor(
     ownerPrefix: String,
     path: Vector[CatalogPathSegment]
 )
+private[metallurgy] final case class InventoryAncestorEvidence(
+    scannerTokenKinds: Vector[ParserScannerTokenKind],
+    directNodeEvidence: Vector[DirectNodeFieldEvidence]
+)
 private[metallurgy] final case class InventoryContext(
     ownerKind: InventoryKind,
     ownerPrefix: String,
     path: Vector[CatalogPathSegment],
     ancestors: Vector[InventoryAncestor] = Vector.empty,
-    ownerNodePrefixes: Map[String, String] = Map.empty
+    ownerNodePrefixes: Map[String, String] = Map.empty,
+    ancestorEvidence: Vector[InventoryAncestorEvidence] = Vector.empty
 )
 private[metallurgy] object InventoryContextLineage:
+  private final case class Lineage(
+      ancestors: Vector[InventoryAncestor],
+      evidence: Vector[InventoryAncestorEvidence]
+  )
+
   def normalized(path: Vector[ParserFieldPathSegment]): Vector[CatalogPathSegment] = path.map:
     case ParserFieldPathSegment.NamedField(name)                  => CatalogPathSegment.NamedField(name)
     case ParserFieldPathSegment.OptionalNesting                   => CatalogPathSegment.Optional
     case ParserFieldPathSegment.RepeatedIndex(_)                  => CatalogPathSegment.RepeatedElement
     case ParserFieldPathSegment.NestedProductBoundary(production) => CatalogPathSegment.NestedProduct(production)
 
-  def resolver(nodes: Map[Long, ParserSyntaxNode]): Resolver = new Resolver(nodes)
+  def resolver(
+      nodes: Map[Long, ParserSyntaxNode],
+      evidence: Map[Long, InventoryAncestorEvidence] = Map.empty
+  ): Resolver = new Resolver(nodes, evidence)
 
-  final class Resolver private[InventoryContextLineage] (nodes: Map[Long, ParserSyntaxNode]):
+  final class Resolver private[InventoryContextLineage] (
+      nodes: Map[Long, ParserSyntaxNode],
+      evidence: Map[Long, InventoryAncestorEvidence]
+  ):
     private val cached =
       val knownParents = nodes.view
         .mapValues(node => node.occurrences.iterator.map(_.ownerNodeId).filter(nodes.contains).toVector.distinct)
@@ -90,12 +106,12 @@ private[metallurgy] object InventoryContextLineage:
       val ready        = collection.mutable.Queue.from(
         remaining.iterator.collect { case (id, 0) => id }.toVector.sorted
       )
-      val values       = collection.mutable.Map.empty[Long, Vector[Vector[InventoryAncestor]]]
+      val values       = collection.mutable.Map.empty[Long, Vector[Lineage]]
       while ready.nonEmpty do
         val id       = ready.dequeue()
         val node     = nodes(id)
         val computed =
-          if node.occurrences.isEmpty then Vector(Vector.empty)
+          if node.occurrences.isEmpty then Vector(Lineage(Vector.empty, Vector.empty))
           else
             node.occurrences.flatMap: occurrence =>
               nodes
@@ -104,9 +120,16 @@ private[metallurgy] object InventoryContextLineage:
                 .flatMap: ancestor =>
                   values
                     .getOrElse(ancestor.id, Vector.empty)
-                    .map(
-                      InventoryAncestor(InventoryKind.Node, ancestor.production, normalized(occurrence.fieldPath)) +: _
-                    )
+                    .map: lineage =>
+                      Lineage(
+                        InventoryAncestor(
+                          InventoryKind.Node,
+                          ancestor.production,
+                          normalized(occurrence.fieldPath)
+                        ) +: lineage.ancestors,
+                        evidence.getOrElse(ancestor.id, InventoryAncestorEvidence(Vector.empty, Vector.empty)) +:
+                          lineage.evidence
+                      )
         values += id -> computed
         children
           .getOrElse(id, Vector.empty)
@@ -119,8 +142,8 @@ private[metallurgy] object InventoryContextLineage:
     def contexts(owner: ParserSyntaxNode, path: Vector[ParserFieldPathSegment]): Vector[InventoryContext] =
       cached
         .flatMap(_.get(owner.id))
-        .getOrElse(ancestries(owner, nodes, Set.empty))
-        .map: ancestors =>
+        .getOrElse(ancestries(owner, nodes, evidence, Set.empty))
+        .map: lineage =>
           val ownerNodePrefixes = owner.fields.flatMap: field =>
             field.value match
               case ParserFieldValue.Node(id) => nodes.get(id).map(value => field.name -> value.production)
@@ -129,21 +152,25 @@ private[metallurgy] object InventoryContextLineage:
             InventoryKind.Node,
             owner.production,
             normalized(path),
-            ancestors,
-            ownerNodePrefixes.toMap
+            lineage.ancestors,
+            ownerNodePrefixes.toMap,
+            lineage.evidence
           )
 
   private def ancestries(
       owner: ParserSyntaxNode,
       nodes: Map[Long, ParserSyntaxNode],
+      evidence: Map[Long, InventoryAncestorEvidence],
       visited: Set[Long]
-  ): Vector[Vector[InventoryAncestor]] =
-    val pending  = collection.mutable.Stack((owner, visited, Vector.empty[InventoryAncestor]))
-    val complete = Vector.newBuilder[Vector[InventoryAncestor]]
+  ): Vector[Lineage] =
+    val pending  = collection.mutable.Stack(
+      (owner, visited, Vector.empty[InventoryAncestor], Vector.empty[InventoryAncestorEvidence])
+    )
+    val complete = Vector.newBuilder[Lineage]
     while pending.nonEmpty do
-      val (current, currentVisited, currentAncestors) = pending.pop()
+      val (current, currentVisited, currentAncestors, currentEvidence) = pending.pop()
       if !currentVisited(current.id) then
-        if current.occurrences.isEmpty then complete += currentAncestors
+        if current.occurrences.isEmpty then complete += Lineage(currentAncestors, currentEvidence)
         else
           current.occurrences.reverseIterator.foreach: occurrence =>
             nodes
@@ -157,6 +184,10 @@ private[metallurgy] object InventoryContextLineage:
                       InventoryKind.Node,
                       ancestor.production,
                       normalized(occurrence.fieldPath)
+                    ),
+                    currentEvidence :+ evidence.getOrElse(
+                      ancestor.id,
+                      InventoryAncestorEvidence(Vector.empty, Vector.empty)
                     )
                   )
                 )
@@ -216,6 +247,16 @@ private[metallurgy] final case class ScannerEvidencePattern(
     required: Set[ParserScannerTokenKind] = Set.empty,
     forbidden: Set[ParserScannerTokenKind] = Set.empty
 )
+private[metallurgy] final case class DirectNodeFieldEvidence(
+    fieldName: String,
+    sourceClassification: SourceClassification,
+    hasSourceWidth: Option[Boolean] = None,
+    requiredAttachmentKinds: Set[String] = Set.empty
+)
+private[metallurgy] final case class AncestorEvidencePattern(
+    scannerEvidence: ScannerEvidencePattern = ScannerEvidencePattern(),
+    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+)
 private[metallurgy] final case class CompilerProductionContextPattern(
     context: ContextPattern,
     sourceClassification: SourceClassification,
@@ -225,8 +266,16 @@ private[metallurgy] final case class CompilerProductionPattern(
     kind: InventoryKind,
     prefix: String,
     fields: Vector[CompilerFieldPattern],
-    occurrences: Vector[CompilerProductionContextPattern]
+    occurrences: Vector[CompilerProductionContextPattern],
+    directNodeEvidence: Vector[DirectNodeFieldEvidence]
 )
+private[metallurgy] object CompilerProductionPattern:
+  def apply(
+      kind: InventoryKind,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      occurrences: Vector[CompilerProductionContextPattern]
+  ): CompilerProductionPattern = CompilerProductionPattern(kind, prefix, fields, occurrences, Vector.empty)
 private[metallurgy] enum ContextPattern:
   case Any
   case Root
@@ -266,6 +315,13 @@ private[metallurgy] enum ContextPattern:
       ownerPrefix: String,
       path: Vector[CatalogPathSegment],
       anchor: InventoryAncestor
+  )
+  case ParentUnderAnchorWithEvidence(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      anchor: InventoryAncestor,
+      evidence: Vector[AncestorEvidencePattern]
   )
   case ParentUnderAnchorThrough(
       ownerKind: InventoryKind,
@@ -330,7 +386,8 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     observation: Vector[InventoryFieldObservation],
     contexts: Vector[InventoryContext],
     sourceClassification: SourceClassification,
-    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
+    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
 )
 private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
@@ -349,7 +406,8 @@ private[metallurgy] final case class ParserProductSyntax(
 private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
     sourceClassification: SourceClassification,
-    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
+    scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
 )
 private[metallurgy] final case class AggregatedCompilerProductionRow(
     kind: InventoryKind,
@@ -478,7 +536,14 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
             canonicalDistinct(
               observations.flatMap: row =>
                 val contexts = if row.contexts.isEmpty then Vector(None) else row.contexts.map(Some(_))
-                contexts.map(CompilerProductionContext(_, row.sourceClassification, row.scannerTokenKinds))
+                contexts.map(
+                  CompilerProductionContext(
+                    _,
+                    row.sourceClassification,
+                    row.scannerTokenKinds,
+                    row.directNodeEvidence
+                  )
+                )
             )(writeProductionContext)
           )
       Right(
@@ -671,6 +736,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
         e.string(field.name); writeObservation(field.value, e)
       e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
       e.sequence(row.scannerTokenKinds)(kind => e.tag(kind.ordinal))
+      writeDirectNodeEvidence(row.directNodeEvidence, e)
 
   private def writeObservation(value: InventoryValueObservation, e: CanonicalByteEncoder): Unit = value match
     case InventoryValueObservation.Node(id, prefix)                      => e.tag(1); e.long(id); e.string(prefix)
@@ -720,6 +786,16 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
   private def writeProductionContext(context: CompilerProductionContext, e: CanonicalByteEncoder): Unit =
     writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
     e.sequence(context.scannerTokenKinds)(kind => e.tag(kind.ordinal))
+    writeDirectNodeEvidence(context.directNodeEvidence, e)
+
+  private def writeDirectNodeEvidence(
+      evidence: Vector[DirectNodeFieldEvidence],
+      e: CanonicalByteEncoder
+  ): Unit =
+    e.sequence(evidence.sortBy(_.fieldName)): value =>
+      e.string(value.fieldName); e.tag(value.sourceClassification.ordinal)
+      value.hasSourceWidth.fold(e.tag(0))(width => { e.tag(1); e.boolean(width) })
+      e.sequence(value.requiredAttachmentKinds.toVector.sorted)(e.string)
 
   private def writeField(field: CompilerFieldPattern, e: CanonicalByteEncoder): Unit =
     e.string(field.name); writePattern(field.value, e)
@@ -754,6 +830,9 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.tag(ancestor.ownerKind.ordinal); e.string(ancestor.ownerPrefix); e.sequence(ancestor.path)(writePath(_, e))
     e.sequence(context.ownerNodePrefixes.toVector.sorted): (name, prefix) =>
       e.string(name); e.string(prefix)
+    e.sequence(context.ancestorEvidence): evidence =>
+      e.sequence(evidence.scannerTokenKinds)(kind => e.tag(kind.ordinal))
+      writeDirectNodeEvidence(evidence.directNodeEvidence, e)
 
   private def writeOptionalContext(context: Option[InventoryContext], e: CanonicalByteEncoder): Unit = context match
     case None        => e.tag(0)
@@ -905,7 +984,36 @@ private[metallurgy] object CompilerRuntimeInventory:
             )
         case _                                        => ()
     val products                                                                                                   = productRows.result()
-    val lineages                                                                                                   = InventoryContextLineage.resolver(nodes)
+    def nodeEvidence(node: ParserSyntaxNode): InventoryAncestorEvidence                                            =
+      val scannerTokenKinds = node.position match
+        case ParserNodePosition.Positioned(range, _, _) =>
+          snapshot.scannerTokens
+            .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
+            .map(_.kind)
+        case _                                          => Vector.empty
+      val directEvidence    = node.fields.flatMap: field =>
+        field.value match
+          case ParserFieldValue.Node(childId) =>
+            nodes
+              .get(childId)
+              .map: child =>
+                val classification = child.position match
+                  case ParserNodePosition.Absent                                                   => SourceClassification.Absent
+                  case ParserNodePosition.Positioned(_, _, ParserPositionProvenance.SourceDerived) =>
+                    SourceClassification.SourceReachable
+                  case _                                                                           => SourceClassification.Synthetic
+                val width          = child.position match
+                  case ParserNodePosition.Positioned(range, _, _) => Some(range.startOffset < range.endOffset)
+                  case ParserNodePosition.Absent                  => None
+                val attachments    = snapshot.attachments
+                  .filter(_.ownerNodeId == childId)
+                  .map(_.keyKind)
+                  .toSet
+                DirectNodeFieldEvidence(field.name, classification, width, attachments)
+          case _                              => None
+      InventoryAncestorEvidence(scannerTokenKinds, directEvidence)
+    val ancestorEvidence                                                                                           = snapshot.nodes.map(node => node.id -> nodeEvidence(node)).toMap
+    val lineages                                                                                                   = InventoryContextLineage.resolver(nodes, ancestorEvidence)
     if !nodes.contains(snapshot.rootNodeId) then failures += InventoryFailure.InvalidRoot(snapshot.rootNodeId)
     def references(
         value: ParserFieldValue,
@@ -1138,24 +1246,44 @@ private[metallurgy] object CompilerRuntimeInventory:
           n.occurrences.map(o => o.ownerNodeId -> o.fieldPath)
         )
       )).map: (kind, id, prefix, fields, position, occurrences) =>
-      val observed          = fields.map(f =>
+      val observed           = fields.map(f =>
         InventoryFieldObservation(
           f.name,
           observe(f.value, kind, id, Vector(ParserFieldPathSegment.NamedField(f.name))),
           f.declaredShape.map(declaredPattern)
         )
       )
-      val classification    = position match
+      val classification     = position match
         case ParserNodePosition.Absent                                                   => SourceClassification.Absent
         case ParserNodePosition.Positioned(_, _, ParserPositionProvenance.SourceDerived) =>
           SourceClassification.SourceReachable
         case _                                                                           => SourceClassification.Synthetic
-      val scannerTokenKinds = position match
+      val scannerTokenKinds  = position match
         case ParserNodePosition.Positioned(range, _, _) =>
           snapshot.scannerTokens
             .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
             .map(_.kind)
         case _                                          => Vector.empty
+      val directNodeEvidence = fields.flatMap: field =>
+        field.value match
+          case ParserFieldValue.Node(childId) =>
+            nodes
+              .get(childId)
+              .map: child =>
+                val childClassification = child.position match
+                  case ParserNodePosition.Absent                                                   => SourceClassification.Absent
+                  case ParserNodePosition.Positioned(_, _, ParserPositionProvenance.SourceDerived) =>
+                    SourceClassification.SourceReachable
+                  case _                                                                           => SourceClassification.Synthetic
+                val hasSourceWidth      = child.position match
+                  case ParserNodePosition.Positioned(range, _, _) => Some(range.startOffset < range.endOffset)
+                  case ParserNodePosition.Absent                  => None
+                val attachmentKinds     = snapshot.attachments
+                  .filter(_.ownerNodeId == childId)
+                  .map(_.keyKind)
+                  .toSet
+                DirectNodeFieldEvidence(field.name, childClassification, hasSourceWidth, attachmentKinds)
+          case _                              => None
       CompilerShapeInventoryRow(
         kind,
         id,
@@ -1164,7 +1292,8 @@ private[metallurgy] object CompilerRuntimeInventory:
         observed,
         occurrences.flatMap(contexts(kind, id, _)).distinct,
         classification,
-        scannerTokenKinds
+        scannerTokenKinds,
+        directNodeEvidence
       )
     val found                                                                                                      = failures.result()
     if found.nonEmpty then Left(found.distinct.sortBy(_.toString))
@@ -1461,6 +1590,11 @@ private[metallurgy] object GrammarRoleId:
   val MatchTypePatternVariable  = GrammarRoleId("scala.type.match.pattern-variable")
   val RefinementType            = GrammarRoleId("scala.type.refinement")
   val AnnotatedType             = GrammarRoleId("scala.type.annotated")
+  val CaptureType               = GrammarRoleId("scala.type.capture")
+  val CaptureSet                = GrammarRoleId("scala.type.capture-set")
+  val CaptureReference          = GrammarRoleId("scala.type.capture-reference")
+  val CaptureFilter             = GrammarRoleId("scala.type.capture-filter")
+  val CaptureSynthetic          = GrammarRoleId("scala.type.capture.synthetic")
   val IntegerLiteral            = GrammarRoleId("scala.literal.integer")
   val ExpressionPayload         = GrammarRoleId("scala.expression.payload")
   val Modifiers                 = GrammarRoleId("scala.modifiers")
@@ -1516,11 +1650,17 @@ private[metallurgy] enum TerminalIntervalSelector:
   case ChildSeparators(roleId: String)
   case BeforeChild(roleId: String)
   case AfterChild(roleId: String)
+  case BeforeChildOutputs(roleId: String)
+  case ChildOutputGap(startRole: String, endRole: String)
+  case ChildOutputSeparators(roleId: String)
   case CompilerEndMarkerKeyword
   case CompilerScannerToken(
       kind: ParserScannerTokenKind,
       occurrence: ScannerTokenOccurrence = ScannerTokenOccurrence.All
   )
+  case CompilerScannerTokenBeforeChildOutputs(kind: ParserScannerTokenKind, roleId: String)
+  case CompilerScannerTokenInChildGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
+  case CompilerScannerTokenInChildOutputGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
   case LocalOutput(outputId: String)
   case RootOutsideLocalOutput(outputId: String)
   case WholeProduction, WholeSource
@@ -1612,6 +1752,11 @@ private[metallurgy] enum OutputRangeDeclaration:
   )
   case BoundaryDerived(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
   case BoundaryDerivedWithTrailingBalancedBrackets(startBoundary: OutputBoundary, endBoundary: OutputBoundary)
+  case BalancedLexicalRangeBeforeChildOutput(
+      roleId: String,
+      opening: ClosedSourceLexicalKind,
+      closing: ClosedSourceLexicalKind
+  )
   case CompilerEndMarker
 private[metallurgy] final case class PsiOutputRoleId(value: String):
   require(value.nonEmpty)
@@ -1660,6 +1805,10 @@ private[metallurgy] object PsiOutputRoleId:
   val CompoundType          = PsiOutputRoleId("scala.type.compound")
   val Refinement            = PsiOutputRoleId("scala.type.refinement")
   val AnnotatedType         = PsiOutputRoleId("scala.type.annotated")
+  val CaptureType           = PsiOutputRoleId("scala.type.capture")
+  val CaptureSet            = PsiOutputRoleId("scala.type.capture-set")
+  val CaptureReference      = PsiOutputRoleId("scala.type.capture-reference")
+  val CaptureFilter         = PsiOutputRoleId("scala.type.capture-filter")
   val IntegerLiteral        = PsiOutputRoleId("scala.literal.integer")
   val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
   val ModifierList          = PsiOutputRoleId("scala.modifiers")
@@ -1686,6 +1835,7 @@ private[metallurgy] object PsiOutputRoleId:
   val Parameter             = PsiOutputRoleId("scala.parameter")
   val ClassParameter        = PsiOutputRoleId("scala.class-parameter")
   val ParameterType         = PsiOutputRoleId("scala.parameter.type")
+  val PureParameterType     = PsiOutputRoleId("scala.parameter.type.pure-compatible")
   val TemplateParents       = PsiOutputRoleId("scala.template.parents")
   val SelfType              = PsiOutputRoleId("scala.template.self-type")
   val DerivesClause         = PsiOutputRoleId("scala.template.derives")
@@ -1751,6 +1901,11 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.MatchTypePatternVariable,
       GrammarRoleId.RefinementType,
       GrammarRoleId.AnnotatedType,
+      GrammarRoleId.CaptureType,
+      GrammarRoleId.CaptureSet,
+      GrammarRoleId.CaptureReference,
+      GrammarRoleId.CaptureFilter,
+      GrammarRoleId.CaptureSynthetic,
       GrammarRoleId.IntegerLiteral,
       GrammarRoleId.ExpressionPayload,
       GrammarRoleId.Modifiers,
@@ -1827,6 +1982,10 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.CompoundType,
       PsiOutputRoleId.Refinement,
       PsiOutputRoleId.AnnotatedType,
+      PsiOutputRoleId.CaptureType,
+      PsiOutputRoleId.CaptureSet,
+      PsiOutputRoleId.CaptureReference,
+      PsiOutputRoleId.CaptureFilter,
       PsiOutputRoleId.IntegerLiteral,
       PsiOutputRoleId.ExpressionPayload,
       PsiOutputRoleId.ModifierList,
@@ -1853,6 +2012,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.Parameter,
       PsiOutputRoleId.ClassParameter,
       PsiOutputRoleId.ParameterType,
+      PsiOutputRoleId.PureParameterType,
       PsiOutputRoleId.TemplateParents,
       PsiOutputRoleId.SelfType,
       PsiOutputRoleId.DerivesClause,
@@ -2170,6 +2330,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       encoder.sequence(production.pattern.occurrences.sortBy(_.toString))(occurrence =>
         encoder.string(occurrence.toString)
       )
+      encoder.sequence(production.pattern.directNodeEvidence.sortBy(_.fieldName)): evidence =>
+        encoder.string(evidence.fieldName)
+        encoder.string(evidence.sourceClassification.toString)
       encoder.sequence(production.grammarRoleIds.toVector.sortBy(_.value))(role => encoder.string(role.value))
       encoder.sequence(production.children.sortBy(_.roleId)): child =>
         encoder.string(child.roleId)
@@ -2296,6 +2459,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScRefinementImpl"
   private val AnnotatedTypeSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScAnnotTypeElementImpl"
+  private val CaptureTypeSurface           =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCaptureTypeElementImpl"
+  private val CaptureSetSurface            =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureSetImpl"
+  private val CaptureReferenceSurface      =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureRefImpl"
+  private val CaptureFilterSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl"
   private val ModifierListSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
   private val AccessModifierSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
   private val AnnotationsSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
@@ -2337,6 +2508,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScClassParameterImpl"
   private val ParameterTypeSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterTypeImpl"
+  private val PureParameterTypeSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyParameterType"
   private val TemplateParentsSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScTemplateParentsImpl"
   private val SelfTypeSurface              =
@@ -2922,6 +3095,33 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
+  private val CaptureTypeAccessors           = Vector(
+    AccessorObligation(
+      s"$CaptureTypeSurface#innerElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(s"$CaptureTypeSurface#captureSet()Lscala/Option;", required = true)
+  )
+  private val CaptureReferenceAccessors      = Vector(
+    AccessorObligation(s"$CaptureReferenceSurface#captureRef()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$CaptureReferenceSurface#hasCapabilityReach()Z",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(s"$CaptureReferenceSurface#captureFilter()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$CaptureReferenceSurface#isReadOnlyCapability()Z",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  private val CaptureFilterAccessors         = Vector(
+    AccessorObligation(
+      s"$CaptureFilterSurface#filterId()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScReference;",
+      required = true
+    )
+  )
   private val ModifierListAccessors          = Vector(
     AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
     AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
@@ -3086,6 +3286,16 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
+  private val PureParameterTypeAccessors     = Vector(
+    AccessorObligation(
+      s"$PureParameterTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(
+      s"$PureParameterTypeSurface#isCallByNameParameter()Z",
+      required = true
+    )
+  )
   private val TemplateParentsAccessors       = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/templates/ScTemplateParents#typeElements()Lscala/collection/immutable/Seq;",
@@ -3154,13 +3364,24 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "ordinary-tuple-type",
     "named-tuple-type",
     "ordinary-function-type",
+    "pure-nullary-function-type",
+    "pure-function-type",
+    "capture-nullary-function-type",
+    "capture-function-type",
     "dependent-function-type",
     "polymorphic-function-type",
     "ordinary-infix-type",
     "ordinary-match-type",
     "ordinary-refinement-type",
     "ordinary-annotated-type",
+    "capture-type-shorthand",
+    "capture-type-explicit-set",
+    "capture-function-result",
+    "capture-function-result-ident",
     "by-name-parameter-type",
+    "impure-by-name-parameter-type",
+    "pure-by-name-parameter-type",
+    "capture-by-name-parameter-type",
     "repeated-parameter-type"
   )
   private val SimpleTypeAliasProductionIds     = Set(
@@ -3507,6 +3728,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "ordinary-tuple-type",
             "named-tuple-type",
             "ordinary-function-type",
+            "pure-nullary-function-type",
+            "pure-function-type",
             "dependent-function-type",
             "polymorphic-function-type",
             "ordinary-infix-type",
@@ -4669,7 +4892,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           CompilerFieldPattern("fun", CatalogValuePattern.Node),
           CompilerFieldPattern("args", arguments)
         ),
-        annotationOccurrences(SourceClassification.SourceReachable, SourceClassification.Synthetic)
+        annotationOccurrences(SourceClassification.SourceReachable, SourceClassification.Synthetic).map(
+          _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))
+        )
       ),
       dispositions = Vector(
         FieldDisposition("fun", FieldDispositionKind.Child),
@@ -4821,7 +5046,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Vector(CatalogPathSegment.NamedField("fun")),
       Vector.empty,
       SourceClassification.Synthetic
-    ),
+    ).map(_.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))),
     Vector(
       FieldDisposition("qualifier", FieldDispositionKind.Child),
       FieldDisposition("name", FieldDispositionKind.SemanticOnly)
@@ -7410,7 +7635,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       classParameter: Boolean,
       contextual: Boolean = false
   ): Scala3PsiProduction =
-    val ancestors =
+    val ancestors             =
       if classParameter then
         Vector(InventoryAncestor(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("constr"))))
       else
@@ -7431,6 +7656,70 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             Vector(CatalogPathSegment.NamedField("refinements"), CatalogPathSegment.RepeatedElement)
           )
         )
+    def outputTemplate(
+        parameterTypeSurface: String,
+        parameterTypeAccessors: Vector[AccessorObligation],
+        parameterTypeRequirement: TargetRequirement
+    ) = LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "parameter",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          if classParameter then PsiOutputRoleId.ClassParameter else PsiOutputRoleId.Parameter,
+          if classParameter then ClassParameterSurface else ParameterSurface,
+          ParameterAccessors
+        ),
+        outputComposite(
+          "parameter-type",
+          Some("parameter"),
+          OutputRangeDeclaration.BoundaryDerived(
+            OutputBoundary.ChildStart(
+              "declared-type",
+              ChildOccurrenceSelector.First,
+              PositionProvenancePolicy.PositionedIncludingSynthetic
+            ),
+            OutputBoundary.ChildEnd(
+              "declared-type",
+              ChildOccurrenceSelector.Last,
+              PositionProvenancePolicy.PositionedIncludingSynthetic
+            )
+          ),
+          if parameterTypeRequirement == TargetRequirement.Compatible then PsiOutputRoleId.PureParameterType
+          else PsiOutputRoleId.ParameterType,
+          parameterTypeSurface,
+          parameterTypeAccessors,
+          parameterTypeRequirement
+        )
+      ),
+      Map("declared-type" -> Some("parameter-type"), "default" -> None) ++
+        Option.when(!contextual)("modifiers" -> Some("parameter"))
+    )
+    val pureByNameProductions = Set("pure-by-name-parameter-type", "capture-by-name-parameter-type")
+    val nativeRealizations    = (TypeAtomProductionIds -- pureByNameProductions).toVector.sorted.map: productionId =>
+      OutputRealization(
+        s"native-$productionId",
+        Vector(
+          ChildOutcomeCondition(
+            "declared-type",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production(productionId)
+          )
+        ),
+        outputTemplate(ParameterTypeSurface, ParameterTypeAccessors, TargetRequirement.Native)
+      )
+    val pureRealizations      = pureByNameProductions.toVector.sorted.map: productionId =>
+      OutputRealization(
+        s"compatible-$productionId",
+        Vector(
+          ChildOutcomeCondition(
+            "declared-type",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production(productionId)
+          )
+        ),
+        outputTemplate(PureParameterTypeSurface, PureParameterTypeAccessors, TargetRequirement.Compatible)
+      )
     Scala3PsiProduction(
       id = id,
       grammarRoleId = if classParameter then GrammarRoleId.ClassParameter else GrammarRoleId.TermParameter,
@@ -7510,41 +7799,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       accessors = ParameterAccessors,
       persistence = PersistenceObligations.NotApplicable,
       navigation = Some(NavigationObligation.Self),
-      outputTemplate = Some(
-        LocalOutputCompositeTemplate(
-          Vector(
-            outputComposite(
-              "parameter",
-              None,
-              OutputRangeDeclaration.CompilerPosition,
-              if classParameter then PsiOutputRoleId.ClassParameter else PsiOutputRoleId.Parameter,
-              if classParameter then ClassParameterSurface else ParameterSurface,
-              ParameterAccessors
-            ),
-            outputComposite(
-              "parameter-type",
-              Some("parameter"),
-              OutputRangeDeclaration.BoundaryDerived(
-                OutputBoundary.ChildStart(
-                  "declared-type",
-                  ChildOccurrenceSelector.First,
-                  PositionProvenancePolicy.PositionedIncludingSynthetic
-                ),
-                OutputBoundary.ChildEnd(
-                  "declared-type",
-                  ChildOccurrenceSelector.Last,
-                  PositionProvenancePolicy.PositionedIncludingSynthetic
-                )
-              ),
-              PsiOutputRoleId.ParameterType,
-              ParameterTypeSurface,
-              ParameterTypeAccessors
-            )
-          ),
-          Map("declared-type" -> Some("parameter-type"), "default" -> None) ++
-            Option.when(!contextual)("modifiers" -> Some("parameter"))
-        )
-      ),
+      outputTemplate = None,
+      outputRealizations = nativeRealizations ++ pureRealizations,
       outputRoleId = None
     )
 
@@ -9008,7 +9264,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     simpleTypeAlias(
       "definition-function-type-alias",
       "Function",
-      Set("ordinary-function-type", "dependent-function-type")
+      Set(
+        "ordinary-function-type",
+        "pure-nullary-function-type",
+        "pure-function-type",
+        "capture-nullary-function-type",
+        "capture-function-type",
+        "dependent-function-type"
+      )
     ),
     simpleTypeAlias(
       "definition-polymorphic-function-type-alias",
@@ -9033,7 +9296,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     simpleTypeAlias(
       "definition-annotated-type-alias",
       "Annotated",
-      Set("ordinary-annotated-type")
+      Set("ordinary-annotated-type", "capture-type-shorthand", "capture-type-explicit-set")
     )
   )
 
@@ -9841,6 +10104,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "ordinary-match-type",
     "ordinary-refinement-type",
     "ordinary-annotated-type",
+    "capture-type-shorthand",
+    "capture-type-explicit-set",
+    "capture-function-result",
+    "capture-function-result-ident",
     "match-type-pattern-reference",
     "match-type-pattern-variable",
     "match-type-pattern-wildcard"
@@ -10133,6 +10400,16 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       )
     )
 
+  private def functionTypeOccurrences(kinds: Vector[ParserScannerTokenKind]) =
+    (typeAtomOccurrences ++ compoundTypeArgumentOccurrences).flatMap: occurrence =>
+      kinds.map(kind => occurrence.copy(scannerEvidence = ScannerEvidencePattern(required = Set(kind))))
+
+  private val ordinaryFunctionArrowKinds =
+    Vector(ParserScannerTokenKind.FunctionArrow, ParserScannerTokenKind.ContextFunctionArrow)
+
+  private val pureFunctionArrowKinds =
+    Vector(ParserScannerTokenKind.PureFunctionArrow, ParserScannerTokenKind.ContextPureFunctionArrow)
+
   private lazy val functionTypeProduction = Scala3PsiProduction(
     id = "ordinary-function-type",
     grammarRoleId = GrammarRoleId.FunctionType,
@@ -10143,7 +10420,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.NodeExceptPrefix("ValDef"))),
         CompilerFieldPattern("body", CatalogValuePattern.Node)
       ),
-      typeAtomOccurrences ++ compoundTypeArgumentOccurrences
+      functionTypeOccurrences(ordinaryFunctionArrowKinds),
+      Vector(DirectNodeFieldEvidence("body", SourceClassification.SourceReachable))
     ),
     dispositions = Vector(
       FieldDisposition("args", FieldDispositionKind.Child),
@@ -10194,16 +10472,24 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       TerminalDeclaration(
         "ordinary-arrow",
-        TerminalIntervalSelector.ChildGap("arguments", "result"),
-        TerminalLeafTarget.Token(NativePsiElementBindings.FunctionArrowTokenSurface, Some("=>")),
+        TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+          ParserScannerTokenKind.FunctionArrow,
+          "arguments",
+          "result"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.FunctionArrowTokenSurface, None),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal,
         ownsStructuralEvidence = Some(false)
       ),
       TerminalDeclaration(
         "context-arrow",
-        TerminalIntervalSelector.ChildGap("arguments", "result"),
-        TerminalLeafTarget.Token(NativePsiElementBindings.ContextFunctionArrowTokenSurface, Some("?=>")),
+        TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+          ParserScannerTokenKind.ContextFunctionArrow,
+          "arguments",
+          "result"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextFunctionArrowTokenSurface, None),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal,
         ownsStructuralEvidence = Some(false)
@@ -10212,7 +10498,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "function-arrow-evidence",
         TerminalIntervalSelector.ChildGap("arguments", "result"),
         TerminalLeafTarget.Parent,
-        OccurrenceCardinality.ExactlyOne,
+        OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       )
     ),
@@ -10264,6 +10550,197 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
 
+  private val captureNullaryFunctionTypeProduction = Scala3PsiProduction(
+    id = "capture-nullary-function-type",
+    grammarRoleId = GrammarRoleId.FunctionType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Function",
+      Vector(
+        CompilerFieldPattern("args", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("body", CatalogValuePattern.Node)
+      ),
+      functionTypeOccurrences(pureFunctionArrowKinds),
+      Vector(DirectNodeFieldEvidence("body", SourceClassification.Synthetic))
+    ),
+    dispositions = Vector(
+      FieldDisposition("args", FieldDispositionKind.TerminalOrLayout),
+      FieldDisposition("body", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration("result", "body", ChildCardinality.ExactlyOne, "capture-function-result")
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "function-prefix",
+        TerminalIntervalSelector.BeforeChildOutputs("result"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-result-separator",
+        TerminalIntervalSelector.ChildOutputSeparators("result"),
+        TerminalLeafTarget.Trivia,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "pure-function-arrow",
+        TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(
+          ParserScannerTokenKind.PureFunctionArrow,
+          "result"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.PureFunctionArrowTokenSurface, None),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = FunctionTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = FunctionTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "function",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.FunctionType,
+            FunctionTypeSurface,
+            FunctionTypeAccessors
+          ),
+          outputComposite(
+            "parameters",
+            Some("function"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.ProductionStart(),
+              OutputBoundary.Advance(OutputBoundary.ProductionStart(), 2)
+            ),
+            PsiOutputRoleId.ParenthesizedType,
+            ParenthesizedTypeSurface,
+            ParenthesizedTypeAccessors
+          )
+        ),
+        Map("result" -> Some("function"))
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private lazy val captureFunctionTypeProduction = functionTypeProduction.copy(
+    id = "capture-function-type",
+    pattern = functionTypeProduction.pattern.copy(
+      fields = Vector(
+        CompilerFieldPattern(
+          "args",
+          CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.NodeExceptPrefix("ValDef"))
+        ),
+        CompilerFieldPattern("body", CatalogValuePattern.Node)
+      ),
+      occurrences = functionTypeOccurrences(pureFunctionArrowKinds),
+      directNodeEvidence = Vector(DirectNodeFieldEvidence("body", SourceClassification.Synthetic))
+    ),
+    children = Vector(
+      compoundChild("arguments", "args", ChildCardinality.Repeated(1, None)),
+      ChildDeclaration("result", "body", ChildCardinality.ExactlyOne, "capture-function-result")
+    ),
+    terminals = (functionTypeProduction.terminals
+      .filterNot(_.target == TerminalLeafTarget.Parent)
+      .map: terminal =>
+        val selector = terminal.selector match
+          case TerminalIntervalSelector.BeforeChild("arguments")        =>
+            TerminalIntervalSelector.BeforeChildOutputs("arguments")
+          case TerminalIntervalSelector.ChildSeparators("arguments")    =>
+            TerminalIntervalSelector.ChildOutputSeparators("arguments")
+          case TerminalIntervalSelector.ChildGap("arguments", "result") =>
+            TerminalIntervalSelector.ChildOutputGap("arguments", "result")
+          case TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+                ParserScannerTokenKind.FunctionArrow,
+                "arguments",
+                "result"
+              ) =>
+            TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(
+              ParserScannerTokenKind.PureFunctionArrow,
+              "arguments",
+              "result"
+            )
+          case TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+                ParserScannerTokenKind.ContextFunctionArrow,
+                "arguments",
+                "result"
+              ) =>
+            TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(
+              ParserScannerTokenKind.ContextPureFunctionArrow,
+              "arguments",
+              "result"
+            )
+          case other                                                    => other
+        val target   = terminal.id match
+          case "ordinary-arrow" =>
+            TerminalLeafTarget.Token(NativePsiElementBindings.PureFunctionArrowTokenSurface, None)
+          case "context-arrow"  =>
+            TerminalLeafTarget.Token(NativePsiElementBindings.ContextPureFunctionArrowTokenSurface, None)
+          case _                => terminal.target
+        terminal.copy(selector = selector, target = target)
+    ) ++ Vector(
+      TerminalDeclaration(
+        "capture-function-evidence",
+        TerminalIntervalSelector.ChildOutputGap("arguments", "result"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-result-separator",
+        TerminalIntervalSelector.ChildOutputSeparators("result"),
+        TerminalLeafTarget.Trivia,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    )
+  )
+
+  private lazy val pureFunctionTypeProduction = functionTypeProduction.copy(
+    id = "pure-function-type",
+    pattern = functionTypeProduction.pattern.copy(occurrences = functionTypeOccurrences(pureFunctionArrowKinds)),
+    terminals = functionTypeProduction.terminals.map: terminal =>
+      terminal.id match
+        case "ordinary-arrow" =>
+          terminal.copy(
+            selector = TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+              ParserScannerTokenKind.PureFunctionArrow,
+              "arguments",
+              "result"
+            ),
+            target = TerminalLeafTarget.Token(NativePsiElementBindings.PureFunctionArrowTokenSurface, None)
+          )
+        case "context-arrow"  =>
+          terminal.copy(
+            selector = TerminalIntervalSelector.CompilerScannerTokenInChildGap(
+              ParserScannerTokenKind.ContextPureFunctionArrow,
+              "arguments",
+              "result"
+            ),
+            target = TerminalLeafTarget.Token(NativePsiElementBindings.ContextPureFunctionArrowTokenSurface, None)
+          )
+        case _                => terminal
+  )
+
+  private lazy val pureNullaryFunctionTypeProduction = captureNullaryFunctionTypeProduction.copy(
+    id = "pure-nullary-function-type",
+    pattern = captureNullaryFunctionTypeProduction.pattern.copy(
+      directNodeEvidence = Vector(DirectNodeFieldEvidence("body", SourceClassification.SourceReachable))
+    ),
+    children = Vector(compoundChild("result", "body", ChildCardinality.ExactlyOne)),
+    terminals = captureNullaryFunctionTypeProduction.terminals.filterNot(_.id == "capture-result-separator")
+  )
+
   private val dependentFunctionTypeProduction = functionTypeProduction.copy(
     id = "dependent-function-type",
     grammarRoleId = GrammarRoleId.DependentFunctionType,
@@ -10284,15 +10761,17 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     ),
     terminals = functionTypeProduction.terminals.map: terminal =>
       terminal.copy(selector = terminal.selector match
-        case TerminalIntervalSelector.BeforeChild("arguments")        =>
+        case TerminalIntervalSelector.BeforeChild("arguments")                                    =>
           TerminalIntervalSelector.BeforeChild("parameters")
-        case TerminalIntervalSelector.AfterChild("arguments")         =>
+        case TerminalIntervalSelector.AfterChild("arguments")                                     =>
           TerminalIntervalSelector.AfterChild("parameters")
-        case TerminalIntervalSelector.ChildSeparators("arguments")    =>
+        case TerminalIntervalSelector.ChildSeparators("arguments")                                =>
           TerminalIntervalSelector.ChildSeparators("parameters")
-        case TerminalIntervalSelector.ChildGap("arguments", "result") =>
+        case TerminalIntervalSelector.ChildGap("arguments", "result")                             =>
           TerminalIntervalSelector.ChildGap("parameters", "result")
-        case other                                                    => other
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, "arguments", "result") =>
+          TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, "parameters", "result")
+        case other                                                                                => other
       ),
     targetSurfaceId = DependentFunctionTypeSurface,
     accessors = DependentFunctionTypeAccessors,
@@ -10413,7 +10892,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             ),
             PsiOutputRoleId.ParameterType,
             ParameterTypeSurface,
-            ParameterTypeAccessors
+            ParameterTypeAccessors,
+            TargetRequirement.Native
           )
         ),
         Map("declared-type" -> Some("parameter-type"), "default" -> None, "modifiers" -> Some("parameter"))
@@ -10559,7 +11039,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       InventoryKind.Node,
       "ByNameTypeTree",
       Vector(CompilerFieldPattern("result", CatalogValuePattern.Node)),
-      dependentParameterTypeOccurrences
+      dependentParameterTypeOccurrences.map(
+        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.FunctionArrow)))
+      ),
+      Vector(DirectNodeFieldEvidence("result", SourceClassification.SourceReachable))
     ),
     dispositions = Vector(FieldDisposition("result", FieldDispositionKind.Child)),
     children = Vector(compoundChild("result", "result", ChildCardinality.ExactlyOne)),
@@ -10589,6 +11072,410 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     navigation = Some(NavigationObligation.Self),
     outputTemplate = Some(transparentTemplate("result")),
     outputRoleId = None
+  )
+
+  private lazy val impureByNameParameterTypeProduction = byNameParameterTypeProduction.copy(
+    id = "impure-by-name-parameter-type",
+    pattern = byNameParameterTypeProduction.pattern.copy(
+      directNodeEvidence = Vector(DirectNodeFieldEvidence("result", SourceClassification.Synthetic))
+    ),
+    children = Vector(
+      ChildDeclaration("result", "result", ChildCardinality.ExactlyOne, "by-name-captures-and-result")
+    )
+  )
+
+  private lazy val byNameCaptureSetTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "capture-set",
+        None,
+        OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput(
+          "result",
+          ClosedSourceLexicalKind.LeftBrace,
+          ClosedSourceLexicalKind.RightBrace
+        ),
+        PsiOutputRoleId.CaptureSet,
+        CaptureSetSurface,
+        Vector.empty
+      )
+    ),
+    Map("capture-references" -> Some("capture-set"), "result" -> None)
+  )
+
+  private def byNameCaptureSetRealization(id: String, referenceProductionId: String): OutputRealization =
+    OutputRealization(
+      id,
+      Vector(
+        ChildOutcomeCondition(
+          "capture-references",
+          ChildOccurrenceSelector.First,
+          ChildOutcomeExpectation.Production(referenceProductionId)
+        )
+      ),
+      byNameCaptureSetTemplate,
+      Vector(EvidenceCondition.RepeatedFieldSize("refs", 1, None))
+    )
+
+  private lazy val byNameCapturesAndResultProduction = Scala3PsiProduction(
+    id = "by-name-captures-and-result",
+    grammarRoleId = GrammarRoleId.CaptureSet,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "CapturesAndResult",
+      Vector(
+        CompilerFieldPattern("refs", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("parent", CatalogValuePattern.Node)
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "ByNameTypeTree", Vector(CatalogPathSegment.NamedField("result"))),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("refs", FieldDispositionKind.Child),
+      FieldDisposition("parent", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "capture-references",
+        "refs",
+        ChildCardinality.Repeated(0, None),
+        "capture-function-reference",
+        Set(
+          "capture-function-qualified-reference",
+          "capture-function-reference-modifier-reach",
+          "capture-function-reference-modifier-read-only",
+          "capture-function-reference-modifier-filter",
+          "by-name-capture-root-select"
+        )
+      ),
+      compoundChild("result", "parent", ChildCardinality.ExactlyOne)
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-reference-commas",
+        TerminalIntervalSelector.ChildOutputSeparators("capture-references"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.TypeCommaTokenSurface, Some(",")),
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "capture-reference-separator-evidence",
+        TerminalIntervalSelector.ChildOutputSeparators("capture-references"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputRealizations = Vector(
+      OutputRealization(
+        "synthetic-capture-root",
+        Vector(
+          ChildOutcomeCondition(
+            "capture-references",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production("by-name-capture-root-select")
+          )
+        ),
+        transparentTemplate("capture-references", "result"),
+        Vector(EvidenceCondition.RepeatedFieldSize("refs", 1, None))
+      ),
+      OutputRealization(
+        "empty-explicit-set",
+        Vector.empty,
+        byNameCaptureSetTemplate,
+        Vector(EvidenceCondition.RepeatedFieldSize("refs", 0, Some(0)))
+      ),
+      byNameCaptureSetRealization("direct-explicit-set", "capture-function-reference"),
+      byNameCaptureSetRealization("qualified-explicit-set", "capture-function-qualified-reference"),
+      byNameCaptureSetRealization("reach-explicit-set", "capture-function-reference-modifier-reach"),
+      byNameCaptureSetRealization("read-only-explicit-set", "capture-function-reference-modifier-read-only"),
+      byNameCaptureSetRealization("filter-explicit-set", "capture-function-reference-modifier-filter")
+    ),
+    outputRoleId = None
+  )
+
+  private lazy val byNameCaptureRootSelectProduction = Scala3PsiProduction(
+    id = "by-name-capture-root-select",
+    grammarRoleId = GrammarRoleId.CaptureSynthetic,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.NodePrefix("Select")),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "CapturesAndResult",
+            Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "ByNameTypeTree",
+                Vector(CatalogPathSegment.NamedField("result"))
+              )
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("qualifier", FieldDispositionKind.Child),
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "qualifier",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "by-name-capture-root-middle-select"
+      )
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate("qualifier")),
+    outputRoleId = None
+  )
+
+  private lazy val byNameCaptureRootMiddleSelectProduction = byNameCaptureRootSelectProduction.copy(
+    id = "by-name-capture-root-middle-select",
+    pattern = byNameCaptureRootSelectProduction.pattern.copy(
+      occurrences = Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "Select",
+            Vector(CatalogPathSegment.NamedField("qualifier")),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "CapturesAndResult",
+                Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "ByNameTypeTree",
+                Vector(CatalogPathSegment.NamedField("result"))
+              )
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "qualifier",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "by-name-capture-root-inner-select"
+      )
+    )
+  )
+
+  private lazy val byNameCaptureRootInnerSelectProduction = byNameCaptureRootSelectProduction.copy(
+    id = "by-name-capture-root-inner-select",
+    pattern = byNameCaptureRootSelectProduction.pattern.copy(
+      fields = Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.NodePrefix("Ident")),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      occurrences = Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "Select",
+            Vector(CatalogPathSegment.NamedField("qualifier")),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier"))
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "CapturesAndResult",
+                Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "ByNameTypeTree",
+                Vector(CatalogPathSegment.NamedField("result"))
+              )
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    children = Vector(
+      ChildDeclaration("qualifier", "qualifier", ChildCardinality.ExactlyOne, "by-name-capture-root-ident")
+    )
+  )
+
+  private lazy val byNameCaptureRootIdentProduction = Scala3PsiProduction(
+    id = "by-name-capture-root-ident",
+    grammarRoleId = GrammarRoleId.CaptureSynthetic,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "Select",
+            Vector(CatalogPathSegment.NamedField("qualifier")),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier"))
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier"))
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "CapturesAndResult",
+                Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+              ),
+              InventoryAncestor(
+                InventoryKind.Node,
+                "ByNameTypeTree",
+                Vector(CatalogPathSegment.NamedField("result"))
+              )
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    children = Vector.empty,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate()),
+    outputRoleId = None
+  )
+
+  private val captureByNameParameterTypeProduction = Scala3PsiProduction(
+    id = "capture-by-name-parameter-type",
+    grammarRoleId = GrammarRoleId.ByNameParameterType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "ByNameTypeTree",
+      Vector(CompilerFieldPattern("result", CatalogValuePattern.Node)),
+      dependentParameterTypeOccurrences.map(
+        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.PureFunctionArrow)))
+      ),
+      Vector(DirectNodeFieldEvidence("result", SourceClassification.Synthetic))
+    ),
+    dispositions = Vector(FieldDisposition("result", FieldDispositionKind.Child)),
+    children = Vector(
+      ChildDeclaration("result", "result", ChildCardinality.ExactlyOne, "by-name-captures-and-result")
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-left-brace",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundLeftBraceTokenSurface, Some("{")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-right-brace",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundRightBraceTokenSurface, Some("}")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "by-name-arrow",
+        TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(
+          ParserScannerTokenKind.PureFunctionArrow,
+          "result"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.PureFunctionArrowTokenSurface, None),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "by-name-prefix-evidence",
+        TerminalIntervalSelector.BeforeChildOutputs("result"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-result-separator",
+        TerminalIntervalSelector.ChildOutputSeparators("result"),
+        TerminalLeafTarget.Trivia,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = PureParameterTypeSurface,
+    targetRequirement = TargetRequirement.Compatible,
+    accessors = PureParameterTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(transparentTemplate("result")),
+    outputRoleId = None
+  )
+
+  private val pureByNameParameterTypeProduction = byNameParameterTypeProduction.copy(
+    id = "pure-by-name-parameter-type",
+    pattern = byNameParameterTypeProduction.pattern.copy(
+      occurrences = dependentParameterTypeOccurrences.map(
+        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.PureFunctionArrow)))
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "by-name-arrow",
+        TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(
+          ParserScannerTokenKind.PureFunctionArrow,
+          "result"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.PureFunctionArrowTokenSurface, None),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      byNameParameterTypeProduction.terminals.find(_.id == "by-name-prefix-evidence").get
+    ),
+    targetSurfaceId = PureParameterTypeSurface,
+    targetRequirement = TargetRequirement.Compatible,
+    accessors = PureParameterTypeAccessors
   )
 
   private val repeatedParameterTypeProduction = Scala3PsiProduction(
@@ -11080,7 +11967,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         CompilerFieldPattern("arg", CatalogValuePattern.Node),
         CompilerFieldPattern("annot", CatalogValuePattern.NodePrefix("Apply"))
       ),
-      typeAtomOccurrences ++ compoundTypeArgumentOccurrences
+      (typeAtomOccurrences ++ compoundTypeArgumentOccurrences).map(
+        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))
+      ),
+      Vector(DirectNodeFieldEvidence("annot", SourceClassification.Synthetic, hasSourceWidth = Some(true)))
     ),
     dispositions = Vector(
       FieldDisposition("arg", FieldDispositionKind.Child),
@@ -11149,15 +12039,1052 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     outputRoleId = None
   )
 
+  private val captureTypeFields = Vector(
+    CompilerFieldPattern("arg", CatalogValuePattern.Node),
+    CompilerFieldPattern("annot", CatalogValuePattern.NodePrefix("Apply"))
+  )
+
+  private def captureTypeProduction(explicitSet: Boolean): Scala3PsiProduction =
+    val id              = if explicitSet then "capture-type-explicit-set" else "capture-type-shorthand"
+    val scannerEvidence =
+      if explicitSet then
+        ScannerEvidencePattern(required = Set(ParserScannerTokenKind.CaptureOperator, ParserScannerTokenKind.LeftBrace))
+      else
+        ScannerEvidencePattern(
+          required = Set(ParserScannerTokenKind.CaptureOperator),
+          forbidden = Set(ParserScannerTokenKind.LeftBrace)
+        )
+    val captureType     = outputComposite(
+      "capture-type",
+      None,
+      OutputRangeDeclaration.CompilerPosition,
+      PsiOutputRoleId.CaptureType,
+      CaptureTypeSurface,
+      CaptureTypeAccessors
+    )
+    val composites      =
+      if explicitSet then
+        Vector(
+          captureType,
+          outputComposite(
+            "capture-set",
+            Some("capture-type"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.Advance(
+                OutputBoundary.ChildEnd(
+                  "captured-type",
+                  ChildOccurrenceSelector.First,
+                  PositionProvenancePolicy.SourceDerivedOnly
+                ),
+                1
+              ),
+              OutputBoundary.ProductionEnd()
+            ),
+            PsiOutputRoleId.CaptureSet,
+            CaptureSetSurface,
+            Vector.empty
+          )
+        )
+      else Vector(captureType)
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.CaptureType,
+      additionalGrammarRoleIds = Option.when(explicitSet)(GrammarRoleId.CaptureSet).toSet,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Annotated",
+        captureTypeFields,
+        (typeAtomOccurrences ++ compoundTypeArgumentOccurrences).map(_.copy(scannerEvidence = scannerEvidence)),
+        Vector(
+          DirectNodeFieldEvidence(
+            "annot",
+            SourceClassification.Synthetic,
+            hasSourceWidth = Option.when(!explicitSet)(false),
+            requiredAttachmentKinds = Option.when(explicitSet)("RetainsAnnot").toSet
+          )
+        )
+      ),
+      dispositions = Vector(
+        FieldDisposition("arg", FieldDispositionKind.Child),
+        FieldDisposition("annot", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        compoundChild("captured-type", "arg", ChildCardinality.ExactlyOne),
+        ChildDeclaration("capture-annotation", "annot", ChildCardinality.ExactlyOne, "capture-annotation-apply")
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "capture-type-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "capture-operator",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.CaptureOperatorTokenSurface, Some("^")),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "capture-left-brace",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundLeftBraceTokenSurface, Some("{")),
+          if explicitSet then OccurrenceCardinality.ExactlyOne else OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "capture-right-brace",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundRightBraceTokenSurface, Some("}")),
+          if explicitSet then OccurrenceCardinality.ExactlyOne else OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = CaptureTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = CaptureTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(
+        LocalOutputCompositeTemplate(
+          composites,
+          Map(
+            "captured-type"      -> Some("capture-type"),
+            "capture-annotation" -> Some(if explicitSet then "capture-set" else "capture-type")
+          )
+        )
+      ),
+      outputRoleId = None
+    )
+
+  private val captureAnnotationApplyProduction = Scala3PsiProduction(
+    id = "capture-annotation-apply",
+    grammarRoleId = GrammarRoleId.CaptureSet,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Apply",
+      Vector(
+        CompilerFieldPattern("fun", CatalogValuePattern.Node),
+        CompilerFieldPattern("args", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "Annotated",
+            Vector(CatalogPathSegment.NamedField("annot"))
+          ),
+          SourceClassification.Synthetic
+        )
+      ).map(_.copy(scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Other))))
+    ),
+    dispositions = Vector(
+      FieldDisposition("fun", FieldDispositionKind.Child),
+      FieldDisposition("args", FieldDispositionKind.Synthetic)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "annotation-function",
+        "fun",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-select",
+        Set("capture-synthetic-type-apply")
+      )
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate("annotation-function")),
+    outputRoleId = None
+  )
+
+  private def captureTransparentProduction(
+      id: String,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      occurrences: Vector[CompilerProductionContextPattern],
+      dispositions: Vector[FieldDisposition],
+      children: Vector[ChildDeclaration],
+      directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id = id,
+    grammarRoleId = GrammarRoleId.CaptureSet,
+    pattern = CompilerProductionPattern(InventoryKind.Node, prefix, fields, occurrences, directNodeEvidence),
+    dispositions = dispositions,
+    children = children,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate(children.map(_.roleId)*)),
+    outputRoleId = None
+  )
+
+  private val CaptureAnnotationAnchor   = InventoryAncestor(
+    InventoryKind.Node,
+    "Annotated",
+    Vector(CatalogPathSegment.NamedField("annot"))
+  )
+  private val CaptureAnnotationEvidence = Vector(
+    AncestorEvidencePattern(
+      directNodeEvidence = Vector(
+        DirectNodeFieldEvidence("annot", SourceClassification.Synthetic, hasSourceWidth = Some(false))
+      )
+    ),
+    AncestorEvidencePattern(
+      directNodeEvidence = Vector(
+        DirectNodeFieldEvidence(
+          "annot",
+          SourceClassification.Synthetic,
+          requiredAttachmentKinds = Set("RetainsAnnot")
+        )
+      )
+    ),
+    AncestorEvidencePattern(
+      scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Other)),
+      directNodeEvidence = Vector(
+        DirectNodeFieldEvidence("annot", SourceClassification.Synthetic, hasSourceWidth = Some(true))
+      )
+    )
+  )
+
+  private def captureSyntheticOccurrence(
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment]
+  ): CompilerProductionContextPattern = CompilerProductionContextPattern(
+    ContextPattern.ParentUnderAnchorWithEvidence(
+      InventoryKind.Node,
+      ownerPrefix,
+      path,
+      CaptureAnnotationAnchor,
+      CaptureAnnotationEvidence
+    ),
+    SourceClassification.Synthetic
+  )
+
+  private val captureSyntheticSelectProduction = captureTransparentProduction(
+    "capture-synthetic-select",
+    "Select",
+    Vector(
+      CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+      CompilerFieldPattern("name", CatalogValuePattern.Name)
+    ),
+    Vector(
+      captureSyntheticOccurrence("Apply", Vector(CatalogPathSegment.NamedField("fun"))),
+      captureSyntheticOccurrence("New", Vector(CatalogPathSegment.NamedField("tpt"))),
+      captureSyntheticOccurrence("Select", Vector(CatalogPathSegment.NamedField("qualifier"))),
+      captureSyntheticOccurrence("TypeApply", Vector(CatalogPathSegment.NamedField("fun")))
+    ),
+    Vector(
+      FieldDisposition("qualifier", FieldDispositionKind.Child),
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly)
+    ),
+    Vector(
+      ChildDeclaration(
+        "qualifier",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-ident",
+        Set("capture-synthetic-new", "capture-synthetic-select", "capture-synthetic-typed-splice")
+      )
+    )
+  )
+
+  private val captureSyntheticTypeApplyProduction = captureTransparentProduction(
+    "capture-synthetic-type-apply",
+    "TypeApply",
+    Vector(
+      CompilerFieldPattern("fun", CatalogValuePattern.NodePrefix("Select")),
+      CompilerFieldPattern("args", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Node))
+    ),
+    Vector(
+      captureSyntheticOccurrence("Apply", Vector(CatalogPathSegment.NamedField("fun")))
+    ),
+    Vector(FieldDisposition("fun", FieldDispositionKind.Child), FieldDisposition("args", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration(
+        "type-function",
+        "fun",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-select"
+      ),
+      ChildDeclaration(
+        "type-arguments",
+        "args",
+        ChildCardinality.Repeated(1, None),
+        "capture-set-group",
+        Set("capture-reference", "capture-synthetic-typed-splice", "capture-reference-ident")
+      )
+    )
+  )
+
+  private val captureSyntheticNewProduction = captureTransparentProduction(
+    "capture-synthetic-new",
+    "New",
+    Vector(CompilerFieldPattern("tpt", CatalogValuePattern.Node)),
+    Vector(
+      captureSyntheticOccurrence("Select", Vector(CatalogPathSegment.NamedField("qualifier")))
+    ),
+    Vector(FieldDisposition("tpt", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration(
+        "new-type",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-select",
+        Set("capture-synthetic-typed-splice")
+      )
+    ),
+    directNodeEvidence = Vector(DirectNodeFieldEvidence("tpt", SourceClassification.Synthetic))
+  )
+
+  private val captureSetGroupProduction = captureTransparentProduction(
+    "capture-set-group",
+    "AppliedTypeTree",
+    Vector(
+      CompilerFieldPattern("tpt", CatalogValuePattern.NodePrefix("TypedSplice")),
+      CompilerFieldPattern("args", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Node))
+    ),
+    Vector(
+      captureSyntheticOccurrence(
+        "TypeApply",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+      ),
+      captureSyntheticOccurrence(
+        "AppliedTypeTree",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+      )
+    ),
+    Vector(FieldDisposition("tpt", FieldDispositionKind.Child), FieldDisposition("args", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration(
+        "set-constructor",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-typed-splice"
+      ),
+      ChildDeclaration(
+        "set-elements",
+        "args",
+        ChildCardinality.Repeated(1, None),
+        "capture-set-group",
+        Set("capture-reference")
+      )
+    )
+  )
+
+  private val captureSyntheticTypedSpliceProduction = captureTransparentProduction(
+    "capture-synthetic-typed-splice",
+    "TypedSplice",
+    Vector(CompilerFieldPattern("splice", CatalogValuePattern.NodePrefix("TypeTree"))),
+    Vector(
+      captureSyntheticOccurrence("New", Vector(CatalogPathSegment.NamedField("tpt"))),
+      captureSyntheticOccurrence("AppliedTypeTree", Vector(CatalogPathSegment.NamedField("tpt"))),
+      captureSyntheticOccurrence(
+        "TypeApply",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+      )
+    ),
+    Vector(FieldDisposition("splice", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration(
+        "splice",
+        "splice",
+        ChildCardinality.ExactlyOne,
+        "capture-synthetic-type-tree"
+      )
+    )
+  )
+
+  private val captureSyntheticTypeTreeProduction = captureTransparentProduction(
+    "capture-synthetic-type-tree",
+    "TypeTree",
+    Vector.empty,
+    Vector(
+      captureSyntheticOccurrence("TypedSplice", Vector(CatalogPathSegment.NamedField("splice")))
+    ),
+    Vector.empty,
+    Vector.empty
+  )
+
+  private val captureSyntheticIdentProduction = captureTransparentProduction(
+    "capture-synthetic-ident",
+    "Ident",
+    Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+    Vector(
+      captureSyntheticOccurrence("Select", Vector(CatalogPathSegment.NamedField("qualifier")))
+    ),
+    Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    Vector.empty
+  )
+
+  private val captureReferenceIdentProduction = Scala3PsiProduction(
+    id = "capture-reference-ident",
+    grammarRoleId = GrammarRoleId.StableReference,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "Annotated",
+            Vector(CatalogPathSegment.NamedField("arg")),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "SingletonTypeTree",
+                Vector(CatalogPathSegment.NamedField("ref"))
+              )
+            )
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "TypeApply",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+            Vector(
+              InventoryAncestor(InventoryKind.Node, "Apply", Vector(CatalogPathSegment.NamedField("fun"))),
+              InventoryAncestor(InventoryKind.Node, "Annotated", Vector(CatalogPathSegment.NamedField("annot")))
+            )
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestorPrefix(
+            InventoryKind.Node,
+            "Annotated",
+            Vector(CatalogPathSegment.NamedField("arg")),
+            Vector(
+              InventoryAncestor(
+                InventoryKind.Node,
+                "CapturesAndResult",
+                Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+              )
+            )
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-reference-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = StableReferenceSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = StableReferenceAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(stableReferenceTemplate()),
+    outputRoleId = None
+  )
+
+  private val captureReferenceProduction = Scala3PsiProduction(
+    id = "capture-reference",
+    grammarRoleId = GrammarRoleId.CaptureReference,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "SingletonTypeTree",
+      Vector(CompilerFieldPattern("ref", CatalogValuePattern.Node)),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "TypeApply",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.Synthetic
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "AppliedTypeTree",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("ref", FieldDispositionKind.Child)),
+    children = Vector(
+      ChildDeclaration(
+        "reference",
+        "ref",
+        ChildCardinality.ExactlyOne,
+        "type-atom-singleton-reference-ident",
+        Set(
+          "type-atom-singleton-reference-select",
+          "capture-reference-modifier-reach",
+          "capture-reference-modifier-read-only",
+          "capture-reference-modifier-filter"
+        )
+      )
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureReferenceSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = CaptureReferenceAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "capture-reference",
+            None,
+            OutputRangeDeclaration.CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic),
+            PsiOutputRoleId.CaptureReference,
+            CaptureReferenceSurface,
+            CaptureReferenceAccessors
+          )
+        ),
+        Map("reference" -> Some("capture-reference"))
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private def captureReferenceModifierProduction(
+      id: String,
+      required: Set[ParserScannerTokenKind],
+      forbidden: Set[ParserScannerTokenKind],
+      filter: Boolean
+  ): Scala3PsiProduction =
+    val output =
+      if filter then
+        Some(
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "capture-filter",
+                None,
+                OutputRangeDeclaration.BoundaryDerived(
+                  OutputBoundary.ChildEnd(
+                    "reference",
+                    ChildOccurrenceSelector.First,
+                    PositionProvenancePolicy.SourceDerivedOnly
+                  ),
+                  OutputBoundary.ProductionEnd()
+                ),
+                PsiOutputRoleId.CaptureFilter,
+                CaptureFilterSurface,
+                CaptureFilterAccessors
+              )
+            ),
+            Map("reference" -> None, "modifier" -> Some("capture-filter"))
+          )
+        )
+      else Some(transparentTemplate("reference", "modifier"))
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = if filter then GrammarRoleId.CaptureFilter else GrammarRoleId.CaptureReference,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Annotated",
+        captureTypeFields,
+        Vector(
+          CompilerProductionContextPattern(
+            ContextPattern
+              .Parent(InventoryKind.Node, "SingletonTypeTree", Vector(CatalogPathSegment.NamedField("ref"))),
+            SourceClassification.SourceReachable,
+            ScannerEvidencePattern(required, forbidden)
+          )
+        ),
+        Vector(DirectNodeFieldEvidence("annot", SourceClassification.Synthetic))
+      ),
+      dispositions = Vector(
+        FieldDisposition("arg", FieldDispositionKind.Child),
+        FieldDisposition("annot", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        ChildDeclaration("reference", "arg", ChildCardinality.ExactlyOne, "capture-reference-ident"),
+        ChildDeclaration("modifier", "annot", ChildCardinality.ExactlyOne, "capture-annotation-apply")
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "capture-reference-modifier-source",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "capture-reach",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.CaptureReachTokenSurface, Some("*")),
+          if id.endsWith("reach") then OccurrenceCardinality.ExactlyOne else OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "capture-read-only",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Token(NativePsiElementBindings.CaptureReadOnlyTokenSurface, Some("rd")),
+          if id.endsWith("read-only") then OccurrenceCardinality.ExactlyOne else OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = if filter then CaptureFilterSurface else CaptureReferenceSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = if filter then CaptureFilterAccessors else CaptureReferenceAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = output,
+      outputRoleId = None
+    )
+
+  private val captureReferenceModifierProductions = Vector(
+    captureReferenceModifierProduction(
+      "capture-reference-modifier-reach",
+      Set.empty,
+      Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.LeftBracket),
+      filter = false
+    ),
+    captureReferenceModifierProduction(
+      "capture-reference-modifier-read-only",
+      Set(ParserScannerTokenKind.Dot),
+      Set(ParserScannerTokenKind.LeftBracket),
+      filter = false
+    ),
+    captureReferenceModifierProduction(
+      "capture-reference-modifier-filter",
+      Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.LeftBracket),
+      Set.empty,
+      filter = true
+    )
+  )
+
+  private val captureFunctionReferenceProduction = Scala3PsiProduction(
+    id = "capture-function-reference",
+    grammarRoleId = GrammarRoleId.CaptureReference,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "CapturesAndResult",
+            Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-reference-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureReferenceSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = CaptureReferenceAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "capture-reference",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.CaptureReference,
+            CaptureReferenceSurface,
+            CaptureReferenceAccessors
+          ),
+          outputComposite(
+            "reference",
+            Some("capture-reference"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.StableReference,
+            StableReferenceSurface,
+            StableReferenceAccessors
+          )
+        ),
+        Map.empty
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private val captureFunctionQualifiedReferenceProduction = Scala3PsiProduction(
+    id = "capture-function-qualified-reference",
+    grammarRoleId = GrammarRoleId.CaptureReference,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "CapturesAndResult",
+            Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("qualifier", FieldDispositionKind.Child),
+      FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "qualifier",
+        "qualifier",
+        ChildCardinality.ExactlyOne,
+        "import-selector-given-bound-qualifier-ident"
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-reference-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureReferenceSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = CaptureReferenceAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "capture-reference",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.CaptureReference,
+            CaptureReferenceSurface,
+            CaptureReferenceAccessors
+          ),
+          outputComposite(
+            "reference",
+            Some("capture-reference"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.StableReference,
+            StableReferenceSurface,
+            StableReferenceAccessors
+          )
+        ),
+        Map("qualifier" -> Some("reference"))
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private def captureFunctionReferenceModifierProduction(
+      id: String,
+      required: Set[ParserScannerTokenKind],
+      forbidden: Set[ParserScannerTokenKind],
+      filter: Boolean
+  ): Scala3PsiProduction =
+    val composites = Vector(
+      outputComposite(
+        "capture-reference",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.CaptureReference,
+        CaptureReferenceSurface,
+        CaptureReferenceAccessors
+      )
+    ) ++ Option.when(filter)(
+      outputComposite(
+        "capture-filter",
+        Some("capture-reference"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary.ChildEnd(
+            "reference",
+            ChildOccurrenceSelector.First,
+            PositionProvenancePolicy.SourceDerivedOnly
+          ),
+          OutputBoundary.ProductionEnd()
+        ),
+        PsiOutputRoleId.CaptureFilter,
+        CaptureFilterSurface,
+        CaptureFilterAccessors
+      )
+    )
+    captureReferenceModifierProduction(id, required, forbidden, filter).copy(
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Annotated",
+        captureTypeFields,
+        Vector(
+          CompilerProductionContextPattern(
+            ContextPattern.Parent(
+              InventoryKind.Node,
+              "CapturesAndResult",
+              Vector(CatalogPathSegment.NamedField("refs"), CatalogPathSegment.RepeatedElement)
+            ),
+            SourceClassification.SourceReachable,
+            ScannerEvidencePattern(required, forbidden)
+          )
+        ),
+        Vector(DirectNodeFieldEvidence("annot", SourceClassification.Synthetic))
+      ),
+      outputTemplate = Some(
+        LocalOutputCompositeTemplate(
+          composites,
+          Map(
+            "reference" -> Some("capture-reference"),
+            "modifier"  -> Some(if filter then "capture-filter" else "capture-reference")
+          )
+        )
+      )
+    )
+
+  private val captureFunctionReferenceModifierProductions = Vector(
+    captureFunctionReferenceModifierProduction(
+      "capture-function-reference-modifier-reach",
+      Set.empty,
+      Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.LeftBracket),
+      filter = false
+    ),
+    captureFunctionReferenceModifierProduction(
+      "capture-function-reference-modifier-read-only",
+      Set(ParserScannerTokenKind.Dot),
+      Set(ParserScannerTokenKind.LeftBracket),
+      filter = false
+    ),
+    captureFunctionReferenceModifierProduction(
+      "capture-function-reference-modifier-filter",
+      Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.LeftBracket),
+      Set.empty,
+      filter = true
+    )
+  )
+
+  private val captureFunctionResultIdentProduction = Scala3PsiProduction(
+    id = "capture-function-result-ident",
+    grammarRoleId = GrammarRoleId.SimpleType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "CapturesAndResult",
+            Vector(CatalogPathSegment.NamedField("parent"))
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "type-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SimpleTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SimpleTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "type",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.SimpleType,
+            SimpleTypeSurface,
+            SimpleTypeAccessors
+          ),
+          outputComposite(
+            "reference",
+            Some("type"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.StableReference,
+            StableReferenceSurface,
+            StableReferenceAccessors
+          )
+        ),
+        Map.empty
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private val captureFunctionResultProduction = Scala3PsiProduction(
+    id = "capture-function-result",
+    grammarRoleId = GrammarRoleId.CaptureSet,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "CapturesAndResult",
+      Vector(
+        CompilerFieldPattern("refs", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("parent", CatalogValuePattern.Node)
+      ),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(InventoryKind.Node, "Function", Vector(CatalogPathSegment.NamedField("body"))),
+          SourceClassification.Synthetic
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("refs", FieldDispositionKind.Child),
+      FieldDisposition("parent", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "capture-references",
+        "refs",
+        ChildCardinality.Repeated(0, None),
+        "capture-function-reference",
+        Set(
+          "capture-function-qualified-reference",
+          "capture-function-reference-modifier-reach",
+          "capture-function-reference-modifier-read-only",
+          "capture-function-reference-modifier-filter"
+        )
+      ),
+      compoundChild("result", "parent", ChildCardinality.ExactlyOne)
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "capture-left-brace",
+        TerminalIntervalSelector.LocalOutput("capture-set"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundLeftBraceTokenSurface, Some("{")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-right-brace",
+        TerminalIntervalSelector.LocalOutput("capture-set"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundRightBraceTokenSurface, Some("}")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "capture-reference-commas",
+        TerminalIntervalSelector.ChildOutputSeparators("capture-references"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.TypeCommaTokenSurface, Some(",")),
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "capture-reference-separator-evidence",
+        TerminalIntervalSelector.ChildOutputSeparators("capture-references"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CaptureSetSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "capture-set",
+            None,
+            OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput(
+              "result",
+              ClosedSourceLexicalKind.LeftBrace,
+              ClosedSourceLexicalKind.RightBrace
+            ),
+            PsiOutputRoleId.CaptureSet,
+            CaptureSetSurface,
+            Vector.empty
+          )
+        ),
+        Map("capture-references" -> Some("capture-set"), "result" -> None)
+      )
+    ),
+    outputRoleId = None
+  )
+
   private lazy val compoundTypeProductions: Vector[Scala3PsiProduction] = Vector(
     tupleTypeProduction,
     namedTupleTypeProduction,
     namedTupleComponentProduction,
     functionTypeProduction,
+    pureNullaryFunctionTypeProduction,
+    pureFunctionTypeProduction,
+    captureNullaryFunctionTypeProduction,
+    captureFunctionTypeProduction,
     dependentFunctionTypeProduction,
     dependentFunctionParameterProduction,
     polyFunctionTypeProduction,
     byNameParameterTypeProduction,
+    impureByNameParameterTypeProduction,
+    byNameCapturesAndResultProduction,
+    byNameCaptureRootSelectProduction,
+    byNameCaptureRootMiddleSelectProduction,
+    byNameCaptureRootInnerSelectProduction,
+    byNameCaptureRootIdentProduction,
+    pureByNameParameterTypeProduction,
+    captureByNameParameterTypeProduction,
     repeatedParameterTypeProduction,
     repeatedParameterSyntheticStarProduction,
     matchTypeProduction,
@@ -11166,8 +13093,24 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     matchTypePatternVariableProduction,
     matchTypePatternWildcardProduction,
     refinementTypeProduction,
-    annotatedTypeProduction
-  )
+    annotatedTypeProduction,
+    captureTypeProduction(explicitSet = false),
+    captureTypeProduction(explicitSet = true),
+    captureAnnotationApplyProduction,
+    captureSyntheticSelectProduction,
+    captureSyntheticNewProduction,
+    captureSyntheticTypeApplyProduction,
+    captureSetGroupProduction,
+    captureSyntheticTypedSpliceProduction,
+    captureSyntheticTypeTreeProduction,
+    captureSyntheticIdentProduction,
+    captureReferenceIdentProduction,
+    captureReferenceProduction,
+    captureFunctionReferenceProduction,
+    captureFunctionQualifiedReferenceProduction,
+    captureFunctionResultIdentProduction,
+    captureFunctionResultProduction
+  ) ++ captureReferenceModifierProductions ++ captureFunctionReferenceModifierProductions
 
   private val SingletonReferenceProductionIds = Set(
     "type-atom-singleton-reference-ident",
@@ -11667,7 +13610,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
 
-  val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
+  lazy val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Vector(
       packageProduction("file-package", body = false),
       packageProduction("file-package-top-statements", body = true),
@@ -13399,6 +15342,16 @@ private[metallurgy] object CatalogShapeMatcher:
     val kinds = observed.toSet
     pattern.required.subsetOf(kinds) && pattern.forbidden.intersect(kinds).isEmpty
 
+  private[psiproducer] def directNodeEvidenceMatches(
+      expected: Vector[DirectNodeFieldEvidence],
+      observed: Vector[DirectNodeFieldEvidence]
+  ): Boolean = expected.forall: requirement =>
+    observed.exists: evidence =>
+      requirement.fieldName == evidence.fieldName &&
+        requirement.sourceClassification == evidence.sourceClassification &&
+        requirement.hasSourceWidth.forall(expected => evidence.hasSourceWidth.contains(expected)) &&
+        requirement.requiredAttachmentKinds.subsetOf(evidence.requiredAttachmentKinds)
+
   def matches(pattern: CatalogValuePattern, observation: InventoryValueObservation): Boolean =
     (pattern, observation) match
       case (CatalogValuePattern.Node, InventoryValueObservation.Node(_, _))                                   => true
@@ -13553,6 +15506,17 @@ private[metallurgy] object CatalogShapeMatcher:
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorWithEvidence(kind, owner, p, anchor, patterns)                      =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors
+            .zip(value.ancestorEvidence)
+            .exists: (ancestor, observed) =>
+              ancestor == anchor && patterns.exists(pattern =>
+                scannerEvidenceMatches(pattern.scannerEvidence, observed.scannerTokenKinds) &&
+                  directNodeEvidenceMatches(pattern.directNodeEvidence, observed.directNodeEvidence)
+              )
+      )
     case ContextPattern.ParentUnderAnchorThrough(kind, owner, p, ancestors, anchor)                          =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -13627,6 +15591,17 @@ private[metallurgy] object CatalogShapeMatcher:
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorWithEvidence(kind, owner, p, anchor, patterns)                      =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors
+            .zip(value.ancestorEvidence)
+            .exists: (ancestor, observed) =>
+              ancestor == anchor && patterns.exists(pattern =>
+                scannerEvidenceMatches(pattern.scannerEvidence, observed.scannerTokenKinds) &&
+                  directNodeEvidenceMatches(pattern.directNodeEvidence, observed.directNodeEvidence)
+              )
+      )
     case ContextPattern.ParentUnderAnchorThrough(kind, owner, p, ancestors, anchor)                          =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -13688,10 +15663,12 @@ private[metallurgy] object CatalogShapeMatcher:
       fields: Vector[InventoryFieldObservation],
       context: Option[InventoryContext],
       sourceClassification: SourceClassification,
-      scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty
+      scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+      directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
   ): Vector[Scala3PsiProduction] =
     val matched = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
+        directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
         p.pattern.occurrences.exists(occurrence =>
           contextMatches(occurrence.context, context) && occurrence.sourceClassification == sourceClassification
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
@@ -13736,7 +15713,7 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             ) && CatalogShapeMatcher.matches(CatalogValuePattern.AnyOf(values), value)
           case _ => false
-      production -> specificity
+      production -> (specificity + production.pattern.directNodeEvidence.size)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }
 
@@ -13747,6 +15724,7 @@ private[metallurgy] object CatalogShapeMatcher:
   ): Vector[Scala3PsiProduction] =
     val matched = catalog.productions.filter(p =>
       p.pattern.kind == row.kind && p.pattern.prefix == row.prefix && coversFields(p.pattern.fields, row.fields) &&
+        directNodeEvidenceMatches(p.pattern.directNodeEvidence, occurrence.directNodeEvidence) &&
         p.pattern.occurrences.exists(pattern =>
           aggregateContextMatches(pattern.context, occurrence.context) &&
             pattern.sourceClassification == occurrence.sourceClassification &&
@@ -13754,10 +15732,10 @@ private[metallurgy] object CatalogShapeMatcher:
         )
     )
     val scored  = matched.map: production =>
-      production -> production.pattern.fields.count(field =>
+      production -> (production.pattern.fields.count(field =>
         field.value match
-          case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |
-              CatalogValuePattern.BacktickedName =>
+          case CatalogValuePattern.LowercaseName |
+              CatalogValuePattern.NonLowercaseName | CatalogValuePattern.BacktickedName =>
             true
           case CatalogValuePattern.AnyOf(values) =>
             values.exists(candidate =>
@@ -13766,7 +15744,7 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             )
           case _                                 => false
-      )
+      ) + production.pattern.directNodeEvidence.size)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }
 
@@ -13883,7 +15861,10 @@ private[metallurgy] object RuntimeRealizationSelector:
   def validate(catalog: Scala3PsiProductionCatalog, runtime: CompilerRuntimeInventory): Vector[CatalogValidationError] =
     val rows                                                                   = runtime.shapes.map(row => (row.kind, row.id) -> row).toMap
     val nodes                                                                  = runtime.nodes.map(node => node.id -> node).toMap
-    val lineages                                                               = InventoryContextLineage.resolver(nodes)
+    val ancestorEvidence                                                       = runtime.shapes.collect:
+      case row if row.kind == InventoryKind.Node =>
+        row.id -> InventoryAncestorEvidence(row.scannerTokenKinds, row.directNodeEvidence)
+    val lineages                                                               = InventoryContextLineage.resolver(nodes, ancestorEvidence.toMap)
     val selected                                                               = collection.mutable.Map.empty[ProductionInstanceId, Scala3PsiProduction]
     val errors                                                                 = Vector.newBuilder[CatalogValidationError]
     val productsByOccurrence                                                   = runtime.products
@@ -13971,7 +15952,8 @@ private[metallurgy] object RuntimeRealizationSelector:
             row.observation,
             context,
             row.sourceClassification,
-            row.scannerTokenKinds
+            row.scannerTokenKinds,
+            row.directNodeEvidence
           )
         )
         .map(_.map(_.id))
@@ -14314,6 +16296,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               (Vector(headerRole) ++ bodyRole)
                 .filterNot(childRoles)
                 .foreach(role => errors += CatalogValidationError.UnknownOutputRangeChildRole(p.id, output.id, role))
+            case OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput(role, _, _)       =>
+              if !childRoles(role) then
+                errors += CatalogValidationError.UnknownOutputRangeChildRole(p.id, output.id, role)
             case OutputRangeDeclaration.BoundaryDerived(start, end)                             =>
               validateBoundary(start); validateBoundary(end)
             case OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(start, end) =>
@@ -14419,29 +16404,53 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case _: TerminalIntervalSelector.ChildGap                                            => false
             case _: TerminalIntervalSelector.ChildSeparators                                     => false
             case _: TerminalIntervalSelector.BeforeChild                                         => true
+            case _: TerminalIntervalSelector.BeforeChildOutputs                                  => true
             case _: TerminalIntervalSelector.AfterChild                                          => false
+            case _: TerminalIntervalSelector.ChildOutputGap                                      => false
+            case _: TerminalIntervalSelector.ChildOutputSeparators                               => false
             case TerminalIntervalSelector.CompilerEndMarkerKeyword |
-                TerminalIntervalSelector.CompilerScannerToken(_, _) | TerminalIntervalSelector.LocalOutput(_) |
-                TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
+                TerminalIntervalSelector.CompilerScannerToken(_, _) |
+                TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, _) |
+                TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, _, _) |
+                TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, _, _) |
+                TerminalIntervalSelector.LocalOutput(_) | TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
               false
           )
           if !declared then errors += CatalogValidationError.MissingTerminalDeclaration(p.id, name)
       p.terminals.foreach(_.selector match
-        case TerminalIntervalSelector.FieldBounds(a, b)     =>
+        case TerminalIntervalSelector.FieldBounds(a, b)                               =>
           Vector(a, b)
             .filterNot(names.contains)
             .foreach(n => errors += CatalogValidationError.UnknownTerminalField(p.id, n))
-        case TerminalIntervalSelector.ChildGap(a, b)        =>
+        case TerminalIntervalSelector.ChildGap(a, b)                                  =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.ChildSeparators(role) =>
+        case TerminalIntervalSelector.ChildSeparators(role)                           =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.BeforeChild(role)     =>
+        case TerminalIntervalSelector.BeforeChild(role)                               =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.AfterChild(role)      =>
+        case TerminalIntervalSelector.AfterChild(role)                                =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case _                                              => ()
+        case TerminalIntervalSelector.BeforeChildOutputs(role)                        =>
+          if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
+        case TerminalIntervalSelector.ChildOutputGap(a, b)                            =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.ChildOutputSeparators(role)                     =>
+          if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
+        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role) =>
+          if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, a, b)         =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, a, b)   =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case _                                                                        => ()
       )
       p.terminals.foreach:
         case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, outputRoleId, _) =>
@@ -14503,7 +16512,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                        shape.observation,
                        context,
                        shape.sourceClassification,
-                       shape.scannerTokenKinds
+                       shape.scannerTokenKinds,
+                       shape.directNodeEvidence
                      )
           error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
         yield error
@@ -14535,7 +16545,11 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                   CatalogShapeMatcher.aggregateContextMatches(pattern.context, occurrence.context) &&
                     pattern.sourceClassification == occurrence.sourceClassification &&
                     pattern.scannerEvidence.required.subsetOf(occurrence.scannerTokenKinds.toSet) &&
-                    pattern.scannerEvidence.forbidden.intersect(occurrence.scannerTokenKinds.toSet).isEmpty
+                    pattern.scannerEvidence.forbidden.intersect(occurrence.scannerTokenKinds.toSet).isEmpty &&
+                    CatalogShapeMatcher.directNodeEvidenceMatches(
+                      production.pattern.directNodeEvidence,
+                      occurrence.directNodeEvidence
+                    )
                 )
             )
           ) =>
@@ -14910,7 +16924,11 @@ private[metallurgy] object WholeFileProductionPlanner:
           )
         )
         .toMap
-      val lineages                                                                                = InventoryContextLineage.resolver(nodes)
+      val ancestorEvidence                                                                        = compiler.shapes.collect:
+        case row if row.kind == InventoryKind.Node =>
+          row.id -> InventoryAncestorEvidence(row.scannerTokenKinds, row.directNodeEvidence)
+      val lineages                                                                                =
+        InventoryContextLineage.resolver(nodes, ancestorEvidence.toMap)
       def fields(instance: ProductionInstanceId): Vector[ParserSyntaxField]                       = instance.kind match
         case InventoryKind.Node       => nodes(instance.valueId).fields
         case InventoryKind.Positioned => positioned(instance.valueId).fields
@@ -15005,7 +17023,8 @@ private[metallurgy] object WholeFileProductionPlanner:
             row.observation,
             context,
             row.sourceClassification,
-            row.scannerTokenKinds
+            row.scannerTokenKinds,
+            row.directNodeEvidence
           )
         )
         val distinct   = selections.map(_._2.map(_.id)).distinct
@@ -16023,7 +18042,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Vector((declaration, CompositeInstanceId(instance, declaration.id), None))
         val ranges               = expandedDeclarations.map { (declaration, compositeId, realizedRange) =>
           val range                 = declaration.range match
-            case OutputRangeDeclaration.CompilerPosition                                     =>
+            case OutputRangeDeclaration.CompilerPosition                                              =>
               position(instance) match
                 case ParserNodePosition.Positioned(value, _, ParserPositionProvenance.SourceDerived) => value
                 case _                                                                               =>
@@ -16040,9 +18059,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                       )
                     )
                   )
-            case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)                   =>
+            case OutputRangeDeclaration.CompilerPositionWithPolicy(policy)                            =>
               positionedRange(instance, policy, OutputBoundary.ProductionStart(policy), declaration.id)
-            case OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(policy) =>
+            case OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(policy)          =>
               val base = positionedRange(
                 instance,
                 policy,
@@ -16168,7 +18187,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               PcSourceRange(base.startOffset, math.max(delimiterEnd, markerEnd))
-            case OutputRangeDeclaration.CompilerEndMarker                                    =>
+            case OutputRangeDeclaration.CompilerEndMarker                                             =>
               compilerEndMarker(instance)
                 .map(_._1)
                 .getOrElse(
@@ -16181,7 +18200,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 )
-            case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary)          =>
+            case OutputRangeDeclaration.BoundaryDerived(startBoundary, endBoundary)                   =>
               val start = resolve(startBoundary, declaration.id)
               val end   = resolve(endBoundary, declaration.id)
               if start > end then
@@ -16226,6 +18245,87 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               withTrailingBalancedBrackets(PcSourceRange(start, end), declaration.id)
+            case OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput(role, opening, closing) =>
+              val sourceOwner = nearestSourceOwnerRange(
+                instance,
+                OutputBoundary.ParentProductionEnd,
+                declaration.id
+              )
+              val childStarts = compilerChildren
+                .getOrElse(instance, Vector.empty)
+                .collect { case (`role`, _, child) => child }
+                .flatMap(child =>
+                  outputRows.getOrElse(child, Vector.empty).collect {
+                    case (childDeclaration, _, childRange) if childDeclaration.parentId.isEmpty =>
+                      childRange.startOffset
+                  }
+                )
+              val anchor      = childStarts.distinct match
+                case Vector(value) => value
+                case values        =>
+                  break(
+                    Left(
+                      WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                        instance,
+                        declaration.id,
+                        OutputBoundary.ProductionStart(),
+                        s"child output anchor is missing or ambiguous: ${values.mkString("[", ",", "]")}"
+                      )
+                    )
+                  )
+              val preceding   = lexicalAtomsWithin(PcSourceRange(sourceOwner.startOffset, anchor))
+              val closeIndex  = preceding.lastIndexWhere(atom =>
+                atom.kind != ClosedSourceLexicalKind.Whitespace &&
+                  atom.kind != ClosedSourceLexicalKind.LineComment && atom.kind != ClosedSourceLexicalKind.BlockComment
+              )
+              if closeIndex < 0 || preceding(closeIndex).kind != closing then
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidOutputRange(
+                      instance,
+                      declaration.id,
+                      anchor,
+                      anchor,
+                      PcSourceRange(anchor, anchor)
+                    )
+                  )
+                )
+              var depth       = 0
+              var index       = closeIndex
+              var start       = Option.empty[Int]
+              while index >= 0 && start.isEmpty do
+                val atom = preceding(index)
+                if atom.kind == closing then depth += 1
+                else if atom.kind == opening then
+                  depth -= 1
+                  if depth == 0 then start = Some(atom.start)
+                  else if depth < 0 then
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.InvalidOutputRange(
+                          instance,
+                          declaration.id,
+                          atom.start,
+                          preceding(closeIndex).end,
+                          PcSourceRange(atom.start, preceding(closeIndex).end)
+                        )
+                      )
+                    )
+                index -= 1
+              val rangeStart  = start.getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.InvalidOutputRange(
+                      instance,
+                      declaration.id,
+                      anchor,
+                      anchor,
+                      PcSourceRange(anchor, anchor)
+                    )
+                  )
+                )
+              )
+              PcSourceRange(rangeStart, preceding(closeIndex).end)
           val ownerRange            = positionedRange(
             instance,
             PositionProvenancePolicy.PositionedIncludingSynthetic,
@@ -16282,9 +18382,16 @@ private[metallurgy] object WholeFileProductionPlanner:
                 OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(_) |
                 OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets(_, _) =>
               range.startOffset >= ownerRange.startOffset && range.endOffset <= snapshot.sourceLength
-            case _ if parentDerived || sourceAncestorDerived =>
+            case OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput(_, _, _) =>
+              val sourceOwner = nearestSourceOwnerRange(
+                instance,
+                OutputBoundary.ParentProductionEnd,
+                declaration.id
+              )
+              range.startOffset >= sourceOwner.startOffset && range.endOffset <= sourceOwner.endOffset
+            case _ if parentDerived || sourceAncestorDerived                           =>
               range.startOffset >= extentRange.startOffset && range.endOffset <= extentRange.endOffset
-            case _                                           =>
+            case _                                                                     =>
               range.startOffset >= ownerRange.startOffset && range.endOffset <= ownerRange.endOffset
           if !validExtent || range.startOffset > range.endOffset || !evidenceBoundaries.contains(
               range.startOffset
@@ -16494,12 +18601,56 @@ private[metallurgy] object WholeFileProductionPlanner:
               PcSourceRange(left.endOffset, right.startOffset)
           .toVector
 
+      def childOutputRanges(
+          instance: ProductionInstanceId,
+          role: String,
+          requireOutput: Boolean = true
+      ): Vector[PcSourceRange] =
+        val ranges = compilerChildren
+          .getOrElse(instance, Vector.empty)
+          .collect { case (`role`, _, child) => child }
+          .flatMap(child =>
+            outputRoots
+              .getOrElse(child, Vector.empty)
+              .map: rootId =>
+                outputRows
+                  .getOrElse(rootId.origin, Vector.empty)
+                  .collectFirst { case (_, `rootId`, range) => range }
+                  .getOrElse(
+                    break(
+                      Left(
+                        WholeFilePlanningFailure.UnsupportedTerminalSelector(
+                          selected(instance).id,
+                          role,
+                          TerminalIntervalSelector.BeforeChildOutputs(role)
+                        )
+                      )
+                    )
+                  )
+          )
+          .sortBy(range => (range.startOffset, range.endOffset))
+        if (requireOutput && ranges.isEmpty) || ranges.sliding(2).exists {
+            case Vector(left, right) => left.endOffset > right.startOffset
+            case _                   => false
+          }
+        then
+          break(
+            Left(
+              WholeFilePlanningFailure.UnsupportedTerminalSelector(
+                selected(instance).id,
+                role,
+                TerminalIntervalSelector.BeforeChildOutputs(role)
+              )
+            )
+          )
+        ranges
+
       def terminalIntervals(
           instance: ProductionInstanceId,
           production: Scala3PsiProduction,
           terminal: TerminalDeclaration
       ): Vector[PcSourceRange] = terminal.selector match
-        case TerminalIntervalSelector.WholeSource if instance != root        =>
+        case TerminalIntervalSelector.WholeSource if instance != root                                =>
           break(
             Left(
               WholeFilePlanningFailure.UnsupportedTerminalSelector(
@@ -16509,13 +18660,13 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-        case TerminalIntervalSelector.WholeSource                            =>
+        case TerminalIntervalSelector.WholeSource                                                    =>
           Vector(PcSourceRange(0, snapshot.sourceLength))
-        case TerminalIntervalSelector.LocalOutput(outputId)                  =>
+        case TerminalIntervalSelector.LocalOutput(outputId)                                          =>
           outputRows
             .getOrElse(instance, Vector.empty)
             .collect { case (declaration, _, range) if declaration.id == outputId => range }
-        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)       =>
+        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)                               =>
           if instance != root then Vector.empty
           else
             outputRows
@@ -16526,17 +18677,17 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Vector(PcSourceRange(0, range.startOffset), PcSourceRange(range.endOffset, snapshot.sourceLength))
                   .filter(value => value.startOffset < value.endOffset)
               )
-        case TerminalIntervalSelector.WholeProduction                        =>
+        case TerminalIntervalSelector.WholeProduction                                                =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                 if range.startOffset < range.endOffset =>
               Vector(range)
             case _ => Vector.empty
-        case TerminalIntervalSelector.ChildGap(startRole, endRole)           =>
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)                                   =>
           childGapIntervals(instance, startRole, endRole)
-        case TerminalIntervalSelector.ChildSeparators(roleId)                =>
+        case TerminalIntervalSelector.ChildSeparators(roleId)                                        =>
           childSeparatorIntervals(instance, roleId)
-        case TerminalIntervalSelector.BeforeChild(roleId)                    =>
+        case TerminalIntervalSelector.BeforeChild(roleId)                                            =>
           (
             position(instance),
             compilerChildren.getOrElse(instance, Vector.empty).collectFirst { case (`roleId`, _, child) =>
@@ -16549,7 +18700,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if parent.startOffset <= child.startOffset =>
               Vector(PcSourceRange(parent.startOffset, child.startOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.AfterChild(roleId)                     =>
+        case TerminalIntervalSelector.AfterChild(roleId)                                             =>
           (
             position(instance),
             compilerChildren
@@ -16563,9 +18714,29 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if child.endOffset <= parent.endOffset =>
               Vector(PcSourceRange(child.endOffset, parent.endOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.CompilerEndMarkerKeyword               =>
+        case TerminalIntervalSelector.BeforeChildOutputs(roleId)                                     =>
+          val outputs = childOutputRanges(instance, roleId)
+          position(instance) match
+            case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
+              Vector(PcSourceRange(parent.startOffset, outputs.head.startOffset))
+            case _                                                                                             => Vector.empty
+        case TerminalIntervalSelector.ChildOutputGap(startRole, endRole)                             =>
+          val starts = childOutputRanges(instance, startRole)
+          val ends   = childOutputRanges(instance, endRole)
+          if starts.last.endOffset <= ends.head.startOffset then
+            Vector(PcSourceRange(starts.last.endOffset, ends.head.startOffset))
+          else Vector.empty
+        case TerminalIntervalSelector.ChildOutputSeparators(roleId)                                  =>
+          if compilerChildren.getOrElse(instance, Vector.empty).exists(_._1 == roleId) then
+            childOutputRanges(instance, roleId, requireOutput = false)
+              .sliding(2)
+              .collect:
+                case Vector(left, right) => PcSourceRange(left.endOffset, right.startOffset)
+              .toVector
+          else Vector.empty
+        case TerminalIntervalSelector.CompilerEndMarkerKeyword                                       =>
           compilerEndMarker(instance).map(_._2).toVector
-        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence) =>
+        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence)                         =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, _) =>
               val matches = snapshot.scannerTokens
@@ -16578,27 +18749,55 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case ScannerTokenOccurrence.First => matches.headOption.toVector
                 case ScannerTokenOccurrence.Last  => matches.lastOption.toVector
             case _                                          => Vector.empty
-        case other                                                           =>
+        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)           =>
+          val outputs = childOutputRanges(instance, roleId)
+          position(instance) match
+            case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
+              val interval = PcSourceRange(parent.startOffset, outputs.head.startOffset)
+              snapshot.scannerTokens
+                .filter(token =>
+                  token.kind == kind && interval.startOffset <= token.range.startOffset && token.range.endOffset <= interval.endOffset
+                )
+                .map(_.range)
+            case _                                                                                             => Vector.empty
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, startRole, endRole)       =>
+          childGapIntervals(instance, startRole, endRole).flatMap: gap =>
+            snapshot.scannerTokens
+              .filter(token =>
+                token.kind == kind && gap.startOffset <= token.range.startOffset && token.range.endOffset <= gap.endOffset
+              )
+              .map(_.range)
+        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(kind, startRole, endRole) =>
+          val starts = childOutputRanges(instance, startRole)
+          val ends   = childOutputRanges(instance, endRole)
+          if starts.last.endOffset <= ends.head.startOffset then
+            val gap = PcSourceRange(starts.last.endOffset, ends.head.startOffset)
+            snapshot.scannerTokens
+              .filter(token =>
+                token.kind == kind && gap.startOffset <= token.range.startOffset && token.range.endOffset <= gap.endOffset
+              )
+              .map(_.range)
+          else Vector.empty
+        case other                                                                                   =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
       def terminalTokenRanges(
-          instance: ProductionInstanceId,
           terminal: TerminalDeclaration,
           intervals: Vector[PcSourceRange]
-      ): Vector[PcSourceRange] = terminal.target match
-        case TerminalLeafTarget.Token(_, Some(expected)) =>
+      ): Vector[PcSourceRange] = (terminal.target, terminal.selector) match
+        case (TerminalLeafTarget.Token(_, Some(expected)), _)                                                        =>
           intervals.flatMap: interval =>
             lexicalAtomsWithin(interval)
               .filter(atom => snapshot.sourceText.substring(atom.start, atom.end) == expected)
-              .filter(atom =>
-                evidence.atoms.exists(sourceAtom =>
-                  sourceAtom.start <= atom.start && atom.end <= sourceAtom.end && sourceAtom.claims.exists(
-                    claims(instance, _)
-                  )
-                )
-              )
               .map(atom => PcSourceRange(atom.start, atom.end))
-        case _                                           => Vector.empty
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerToken)                   => intervals
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs) =>
+          intervals
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerTokenInChildGap)         =>
+          intervals
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap)   =>
+          intervals
+        case _                                                                                                       => Vector.empty
 
       def terminalLexicalKinds(intervals: Vector[PcSourceRange]): Vector[ClosedSourceLexicalKind] =
         intervals.flatMap: interval =>
@@ -16637,7 +18836,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         production.terminals.foreach: terminal =>
           val intervals = terminalIntervals(instance, production, terminal)
           val ranges    = terminal.target match
-            case _: TerminalLeafTarget.Token => terminalTokenRanges(instance, terminal, intervals)
+            case _: TerminalLeafTarget.Token => terminalTokenRanges(terminal, intervals)
             case _                           => intervals
           ranges.foreach: range =>
             requestedBoundaries += terminal.outputRoleId -> range.startOffset
@@ -16722,7 +18921,11 @@ private[metallurgy] object WholeFileProductionPlanner:
         result.result()
       val deepestOutputClaimOwners                                                                        = planningAtoms
         .map: atom =>
-          val owners  = claimOwners(atom, outputClaimOwners)
+          val owners  = claimOwners(atom, outputClaimOwners).filter(instance =>
+            outputRows
+              .getOrElse(instance, Vector.empty)
+              .exists((_, _, range) => range.startOffset <= atom.start && atom.end <= range.endOffset)
+          )
           val deepest = owners.zipWithIndex.collect:
             case (owner, index)
                 if owners.lift(index + 1).forall(next => ownershipEntry(next) >= ownershipExit(owner)) =>
@@ -16745,6 +18948,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               if declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithBodyLayoutOrEndMarker] ||
                 declaration.range.isInstanceOf[OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets] ||
                 declaration.range.isInstanceOf[OutputRangeDeclaration.BoundaryDerivedWithTrailingBalancedBrackets] ||
+                declaration.range.isInstanceOf[OutputRangeDeclaration.BalancedLexicalRangeBeforeChildOutput] ||
                 (declaration.range match
                   case OutputRangeDeclaration.BoundaryDerived(start, end) =>
                     Set(start, end).exists:
@@ -16755,13 +18959,6 @@ private[metallurgy] object WholeFileProductionPlanner:
             range
         )
         .toMap
-      val sourceExtendedAtoms                                                                             = sourceExtendedRanges.map: (instance, ranges) =>
-        instance -> planningAtoms.filter: atom =>
-          ranges.exists(range => range.startOffset <= atom.start && atom.end <= range.endOffset) &&
-            (claimOwners(atom, activeClaimOwners) match
-              case Vector() => true
-              case owners   => owners.forall(owner => owner == instance || isAncestor(owner, instance))
-            )
       val distinctPlanningAtoms                                                                           = stableDistinctSourceAtoms(planningAtoms)
       val planningAtomRangeIndex                                                                          = new SourceOrderedRangeIndex(
         distinctPlanningAtoms,
@@ -16769,6 +18966,18 @@ private[metallurgy] object WholeFileProductionPlanner:
         _.end,
         workObserver.terminalCandidateEntries
       )
+      val sourceExtendedAtoms                                                                             = sourceExtendedRanges.map: (instance, ranges) =>
+        instance -> stableDistinctSourceAtoms(
+          ranges
+            .flatMap(planningAtomRangeIndex.within)
+            .filter: atom =>
+              claimOwners(atom, activeClaimOwners) match
+                case Vector() => true
+                case owners   => owners.forall(owner => owner == instance || isAncestor(owner, instance))
+        )
+      val sourceExtendedAtomSets                                                                          = sourceExtendedAtoms.view
+        .mapValues(_.toSet)
+        .toMap
       val distinctParentClaimAtoms                                                                        = active.iterator
         .filter(instance => selected(instance).terminals.exists(_.target == TerminalLeafTarget.Parent))
         .map: instance =>
@@ -16784,7 +18993,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       active.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
-          val intervals          = terminalIntervals(instance, production, terminal)
+          val intervals            = terminalIntervals(instance, production, terminal)
           if !terminalLexicalContractSatisfied(terminal, intervals) then
             break(
               Left(
@@ -16796,23 +19005,27 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
               )
             )
-          val tokenRanges        = terminalTokenRanges(instance, terminal, intervals).toSet
-          val terminalCandidates = terminal.target match
+          val tokenRanges          = terminalTokenRanges(terminal, intervals).toSet
+          val extendedCandidateSet = sourceExtendedAtomSets.getOrElse(instance, Set.empty)
+          val terminalCandidates   = terminal.target match
             case TerminalLeafTarget.Parent => distinctParentClaimAtoms.getOrElse(instance, Vector.empty)
-            case _                         => distinctPlanningAtoms
-          val atoms              = intervals.flatMap: interval =>
+            case _                         => Vector.empty
+          val atoms                = intervals.flatMap: interval =>
             val candidates = terminal.target match
               case TerminalLeafTarget.Parent =>
                 workObserver.terminalCandidateEntries(terminalCandidates.size)
                 terminalCandidates.filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
               case _                         => planningAtomRangeIndex.within(interval)
             candidates
-              .filter(atom => terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)))
+              .filter(atom =>
+                terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)) ||
+                  extendedCandidateSet(atom)
+              )
               .filter: atom =>
                 terminal.target match
                   case TerminalLeafTarget.Token(_, Some(_)) => tokenRanges(PcSourceRange(atom.start, atom.end))
                   case _                                    => true
-          val occurrences        = terminal.target match
+          val occurrences          = terminal.target match
             case _: TerminalLeafTarget.Token => atoms.size
             case _                           => intervals.size
           if !accepts(terminal.cardinality, occurrences) then

@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.build.ScalacFlagsService
 import com.hmemcpy.metallurgy.pc.{
   ParserDiagnostic,
   ParserDiagnosticSeverity,
@@ -84,12 +85,13 @@ final class Scala3DotcFileElementType
                           .parserFor(active)
                           .toRight(failure(Scala3SyntaxCapabilityStage.Preparation, lifecycle.stateFor(active)))
       uri            <- ParserSourceUri.from(sourceId).left.map(failure(Scala3SyntaxCapabilityStage.Parser, _))
+      compilerOptions = ScalacFlagsService.get(psi.getProject).presentationCompilerOptions(active).toVector
       snapshot       <- prepared.bridge
                           .parse(
                             Scala3ParserRequest(
                               uri,
                               source,
-                              prepared.compilerOptions,
+                              compilerOptions,
                               new Scala3ParserCancellation:
                                 override def checkCanceled(): Unit = ProgressManager.checkCanceled()
                             )

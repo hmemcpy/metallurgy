@@ -1,0 +1,9 @@
+class Capability extends caps.Capability
+class Box[A]
+def explicit(x: Capability): Box[String]^{x} = ???
+def pure(x: Capability): () ->{x} String = ???
+def pureByName(value: -> String): String = value
+:type explicit(_)
+:type pure(_)
+:type pureByName(_)
+:quit
