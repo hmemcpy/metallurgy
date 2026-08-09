@@ -44,6 +44,18 @@ These goals are the project's reason for existing and take precedence over every
 
 ## Discipline (non-negotiable)
 
+- **Use the exact commit identity.** Every commit author and committer must be exactly
+  `Igal Tabachnik <hmemcpy@gmail.com>`.
+- **Never add automated attribution.** Do not add `Co-authored-by`, `Signed-off-by`, `Amp-Thread-ID`, or any other
+  commit trailer, header, or message attribution naming Amp, ampagent, ampcode, an Amp email/domain, or an automated
+  agent.
+- **Keep sole ownership explicit.** Metallurgy is a sole-owner research project. Its only owner, user, author, and
+  committer is `Igal Tabachnik <hmemcpy@gmail.com>`. History may be rewritten to enforce this policy when active work
+  is preserved and recoverable local backups exist.
+- **Prevent attribution injection.** Hooks, ship prompts, commit templates, and tooling must not inject such
+  attribution.
+- **Inspect commits before push.** Inspect the complete raw commit object and message plus author and committer fields;
+  stop if prohibited attribution exists.
 - **Assume the compiler and PC are correct.** A surprising result normally means the probe, source range, flags,
   classpath, snapshot generation, or interpretation is wrong. Confirm the exact compiler behavior before changing
   implementation.

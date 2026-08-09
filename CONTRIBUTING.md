@@ -41,14 +41,6 @@ Reference the issue number at the start of the summary:
 Body explaining the why and how.
 ```
 
-Sign off your commits:
-
-```
-Signed-off-by: Your Name <your.email@example.com>
-```
-
-This is a [DCO-style](https://developercertificate.org/) signoff — by signing off you certify that you wrote the change or otherwise have the right to contribute it.
-
 ## Tests
 
 Every change that adds or modifies behaviour should ship with tests. Where a behaviour depends on the bundled Scala plugin's testkit (currently being backported under `src/test/scala/org/jetbrains/plugins/scala/*`), tests can land alongside the testkit work; otherwise plain JUnit tests are fine.
