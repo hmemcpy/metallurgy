@@ -186,9 +186,15 @@ private[metallurgy] enum CatalogValuePattern:
   case Product(prefix: String, fields: Vector[CompilerFieldPattern])
   case Name, GeneratedName
   case ClassifiedName(nameClass: NeutralNameClass)
+  case LowercaseName, NonLowercaseName, BacktickedName
   case Scalar(kind: String)
   case ExactScalar(kind: String, rendered: String)
   case Unsupported(runtimeType: String)
+private[metallurgy] object CatalogValuePattern:
+  def isLowercaseName(value: String): Boolean    =
+    value.nonEmpty && value != "_" && Character.isLowerCase(value.codePointAt(0))
+  def isNonLowercaseName(value: String): Boolean =
+    value.nonEmpty && value != "_" && !isLowercaseName(value)
 private[metallurgy] enum InventoryValueObservation:
   case Node(id: Long, prefix: String)
   case Positioned(id: Long, prefix: String)
@@ -196,6 +202,7 @@ private[metallurgy] enum InventoryValueObservation:
   case Repeated(values: Vector[InventoryValueObservation])
   case Product(prefix: String, fields: Vector[InventoryFieldObservation])
   case Name(value: String)
+  case BacktickedName(value: String)
   case GeneratedName(base: String, separator: String, generationIndex: Int)
   case Scalar(value: ParserScalar)
   case Unsupported(runtimeType: String)
@@ -266,6 +273,14 @@ private[metallurgy] enum ContextPattern:
       path: Vector[CatalogPathSegment],
       ancestors: Vector[InventoryAncestor],
       anchor: InventoryAncestor
+  )
+  case ParentUnderAnchorThroughWithParent(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      ancestors: Vector[InventoryAncestor],
+      anchor: InventoryAncestor,
+      parent: InventoryAncestor
   )
   case ParentWithAncestor(
       ownerKind: InventoryKind,
@@ -486,8 +501,8 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       then Right(result)
       else incompatible(path)
     observations.headOption match
-      case None                                                                                 => Left(InventoryAggregationFailure.UnresolvedShape(path))
-      case Some(_: InventoryValueObservation.Optional)                                          =>
+      case None                                                     => Left(InventoryAggregationFailure.UnresolvedShape(path))
+      case Some(_: InventoryValueObservation.Optional)              =>
         if !observations.forall(_.isInstanceOf[InventoryValueObservation.Optional]) then incompatible(path)
         else
           val concrete = fields.flatMap: field =>
@@ -513,7 +528,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
               case Vector(CatalogValuePattern.Optional(value)) => validate(CatalogValuePattern.EmptyOptional(value))
               case Vector()                                    => Left(InventoryAggregationFailure.UnresolvedShape(path))
               case _                                           => incompatible(path)
-      case Some(_: InventoryValueObservation.Repeated)                                          =>
+      case Some(_: InventoryValueObservation.Repeated)              =>
         if !observations.forall(_.isInstanceOf[InventoryValueObservation.Repeated]) then incompatible(path)
         else
           val concrete = fields.flatMap: field =>
@@ -540,7 +555,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
                 validate(CatalogValuePattern.EmptyRepeated(element))
               case Vector()                                      => Left(InventoryAggregationFailure.UnresolvedShape(path))
               case _                                             => incompatible(path)
-      case Some(InventoryValueObservation.Product(prefix, _))                                   =>
+      case Some(InventoryValueObservation.Product(prefix, _))       =>
         boundary:
           val products = observations.collect { case value: InventoryValueObservation.Product => value }
           if products.size != observations.size || products.exists(_.prefix != prefix) then incompatible(path)
@@ -555,32 +570,44 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
                   case Left(failure) => break(Left(failure))
                   case Right(value)  => fields += CompilerFieldPattern(name, value)
               validate(CatalogValuePattern.Product(prefix, fields.result()))
-      case Some(_: InventoryValueObservation.Node)                                              =>
+      case Some(_: InventoryValueObservation.Node)                  =>
         sameCategory(observations, path)(_.isInstanceOf[InventoryValueObservation.Node], CatalogValuePattern.Node)
           .flatMap(validate)
-      case Some(_: InventoryValueObservation.Positioned)                                        =>
+      case Some(_: InventoryValueObservation.Positioned)            =>
         sameCategory(observations, path)(
           _.isInstanceOf[InventoryValueObservation.Positioned],
           CatalogValuePattern.Positioned
         ).flatMap(validate)
-      case Some(_: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName) =>
-        val classes = observations.collect { case InventoryValueObservation.Name(value) =>
-          NeutralNameClass.classify(value)
+      case Some(
+            _: InventoryValueObservation.Name | _: InventoryValueObservation.BacktickedName |
+            _: InventoryValueObservation.GeneratedName
+          ) =>
+        val names           = observations.collect { case InventoryValueObservation.Name(value) => value }
+        val backtickedNames = observations.collect { case InventoryValueObservation.BacktickedName(value) => value }
+        val classes         = observations.collect {
+          case InventoryValueObservation.Name(value)           => NeutralNameClass.classify(value)
+          case InventoryValueObservation.BacktickedName(value) => NeutralNameClass.classify(value)
         }
         if observations.forall(value =>
             value.isInstanceOf[InventoryValueObservation.Name] ||
+              value.isInstanceOf[InventoryValueObservation.BacktickedName] ||
               value.isInstanceOf[InventoryValueObservation.GeneratedName]
           )
         then
           val result =
-            if classes.size == observations.size && classes.distinct.size == 1 then
+            if backtickedNames.size == observations.size then CatalogValuePattern.BacktickedName
+            else if names.size == observations.size && names.forall(CatalogValuePattern.isLowercaseName) then
+              CatalogValuePattern.LowercaseName
+            else if names.size == observations.size && names.forall(CatalogValuePattern.isNonLowercaseName) then
+              CatalogValuePattern.NonLowercaseName
+            else if classes.size == observations.size && classes.distinct.size == 1 then
               CatalogValuePattern.ClassifiedName(classes.head)
             else if observations.forall(_.isInstanceOf[InventoryValueObservation.GeneratedName]) then
               CatalogValuePattern.GeneratedName
             else CatalogValuePattern.Name
           validate(result)
         else incompatible(path)
-      case Some(InventoryValueObservation.Scalar(value))                                        =>
+      case Some(InventoryValueObservation.Scalar(value))            =>
         val kind     = value.productPrefix
         val rendered = observations.collect { case InventoryValueObservation.Scalar(candidate) => candidate.toString }
         if rendered.size == observations.size && observations.forall {
@@ -593,7 +620,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
             else CatalogValuePattern.Scalar(kind)
           validate(pattern)
         else incompatible(path)
-      case Some(InventoryValueObservation.Unsupported(runtimeType))                             =>
+      case Some(InventoryValueObservation.Unsupported(runtimeType)) =>
         if observations.forall {
             case InventoryValueObservation.Unsupported(candidate) => candidate == runtimeType
             case _                                                => false
@@ -655,6 +682,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.tag(5); e.string(prefix);
       e.sequence(fields)(field => { e.string(field.name); writeObservation(field.value, e) })
     case InventoryValueObservation.Name(value)                           => e.tag(6); e.string(value)
+    case InventoryValueObservation.BacktickedName(value)                 => e.tag(10); e.string(value)
     case InventoryValueObservation.GeneratedName(base, separator, index) =>
       e.tag(7); e.string(base); e.string(separator); e.int(index)
     case InventoryValueObservation.Scalar(value)                         => e.tag(8); e.string(value.toString)
@@ -684,6 +712,8 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
         e.string(field.name)
         writeObservedPartition(field.value, field.declaredPattern, e)
     case InventoryValueObservation.Name(name)              => e.tag(15); e.tag(NeutralNameClass.classify(name).ordinal)
+    case InventoryValueObservation.BacktickedName(name)    =>
+      e.tag(17); e.tag(NeutralNameClass.classify(name).ordinal)
     case InventoryValueObservation.GeneratedName(_, _, _)  => e.tag(16)
     case other                                             => writeObservation(other, e)
 
@@ -711,6 +741,9 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     case CatalogValuePattern.Name                                   => e.tag(6)
     case CatalogValuePattern.GeneratedName                          => e.tag(7)
     case CatalogValuePattern.ClassifiedName(value)                  => e.tag(11); e.string(value.toString)
+    case CatalogValuePattern.LowercaseName                          => e.tag(19)
+    case CatalogValuePattern.NonLowercaseName                       => e.tag(20)
+    case CatalogValuePattern.BacktickedName                         => e.tag(21)
     case CatalogValuePattern.Scalar(kind)                           => e.tag(8); e.string(kind)
     case CatalogValuePattern.ExactScalar(kind, value)               => e.tag(13); e.string(kind); e.string(value)
     case CatalogValuePattern.Unsupported(runtime)                   => e.tag(9); e.string(runtime)
@@ -1036,7 +1069,18 @@ private[metallurgy] object CompilerRuntimeInventory:
             )
           )
         )
-      case ParserFieldValue.Name(value)             => InventoryValueObservation.Name(value)
+      case ParserFieldValue.Name(value)             =>
+        val backticked = path == Vector(ParserFieldPathSegment.NamedField("name")) && nodes
+          .get(ownerId)
+          .filter(_.production == "Ident")
+          .flatMap(_.position match
+            case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+              Some(snapshot.sourceText.substring(range.startOffset, range.endOffset))
+            case _                                                                               => None
+          )
+          .exists(text => text.length >= 2 && text.head == '`' && text.last == '`')
+        if backticked then InventoryValueObservation.BacktickedName(value)
+        else InventoryValueObservation.Name(value)
       case ParserFieldValue.GeneratedName(a, b, c)  => InventoryValueObservation.GeneratedName(a, b, c)
       case ParserFieldValue.Scalar(value)           => InventoryValueObservation.Scalar(value)
       case ParserFieldValue.Unsupported(value)      => InventoryValueObservation.Unsupported(value)
@@ -1060,6 +1104,7 @@ private[metallurgy] object CompilerRuntimeInventory:
       case InventoryValueObservation.Product(prefix, fields) =>
         CatalogValuePattern.Product(prefix, fields.map(f => CompilerFieldPattern(f.name, pattern(f.value))))
       case InventoryValueObservation.Name(value)             => CatalogValuePattern.ClassifiedName(NeutralNameClass.classify(value))
+      case InventoryValueObservation.BacktickedName(_)       => CatalogValuePattern.BacktickedName
       case InventoryValueObservation.GeneratedName(_, _, _)  => CatalogValuePattern.GeneratedName
       case InventoryValueObservation.Scalar(value)           => CatalogValuePattern.Scalar(value.productPrefix)
       case InventoryValueObservation.Unsupported(value)      => CatalogValuePattern.Unsupported(value)
@@ -1411,6 +1456,9 @@ private[metallurgy] object GrammarRoleId:
   val TypeLambda                = GrammarRoleId("scala.type.lambda")
   val TermLambda                = GrammarRoleId("scala.type.term-lambda")
   val InfixType                 = GrammarRoleId("scala.type.infix")
+  val MatchType                 = GrammarRoleId("scala.type.match")
+  val MatchTypeCase             = GrammarRoleId("scala.type.match.case")
+  val MatchTypePatternVariable  = GrammarRoleId("scala.type.match.pattern-variable")
   val IntegerLiteral            = GrammarRoleId("scala.literal.integer")
   val ExpressionPayload         = GrammarRoleId("scala.expression.payload")
   val Modifiers                 = GrammarRoleId("scala.modifiers")
@@ -1603,6 +1651,10 @@ private[metallurgy] object PsiOutputRoleId:
   val ContextBound          = PsiOutputRoleId("scala.type.context-bound")
   val TypeLambda            = PsiOutputRoleId("scala.type.lambda")
   val InfixType             = PsiOutputRoleId("scala.type.infix")
+  val MatchType             = PsiOutputRoleId("scala.type.match")
+  val MatchTypeCases        = PsiOutputRoleId("scala.type.match.cases")
+  val MatchTypeCase         = PsiOutputRoleId("scala.type.match.case")
+  val MatchTypeVariable     = PsiOutputRoleId("scala.type.match.variable")
   val IntegerLiteral        = PsiOutputRoleId("scala.literal.integer")
   val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
   val ModifierList          = PsiOutputRoleId("scala.modifiers")
@@ -1689,6 +1741,9 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.TypeLambda,
       GrammarRoleId.TermLambda,
       GrammarRoleId.InfixType,
+      GrammarRoleId.MatchType,
+      GrammarRoleId.MatchTypeCase,
+      GrammarRoleId.MatchTypePatternVariable,
       GrammarRoleId.IntegerLiteral,
       GrammarRoleId.ExpressionPayload,
       GrammarRoleId.Modifiers,
@@ -1758,6 +1813,10 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.ContextBound,
       PsiOutputRoleId.TypeLambda,
       PsiOutputRoleId.InfixType,
+      PsiOutputRoleId.MatchType,
+      PsiOutputRoleId.MatchTypeCases,
+      PsiOutputRoleId.MatchTypeCase,
+      PsiOutputRoleId.MatchTypeVariable,
       PsiOutputRoleId.IntegerLiteral,
       PsiOutputRoleId.ExpressionPayload,
       PsiOutputRoleId.ModifierList,
@@ -2213,6 +2272,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeLambdaTypeElementImpl"
   private val InfixTypeSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScInfixTypeElementImpl"
+  private val MatchTypeSurface             =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeElementImpl"
+  private val MatchTypeCasesSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeCasesImpl"
+  private val MatchTypeCaseSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeCaseImpl"
+  private val MatchTypeVariableSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeVariableTypeElementImpl"
   private val ModifierListSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
   private val AccessModifierSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
   private val AnnotationsSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
@@ -2804,6 +2871,27 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       required = true
     )
   )
+  private val MatchTypeAccessors             = Vector(
+    AccessorObligation(
+      s"$MatchTypeSurface#scrutineeTypeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(s"$MatchTypeSurface#cases()Lscala/Option;", required = true)
+  )
+  private val MatchTypeCasesAccessors        = Vector(
+    AccessorObligation(
+      s"$MatchTypeCasesSurface#firstCase()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScMatchTypeCase;",
+      required = true
+    ),
+    AccessorObligation(s"$MatchTypeCasesSurface#cases()Lscala/collection/immutable/Seq;", required = true)
+  )
+  private val MatchTypeCaseAccessors         = Vector(
+    AccessorObligation(s"$MatchTypeCaseSurface#pattern()Lscala/Option;", required = true),
+    AccessorObligation(s"$MatchTypeCaseSurface#result()Lscala/Option;", required = true)
+  )
+  private val MatchTypeVariableAccessors     = Vector(
+    AccessorObligation(s"$MatchTypeVariableSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
+  )
   private val ModifierListAccessors          = Vector(
     AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
     AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
@@ -3039,6 +3127,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "dependent-function-type",
     "polymorphic-function-type",
     "ordinary-infix-type",
+    "ordinary-match-type",
     "by-name-parameter-type",
     "repeated-parameter-type"
   )
@@ -3053,6 +3142,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "definition-function-type-alias",
     "definition-polymorphic-function-type-alias",
     "definition-infix-type-alias",
+    "definition-match-type-alias",
     "definition-opaque-simple-ident-type-alias",
     "definition-type-lambda-alias",
     "definition-opaque-bounded-type-alias"
@@ -3142,11 +3232,16 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "ByNameTypeTree" -> Vector(CatalogPathSegment.NamedField("result")),
     "PostfixOp"      -> Vector(CatalogPathSegment.NamedField("od")),
     "InfixOp"        -> Vector(CatalogPathSegment.NamedField("left")),
-    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("right"))
+    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("right")),
+    "MatchTypeTree"  -> Vector(CatalogPathSegment.NamedField("bound")),
+    "MatchTypeTree"  -> Vector(CatalogPathSegment.NamedField("selector")),
+    "CaseDef"        -> Vector(CatalogPathSegment.NamedField("pat")),
+    "CaseDef"        -> Vector(CatalogPathSegment.NamedField("body"))
   )
   private val CompoundTypeTraversedAncestors = (CompoundTypeChildPaths ++ Vector(
     "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("tpt")),
     "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+    "MatchTypeTree"        -> Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement),
     "LambdaTypeTree"       -> Vector(CatalogPathSegment.NamedField("body")),
     "PolyFunction"         -> Vector(CatalogPathSegment.NamedField("targs"), CatalogPathSegment.RepeatedElement),
     "TypeDef"              -> Vector(CatalogPathSegment.NamedField("rhs")),
@@ -3160,6 +3255,39 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "Parens"               -> Vector(CatalogPathSegment.NamedField("t")),
     "TermLambdaTypeTree"   -> Vector(CatalogPathSegment.NamedField("body"))
   )).map((owner, path) => InventoryAncestor(InventoryKind.Node, owner, path)).distinct
+
+  private val MatchTypeCasesAnchor   = InventoryAncestor(
+    InventoryKind.Node,
+    "MatchTypeTree",
+    Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
+  )
+  private val MatchTypePatternAnchor =
+    InventoryAncestor(InventoryKind.Node, "CaseDef", Vector(CatalogPathSegment.NamedField("pat")))
+
+  private def matchTypePatternOccurrences: Vector[CompilerProductionContextPattern] =
+    CompilerProductionContextPattern(
+      ContextPattern.ParentWithAncestor(
+        InventoryKind.Node,
+        "CaseDef",
+        Vector(CatalogPathSegment.NamedField("pat")),
+        MatchTypeCasesAnchor
+      ),
+      SourceClassification.SourceReachable
+    ) +: (CompoundTypeChildPaths ++ Vector(
+      "AppliedTypeTree" -> Vector(CatalogPathSegment.NamedField("tpt")),
+      "AppliedTypeTree" -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    )).map: (owner, path) =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentUnderAnchorThroughWithParent(
+          InventoryKind.Node,
+          owner,
+          path,
+          CompoundTypeTraversedAncestors,
+          MatchTypePatternAnchor,
+          MatchTypeCasesAnchor
+        ),
+        SourceClassification.SourceReachable
+      )
 
   private def compoundTypeChildOccurrences: Vector[CompilerProductionContextPattern] =
     (GivenSelectorBoundAnchor +: OwnerTypeAnchors).flatMap: anchor =>
@@ -3319,7 +3447,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           "tpt",
           ChildCardinality.ExactlyOne,
           "import-selector-bound-type",
-          (TypeAtomProductionIds + "type-argument-applied") - "import-selector-bound-type"
+          (TypeAtomProductionIds ++ Set(
+            "type-argument-applied",
+            "match-type-pattern-reference",
+            "match-type-pattern-variable",
+            "match-type-pattern-wildcard"
+          )) - "import-selector-bound-type"
         ),
         ChildDeclaration(
           "arguments",
@@ -3335,7 +3468,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "ordinary-function-type",
             "dependent-function-type",
             "polymorphic-function-type",
-            "ordinary-infix-type"
+            "ordinary-infix-type",
+            "ordinary-match-type",
+            "match-type-pattern-reference",
+            "match-type-pattern-variable",
+            "match-type-pattern-wildcard"
           )
         )
       ),
@@ -7009,7 +7146,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "TypeBoundsTree" -> "lo",
         "TypeBoundsTree" -> "hi",
         "TypeBoundsTree" -> "alias",
-        "Template"       -> "preBody"
+        "Template"       -> "preBody",
+        "CaseDef"        -> "guard"
       ).map { case (owner, field) =>
         CompilerProductionContextPattern(
           context =
@@ -7019,6 +7157,17 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 owner,
                 Vector(CatalogPathSegment.NamedField(field)),
                 InventoryAncestor(InventoryKind.Node, "TypeDef", Vector(CatalogPathSegment.NamedField("rhs")))
+              )
+            else if owner == "CaseDef" then
+              ContextPattern.ParentWithAncestor(
+                InventoryKind.Node,
+                owner,
+                Vector(CatalogPathSegment.NamedField(field)),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "MatchTypeTree",
+                  Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
+                )
               )
             else
               ContextPattern.Parent(
@@ -7031,6 +7180,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           sourceClassification = SourceClassification.Absent
         )
       }
+        ++ OwnerTypeAnchors.map { anchor =>
+          CompilerProductionContextPattern(
+            ContextPattern.ParentUnderAnchorThrough(
+              InventoryKind.Node,
+              "MatchTypeTree",
+              Vector(CatalogPathSegment.NamedField("bound")),
+              CompoundTypeTraversedAncestors,
+              anchor
+            ),
+            SourceClassification.Absent
+          )
+        }
         ++ Vector("lo", "hi", "alias").flatMap { field =>
           OwnerTypeAnchors.flatMap { anchor =>
             Vector(
@@ -8714,7 +8875,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       )
     )
 
-  private val simpleTypeAliases = Vector(
+  private lazy val simpleTypeAliases: Vector[Scala3PsiProduction] = Vector(
     simpleTypeAlias("definition-simple-ident-type-alias", "Ident", Set("import-selector-bound-type")),
     simpleTypeAlias(
       "definition-simple-select-type-alias",
@@ -8752,6 +8913,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "definition-infix-type-alias",
       "InfixOp",
       Set("ordinary-infix-type")
+    ),
+    simpleTypeAlias(
+      "definition-match-type-alias",
+      "MatchTypeTree",
+      Set("ordinary-match-type")
     )
   )
 
@@ -8800,6 +8966,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "type-definition-literal-lambda-encoding",
     "type-definition-parenthesized-lambda-encoding",
     "type-definition-applied-lambda-encoding",
+    "type-definition-match-lambda-encoding",
     "type-definition-nested-lambda-encoding"
   )
 
@@ -9250,6 +9417,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "ordinary-applied-type"
     ),
     typeDefinitionLambdaEncoding(
+      "type-definition-match-lambda-encoding",
+      CatalogValuePattern.NodePrefix("MatchTypeTree"),
+      "ordinary-match-type"
+    ),
+    typeDefinitionLambdaEncoding(
       "type-definition-nested-lambda-encoding",
       CatalogValuePattern.NodePrefix("LambdaTypeTree"),
       "explicit-type-lambda"
@@ -9518,7 +9690,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       expressionNamedTypeArgument
     )
 
-  private val CompoundTypeProductionIds = TypeAtomProductionIds + "explicit-type-lambda"
+  private val CompoundTypeProductionIds = TypeAtomProductionIds ++ Set(
+    "explicit-type-lambda",
+    "ordinary-match-type",
+    "match-type-pattern-reference",
+    "match-type-pattern-variable",
+    "match-type-pattern-wildcard"
+  )
 
   private def compoundChild(
       role: String,
@@ -9807,7 +9985,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       )
     )
 
-  private val functionTypeProduction = Scala3PsiProduction(
+  private lazy val functionTypeProduction = Scala3PsiProduction(
     id = "ordinary-function-type",
     grammarRoleId = GrammarRoleId.FunctionType,
     pattern = CompilerProductionPattern(
@@ -10337,7 +10515,294 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     outputRoleId = None
   )
 
-  private val compoundTypeProductions = Vector(
+  private lazy val matchTypeProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "ordinary-match-type",
+    grammarRoleId = GrammarRoleId.MatchType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "MatchTypeTree",
+      Vector(
+        CompilerFieldPattern("bound", CatalogValuePattern.Node),
+        CompilerFieldPattern("selector", CatalogValuePattern.Node),
+        CompilerFieldPattern("cases", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.NodePrefix("CaseDef")))
+      ),
+      typeAtomOccurrences ++ compoundTypeArgumentOccurrences
+    ),
+    dispositions = Vector(
+      FieldDisposition("bound", FieldDispositionKind.Child),
+      FieldDisposition("selector", FieldDispositionKind.Child),
+      FieldDisposition("cases", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "bound",
+        "bound",
+        ChildCardinality.ExactlyOne,
+        "template-absent-tree",
+        CompoundTypeProductionIds
+      ),
+      compoundChild("selector", "selector", ChildCardinality.ExactlyOne),
+      ChildDeclaration("cases", "cases", ChildCardinality.Repeated(1, None), "match-type-case")
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "match-type-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "match-keyword",
+        TerminalIntervalSelector.ChildGap("selector", "cases"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.MatchKeywordTokenSurface, Some("match")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "left-brace",
+        TerminalIntervalSelector.ChildGap("selector", "cases"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundLeftBraceTokenSurface, Some("{")),
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "right-brace",
+        TerminalIntervalSelector.AfterChild("cases"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundRightBraceTokenSurface, Some("}")),
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = MatchTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = MatchTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "match-type",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.MatchType,
+            MatchTypeSurface,
+            MatchTypeAccessors
+          ),
+          outputComposite(
+            "cases",
+            Some("match-type"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary
+                .ChildStart("cases", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+              OutputBoundary.ChildEnd("cases", ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
+            ),
+            PsiOutputRoleId.MatchTypeCases,
+            MatchTypeCasesSurface,
+            MatchTypeCasesAccessors
+          )
+        ),
+        Map("bound" -> None, "selector" -> Some("match-type"), "cases" -> Some("cases"))
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private lazy val matchTypeCaseProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "match-type-case",
+    grammarRoleId = GrammarRoleId.MatchTypeCase,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "CaseDef",
+      Vector(
+        CompilerFieldPattern("pat", CatalogValuePattern.Node),
+        CompilerFieldPattern("guard", CatalogValuePattern.NodePrefix("Thicket")),
+        CompilerFieldPattern("body", CatalogValuePattern.Node)
+      ),
+      OwnerTypeAnchors.map: anchor =>
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchor(
+            InventoryKind.Node,
+            "MatchTypeTree",
+            Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement),
+            anchor
+          ),
+          SourceClassification.SourceReachable
+        )
+    ),
+    dispositions = Vector(
+      FieldDisposition("pat", FieldDispositionKind.Child),
+      FieldDisposition("guard", FieldDispositionKind.Child),
+      FieldDisposition("body", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      compoundChild("pattern", "pat", ChildCardinality.ExactlyOne),
+      ChildDeclaration("guard", "guard", ChildCardinality.ExactlyOne, "template-absent-tree"),
+      compoundChild("result", "body", ChildCardinality.ExactlyOne)
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "case-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "case-keyword",
+        TerminalIntervalSelector.BeforeChild("pattern"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.CaseKeywordTokenSurface, Some("case")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "case-arrow",
+        TerminalIntervalSelector.ChildGap("pattern", "result"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.FunctionArrowTokenSurface, Some("=>")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "case-semicolon",
+        TerminalIntervalSelector.AfterChild("result"),
+        TerminalLeafTarget.Token(NativePsiElementBindings.SemicolonTokenSurface, Some(";")),
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = MatchTypeCaseSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = MatchTypeCaseAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "case",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.MatchTypeCase,
+            MatchTypeCaseSurface,
+            MatchTypeCaseAccessors
+          )
+        ),
+        Map("pattern" -> Some("case"), "guard" -> None, "result" -> Some("case"))
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private lazy val matchTypePatternReferenceProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "match-type-pattern-reference",
+    grammarRoleId = GrammarRoleId.SimpleType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(
+        CompilerFieldPattern(
+          "name",
+          CatalogValuePattern.AnyOf(Vector(CatalogValuePattern.NonLowercaseName, CatalogValuePattern.BacktickedName))
+        )
+      ),
+      matchTypePatternOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "pattern-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SimpleTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SimpleTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "type",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.SimpleType,
+            SimpleTypeSurface,
+            SimpleTypeAccessors
+          ),
+          outputComposite(
+            "reference",
+            Some("type"),
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.StableReference,
+            StableReferenceSurface,
+            StableReferenceAccessors
+          )
+        ),
+        Map.empty
+      )
+    ),
+    outputRoleId = None
+  )
+
+  private def matchTypePatternVariable(
+      id: String,
+      namePattern: CatalogValuePattern
+  ): Scala3PsiProduction = Scala3PsiProduction(
+    id = id,
+    grammarRoleId = GrammarRoleId.MatchTypePatternVariable,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", namePattern)),
+      matchTypePatternOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "variable-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = MatchTypeVariableSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = MatchTypeVariableAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRoleId = Some(PsiOutputRoleId.MatchTypeVariable)
+  )
+
+  private lazy val matchTypePatternVariableProduction: Scala3PsiProduction =
+    matchTypePatternVariable("match-type-pattern-variable", CatalogValuePattern.LowercaseName)
+  private lazy val matchTypePatternWildcardProduction: Scala3PsiProduction = matchTypePatternVariable(
+    "match-type-pattern-wildcard",
+    CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard)
+  )
+
+  private lazy val compoundTypeProductions: Vector[Scala3PsiProduction] = Vector(
     tupleTypeProduction,
     namedTupleTypeProduction,
     namedTupleComponentProduction,
@@ -10347,7 +10812,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     polyFunctionTypeProduction,
     byNameParameterTypeProduction,
     repeatedParameterTypeProduction,
-    repeatedParameterSyntheticStarProduction
+    repeatedParameterSyntheticStarProduction,
+    matchTypeProduction,
+    matchTypeCaseProduction,
+    matchTypePatternReferenceProduction,
+    matchTypePatternVariableProduction,
+    matchTypePatternWildcardProduction
   )
 
   private val SingletonReferenceProductionIds = Set(
@@ -12565,6 +13035,9 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.Name                                   => "Name"
     case CatalogValuePattern.GeneratedName                          => "GeneratedName"
     case CatalogValuePattern.ClassifiedName(value)                  => s"Name[$value]"
+    case CatalogValuePattern.LowercaseName                          => "LowercaseName"
+    case CatalogValuePattern.NonLowercaseName                       => "NonLowercaseName"
+    case CatalogValuePattern.BacktickedName                         => "BacktickedName"
     case CatalogValuePattern.Scalar(kind)                           => s"Scalar[$kind]"
     case CatalogValuePattern.ExactScalar(kind, value)               => s"ExactScalar[$kind,$value]"
     case CatalogValuePattern.Unsupported(runtimeType)               => s"Unsupported[$runtimeType]"
@@ -12609,9 +13082,20 @@ private[metallurgy] object CatalogShapeMatcher:
             _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName
           ) =>
         true
+      case (CatalogValuePattern.Name, _: InventoryValueObservation.BacktickedName)                            => true
       case (CatalogValuePattern.GeneratedName, InventoryValueObservation.GeneratedName(_, _, _))              => true
       case (CatalogValuePattern.ClassifiedName(expected), InventoryValueObservation.Name(value))              =>
         expected == NeutralNameClass.classify(value)
+      case (CatalogValuePattern.LowercaseName, InventoryValueObservation.Name(value))                         =>
+        CatalogValuePattern.isLowercaseName(value)
+      case (CatalogValuePattern.NonLowercaseName, InventoryValueObservation.Name(value))                      =>
+        CatalogValuePattern.isNonLowercaseName(value)
+      case (CatalogValuePattern.BacktickedName, _: InventoryValueObservation.BacktickedName)                  => true
+      case (
+            CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary),
+            InventoryValueObservation.BacktickedName(_)
+          ) =>
+        true
       case (CatalogValuePattern.Scalar(kind), InventoryValueObservation.Scalar(value))                        =>
         kind == value.productPrefix
       case (CatalogValuePattern.ExactScalar(kind, rendered), InventoryValueObservation.Scalar(value))         =>
@@ -12638,6 +13122,14 @@ private[metallurgy] object CatalogShapeMatcher:
         excluded != observed
       case (CatalogValuePattern.Name, CatalogValuePattern.Name | CatalogValuePattern.GeneratedName)             => true
       case (CatalogValuePattern.Name, CatalogValuePattern.ClassifiedName(_))                                    => true
+      case (CatalogValuePattern.Name, CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName) => true
+      case (CatalogValuePattern.Name, CatalogValuePattern.BacktickedName)                                       => true
+      case (
+            CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary),
+            CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName
+          ) =>
+        true
+      case (CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary), CatalogValuePattern.BacktickedName)  => true
       case (CatalogValuePattern.ClassifiedName(expected), CatalogValuePattern.ClassifiedName(observed))         =>
         expected == observed
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue))           =>
@@ -12717,6 +13209,13 @@ private[metallurgy] object CatalogShapeMatcher:
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors
+            .dropWhile(value => value != anchor && ancestors.contains(value))
+            .startsWith(Vector(anchor, parent))
+      )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
@@ -12783,6 +13282,13 @@ private[metallurgy] object CatalogShapeMatcher:
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
+      )
+    case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors
+            .dropWhile(value => value != anchor && ancestors.contains(value))
+            .startsWith(Vector(anchor, parent))
       )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                                             =>
       context.exists(value =>
@@ -12861,6 +13367,25 @@ private[metallurgy] object CatalogShapeMatcher:
                 InventoryFieldObservation(_, InventoryValueObservation.Scalar(value), _)
               ) =>
             kind == value.productPrefix && rendered == value.toString
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.LowercaseName),
+                InventoryFieldObservation(_, InventoryValueObservation.Name(value), _)
+              ) =>
+            CatalogValuePattern.isLowercaseName(value)
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.NonLowercaseName),
+                InventoryFieldObservation(_, InventoryValueObservation.Name(value), _)
+              ) =>
+            CatalogValuePattern.isNonLowercaseName(value)
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.AnyOf(values)),
+                InventoryFieldObservation(_, value, _)
+              ) =>
+            values.exists(candidate =>
+              candidate == CatalogValuePattern.LowercaseName ||
+                candidate == CatalogValuePattern.NonLowercaseName ||
+                candidate == CatalogValuePattern.BacktickedName
+            ) && CatalogShapeMatcher.matches(CatalogValuePattern.AnyOf(values), value)
           case _ => false
       production -> specificity
     val highest = scored.map(_._2).maxOption.getOrElse(0)
@@ -12871,7 +13396,7 @@ private[metallurgy] object CatalogShapeMatcher:
       row: AggregatedCompilerProductionRow,
       occurrence: CompilerProductionContext
   ): Vector[Scala3PsiProduction] =
-    catalog.productions.filter(p =>
+    val matched = catalog.productions.filter(p =>
       p.pattern.kind == row.kind && p.pattern.prefix == row.prefix && coversFields(p.pattern.fields, row.fields) &&
         p.pattern.occurrences.exists(pattern =>
           aggregateContextMatches(pattern.context, occurrence.context) &&
@@ -12879,6 +13404,22 @@ private[metallurgy] object CatalogShapeMatcher:
             scannerEvidenceMatches(pattern.scannerEvidence, occurrence.scannerTokenKinds)
         )
     )
+    val scored  = matched.map: production =>
+      production -> production.pattern.fields.count(field =>
+        field.value match
+          case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |
+              CatalogValuePattern.BacktickedName =>
+            true
+          case CatalogValuePattern.AnyOf(values) =>
+            values.exists(candidate =>
+              candidate == CatalogValuePattern.LowercaseName ||
+                candidate == CatalogValuePattern.NonLowercaseName ||
+                candidate == CatalogValuePattern.BacktickedName
+            )
+          case _                                 => false
+      )
+    val highest = scored.map(_._2).maxOption.getOrElse(0)
+    scored.collect { case (production, score) if score == highest => production }
 
 private[metallurgy] enum CatalogValidationError:
   case DuplicateProductionId(id: String)

@@ -7,10 +7,12 @@ com.hmemcpy.metallurgy.pc.PcSnapshotTest
 com.hmemcpy.metallurgy.pc.PresentationCompilerResolverTest
 com.hmemcpy.metallurgy.pc.Scala3BoundsWildcardLambdaParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3InfixTypeParserInventoryTest
+com.hmemcpy.metallurgy.pc.Scala3MatchTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3TupleFunctionTypeParserInventoryTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3BoundsWildcardLambdaPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3InfixTypePsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3MatchTypePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3OwnerTypeMountPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
 com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest

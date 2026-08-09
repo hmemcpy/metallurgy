@@ -69,6 +69,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScFunctionalTypeElement,
   ScInfixTypeElement,
   ScLiteralTypeElement,
+  ScMatchTypeElement,
   ScNamedTupleTypeElement,
   ScParameterizedTypeElement,
   ScParenthesisedTypeElement,
@@ -80,6 +81,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScTypeElement,
   ScTypeProjection,
   ScTypeLambdaTypeElement,
+  ScTypeVariableTypeElement,
   ScWildcardTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.imports.{ScExportStmt, ScImportStmt}
@@ -212,6 +214,9 @@ private[metallurgy] object NativePsiElementBindings:
   val FunctionArrowTokenSurface          = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tFUNTYPE"
   val ContextFunctionArrowTokenSurface   = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitFunctionArrow"
   val RepeatedParameterStarTokenSurface  = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tIDENTIFIER"
+  val MatchKeywordTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kMATCH"
+  val CaseKeywordTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kCASE"
+  val SemicolonTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tSEMICOLON"
   val AnnotatedMemberIndexSurface        =
     "org/jetbrains/plugins/scala/lang/psi/stubs/index/ScalaIndexKeys#ANNOTATED_MEMBER_KEY"
   val ModifierKeywordSurfaceIds          = Map(
@@ -305,6 +310,7 @@ private[metallurgy] object NativePsiElementBindings:
           |type ContextFunctionTypeProbe = Bound ?=> Lower
           |type DependentFunctionTypeProbe = (value: Lower) => value.type
           |type PolyFunctionTypeProbe = [A] => A => A
+          |type MatchTypeProbe[X] = X match { case Array[t] => t; case _ => Nothing }
           |def ParameterTypeProbe(thunk: => Lower, values: Upper*): Lower = thunk
           |""".stripMargin
       )
@@ -442,6 +448,19 @@ private[metallurgy] object NativePsiElementBindings:
     val contextFunctionType      = functionalTypes.find(_.getText == "Bound ?=> Lower").orNull
     val dependentFunctionType    = PsiTreeUtil.findChildOfType(file, classOf[ScDependentFunctionTypeElement])
     val polyFunctionType         = PsiTreeUtil.findChildOfType(file, classOf[ScPolyFunctionTypeElement])
+    val matchType                = PsiTreeUtil.findChildOfType(file, classOf[ScMatchTypeElement])
+    val matchTypeCases           = Option(matchType).flatMap(_.cases).orNull
+    val matchCases               = Option(matchTypeCases).map(_.cases.toVector).getOrElse(Vector.empty)
+    val matchTypeVariable        = matchCases.headOption
+      .flatMap(_.pattern)
+      .toVector
+      .flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScTypeVariableTypeElement]).asScala)
+      .headOption
+      .orNull
+    val matchKeyword             = Option(matchType).flatMap(leafAtText(_, "match")).orNull
+    val caseKeyword              = matchCases.headOption.flatMap(leafAtText(_, "case")).orNull
+    val matchCaseArrow           = matchCases.headOption.flatMap(leafAtText(_, "=>")).orNull
+    val matchCaseSemicolon       = Option(matchTypeCases).flatMap(leafAtText(_, ";")).orNull
     val ordinaryFunctionArrow    = Option(functionType).flatMap(leafAtText(_, "=>")).orNull
     val contextFunctionArrow     = Option(contextFunctionType).flatMap(leafAtText(_, "?=>")).orNull
     val singletonType            = PsiTreeUtil
@@ -567,6 +586,10 @@ private[metallurgy] object NativePsiElementBindings:
         contextFunctionType,
         dependentFunctionType,
         polyFunctionType,
+        matchType,
+        matchTypeCases,
+        matchCases.headOption.orNull,
+        matchTypeVariable,
         singletonType,
         annotatedModifiers,
         memberModifiers,
@@ -700,6 +723,26 @@ private[metallurgy] object NativePsiElementBindings:
       infixLeft.getParent != infixType || infixRight.getParent != infixType || infixOperation.getParent != infixType ||
       nestedInfixType.getParent != infixType
     then Left("native infix given type PSI is inconsistent")
+    else if matchType == null || matchTypeCases == null || matchCases.size != 2 || matchTypeVariable == null ||
+      matchKeyword == null || caseKeyword == null || matchCaseArrow == null || matchCaseSemicolon == null
+    then Left("native match type PSI probe is incomplete")
+    else if matchType.getText != "X match { case Array[t] => t; case _ => Nothing }" ||
+      matchType.scrutineeTypeElement.getText != "X" || matchType.scrutineeTypeElement.getParent != matchType ||
+      matchType.cases != Some(matchTypeCases) || matchTypeCases.getParent != matchType ||
+      matchTypeCases.firstCase != matchCases.head || matchTypeCases.cases.toVector != matchCases ||
+      matchCases.map(_.pattern.map(_.getText)) != Vector(Some("Array[t]"), Some("_")) ||
+      matchCases.map(_.result.map(_.getText)) != Vector(Some("t"), Some("Nothing")) ||
+      matchCases.exists(_.getParent != matchTypeCases) ||
+      matchCases.exists(value =>
+        value.pattern.exists(_.getParent != value) || value.result.exists(_.getParent != value)
+      ) ||
+      matchTypeVariable.name != "t" || matchTypeVariable.nameId.getText != "t"
+    then Left("native match type accessors are inconsistent")
+    else if matchKeyword.getNode.getElementType != ScalaTokenTypes.kMATCH ||
+      caseKeyword.getNode.getElementType != ScalaTokenTypes.kCASE ||
+      matchCaseArrow.getNode.getElementType != ScalaTokenTypes.tFUNTYPE ||
+      matchCaseSemicolon.getNode.getElementType != ScalaTokenTypes.tSEMICOLON
+    then Left("native match type tokens are inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
     else if typeProjection == null || integerLiteralType == null || longLiteralType == null || floatLiteralType == null ||
@@ -1020,6 +1063,9 @@ private[metallurgy] object NativePsiElementBindings:
               Map(FunctionArrowTokenSurface -> ordinaryFunctionArrow.getNode.getElementType) ++
               Map(ContextFunctionArrowTokenSurface -> contextFunctionArrow.getNode.getElementType) ++
               Map(RepeatedParameterStarTokenSurface -> ScalaTokenTypes.tIDENTIFIER) ++
+              Map(MatchKeywordTokenSurface -> matchKeyword.getNode.getElementType) ++
+              Map(CaseKeywordTokenSurface -> caseKeyword.getNode.getElementType) ++
+              Map(SemicolonTokenSurface -> matchCaseSemicolon.getNode.getElementType) ++
               Map(
                 ModifierKeywordSurfaceIds("Abstract")        -> ScalaTokenTypes.kABSTRACT,
                 ModifierKeywordSurfaceIds("Final")           -> ScalaTokenTypes.kFINAL,
@@ -1071,6 +1117,10 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ContextBound          -> contextBound.getNode.getElementType,
               PsiOutputRoleId.TypeLambda            -> typeLambda.getNode.getElementType,
               PsiOutputRoleId.InfixType             -> infixType.getNode.getElementType,
+              PsiOutputRoleId.MatchType             -> matchType.getNode.getElementType,
+              PsiOutputRoleId.MatchTypeCases        -> matchTypeCases.getNode.getElementType,
+              PsiOutputRoleId.MatchTypeCase         -> matchCases.head.getNode.getElementType,
+              PsiOutputRoleId.MatchTypeVariable     -> matchTypeVariable.getNode.getElementType,
               PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
               PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
               PsiOutputRoleId.AccessModifier        -> accessModifiers.head.getNode.getElementType,
@@ -1153,6 +1203,10 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ContextBound          -> surfaceId(contextBound.getClass),
               PsiOutputRoleId.TypeLambda            -> surfaceId(typeLambda.getClass),
               PsiOutputRoleId.InfixType             -> surfaceId(infixType.getClass),
+              PsiOutputRoleId.MatchType             -> surfaceId(matchType.getClass),
+              PsiOutputRoleId.MatchTypeCases        -> surfaceId(matchTypeCases.getClass),
+              PsiOutputRoleId.MatchTypeCase         -> surfaceId(matchCases.head.getClass),
+              PsiOutputRoleId.MatchTypeVariable     -> surfaceId(matchTypeVariable.getClass),
               PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
               PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
               PsiOutputRoleId.AccessModifier        -> surfaceId(accessModifiers.head.getClass),
@@ -1398,6 +1452,30 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native context function arrow token")
+              ),
+              ScalaPsiSurfaceRow(
+                MatchKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native match keyword token")
+              ),
+              ScalaPsiSurfaceRow(
+                CaseKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native case keyword token")
+              ),
+              ScalaPsiSurfaceRow(
+                SemicolonTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native semicolon token")
               )
             ) ++ ModifierTokenSurfaceIds.toVector.sortBy(_._1).map { (prefix, id) =>
               ScalaPsiSurfaceRow(

@@ -240,7 +240,6 @@ final class Scala3InfixTypePsiTest extends Scala3CompatTestCase:
 
   def testLaterTypeFamiliesRemainFailClosed(): Unit =
     Vector(
-      "type Deferred = Left match\n  case Left => Right\n",
       "type Deferred = Left { type Member }\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/InfixBoundary$index.scala", source)

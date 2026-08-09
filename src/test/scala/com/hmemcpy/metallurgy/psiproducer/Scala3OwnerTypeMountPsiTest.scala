@@ -269,7 +269,6 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
   def testLaterTypeFamiliesAndTermParentApplicationsRemainFailClosed(): Unit =
     Vector(
       "trait A\ntype Rejected = Map[K = Int, V = String]\n",
-      "trait A\ntrait B\ntype Rejected = A match { case A => B }\n",
       "trait A\ntype Rejected = A { type Member }\n",
       "trait A\ntype Rejected = A @unchecked\n",
       "class Parent(value: Int)\nclass Rejected extends Parent(1)\n"

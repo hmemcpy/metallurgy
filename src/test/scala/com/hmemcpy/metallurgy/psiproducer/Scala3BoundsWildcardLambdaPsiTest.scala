@@ -378,7 +378,6 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
 
   def testLaterTypeFamiliesRemainFailClosed(): Unit =
     Vector(
-      "type Rejected = Int match { case Int => String }\n",
       "type Rejected = { type A = Int }\n",
       "type Rejected = Int @unchecked\n",
       "type Rejected = '[Int]\n"

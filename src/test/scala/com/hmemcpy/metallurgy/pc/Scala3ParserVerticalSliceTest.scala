@@ -729,7 +729,7 @@ final class Scala3ParserVerticalSliceTest:
           "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
           "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
           "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
-          "145fbfccab0f22f8612df56f3baf379beffb9bd97f380a291c2e12e5083223eb"
+          "9d5b2dcbd1df65af482655458dc11ccd1590008c73b120b9a2e59ee412796ef2"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -1100,7 +1100,7 @@ final class Scala3ParserVerticalSliceTest:
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "782d0c2c5162d58ac22260b2850e1ffc4ac8cc74b9ce3349e0fc3954356e25d2"
+          "69c0334e6a8a8a55dc85968f6710384a26a30ed9c3d8415c1cba5c1b44d76cfe"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -1266,7 +1266,7 @@ final class Scala3ParserVerticalSliceTest:
         value.nodes
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
-      assertEquals("9c12afcb54cd5bc90683f01fbf74184beac68be58589fb9842317b1b355de43b", aggregate.fingerprint)
+      assertEquals("667463f95ff9d3c71adb685c24fc31dae99e8f4c8ef6b0e4db2a66a71bbd1ed5", aggregate.fingerprint)
       val identifierPackage    = parse(bridge, "package example\n", "file:///Scala3IdentifierPackageFamily.scala")
       val identifierInventory  = CompilerRuntimeInventory
         .from(identifierPackage)
@@ -1401,7 +1401,7 @@ final class Scala3ParserVerticalSliceTest:
         ),
         first.nodes.map(_.occurrences)
       )
-      assertEquals("f7aba83625aec0b6a6b877ca8020c1382aff63e3dfbf28437b2b9115760d60e8", aggregate.fingerprint)
+      assertEquals("187f490eda779efe18c7d7457b531b28663a3f1a53113878b1147ac80b9c7671", aggregate.fingerprint)
       val catalog                = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-package") || production.id.startsWith("package-stable")
@@ -1581,7 +1581,7 @@ final class Scala3ParserVerticalSliceTest:
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("3f7c6d33ad13d5c080789472b7b1e5fde5a487dcf197cfc263775db244513247", aggregate.fingerprint)
+      assertEquals("2ea964a03794634e9a551447d4a3a2171785fc8cc04c6d2c6aa49263383346b8", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,

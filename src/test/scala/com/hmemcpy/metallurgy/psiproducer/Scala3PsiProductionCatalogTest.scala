@@ -768,7 +768,7 @@ final class Scala3PsiProductionCatalogTest:
     assertEquals(
       Set(
         CatalogValuePattern.EmptyOptional(CatalogValuePattern.Name),
-        CatalogValuePattern.Optional(CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
+        CatalogValuePattern.Optional(CatalogValuePattern.LowercaseName)
       ),
       aggregate(optional).productions.map(_.fields.head.value).toSet
     )
@@ -1015,6 +1015,7 @@ final class Scala3PsiProductionCatalogTest:
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
         "annotation-designator-select",
+        "match-type-pattern-reference",
         "expression-named-type-argument-type"
       ),
       GrammarRoleId.TypeProjection            -> Set("type-atom-projection"),
@@ -1084,6 +1085,12 @@ final class Scala3PsiProductionCatalogTest:
         "ordinary-wildcard-type"
       ),
       GrammarRoleId.InfixType                 -> Set("ordinary-infix-type"),
+      GrammarRoleId.MatchType                 -> Set("ordinary-match-type"),
+      GrammarRoleId.MatchTypeCase             -> Set("match-type-case"),
+      GrammarRoleId.MatchTypePatternVariable  -> Set(
+        "match-type-pattern-variable",
+        "match-type-pattern-wildcard"
+      ),
       GrammarRoleId.IntegerLiteral            -> Set("integer-literal-number"),
       GrammarRoleId.Modifiers                 -> Set(
         "modifiers-annotations-synthetic",
@@ -1142,6 +1149,7 @@ final class Scala3PsiProductionCatalogTest:
         "type-definition-literal-lambda-encoding",
         "type-definition-parenthesized-lambda-encoding",
         "type-definition-applied-lambda-encoding",
+        "type-definition-match-lambda-encoding",
         "type-definition-nested-lambda-encoding"
       ),
       GrammarRoleId.UnboundedTypeParameter    -> Set(
@@ -1193,6 +1201,7 @@ final class Scala3PsiProductionCatalogTest:
         "definition-function-type-alias",
         "definition-polymorphic-function-type-alias",
         "definition-infix-type-alias",
+        "definition-match-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-opaque-bounded-type-alias",
         "definition-type-lambda-alias"
@@ -1315,6 +1324,7 @@ final class Scala3PsiProductionCatalogTest:
         "definition-function-type-alias",
         "definition-polymorphic-function-type-alias",
         "definition-infix-type-alias",
+        "definition-match-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-type-lambda-alias",
         "definition-opaque-bounded-type-alias"
@@ -3611,8 +3621,9 @@ final class Scala3PsiProductionCatalogTest:
         case InventoryValueObservation.Optional(value)       => value.flatMap(referencedProduction)
         case InventoryValueObservation.Repeated(values)      => values.flatMap(referencedProduction).headOption
         case InventoryValueObservation.Product(prefix, _)    => Some(prefix)
-        case _: InventoryValueObservation.Name | _: InventoryValueObservation.GeneratedName |
-            _: InventoryValueObservation.Scalar | _: InventoryValueObservation.Unsupported =>
+        case _: InventoryValueObservation.Name | _: InventoryValueObservation.BacktickedName |
+            _: InventoryValueObservation.GeneratedName | _: InventoryValueObservation.Scalar |
+            _: InventoryValueObservation.Unsupported =>
           None
       val childFields                                                            = shape.observation.flatMap(field => referencedProduction(field.value).map(field.name -> _))
       val childFieldNames                                                        = childFields.map(_._1).toSet
