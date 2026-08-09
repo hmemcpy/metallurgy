@@ -40,6 +40,19 @@ build/
 *.zip
 !gradle-wrapper.jar
 
+### Generated evidence ###
+**/target/test-evidence/
+ideprobe-tests/target/ideprobe-artifacts/
+qualification/
+TEST-*.xml
+idea.log
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+*.jfr
+*.dump
+docs/evidence/**/*.log
+
 ### OS cruft ###
 Thumbs.db
 ehthumbs.db
