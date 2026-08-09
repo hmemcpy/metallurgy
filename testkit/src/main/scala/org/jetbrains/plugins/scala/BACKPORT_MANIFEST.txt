@@ -1,10 +1,10 @@
 Backport manifest — Scala plugin testkit from JetBrains/intellij-scala idea261.x
 ==============================================================================
 
-Source repo : /Users/hmemcpy/git/intellij-scala
+Source repo : JetBrains/intellij-scala
 Source branch: idea261.x
 Source commit: 8dd22d153b65c847f4ced8917dd7e02b83561e5d
-Target repo : /Users/hmemcpy/git/metallurgy
+Target repo : hmemcpy/metallurgy
 Target path : src/test/scala/org/jetbrains/plugins/scala/
 
 All paths below are relative to the package root

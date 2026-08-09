@@ -93,7 +93,6 @@ options. The sbt host used `-Xms1024m`, `-Xmx1024m`, and `-Xss4M`. No environmen
 | Local runner/JBR audit | `2de5dcfccb16fb0b9c96a7de74b99da7083b4204a8d844cdb968d356dc45fcd2` |
 | Effective sbt test settings | `12fe14c3d53cf759d4dd227bd3774447ebd8a321aee8ea13bf858a9ee409cd75` |
 
-The durable archive is
-`/Users/hmemcpy/git/metallurgy-123a-evidence/final-20260807T150028Z`. Its `SHA256SUMS` file has SHA-256
+The durable archive identifier is `metallurgy-123a-evidence/final-20260807T150028Z`. Its `SHA256SUMS` file has SHA-256
 `fc31fa3fec117033acae907bf5b9ecba312d3979ba956d9e86ce895485f7d782`, and every archived entry was verified after
 creation.

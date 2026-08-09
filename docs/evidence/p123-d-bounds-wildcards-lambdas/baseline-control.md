@@ -16,8 +16,8 @@ The preserved run directories are:
 
 - P123-D editor: `target/test-evidence/baseline-editor-operations/p123d-editor-20260808T1825Z`
 - P123-D semantics: `target/test-evidence/baseline-semantics/p123d-semantics-20260808T1833Z`
-- P123-C editor: `/Users/hmemcpy/git/metallurgy-123c-applied-named-type-arguments/target/test-evidence/baseline-editor-operations/p123c-control-editor-20260808T1900Z`
-- P123-C semantics: `/Users/hmemcpy/git/metallurgy-123c-applied-named-type-arguments/target/test-evidence/baseline-semantics/p123c-control-semantics-20260808T1902Z`
+- P123-C editor: `metallurgy-123c-applied-named-type-arguments/target/test-evidence/baseline-editor-operations/p123c-control-editor-20260808T1900Z`
+- P123-C semantics: `metallurgy-123c-applied-named-type-arguments/target/test-evidence/baseline-semantics/p123c-control-semantics-20260808T1902Z`
 
 The exact match proves that these failures are inherited applicability boundaries rather than P123-D regressions.
 Admitting expression roles or P123-E type families to change them would violate this packet's scope.

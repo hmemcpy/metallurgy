@@ -4,12 +4,12 @@ Bounds, wildcard, and lambda evidence uses Scala 3.7.4, with the bounded alterna
 Scala 3.5.2. The protected `COMMANDS` file records the exact compiler, REPL, parser, PSI, lifecycle, lane, and scale
 commands and flags.
 
-- Canonical archive path: `/Users/hmemcpy/git/metallurgy-123d-evidence/bounded-scale-policy-20260808`
+- Canonical archive identifier: `metallurgy-123d-evidence/bounded-scale-policy-20260808`
 - Inner manifest: `SHA256SUMS`
 - Manifest SHA-256: `7e296d2ae0bb20875b3408b706e1d2537142153258edf947a22afaf2e0bcd141`
 - Verified entries: 16,983
 - Archive collection size: 5.0 GiB
-- Retention: preserve the complete `/Users/hmemcpy/git/metallurgy-123d-evidence` collection through the maintenance and rollback window and until verified replacements are recorded
+- Retention: preserve the complete `metallurgy-123d-evidence` collection through the maintenance and rollback window and until verified replacements are recorded
 
 All use an inner manifest named `SHA256SUMS`. The collection also retains:
 

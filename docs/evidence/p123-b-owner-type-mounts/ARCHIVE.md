@@ -11,7 +11,7 @@ scala-cli compile --server=false --scala 3.7.4 --scalac-option -Xprint:typer Own
 sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.pc.Scala3OwnerTypeMountParserInventoryTest"
 ```
 
-- Archive path: `/Users/hmemcpy/git/metallurgy-123b-evidence/final-20260807T2016Z`
+- Archive identifier: `metallurgy-123b-evidence/final-20260807T2016Z`
 - Inner manifest: `SHA256SUMS`
 - Manifest SHA-256: `502b4314e29afb3951ad688e7332ab8d8ea656ce467ffb979bb53511b1c68f1a`
 - Verified entries: 76
