@@ -18,6 +18,7 @@ import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScContextBound,
+  ScInfixTypeElement,
   ScTypeLambdaTypeElement,
   ScWildcardTypeElement
 }
@@ -280,7 +281,7 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
     assertEquals(Some("Other"), wildcardPointer.getElement.upperTypeElement.map(_.getText))
     assertEquals("[X >: Low <: High] =>> List[X]", lambdaPointer.getElement.getText)
 
-    val insertion = document.getText.indexOf("List[X]") + "List[X]".length
+    val insertion    = document.getText.indexOf("List[X]") + "List[X]".length
     WriteCommandAction.runWriteCommandAction(
       getProject,
       new Runnable:
@@ -288,7 +289,13 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
     )
     PsiDocumentManager.getInstance(getProject).commitDocument(document)
     file.getChildren
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeLambdaTypeElement]).isEmpty)
+    val editedLambda = PsiTreeUtil.findChildOfType(file, classOf[ScTypeLambdaTypeElement])
+    assertEquals("[X >: Low <: High] =>> List[X] | Other", editedLambda.getText)
+    val editedInfix  = PsiTreeUtil.findChildOfType(editedLambda, classOf[ScInfixTypeElement])
+    assertEquals("List[X] | Other", editedInfix.getText)
+    assertEquals("List[X]", editedInfix.left.getText)
+    assertEquals("|", editedInfix.operation.getText)
+    assertEquals(Some("Other"), editedInfix.rightOption.map(_.getText))
 
     WriteCommandAction.runWriteCommandAction(
       getProject,
@@ -371,8 +378,6 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
 
   def testLaterTypeFamiliesRemainFailClosed(): Unit =
     Vector(
-      "type Rejected = Int | String\n",
-      "type Rejected = Int & Product\n",
       "type Rejected = Int match { case Int => String }\n",
       "type Rejected = { type A = Int }\n",
       "type Rejected = Int @unchecked\n",

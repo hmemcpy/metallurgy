@@ -776,11 +776,11 @@ final class Scala3PackagePsiProducerTest extends Scala3CompatTestCase:
 
   def testSimpleOwnerTypeMountsUseNativePhysicalPsi(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 11),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 12),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "af1d86522598ee9895a2014b8eae855799bd54255447eb58cc8887d740dd7a10",
+      "ec7ca41d9395f0aed7cbce1a165d5ce6f92ca898f82a656bed6ad6e7755ee8ae",
       Scala3DotcFileElementType.SchemaFingerprint
     )
     val source  =

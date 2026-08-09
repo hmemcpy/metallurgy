@@ -3021,7 +3021,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "type-atom-literal",
     "type-atom-parenthesized",
     "import-selector-given-bound-wildcard-type",
-    "import-selector-given-bound-infix-type"
+    "ordinary-infix-type"
   )
   private val TypeAtomProductionIds           = Set(
     "import-selector-bound-type",
@@ -3038,6 +3038,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "ordinary-function-type",
     "dependent-function-type",
     "polymorphic-function-type",
+    "ordinary-infix-type",
     "by-name-parameter-type",
     "repeated-parameter-type"
   )
@@ -3051,6 +3052,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "definition-tuple-type-alias",
     "definition-function-type-alias",
     "definition-polymorphic-function-type-alias",
+    "definition-infix-type-alias",
     "definition-opaque-simple-ident-type-alias",
     "definition-type-lambda-alias",
     "definition-opaque-bounded-type-alias"
@@ -3131,36 +3133,45 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             )
         )
 
+  private val CompoundTypeChildPaths         = Vector(
+    "Tuple"          -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+    "NamedArg"       -> Vector(CatalogPathSegment.NamedField("arg")),
+    "Function"       -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+    "Function"       -> Vector(CatalogPathSegment.NamedField("body")),
+    "PolyFunction"   -> Vector(CatalogPathSegment.NamedField("body")),
+    "ByNameTypeTree" -> Vector(CatalogPathSegment.NamedField("result")),
+    "PostfixOp"      -> Vector(CatalogPathSegment.NamedField("od")),
+    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("left")),
+    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("right"))
+  )
+  private val CompoundTypeTraversedAncestors = (CompoundTypeChildPaths ++ Vector(
+    "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("tpt")),
+    "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+    "LambdaTypeTree"       -> Vector(CatalogPathSegment.NamedField("body")),
+    "PolyFunction"         -> Vector(CatalogPathSegment.NamedField("targs"), CatalogPathSegment.RepeatedElement),
+    "TypeDef"              -> Vector(CatalogPathSegment.NamedField("rhs")),
+    "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("lo")),
+    "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("hi")),
+    "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("alias")),
+    "ContextBoundTypeTree" -> Vector(CatalogPathSegment.NamedField("tycon")),
+    "ContextBounds"        -> Vector(CatalogPathSegment.NamedField("bounds")),
+    "ContextBounds"        -> Vector(CatalogPathSegment.NamedField("cxBounds"), CatalogPathSegment.RepeatedElement),
+    "ValDef"               -> Vector(CatalogPathSegment.NamedField("tpt")),
+    "Parens"               -> Vector(CatalogPathSegment.NamedField("t")),
+    "TermLambdaTypeTree"   -> Vector(CatalogPathSegment.NamedField("body"))
+  )).map((owner, path) => InventoryAncestor(InventoryKind.Node, owner, path)).distinct
+
   private def compoundTypeChildOccurrences: Vector[CompilerProductionContextPattern] =
-    val childPaths = Vector(
-      "Tuple"          -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
-      "NamedArg"       -> Vector(CatalogPathSegment.NamedField("arg")),
-      "Function"       -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
-      "Function"       -> Vector(CatalogPathSegment.NamedField("body")),
-      "PolyFunction"   -> Vector(CatalogPathSegment.NamedField("body")),
-      "ByNameTypeTree" -> Vector(CatalogPathSegment.NamedField("result")),
-      "PostfixOp"      -> Vector(CatalogPathSegment.NamedField("od"))
-    )
-    val traversed  = (childPaths ++ Vector(
-      "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("tpt")),
-      "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
-      "LambdaTypeTree"       -> Vector(CatalogPathSegment.NamedField("body")),
-      "PolyFunction"         -> Vector(CatalogPathSegment.NamedField("targs"), CatalogPathSegment.RepeatedElement),
-      "TypeDef"              -> Vector(CatalogPathSegment.NamedField("rhs")),
-      "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("lo")),
-      "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("hi")),
-      "TypeBoundsTree"       -> Vector(CatalogPathSegment.NamedField("alias")),
-      "ContextBoundTypeTree" -> Vector(CatalogPathSegment.NamedField("tycon")),
-      "ContextBounds"        -> Vector(CatalogPathSegment.NamedField("bounds")),
-      "ContextBounds"        -> Vector(CatalogPathSegment.NamedField("cxBounds"), CatalogPathSegment.RepeatedElement),
-      "ValDef"               -> Vector(CatalogPathSegment.NamedField("tpt")),
-      "Parens"               -> Vector(CatalogPathSegment.NamedField("t")),
-      "TermLambdaTypeTree"   -> Vector(CatalogPathSegment.NamedField("body"))
-    )).map((owner, path) => InventoryAncestor(InventoryKind.Node, owner, path)).distinct
     (GivenSelectorBoundAnchor +: OwnerTypeAnchors).flatMap: anchor =>
-      childPaths.map: (owner, path) =>
+      CompoundTypeChildPaths.map: (owner, path) =>
         CompilerProductionContextPattern(
-          ContextPattern.ParentUnderAnchorThrough(InventoryKind.Node, owner, path, traversed, anchor),
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            owner,
+            path,
+            CompoundTypeTraversedAncestors,
+            anchor
+          ),
           SourceClassification.SourceReachable
         )
 
@@ -3323,7 +3334,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "named-tuple-type",
             "ordinary-function-type",
             "dependent-function-type",
-            "polymorphic-function-type"
+            "polymorphic-function-type",
+            "ordinary-infix-type"
           )
         )
       ),
@@ -8735,6 +8747,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "definition-polymorphic-function-type-alias",
       "PolyFunction",
       Set("polymorphic-function-type")
+    ),
+    simpleTypeAlias(
+      "definition-infix-type-alias",
+      "InfixOp",
+      Set("ordinary-infix-type")
     )
   )
 
@@ -11919,7 +11936,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         outputTemplate = Some(transparentTemplate())
       ),
       Scala3PsiProduction(
-        id = "import-selector-given-bound-infix-type",
+        id = "ordinary-infix-type",
         grammarRoleId = GrammarRoleId.InfixType,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
@@ -11929,7 +11946,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             CompilerFieldPattern("op", CatalogValuePattern.Node),
             CompilerFieldPattern("right", CatalogValuePattern.Node)
           ),
-          givenTypeOccurrences
+          typeAtomOccurrences ++ compoundTypeArgumentOccurrences
         ),
         dispositions = Vector(
           FieldDisposition("left", FieldDispositionKind.Child),
@@ -11937,26 +11954,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           FieldDisposition("right", FieldDispositionKind.Child)
         ),
         children = Vector(
-          ChildDeclaration(
-            "left",
-            "left",
-            ChildCardinality.ExactlyOne,
-            "import-selector-bound-type",
-            GivenTypeProductionIds - "import-selector-bound-type"
-          ),
+          compoundChild("left", "left", ChildCardinality.ExactlyOne),
           ChildDeclaration(
             "operator",
             "op",
             ChildCardinality.ExactlyOne,
-            "import-selector-given-bound-infix-operator"
+            "infix-type-operator"
           ),
-          ChildDeclaration(
-            "right",
-            "right",
-            ChildCardinality.ExactlyOne,
-            "import-selector-bound-type",
-            GivenTypeProductionIds - "import-selector-bound-type"
-          )
+          compoundChild("right", "right", ChildCardinality.ExactlyOne)
         ),
         terminals = Vector(
           TerminalDeclaration(
@@ -11987,23 +11992,23 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         )
       ),
       Scala3PsiProduction(
-        id = "import-selector-given-bound-infix-operator",
+        id = "infix-type-operator",
         grammarRoleId = GrammarRoleId.StableReference,
         pattern = CompilerProductionPattern(
           InventoryKind.Node,
           "Ident",
           Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
-          Vector(
+          (GivenSelectorBoundAnchor +: OwnerTypeAnchors).map: anchor =>
             CompilerProductionContextPattern(
-              ContextPattern.ParentUnderAnchor(
+              ContextPattern.ParentUnderAnchorThrough(
                 InventoryKind.Node,
                 "InfixOp",
                 Vector(CatalogPathSegment.NamedField("op")),
-                GivenSelectorBoundAnchor
+                CompoundTypeTraversedAncestors,
+                anchor
               ),
               SourceClassification.SourceReachable
             )
-          )
         ),
         dispositions = Vector(FieldDisposition("name", FieldDispositionKind.TerminalOrLayout)),
         children = Vector.empty,

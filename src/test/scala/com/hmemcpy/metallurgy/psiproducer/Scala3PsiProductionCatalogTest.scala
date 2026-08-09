@@ -578,6 +578,31 @@ final class Scala3PsiProductionCatalogTest:
       assertFalse(CatalogShapeMatcher.contextMatches(pattern, context(ancestors)))
       assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, context(ancestors)))
 
+  @Test def expressionInfixOperatorUnderATypeOwnedTemplateRemainsExpressionOnly(): Unit =
+    val context  = InventoryContext(
+      InventoryKind.Node,
+      "InfixOp",
+      Vector(CatalogPathSegment.NamedField("op")),
+      Vector(
+        InventoryAncestor(InventoryKind.Node, "ValDef", Vector(CatalogPathSegment.NamedField("preRhs"))),
+        InventoryAncestor(
+          InventoryKind.Node,
+          "Template",
+          Vector(CatalogPathSegment.NamedField("preBody"), CatalogPathSegment.RepeatedElement)
+        ),
+        InventoryAncestor(InventoryKind.Node, "TypeDef", Vector(CatalogPathSegment.NamedField("rhs")))
+      )
+    )
+    val selected = CatalogShapeMatcher.select(
+      Scala3PsiProductionCatalog.Reviewed,
+      InventoryKind.Node,
+      "Ident",
+      Vector(InventoryFieldObservation("name", InventoryValueObservation.Name("combine"))),
+      Some(context),
+      SourceClassification.SourceReachable
+    )
+    assertEquals(Vector("payload-descendant-ident"), selected.map(_.id))
+
   @Test def typeAtomSelectionRequiresExactScannerEvidenceAndContext(): Unit =
     val catalog      = Scala3PsiProductionCatalog.Reviewed
     val direct       = Some(
@@ -972,7 +997,7 @@ final class Scala3PsiProductionCatalogTest:
         "package-stable-identifier",
         "import-selector-given-bound-qualifier-ident",
         "import-selector-given-bound-qualifier-select",
-        "import-selector-given-bound-infix-operator",
+        "infix-type-operator",
         "annotation-designator-qualifier-ident",
         "annotation-designator-qualifier-select",
         "type-atom-singleton-reference-ident",
@@ -1058,7 +1083,7 @@ final class Scala3PsiProductionCatalogTest:
         "import-selector-given-bound-wildcard-type",
         "ordinary-wildcard-type"
       ),
-      GrammarRoleId.InfixType                 -> Set("import-selector-given-bound-infix-type"),
+      GrammarRoleId.InfixType                 -> Set("ordinary-infix-type"),
       GrammarRoleId.IntegerLiteral            -> Set("integer-literal-number"),
       GrammarRoleId.Modifiers                 -> Set(
         "modifiers-annotations-synthetic",
@@ -1167,6 +1192,7 @@ final class Scala3PsiProductionCatalogTest:
         "definition-tuple-type-alias",
         "definition-function-type-alias",
         "definition-polymorphic-function-type-alias",
+        "definition-infix-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-opaque-bounded-type-alias",
         "definition-type-lambda-alias"
@@ -1288,6 +1314,7 @@ final class Scala3PsiProductionCatalogTest:
         "definition-tuple-type-alias",
         "definition-function-type-alias",
         "definition-polymorphic-function-type-alias",
+        "definition-infix-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-type-lambda-alias",
         "definition-opaque-bounded-type-alias"
