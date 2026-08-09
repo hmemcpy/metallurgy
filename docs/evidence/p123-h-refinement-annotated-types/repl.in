@@ -1,0 +1,6 @@
+import scala.annotation.unchecked.uncheckedVariance
+type Structural[A] = AnyRef { type Elem <: A; val value: Elem; def map(x: Elem): List[Elem @uncheckedVariance] }
+type Marked[A] = List[A @uncheckedVariance] @unchecked
+:type (null: Structural[String])
+:type (null: Marked[String])
+:quit

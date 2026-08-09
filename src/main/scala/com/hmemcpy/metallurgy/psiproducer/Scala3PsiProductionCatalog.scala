@@ -1459,6 +1459,8 @@ private[metallurgy] object GrammarRoleId:
   val MatchType                 = GrammarRoleId("scala.type.match")
   val MatchTypeCase             = GrammarRoleId("scala.type.match.case")
   val MatchTypePatternVariable  = GrammarRoleId("scala.type.match.pattern-variable")
+  val RefinementType            = GrammarRoleId("scala.type.refinement")
+  val AnnotatedType             = GrammarRoleId("scala.type.annotated")
   val IntegerLiteral            = GrammarRoleId("scala.literal.integer")
   val ExpressionPayload         = GrammarRoleId("scala.expression.payload")
   val Modifiers                 = GrammarRoleId("scala.modifiers")
@@ -1655,6 +1657,9 @@ private[metallurgy] object PsiOutputRoleId:
   val MatchTypeCases        = PsiOutputRoleId("scala.type.match.cases")
   val MatchTypeCase         = PsiOutputRoleId("scala.type.match.case")
   val MatchTypeVariable     = PsiOutputRoleId("scala.type.match.variable")
+  val CompoundType          = PsiOutputRoleId("scala.type.compound")
+  val Refinement            = PsiOutputRoleId("scala.type.refinement")
+  val AnnotatedType         = PsiOutputRoleId("scala.type.annotated")
   val IntegerLiteral        = PsiOutputRoleId("scala.literal.integer")
   val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
   val ModifierList          = PsiOutputRoleId("scala.modifiers")
@@ -1744,6 +1749,8 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.MatchType,
       GrammarRoleId.MatchTypeCase,
       GrammarRoleId.MatchTypePatternVariable,
+      GrammarRoleId.RefinementType,
+      GrammarRoleId.AnnotatedType,
       GrammarRoleId.IntegerLiteral,
       GrammarRoleId.ExpressionPayload,
       GrammarRoleId.Modifiers,
@@ -1817,6 +1824,9 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.MatchTypeCases,
       PsiOutputRoleId.MatchTypeCase,
       PsiOutputRoleId.MatchTypeVariable,
+      PsiOutputRoleId.CompoundType,
+      PsiOutputRoleId.Refinement,
+      PsiOutputRoleId.AnnotatedType,
       PsiOutputRoleId.IntegerLiteral,
       PsiOutputRoleId.ExpressionPayload,
       PsiOutputRoleId.ModifierList,
@@ -2280,6 +2290,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeCaseImpl"
   private val MatchTypeVariableSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeVariableTypeElementImpl"
+  private val CompoundTypeSurface          =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCompoundTypeElementImpl"
+  private val RefinementSurface            =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScRefinementImpl"
+  private val AnnotatedTypeSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScAnnotTypeElementImpl"
   private val ModifierListSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
   private val AccessModifierSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
   private val AnnotationsSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
@@ -2892,6 +2908,20 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   private val MatchTypeVariableAccessors     = Vector(
     AccessorObligation(s"$MatchTypeVariableSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
   )
+  private val CompoundTypeAccessors          = Vector(
+    AccessorObligation(s"$CompoundTypeSurface#components()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$CompoundTypeSurface#refinement()Lscala/Option;", required = true)
+  )
+  private val RefinementAccessors            = Vector(
+    AccessorObligation(s"$RefinementSurface#holders()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$RefinementSurface#types()Lscala/collection/immutable/Seq;", required = true)
+  )
+  private val AnnotatedTypeAccessors         = Vector(
+    AccessorObligation(
+      s"$AnnotatedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    )
+  )
   private val ModifierListAccessors          = Vector(
     AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
     AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
@@ -3094,12 +3124,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
 
-  private val GivenSelectorBoundAnchor        = InventoryAncestor(
+  private val GivenSelectorBoundAnchor         = InventoryAncestor(
     InventoryKind.Node,
     "ImportSelector",
     Vector(CatalogPathSegment.NamedField("bound"))
   )
-  private val GivenTypeProductionIds          = Set(
+  private val GivenTypeProductionIds           = Set(
     "import-selector-bound-type",
     "import-selector-bound-applied-type",
     "import-selector-given-bound-qualified-type",
@@ -3111,7 +3141,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "import-selector-given-bound-wildcard-type",
     "ordinary-infix-type"
   )
-  private val TypeAtomProductionIds           = Set(
+  private val TypeAtomProductionIds            = Set(
     "import-selector-bound-type",
     "ordinary-applied-type",
     "import-selector-given-bound-qualified-type",
@@ -3128,10 +3158,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "polymorphic-function-type",
     "ordinary-infix-type",
     "ordinary-match-type",
+    "ordinary-refinement-type",
+    "ordinary-annotated-type",
     "by-name-parameter-type",
     "repeated-parameter-type"
   )
-  private val SimpleTypeAliasProductionIds    = Set(
+  private val SimpleTypeAliasProductionIds     = Set(
     "definition-simple-ident-type-alias",
     "definition-simple-select-type-alias",
     "definition-simple-singleton-type-alias",
@@ -3143,11 +3175,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     "definition-polymorphic-function-type-alias",
     "definition-infix-type-alias",
     "definition-match-type-alias",
+    "definition-refinement-type-alias",
+    "definition-annotated-type-alias",
     "definition-opaque-simple-ident-type-alias",
     "definition-type-lambda-alias",
     "definition-opaque-bounded-type-alias"
   )
-  private val GivenTypeQualifierProductionIds = Set(
+  private val RefinementTypeAliasProductionIds = SimpleTypeAliasProductionIds -- Set(
+    "definition-opaque-simple-ident-type-alias",
+    "definition-type-lambda-alias",
+    "definition-opaque-bounded-type-alias"
+  )
+  private val GivenTypeQualifierProductionIds  = Set(
     "import-selector-given-bound-qualifier-ident",
     "import-selector-given-bound-qualifier-select"
   )
@@ -3224,19 +3263,21 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         )
 
   private val CompoundTypeChildPaths         = Vector(
-    "Tuple"          -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
-    "NamedArg"       -> Vector(CatalogPathSegment.NamedField("arg")),
-    "Function"       -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
-    "Function"       -> Vector(CatalogPathSegment.NamedField("body")),
-    "PolyFunction"   -> Vector(CatalogPathSegment.NamedField("body")),
-    "ByNameTypeTree" -> Vector(CatalogPathSegment.NamedField("result")),
-    "PostfixOp"      -> Vector(CatalogPathSegment.NamedField("od")),
-    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("left")),
-    "InfixOp"        -> Vector(CatalogPathSegment.NamedField("right")),
-    "MatchTypeTree"  -> Vector(CatalogPathSegment.NamedField("bound")),
-    "MatchTypeTree"  -> Vector(CatalogPathSegment.NamedField("selector")),
-    "CaseDef"        -> Vector(CatalogPathSegment.NamedField("pat")),
-    "CaseDef"        -> Vector(CatalogPathSegment.NamedField("body"))
+    "Tuple"           -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+    "NamedArg"        -> Vector(CatalogPathSegment.NamedField("arg")),
+    "Function"        -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+    "Function"        -> Vector(CatalogPathSegment.NamedField("body")),
+    "PolyFunction"    -> Vector(CatalogPathSegment.NamedField("body")),
+    "ByNameTypeTree"  -> Vector(CatalogPathSegment.NamedField("result")),
+    "PostfixOp"       -> Vector(CatalogPathSegment.NamedField("od")),
+    "InfixOp"         -> Vector(CatalogPathSegment.NamedField("left")),
+    "InfixOp"         -> Vector(CatalogPathSegment.NamedField("right")),
+    "MatchTypeTree"   -> Vector(CatalogPathSegment.NamedField("bound")),
+    "MatchTypeTree"   -> Vector(CatalogPathSegment.NamedField("selector")),
+    "CaseDef"         -> Vector(CatalogPathSegment.NamedField("pat")),
+    "CaseDef"         -> Vector(CatalogPathSegment.NamedField("body")),
+    "RefinedTypeTree" -> Vector(CatalogPathSegment.NamedField("tpt")),
+    "Annotated"       -> Vector(CatalogPathSegment.NamedField("arg"))
   )
   private val CompoundTypeTraversedAncestors = (CompoundTypeChildPaths ++ Vector(
     "AppliedTypeTree"      -> Vector(CatalogPathSegment.NamedField("tpt")),
@@ -3470,6 +3511,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             "polymorphic-function-type",
             "ordinary-infix-type",
             "ordinary-match-type",
+            "ordinary-refinement-type",
+            "ordinary-annotated-type",
             "match-type-pattern-reference",
             "match-type-pattern-variable",
             "match-type-pattern-wildcard"
@@ -4334,6 +4377,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           classification
         )
       )
+    ) ++ classifications.map(classification =>
+      CompilerProductionContextPattern(
+        ContextPattern.Parent(
+          InventoryKind.Node,
+          "Annotated",
+          Vector(CatalogPathSegment.NamedField("annot"))
+        ),
+        classification
+      )
     )
 
   private def annotationChildOccurrences(
@@ -4351,6 +4403,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ),
       classification
     )
+  ) :+ CompilerProductionContextPattern(
+    ContextPattern.ParentWithAncestorPrefix(
+      InventoryKind.Node,
+      owner,
+      path,
+      directAncestors :+ InventoryAncestor(
+        InventoryKind.Node,
+        "Annotated",
+        Vector(CatalogPathSegment.NamedField("annot"))
+      )
+    ),
+    classification
   )
 
   private val ApplyFunAncestor           = InventoryAncestor(
@@ -7140,14 +7204,15 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "Thicket",
       Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
       Vector(
-        "DefDef"         -> "preRhs",
-        "ValDef"         -> "tpt",
-        "ValDef"         -> "preRhs",
-        "TypeBoundsTree" -> "lo",
-        "TypeBoundsTree" -> "hi",
-        "TypeBoundsTree" -> "alias",
-        "Template"       -> "preBody",
-        "CaseDef"        -> "guard"
+        "DefDef"          -> "preRhs",
+        "ValDef"          -> "tpt",
+        "ValDef"          -> "preRhs",
+        "TypeBoundsTree"  -> "lo",
+        "TypeBoundsTree"  -> "hi",
+        "TypeBoundsTree"  -> "alias",
+        "Template"        -> "preBody",
+        "CaseDef"         -> "guard",
+        "RefinedTypeTree" -> "tpt"
       ).map { case (owner, field) =>
         CompilerProductionContextPattern(
           context =
@@ -7268,22 +7333,34 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     )
   )
 
+  private val refinementMemberOccurrences = Vector(
+    CompilerProductionContextPattern(
+      ContextPattern.Parent(
+        InventoryKind.Node,
+        "RefinedTypeTree",
+        Vector(CatalogPathSegment.NamedField("refinements"), CatalogPathSegment.RepeatedElement)
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
   private def definitionChildOccurrences(field: String) =
     Vector("DefDef", "ValDef").flatMap(owner =>
-      Vector("PackageDef" -> "stats", "Template" -> "preBody").map((ancestor, ancestorField) =>
-        CompilerProductionContextPattern(
-          ContextPattern.ParentWithAncestor(
-            InventoryKind.Node,
-            owner,
-            Vector(CatalogPathSegment.NamedField(field)),
-            InventoryAncestor(
+      Vector("PackageDef" -> "stats", "Template" -> "preBody", "RefinedTypeTree" -> "refinements").map(
+        (ancestor, ancestorField) =>
+          CompilerProductionContextPattern(
+            ContextPattern.ParentWithAncestor(
               InventoryKind.Node,
-              ancestor,
-              Vector(CatalogPathSegment.NamedField(ancestorField), CatalogPathSegment.RepeatedElement)
-            )
-          ),
-          SourceClassification.Synthetic
-        )
+              owner,
+              Vector(CatalogPathSegment.NamedField(field)),
+              InventoryAncestor(
+                InventoryKind.Node,
+                ancestor,
+                Vector(CatalogPathSegment.NamedField(ancestorField), CatalogPathSegment.RepeatedElement)
+              )
+            ),
+            SourceClassification.Synthetic
+          )
       )
     )
 
@@ -7347,6 +7424,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             InventoryKind.Node,
             "PackageDef",
             Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+          ),
+          InventoryAncestor(
+            InventoryKind.Node,
+            "RefinedTypeTree",
+            Vector(CatalogPathSegment.NamedField("refinements"), CatalogPathSegment.RepeatedElement)
           )
         )
     Scala3PsiProduction(
@@ -8760,6 +8842,29 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Option.when(!function)(GrammarRoleId.ReferenceBinding).toSet
     )
 
+  private def refinementDeclarationShell(
+      id: String,
+      prefix: String,
+      role: PsiOutputRoleId,
+      surface: String,
+      accessors: Vector[AccessorObligation],
+      flags: Long
+  ): Scala3PsiProduction =
+    val base = definitionShell(id, prefix, role, surface, accessors, flags)
+    base.copy(
+      pattern = base.pattern.copy(
+        fields = base.pattern.fields.map:
+          case CompilerFieldPattern("preRhs", _) =>
+            CompilerFieldPattern("preRhs", CatalogValuePattern.NodePrefix("Thicket"))
+          case field                             => field,
+        occurrences = refinementMemberOccurrences
+      ),
+      children = base.children.map:
+        case child @ ChildDeclaration("payload", _, _, _, _, _) =>
+          child.copy(productionId = "template-absent-tree", additionalProductionIds = Set.empty)
+        case child                                              => child
+    )
+
   private val abstractTypeAlias = Scala3PsiProduction(
     "definition-unbounded-type-alias",
     GrammarRoleId.TypeAliasDeclaration,
@@ -8771,7 +8876,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         CompilerFieldPattern("rhs", CatalogValuePattern.NodePrefix("TypeBoundsTree")),
         CompilerFieldPattern("mods", emptyModifiers(0L))
       ),
-      definitionOccurrences("Template", "preBody")
+      definitionOccurrences("Template", "preBody") ++ refinementMemberOccurrences
     ),
     Vector(
       FieldDisposition("name", FieldDispositionKind.TerminalOrLayout),
@@ -8837,7 +8942,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           1,
           CompilerFieldPattern("rhs", CatalogValuePattern.NodePrefix(rootProduction))
         ),
-        occurrences = definitionOccurrences("PackageDef") ++ definitionOccurrences("Template", "preBody")
+        occurrences = definitionOccurrences("PackageDef") ++ definitionOccurrences("Template", "preBody") ++
+          refinementMemberOccurrences
       ),
       children = Vector(
         ChildDeclaration(
@@ -8918,6 +9024,16 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       "definition-match-type-alias",
       "MatchTypeTree",
       Set("ordinary-match-type")
+    ),
+    simpleTypeAlias(
+      "definition-refinement-type-alias",
+      "RefinedTypeTree",
+      Set("ordinary-refinement-type")
+    ),
+    simpleTypeAlias(
+      "definition-annotated-type-alias",
+      "Annotated",
+      Set("ordinary-annotated-type")
     )
   )
 
@@ -8943,7 +9059,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               )
             )
           )
-        )
+        ),
+        occurrences = definitionOccurrences("PackageDef") ++ definitionOccurrences("Template", "preBody")
       ),
       children = base.children.updated(
         1,
@@ -9105,6 +9222,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           InventoryKind.Node,
           "Template",
           Vector(CatalogPathSegment.NamedField("preBody"), CatalogPathSegment.RepeatedElement)
+        ),
+        InventoryAncestor(
+          InventoryKind.Node,
+          "RefinedTypeTree",
+          Vector(CatalogPathSegment.NamedField("refinements"), CatalogPathSegment.RepeatedElement)
         )
       ).flatMap: ancestor =>
         Vector(SourceClassification.SourceReachable, SourceClassification.Synthetic).map: classification =>
@@ -9672,6 +9794,30 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       VariableDefinitionAccessors,
       4097L
     ),
+    refinementDeclarationShell(
+      "refinement-function-declaration",
+      "DefDef",
+      PsiOutputRoleId.FunctionDefinition,
+      FunctionDefinitionSurface,
+      FunctionDefinitionAccessors,
+      129L
+    ),
+    refinementDeclarationShell(
+      "refinement-value-declaration",
+      "ValDef",
+      PsiOutputRoleId.PatternDefinition,
+      PatternDefinitionSurface,
+      PropertyDefinitionAccessors,
+      0L
+    ),
+    refinementDeclarationShell(
+      "refinement-variable-declaration",
+      "ValDef",
+      PsiOutputRoleId.VariableDefinition,
+      VariableDefinitionSurface,
+      VariableDefinitionAccessors,
+      4097L
+    ),
     abstractTypeAlias
   ) ++ simpleTypeAliases ++ Vector(
     opaqueSimpleTypeAlias,
@@ -9693,6 +9839,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
   private val CompoundTypeProductionIds = TypeAtomProductionIds ++ Set(
     "explicit-type-lambda",
     "ordinary-match-type",
+    "ordinary-refinement-type",
+    "ordinary-annotated-type",
     "match-type-pattern-reference",
     "match-type-pattern-variable",
     "match-type-pattern-wildcard"
@@ -10802,6 +10950,205 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard)
   )
 
+  private lazy val refinementTypeProduction: Scala3PsiProduction =
+    val memberProductionIds = Set(
+      "refinement-function-declaration",
+      "refinement-value-declaration",
+      "refinement-variable-declaration",
+      "definition-unbounded-type-alias"
+    ) ++ RefinementTypeAliasProductionIds
+    Scala3PsiProduction(
+      id = "ordinary-refinement-type",
+      grammarRoleId = GrammarRoleId.RefinementType,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "RefinedTypeTree",
+        Vector(
+          CompilerFieldPattern("tpt", CatalogValuePattern.Node),
+          CompilerFieldPattern("refinements", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Node))
+        ),
+        typeAtomOccurrences ++ compoundTypeArgumentOccurrences
+      ),
+      dispositions = Vector(
+        FieldDisposition("tpt", FieldDispositionKind.Child),
+        FieldDisposition("refinements", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        ChildDeclaration(
+          "parent-type",
+          "tpt",
+          ChildCardinality.ExactlyOne,
+          "template-absent-tree",
+          CompoundTypeProductionIds
+        ),
+        ChildDeclaration(
+          "members",
+          "refinements",
+          ChildCardinality.Repeated(1, None),
+          memberProductionIds.toVector.sorted.head,
+          memberProductionIds - memberProductionIds.toVector.sorted.head
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "refinement-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "left-brace",
+          TerminalIntervalSelector.BeforeChild("members"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundLeftBraceTokenSurface, Some("{")),
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "layout-colon",
+          TerminalIntervalSelector.BeforeChild("members"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeColonTokenSurface, Some(":")),
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "member-semicolons",
+          TerminalIntervalSelector.ChildSeparators("members"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.SemicolonTokenSurface, Some(";")),
+          OccurrenceCardinality.Repeated(0, None),
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "right-brace",
+          TerminalIntervalSelector.AfterChild("members"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.ContextBoundRightBraceTokenSurface, Some("}")),
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = CompoundTypeSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = CompoundTypeAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(
+        LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "compound",
+              None,
+              OutputRangeDeclaration.CompilerPosition,
+              PsiOutputRoleId.CompoundType,
+              CompoundTypeSurface,
+              CompoundTypeAccessors
+            ),
+            outputComposite(
+              "refinement",
+              Some("compound"),
+              OutputRangeDeclaration.BoundaryDerived(
+                OutputBoundary.PreviousSignificantChildTokenStart(
+                  "members",
+                  ChildOccurrenceSelector.First,
+                  PositionProvenancePolicy.SourceDerivedOnly
+                ),
+                OutputBoundary.ProductionEnd()
+              ),
+              PsiOutputRoleId.Refinement,
+              RefinementSurface,
+              RefinementAccessors
+            )
+          ),
+          Map("parent-type" -> Some("compound"), "members" -> Some("refinement"))
+        )
+      ),
+      outputRoleId = None
+    )
+
+  private lazy val annotatedTypeProduction: Scala3PsiProduction = Scala3PsiProduction(
+    id = "ordinary-annotated-type",
+    grammarRoleId = GrammarRoleId.AnnotatedType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Annotated",
+      Vector(
+        CompilerFieldPattern("arg", CatalogValuePattern.Node),
+        CompilerFieldPattern("annot", CatalogValuePattern.NodePrefix("Apply"))
+      ),
+      typeAtomOccurrences ++ compoundTypeArgumentOccurrences
+    ),
+    dispositions = Vector(
+      FieldDisposition("arg", FieldDispositionKind.Child),
+      FieldDisposition("annot", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      compoundChild("annotated-type", "arg", ChildCardinality.ExactlyOne),
+      ChildDeclaration(
+        "annotation",
+        "annot",
+        ChildCardinality.ExactlyOne,
+        "annotation-apply-simple",
+        Set("annotation-apply-arguments")
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "annotated-type-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = AnnotatedTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = AnnotatedTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "annotated",
+            None,
+            OutputRangeDeclaration.CompilerPosition,
+            PsiOutputRoleId.AnnotatedType,
+            AnnotatedTypeSurface,
+            AnnotatedTypeAccessors
+          ),
+          outputComposite(
+            "annotations",
+            Some("annotated"),
+            OutputRangeDeclaration.BoundaryDerived(
+              OutputBoundary.ChildStart(
+                "annotation",
+                ChildOccurrenceSelector.First,
+                PositionProvenancePolicy.PositionedIncludingSynthetic
+              ),
+              OutputBoundary.ChildEnd(
+                "annotation",
+                ChildOccurrenceSelector.Last,
+                PositionProvenancePolicy.PositionedIncludingSynthetic
+              )
+            ),
+            PsiOutputRoleId.Annotations,
+            AnnotationsSurface,
+            AnnotationsAccessors
+          )
+        ),
+        Map("annotated-type" -> Some("annotated"), "annotation" -> Some("annotations"))
+      )
+    ),
+    outputRoleId = None
+  )
+
   private lazy val compoundTypeProductions: Vector[Scala3PsiProduction] = Vector(
     tupleTypeProduction,
     namedTupleTypeProduction,
@@ -10817,7 +11164,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
     matchTypeCaseProduction,
     matchTypePatternReferenceProduction,
     matchTypePatternVariableProduction,
-    matchTypePatternWildcardProduction
+    matchTypePatternWildcardProduction,
+    refinementTypeProduction,
+    annotatedTypeProduction
   )
 
   private val SingletonReferenceProductionIds = Set(

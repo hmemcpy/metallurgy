@@ -1087,6 +1087,8 @@ final class Scala3PsiProductionCatalogTest:
       GrammarRoleId.InfixType                 -> Set("ordinary-infix-type"),
       GrammarRoleId.MatchType                 -> Set("ordinary-match-type"),
       GrammarRoleId.MatchTypeCase             -> Set("match-type-case"),
+      GrammarRoleId.RefinementType            -> Set("ordinary-refinement-type"),
+      GrammarRoleId.AnnotatedType             -> Set("ordinary-annotated-type"),
       GrammarRoleId.MatchTypePatternVariable  -> Set(
         "match-type-pattern-variable",
         "match-type-pattern-wildcard"
@@ -1186,9 +1188,22 @@ final class Scala3PsiProductionCatalogTest:
       ),
       GrammarRoleId.TemplateSelf              -> Set("template-self-absent", "template-self-simple"),
       GrammarRoleId.TemplateTypeTree          -> Set("template-type-tree-synthetic"),
-      GrammarRoleId.FunctionDefinition        -> Set("definition-function-untyped"),
-      GrammarRoleId.PropertyDefinition        -> Set("definition-val-untyped", "definition-var-untyped"),
-      GrammarRoleId.ReferenceBinding          -> Set("definition-val-untyped", "definition-var-untyped"),
+      GrammarRoleId.FunctionDefinition        -> Set(
+        "definition-function-untyped",
+        "refinement-function-declaration"
+      ),
+      GrammarRoleId.PropertyDefinition        -> Set(
+        "definition-val-untyped",
+        "definition-var-untyped",
+        "refinement-value-declaration",
+        "refinement-variable-declaration"
+      ),
+      GrammarRoleId.ReferenceBinding          -> Set(
+        "definition-val-untyped",
+        "definition-var-untyped",
+        "refinement-value-declaration",
+        "refinement-variable-declaration"
+      ),
       GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),
       GrammarRoleId.TypeAliasDefinition       -> Set(
         "definition-simple-ident-type-alias",
@@ -1202,6 +1217,8 @@ final class Scala3PsiProductionCatalogTest:
         "definition-polymorphic-function-type-alias",
         "definition-infix-type-alias",
         "definition-match-type-alias",
+        "definition-refinement-type-alias",
+        "definition-annotated-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-opaque-bounded-type-alias",
         "definition-type-lambda-alias"
@@ -1325,6 +1342,8 @@ final class Scala3PsiProductionCatalogTest:
         "definition-polymorphic-function-type-alias",
         "definition-infix-type-alias",
         "definition-match-type-alias",
+        "definition-refinement-type-alias",
+        "definition-annotated-type-alias",
         "definition-opaque-simple-ident-type-alias",
         "definition-type-lambda-alias",
         "definition-opaque-bounded-type-alias"

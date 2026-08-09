@@ -266,11 +266,9 @@ final class Scala3OwnerTypeMountPsiTest extends Scala3CompatTestCase:
     assertEquals(Some("[Int]"), parent.typeArgList.map(_.getText))
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeArgs]).asScala.forall(_.typeArgs.nonEmpty))
 
-  def testLaterTypeFamiliesAndTermParentApplicationsRemainFailClosed(): Unit =
+  def testNamedTypeArgumentsAndTermParentApplicationsRemainFailClosed(): Unit =
     Vector(
       "trait A\ntype Rejected = Map[K = Int, V = String]\n",
-      "trait A\ntype Rejected = A { type Member }\n",
-      "trait A\ntype Rejected = A @unchecked\n",
       "class Parent(value: Int)\nclass Rejected extends Parent(1)\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/OwnerTypeRejected${index + 1}.scala", source)

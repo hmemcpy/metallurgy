@@ -9,6 +9,8 @@ import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiErrorElement, PsiMan
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScAnnotTypeElement,
+  ScCompoundTypeElement,
   ScMatchTypeElement,
   ScSimpleTypeElement,
   ScTypeVariableTypeElement
@@ -175,11 +177,21 @@ final class Scala3MatchTypePsiTest extends Scala3CompatTestCase:
       reopenedAliases.map(stub => stub.getName -> stub.typeText)
     )
 
-  def testTermCasesAndLaterTypeFamiliesRemainFailClosed(): Unit =
+  def testTermCasesAndCaptureTypesRemainFailClosedWhileNewTypeFamiliesMount(): Unit =
+    val refinement = physical(
+      "MatchTypeRefinement1.scala",
+      "type Structural[X] = X match\n  case String => Char { type Member }\n"
+    )
+    assertEquals(1, PsiTreeUtil.findChildrenOfType(refinement, classOf[ScCompoundTypeElement]).size)
+
+    val annotated = physical(
+      "MatchTypeAnnotated1.scala",
+      "type Annotated[X] = X match\n  case String => (Char @unchecked)\n"
+    )
+    assertEquals(1, PsiTreeUtil.findChildrenOfType(annotated, classOf[ScAnnotTypeElement]).size)
+
     Vector(
       "val result = 1 match\n  case 1 => 2\n",
-      "type Deferred[X] = X match\n  case String => Char { type Member }\n",
-      "type Deferred[X] = X match\n  case String => (Char @unchecked)\n",
       "type Deferred[X] = X match\n  case String => Char^\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/MatchTypeBoundary$index.scala", source)

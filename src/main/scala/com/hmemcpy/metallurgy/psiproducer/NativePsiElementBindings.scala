@@ -37,7 +37,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScVariableDefinition
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScReferencePattern
-import org.jetbrains.plugins.scala.lang.psi.api.base.{ScFieldId, ScIdList, ScPatternList}
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScPatternList
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{
   ScClassParameter,
   ScParameter,
@@ -53,7 +53,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
   ScTemplateParents
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScBooleanLiteral,
   ScCharLiteral,
@@ -64,6 +64,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScStringLiteral
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
+  ScAnnotTypeElement,
+  ScCompoundTypeElement,
   ScContextBound,
   ScDependentFunctionTypeElement,
   ScFunctionalTypeElement,
@@ -311,6 +313,8 @@ private[metallurgy] object NativePsiElementBindings:
           |type DependentFunctionTypeProbe = (value: Lower) => value.type
           |type PolyFunctionTypeProbe = [A] => A => A
           |type MatchTypeProbe[X] = X match { case Array[t] => t; case _ => Nothing }
+          |type RefinementTypeProbe = AnyRef { type RefinedElem; val refinedValue: RefinedElem; def refinedCurrent: RefinedElem }
+          |type AnnotatedTypeProbe = TraitProbe @unchecked
           |def ParameterTypeProbe(thunk: => Lower, values: Upper*): Lower = thunk
           |""".stripMargin
       )
@@ -461,6 +465,23 @@ private[metallurgy] object NativePsiElementBindings:
     val caseKeyword              = matchCases.headOption.flatMap(leafAtText(_, "case")).orNull
     val matchCaseArrow           = matchCases.headOption.flatMap(leafAtText(_, "=>")).orNull
     val matchCaseSemicolon       = Option(matchTypeCases).flatMap(leafAtText(_, ";")).orNull
+    val compoundType             = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScCompoundTypeElement])
+      .asScala
+      .find(_.getText.startsWith("AnyRef { type RefinedElem"))
+      .orNull
+    val refinement               = Option(compoundType).flatMap(_.refinement).orNull
+    val annotatedType            = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScAnnotTypeElement])
+      .asScala
+      .find(_.getText == "TraitProbe @unchecked")
+      .orNull
+    val typeAnnotationContainer  = Option(annotatedType)
+      .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScAnnotations])))
+      .orNull
+    val typeAnnotation           = Option(typeAnnotationContainer)
+      .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScAnnotation])))
+      .orNull
     val ordinaryFunctionArrow    = Option(functionType).flatMap(leafAtText(_, "=>")).orNull
     val contextFunctionArrow     = Option(contextFunctionType).flatMap(leafAtText(_, "?=>")).orNull
     val singletonType            = PsiTreeUtil
@@ -474,15 +495,14 @@ private[metallurgy] object NativePsiElementBindings:
     val accessModifiers          = PsiTreeUtil.findChildrenOfType(file, classOf[ScAccessModifier]).asScala.toVector
     val annotationsContainers    = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotations]).asScala.toVector
     val annotationContainer      = annotationsContainers.find(_.getText.startsWith("@ann")).orNull
-    val annotations              = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotation]).asScala.toVector
-    val annotationExpressions    = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotationExpr]).asScala.toVector
+    val annotations              = Option(annotationContainer).toVector.flatMap(_.getAnnotations)
+    val annotationExpressions    =
+      annotations.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScAnnotationExpr]).asScala)
     val deprecatedAnnotation     = annotations.find(_.getText == "@deprecated(\"m\", \"1\")").orNull
-    val constructorInvocations   = PsiTreeUtil
-      .findChildrenOfType(file, classOf[ScConstructorInvocation])
-      .asScala
-      .filter(_.getParent.isInstanceOf[ScAnnotationExpr])
-      .toVector
-    val argumentLists            = PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).asScala.toVector
+    val constructorInvocations   = annotationExpressions.flatMap(value =>
+      PsiTreeUtil.findChildrenOfType(value, classOf[ScConstructorInvocation]).asScala
+    )
+    val argumentLists            = constructorInvocations.flatMap(_.args)
     val classes                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector
     val traits                   = PsiTreeUtil.findChildrenOfType(file, classOf[ScTrait]).asScala.toVector
     val objects                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScObject]).asScala.toVector
@@ -509,17 +529,29 @@ private[metallurgy] object NativePsiElementBindings:
     val selfTypes                = PsiTreeUtil.findChildrenOfType(file, classOf[ScSelfTypeElement]).asScala.toVector
     val derivesClauses           = PsiTreeUtil.findChildrenOfType(file, classOf[ScDerivesClause]).asScala.toVector
     val functionDefinitions      = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).asScala.toVector
-    val functionDeclarations     = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDeclaration]).asScala.toVector
+    val functionDeclarations     = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScFunctionDeclaration])
+      .asScala
+      .filter(_.name == "declaredFunction")
+      .toVector
     val patternDefinitions       = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).asScala.toVector
-    val valueDeclarations        = PsiTreeUtil.findChildrenOfType(file, classOf[ScValueDeclaration]).asScala.toVector
+    val valueDeclarations        = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScValueDeclaration])
+      .asScala
+      .filter(_.declaredElements.exists(_.getName == "declaredValue"))
+      .toVector
     val variableDefinitions      = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).asScala.toVector
-    val variableDeclarations     = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDeclaration]).asScala.toVector
+    val variableDeclarations     = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScVariableDeclaration])
+      .asScala
+      .filter(_.declaredElements.exists(_.getName == "declaredVariable"))
+      .toVector
     val typeAliasDeclarations    = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector
     val typeAliasDefinitions     = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDefinition]).asScala.toVector
     val patternLists             = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternList]).asScala.toVector
     val referencePatterns        = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferencePattern]).asScala.toVector
-    val identifierLists          = PsiTreeUtil.findChildrenOfType(file, classOf[ScIdList]).asScala.toVector
-    val fieldIds                 = PsiTreeUtil.findChildrenOfType(file, classOf[ScFieldId]).asScala.toVector
+    val identifierLists          = (valueDeclarations.map(_.getIdList) ++ variableDeclarations.map(_.getIdList)).toVector
+    val fieldIds                 = identifierLists.flatMap(_.fieldIds)
     val directFunction           = functionDefinitions.find(_.name == "directFunction").orNull
     val directPattern            = patternDefinitions.find(_.bindings.exists(_.name == "directValue")).orNull
     val directVariable           = variableDefinitions.find(_.bindings.exists(_.name == "directVariable")).orNull
@@ -590,6 +622,11 @@ private[metallurgy] object NativePsiElementBindings:
         matchTypeCases,
         matchCases.headOption.orNull,
         matchTypeVariable,
+        compoundType,
+        refinement,
+        annotatedType,
+        typeAnnotationContainer,
+        typeAnnotation,
         singletonType,
         annotatedModifiers,
         memberModifiers,
@@ -743,6 +780,19 @@ private[metallurgy] object NativePsiElementBindings:
       matchCaseArrow.getNode.getElementType != ScalaTokenTypes.tFUNTYPE ||
       matchCaseSemicolon.getNode.getElementType != ScalaTokenTypes.tSEMICOLON
     then Left("native match type tokens are inconsistent")
+    else if compoundType == null || refinement == null || annotatedType == null || typeAnnotationContainer == null ||
+      typeAnnotation == null
+    then Left("native refinement or annotated type PSI probe is incomplete")
+    else if compoundType.components.map(_.getText).toVector != Vector("AnyRef") ||
+      compoundType.refinement != Some(refinement) || refinement.getParent != compoundType ||
+      refinement.types.map(_.name).toVector != Vector("RefinedElem") ||
+      refinement.holders.flatMap(_.declaredElements).map(_.getName).toVector !=
+        Vector("refinedValue", "refinedCurrent")
+    then Left("native refinement type accessors are inconsistent")
+    else if annotatedType.typeElement.getText != "TraitProbe" || annotatedType.typeElement.getParent != annotatedType ||
+      typeAnnotationContainer.getParent != annotatedType || typeAnnotationContainer.getAnnotations.toVector !=
+        Vector(typeAnnotation) || typeAnnotation.getText != "@unchecked"
+    then Left("native annotated type accessors are inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
     else if typeProjection == null || integerLiteralType == null || longLiteralType == null || floatLiteralType == null ||
@@ -1121,6 +1171,9 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.MatchTypeCases        -> matchTypeCases.getNode.getElementType,
               PsiOutputRoleId.MatchTypeCase         -> matchCases.head.getNode.getElementType,
               PsiOutputRoleId.MatchTypeVariable     -> matchTypeVariable.getNode.getElementType,
+              PsiOutputRoleId.CompoundType          -> compoundType.getNode.getElementType,
+              PsiOutputRoleId.Refinement            -> refinement.getNode.getElementType,
+              PsiOutputRoleId.AnnotatedType         -> annotatedType.getNode.getElementType,
               PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
               PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
               PsiOutputRoleId.AccessModifier        -> accessModifiers.head.getNode.getElementType,
@@ -1207,6 +1260,9 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.MatchTypeCases        -> surfaceId(matchTypeCases.getClass),
               PsiOutputRoleId.MatchTypeCase         -> surfaceId(matchCases.head.getClass),
               PsiOutputRoleId.MatchTypeVariable     -> surfaceId(matchTypeVariable.getClass),
+              PsiOutputRoleId.CompoundType          -> surfaceId(compoundType.getClass),
+              PsiOutputRoleId.Refinement            -> surfaceId(refinement.getClass),
+              PsiOutputRoleId.AnnotatedType         -> surfaceId(annotatedType.getClass),
               PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
               PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
               PsiOutputRoleId.AccessModifier        -> surfaceId(accessModifiers.head.getClass),

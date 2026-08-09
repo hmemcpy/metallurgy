@@ -238,21 +238,7 @@ final class Scala3InfixTypePsiTest extends Scala3CompatTestCase:
     assertEquals(null, file.getTreeElement)
     assertEquals(beforeShape, stubShape(file.getStubTree.getPlainList.asScala))
 
-  def testLaterTypeFamiliesRemainFailClosed(): Unit =
-    Vector(
-      "type Deferred = Left { type Member }\n"
-    ).zipWithIndex.foreach: (source, index) =>
-      val pending = myFixture.addFileToProject(s"src/InfixBoundary$index.scala", source)
-      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
-      assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDefinition]).isEmpty)
-      assertTrue(
-        source,
-        Scala3SyntaxCapabilityService
-          .get(getProject)
-          .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-          .nonEmpty
-      )
-
+  def testModifiedInfixOwnersRemainFailClosed(): Unit =
     val modifiedOwnerSource  = "infix trait Deferred[A, B]\n"
     val modifiedOwnerPending = myFixture.addFileToProject("src/InfixModifiedOwner.scala", modifiedOwnerSource)
     val modifiedOwnerFile    = PsiManager.getInstance(getProject).findFile(modifiedOwnerPending.getVirtualFile)

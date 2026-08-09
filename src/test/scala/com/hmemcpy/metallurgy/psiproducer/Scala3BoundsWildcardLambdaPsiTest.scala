@@ -376,10 +376,8 @@ final class Scala3BoundsWildcardLambdaPsiTest extends Scala3CompatTestCase:
       file.getText
     )
 
-  def testLaterTypeFamiliesRemainFailClosed(): Unit =
+  def testQuotedTypesRemainFailClosed(): Unit =
     Vector(
-      "type Rejected = { type A = Int }\n",
-      "type Rejected = Int @unchecked\n",
       "type Rejected = '[Int]\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/BoundsRejected${index + 1}.scala", source)

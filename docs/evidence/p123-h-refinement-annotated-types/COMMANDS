@@ -1,0 +1,5 @@
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 RefinementAnnotatedTypes.scala
+gtimeout --kill-after=5s 120s scala-cli compile --server=false --scala 3.7.4 --scalac-option -Xprint:typer RefinementAnnotatedTypes.scala
+gtimeout --kill-after=5s 120s scala-cli repl --server=false --scala 3.7.4 < repl.in
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.pc.Scala3RefinementAnnotatedTypeParserInventoryTest"
+gtimeout --kill-after=5s 120s sbt -batch -no-colors "testOnly com.hmemcpy.metallurgy.psiproducer.Scala3RefinementAnnotatedTypePsiTest"

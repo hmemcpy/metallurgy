@@ -187,6 +187,6 @@ final class Scala3DotcFileElementType
 private[metallurgy] object Scala3DotcFileElementType:
   val ExternalId                     = "metallurgy.scala3.file"
   val DebugName                      = "METALLURGY_SCALA3_FILE"
-  val SchemaVersion                  = 13
+  val SchemaVersion                  = 14
   lazy val SchemaFingerprint: String =
     Scala3PsiProductionCatalog.persistenceSchemaFingerprint(Scala3PsiProductionCatalog.Reviewed)
