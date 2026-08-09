@@ -19,7 +19,7 @@
             },
             {
               "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/Scala3CompatTestCase.scala",
-              "sha256": "aac49d2d0059c258d64e4d3b8b1aad9f93548e5e7bbdadc7af7be642845abcfe"
+              "sha256": "93748c0c3c8a573e5c407e0e8c3a43c9b79f6f412b16c19c332dba7a6a178c11"
             },
             {
               "path": "src/test/scala/com/hmemcpy/metallurgy/compat/scala3/TypeInferenceTestInput.scala",
