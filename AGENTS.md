@@ -12,6 +12,20 @@ Scala 3 semantic roles with the real compiler while retaining IntelliJ's existin
 - **Status:** pre-alpha. The target architecture is fully specified; each active ownership cutover deletes the
   implementation it replaces in the same change.
 
+## Plain communication
+
+Use plain English in user-facing and public communication, including status updates, GitHub comments, pull request and
+commit summaries, reports, and public documentation. Lead with the practical meaning or status. Explain necessary
+technical terms briefly. Avoid dense prose and long metric lists unless they are needed for a decision or audit. Keep
+detailed raw evidence in internal evidence files or threads and link to it instead of pasting it publicly.
+
+## Autonomous routine decisions
+
+Decide routine implementation choices, compiler artifacts, test fixes, and bounded refactor mechanics without asking.
+Ask only for destructive or irreversible production actions, credentials or privileged access, material scope or
+behavior changes, data loss, weaker acceptance criteria, or choices with meaningful user-visible effects. Follow the
+repository's existing force-push and sole-owner rules.
+
 ## Primary goals (immutable)
 
 These goals are the project's reason for existing and take precedence over every other instruction in this file.
