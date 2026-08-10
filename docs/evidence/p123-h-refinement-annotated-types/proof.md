@@ -1,5 +1,13 @@
 # Refinement and annotated type proof
 
+## Evidence scope
+
+This historical report describes commit `cf6a7dc3cd87ea23b4b5aa23ec11ad50080bec93`, tree
+`644ee3fa45aa2f8fbf3f3a3b18905313afeb268c`. Its recorded schema fingerprint is correct only for that commit and is
+not the current value after later catalog changes. The retained evidence does not prove that the final value was
+harvested from a dirty or incremental build. This report does not identify an immutable external archive reference,
+archive size, or verified entry count.
+
 ## Exact compiler contract
 
 The source and REPL input in this directory run unchanged with Scala 3.7.4. Compile, REPL `:type`, and
@@ -32,4 +40,5 @@ quote, semantic, and modified owner families fail closed. Annotation ancestry is
 ## Persistence
 
 The native role additions change the canonical physical plan and advance the file persistence schema to 14. The
-reviewed canonical schema fingerprint is `87f1db3803235457f6f9cc8c04fdd5f46f1ce028ab5ae5fd2879c48c261e52d6`.
+reviewed schema fingerprint for the commit and tree named above is
+`87f1db3803235457f6f9cc8c04fdd5f46f1ce028ab5ae5fd2879c48c261e52d6`.

@@ -5,18 +5,22 @@ Thanks for your interest in contributing.
 ## Setup
 
 1. Clone the repo.
-2. Install JDK 21 (Temurin or any OpenJDK 21+ build works for the build; IntelliJ 2026.1 ships JBR 25 at runtime).
-3. Install sbt 1.9.9+ (the project is pinned to 1.9.9 via `project/build.properties`).
+2. Use the JBR 25 from the pinned IntelliJ SDK for builds and tests. The current baseline path is
+   `~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home`.
+3. Install sbt. The exact version is pinned in `project/build.properties`.
 4. Open the project in IntelliJ IDEA with the bundled Scala plugin; let it import as an sbt project.
 
 ## Build / test
 
 ```sh
-sbt compile        # build the plugin
-sbt test           # run unit tests
-sbt packageArtifactZip   # produce the distributable zip
-sbt runIDE         # launch a dev IDEA with the plugin loaded
+JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
+/opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt compile
+/opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt test
+/opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt packageArtifactZip
+/opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt runIDE
 ```
+
+Increase the 120-second limit only when evidence justifies it.
 
 ## Code style
 
@@ -26,6 +30,8 @@ sbt runIDE         # launch a dev IDEA with the plugin loaded
 - **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the definitive reference** for IntelliJ / Scala-plugin APIs. Before writing an implementation, helper, or test fixture, check it (the GitHub repo, or your local checkout) for an existing one to mirror.
 - **The [scala/scala3](https://github.com/scala/scala3) repo is the source of truth for Scala language and compiler behaviour.** When something doesn't work where it seemingly should — a snippet that won't compile, a type that resolves unexpectedly, a macro that doesn't expand — check the upstream compiler implementation, its tests (`tests/run`, `tests/run-macros`, `tests/pos`), and the issue tracker *before* concluding it's a tooling limitation. This is the companion to **"pc is never wrong"**: a surprising `pc`/dotc result almost always means the snippet or assumption is wrong, and the canonical usage lives upstream (verified against the exact Scala version under test).
 - When running tests, always bound the timeout — a hung compile-server test should not stall the suite.
+- Follow the [hash provenance and expected-value update policy](docs/agents/hash-provenance.md) before changing a
+  fingerprint, copied-source digest, schema value, stable ID, pin, or evidence seal.
 
 ## Branches
 

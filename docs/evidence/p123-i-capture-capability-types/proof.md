@@ -1,5 +1,12 @@
 # Capture and capability type proof
 
+## Evidence scope
+
+This historical report describes commit `453b0533487696a808b4c2c4360f441cd34a160c`, tree
+`73a9bd6caddf86f78fee21a817d14abbef6aabeb`. Its catalog value and validation results apply only to that commit and
+tree. The retained evidence does not prove that the final value was harvested from a dirty or incremental build. This
+report does not identify an immutable external archive reference, archive size, or verified entry count.
+
 ## Exact compiler contract
 
 The source and REPL input in this directory run unchanged with Scala 3.7.4 and
@@ -56,7 +63,8 @@ log is `ideprobe-tests/target/ideprobe-artifacts/latest/stages.log`, SHA-256
 `ecca7feb960b023fd5814ad1150ae2c708afa458b17af7756fbe36a68e9d248d`; the final `idea.log` SHA-256 is
 `b8fecb478becdd25b619652e22bfa0fda69c449dd8b970586d9a48a57d685d92`.
 
-External raw compiler logs are retained outside the tracked proof. Their SHA-256 values are: clean compile
+At the commit named above, this report recorded that external raw compiler logs were retained outside the tracked
+proof. Their recorded SHA-256 values are: clean compile
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, typer
 `c8fa122222d2fe040237ecdf26b31f2f958762d52f4e02034fe842c53eff03c3`, REPL
 `4a4df5f0d8f2e7a4a593400800adad1e3e998da38a15a14d1a857e5e7ecc5b59`, and missing-option rejection
