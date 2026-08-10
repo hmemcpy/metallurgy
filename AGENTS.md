@@ -245,6 +245,18 @@ Best-effort TASTy is a cross-module semantic input. It never parses the current 
   contracts admits without production-code changes; novel drift identifies bridge, grammar-role, output-role,
   semantic-role, or compatibility-binding work. Never claim that an old binary supports arbitrary unseen grammar.
 
+## Maintainable file boundaries
+
+Avoid huge first-party source, test, and configuration files. Before adding unrelated growth to a mixed-responsibility
+file, split it along cohesive semantic feature or ownership boundaries.
+
+Retain one clear aggregation or registry entry point where ordering or discovery is part of the contract. Prefer the
+smallest shared abstractions needed by multiple owners. Preserve deterministic order and public behavior, and avoid
+initialization cycles or excessive fragmentation.
+
+A known monolith may grow only while its dedicated decomposition packet is in progress, or during a bounded migration
+completed in the same packet.
+
 ## Agent resources
 
 - **Issue tracker:** GitHub via `gh`; see `docs/agents/issue-tracker.md`.
