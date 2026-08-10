@@ -11,19 +11,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup JetBrains Runtime 25
+      - name: Setup bootstrap Java
         uses: actions/setup-java@v5
         with:
-          distribution: jetbrains
-          java-version: '25'
+          distribution: temurin
+          java-version: '21'
           java-package: jdk
           cache: sbt
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
 
+      - name: Verify baseline and resolve pinned IntelliJ SDK
+        run: |
+          java scripts/MetallurgyBaselineVerifier.java static
+          intellij_build="$(java scripts/MetallurgyBaselineVerifier.java value intellij.build)"
+          echo "METALLURGY_INTELLIJ_HOME=$HOME/.metallurgyPluginIC/sdk/$intellij_build" >> "$GITHUB_ENV"
+          timeout --kill-after=5s 120s sbt -batch -no-colors updateIntellij
+
+      - name: Switch to verified IntelliJ JBR
+        run: |
+          if [[ -x "$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home/bin/java" ]]; then
+            jbr="$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home"
+          else
+            jbr="$METALLURGY_INTELLIJ_HOME/jbr"
+          fi
+          "$jbr/bin/java" scripts/MetallurgyBaselineVerifier.java host "$METALLURGY_INTELLIJ_HOME"
+          echo "JAVA_HOME=$jbr" >> "$GITHUB_ENV"
+          echo "$jbr/bin" >> "$GITHUB_PATH"
+
       - name: Check formatting and compile
-        run: timeout --kill-after=5s 120s sbt -batch -no-colors scalafmtCheckAll compile
+        run: timeout --kill-after=5s 120s sbt -batch -no-colors scalafmtCheckAll compile 'Test/compile'
 
       - name: Fetch pinned IntelliJ Scala revision
         run: |

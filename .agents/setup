@@ -7,8 +7,8 @@ bin_dir="$HOME/.local/bin"
 bootstrap_jdk="$tools_root/temurin-21"
 fixture_jdk="$tools_root/temurin-17"
 sbt_home="$tools_root/sbt"
-intellij_sdk="$HOME/.metallurgyPluginIC/sdk/261.26222.65"
 profile_env="$HOME/.config/metallurgy/orb-env.sh"
+verifier="$repo_root/scripts/MetallurgyBaselineVerifier.java"
 
 mkdir -p "$tools_root" "$bin_dir" "$(dirname "$profile_env")"
 
@@ -46,13 +46,21 @@ fi
 mkdir -p "$HOME/.jdks"
 ln -sfn "$fixture_jdk" "$HOME/.jdks/temurin-17"
 
+export JAVA_HOME="$bootstrap_jdk"
+export PATH="$bin_dir:$JAVA_HOME/bin:$PATH"
+
+"$JAVA_HOME/bin/java" "$verifier" static
+intellij_build="$("$JAVA_HOME/bin/java" "$verifier" value intellij.build)"
+sbt_version="$("$JAVA_HOME/bin/java" "$verifier" value sbt.version)"
+intellij_sdk="${METALLURGY_INTELLIJ_HOME:-$HOME/.metallurgyPluginIC/sdk/$intellij_build}"
+
 if [[ ! -x "$sbt_home/bin/sbt" ]]; then
-  echo "Installing sbt 1.11.7"
+  echo "Installing sbt $sbt_version"
   archive="$(mktemp)"
   trap 'rm -f "$archive"' EXIT
   curl --fail --location --retry 3 \
     --output "$archive" \
-    "https://github.com/sbt/sbt/releases/download/v1.11.7/sbt-1.11.7.tgz"
+    "https://github.com/sbt/sbt/releases/download/v$sbt_version/sbt-$sbt_version.tgz"
   tar -xzf "$archive" -C "$tools_root"
   rm -f "$archive"
   trap - EXIT
@@ -60,9 +68,6 @@ fi
 
 ln -sfn "$sbt_home/bin/sbt" "$bin_dir/sbt"
 ln -sfn "$(command -v timeout)" "$bin_dir/gtimeout"
-
-export JAVA_HOME="$bootstrap_jdk"
-export PATH="$bin_dir:$JAVA_HOME/bin:$PATH"
 
 echo "Resolving the pinned IntelliJ SDK and build dependencies"
 (
@@ -78,15 +83,21 @@ if [[ ! -e "$bundled_scala_plugin" && -d "$scala_plugin" ]]; then
   ln -s "$scala_plugin" "$bundled_scala_plugin"
 fi
 
-if [[ ! -x "$intellij_sdk/jbr/bin/java" ]]; then
+if [[ -x "$intellij_sdk/jbr/Contents/Home/bin/java" ]]; then
+  intellij_jbr="$intellij_sdk/jbr/Contents/Home"
+elif [[ -x "$intellij_sdk/jbr/bin/java" ]]; then
+  intellij_jbr="$intellij_sdk/jbr"
+else
   echo "The pinned IntelliJ SDK does not contain its JBR at $intellij_sdk/jbr" >&2
   exit 1
 fi
 
-export JAVA_HOME="$intellij_sdk/jbr"
+export JAVA_HOME="$intellij_jbr"
 export PATH="$JAVA_HOME/bin:$PATH"
 export METALLURGY_REPO_ROOT="$repo_root"
 export METALLURGY_INTELLIJ_HOME="$intellij_sdk"
+
+"$JAVA_HOME/bin/java" "$verifier" host "$intellij_sdk"
 
 (
   cd "$repo_root"
@@ -104,7 +115,7 @@ export METALLURGY_INTELLIJ_HOME="$intellij_sdk"
 )
 
 cat > "$profile_env" <<EOF
-export JAVA_HOME="$intellij_sdk/jbr"
+export JAVA_HOME="$intellij_jbr"
 export PATH="$bin_dir:\$JAVA_HOME/bin:\$PATH"
 export METALLURGY_REPO_ROOT="$repo_root"
 export METALLURGY_INTELLIJ_HOME="$intellij_sdk"

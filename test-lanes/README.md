@@ -25,10 +25,11 @@ for every later comparison.
 
 ## Run a lane
 
-Use JetBrains Runtime 25:
+Use the embedded JBR from the IntelliJ SDK named by the
+[`baseline manifest`](../project/metallurgy-baseline.properties):
 
 ```sh
-JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
+JBR="$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home"
 env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" \
   scripts/run-test-lane.sh test-lanes/ci.txt
 ```

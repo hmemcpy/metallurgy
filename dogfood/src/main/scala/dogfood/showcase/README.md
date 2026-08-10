@@ -6,7 +6,7 @@ Drop the PNGs into `docs/screenshots/` and they'll be embedded in the README.
 
 ## Setup
 
-- Project: `metallurgy-dogfood` (Scala 3.7.4, `-experimental`).
+- Project: `metallurgy-dogfood` (baseline Scala version, `-experimental`).
 - Metallurgy: opt the module in (Settings → Metallurgy) and keep compiler-based
   highlighting on. For the "off" shots, disable Metallurgy for the module and reopen the file.
 - Frame the editor tightly around the relevant lines (crop out the rest).

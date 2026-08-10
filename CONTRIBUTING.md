@@ -5,15 +5,15 @@ Thanks for your interest in contributing.
 ## Setup
 
 1. Clone the repo.
-2. Use the JBR 25 from the pinned IntelliJ SDK for builds and tests. The current baseline path is
-   `~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home`.
-3. Install sbt. The exact version is pinned in `project/build.properties`.
+2. Set `METALLURGY_INTELLIJ_HOME` to the pinned IntelliJ SDK. Use its embedded JBR for builds and tests. The default
+   SDK location derives from the build in [`project/metallurgy-baseline.properties`](project/metallurgy-baseline.properties).
+3. Install sbt. The exact baseline is in the manifest and the launcher pin remains in `project/build.properties`.
 4. Open the project in IntelliJ IDEA with the bundled Scala plugin; let it import as an sbt project.
 
 ## Build / test
 
 ```sh
-JBR=~/.metallurgyPluginIC/sdk/261.26222.65/jbr/Contents/Home
+JBR="$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home"
 /opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt compile
 /opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt test
 /opt/homebrew/bin/gtimeout --kill-after=5s 120s env JAVA_HOME="$JBR" PATH="$JBR/bin:$PATH" sbt packageArtifactZip
@@ -24,7 +24,9 @@ Increase the 120-second limit only when evidence justifies it.
 
 ## Code style
 
-- Plugin code is **Scala 3.7.4**. The in-tree testkit backport (`testkit/`, ADR 0005) is **Scala 2.13.16** to match the bundled Scala plugin it mirrors.
+- Plugin and testkit versions are exact in
+  [`project/metallurgy-baseline.properties`](project/metallurgy-baseline.properties). The testkit backport
+  (`testkit/`, ADR 0005) matches the bundled Scala plugin it mirrors.
 - `sbt fmt` applies `scalafmt`; `sbt check` verifies formatting (CI gates on this).
 - Prefer idiomatic Scala 3. **Java-isms are fine where the IntelliJ / bundled-Scala-plugin APIs force them** — don't fight the platform for purity.
 - **The bundled [intellij-scala](https://github.com/JetBrains/intellij-scala) plugin is the definitive reference** for IntelliJ / Scala-plugin APIs. Before writing an implementation, helper, or test fixture, check it (the GitHub repo, or your local checkout) for an existing one to mirror.

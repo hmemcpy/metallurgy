@@ -26,14 +26,12 @@ inside your favourite Scala IDE*.
 
 ## Compatibility
 
-| IntelliJ IDEA | Scala plugin | Scala | Status |
-|---|---|---|---|
-| IC 261.26222.65 | 2026.1.20 | 3.7.4 | WIP — current development baseline |
-| Other | Other | Other Scala 3 combinations | WIP — not yet verified |
-| Any | Any | Scala 2 | Out of scope |
+The exact current development baseline is reviewed in
+[`project/metallurgy-baseline.properties`](project/metallurgy-baseline.properties). Other Scala 3 combinations are
+not yet verified. Scala 2 is out of scope.
 
-This table does not claim broad compatibility. It records the environment used for current development and the limits
-of what has been verified.
+The manifest does not claim broad compatibility. It records the environment used for current development and the
+limits of what has been verified.
 
 ## Learn more
 

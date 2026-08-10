@@ -1,6 +1,7 @@
 # Metallurgy dogfood project
 
-A standalone Scala 3.7.4 sbt project containing **valid, compiling** Scala 3 samples drawn from
+A standalone project using the exact Scala version in the
+[`baseline manifest`](../project/metallurgy-baseline.properties), containing **valid, compiling** Scala 3 samples drawn from
 Metallurgy's test harness — constructs the bundled IntelliJ Scala plugin *should* highlight without
 false red. Use it to eyeball, in a **clean IntelliJ with the bundled Scala plugin but NO Metallurgy**,
 whether native Scala 3 support now handles these on its own.
@@ -33,7 +34,7 @@ there are no deliberate-error "control" files.)
 
 ## Notes
 
-- Scala 3.7.4 (any ≥ 3.5 is supported; the version is immaterial to the inspection). `-experimental` is
+- The baseline Scala version is immaterial to the inspection. `-experimental` is
   on for the Caprese capture-checking and jing `inlineYaml` samples.
 - Metallurgy itself is per-module version-agnostic: `MtagsFetcher`/`PresentationCompilerResolver` fetch
   the exact-version `pc` for each module's Scala version, so the plugin is not pinned to one.

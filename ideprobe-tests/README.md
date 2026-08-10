@@ -1,11 +1,12 @@
 # IntelliJ lifecycle validation
 
-This standalone Scala 2.13 build adapts ide-probe 0.53 to IntelliJ 261. It starts a clean IDE under Xvfb, installs the
-pinned Scala plugin and the current Metallurgy package, imports the `dogfood` sbt build, waits for indexing and
+This standalone build adapts the exact ide-probe and IntelliJ coordinates in the
+[`baseline manifest`](../project/metallurgy-baseline.properties). It starts a clean IDE under Xvfb, installs the pinned
+Scala plugin and the current Metallurgy package, imports the `dogfood` sbt build, waits for indexing and
 Metallurgy parser preparation, highlights a Scala 3 source file, and checks both the IDE message pool and `idea.log`.
 The test retains its stage timeline, project state, highlights, and logs under `target/ideprobe-artifacts`.
 
-The cross-platform IntelliJ SDK has no `Contents/MacOS/idea`. On macOS, ide-probe 0.53 therefore falls back to
+The cross-platform IntelliJ SDK has no `Contents/MacOS/idea`. On macOS, the pinned ide-probe therefore falls back to
 `Contents/bin/idea.sh`, which carries Linux amd64 JNA and module settings. The repository wrapper corrects only the IDE
 child on macOS arm64. It does not change the SDK, global Java settings, the ide-probe driver, or user wrappers.
 
@@ -22,7 +23,7 @@ these paths when they are not already provided by `.agents/setup`:
 
 ```sh
 export METALLURGY_REPO_ROOT="$(cd .. && pwd)"
-export METALLURGY_INTELLIJ_HOME="$HOME/.metallurgyPluginIC/sdk/261.26222.65"
+export METALLURGY_INTELLIJ_HOME="<path-to-the-pinned-IntelliJ-SDK>"
 if [[ -d "$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home" ]]; then
   export JAVA_HOME="$METALLURGY_INTELLIJ_HOME/jbr/Contents/Home"
 else
@@ -61,7 +62,7 @@ gtimeout --kill-after=15s 15m \
   com.hmemcpy.metallurgy.ideprobe.ProjectLifecycleTest
 ```
 
-The `java.lang` opening is required by ide-probe 0.53 to reconstruct a remote stack trace on JBR 25. It does not alter
+The `java.lang` opening is required by the pinned ide-probe to reconstruct a remote stack trace on the pinned JBR. It does not alter
 the IDE under test.
 
 On Linux and non-arm64 macOS, the wrapper directly executes the requested command without setting

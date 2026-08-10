@@ -7,7 +7,8 @@ usage() {
     'Usage: scripts/run-test-lane.sh <manifest> [--plan-only] [--run-id <id>] [--timeout-seconds <seconds>]' \
     '' \
     'Environment:' \
-    '  JAVA_HOME                         JetBrains Runtime 25 home (required)' \
+    '  JAVA_HOME                         Verified IntelliJ SDK JBR home (required)' \
+    '  METALLURGY_INTELLIJ_HOME          Exact IntelliJ SDK home (optional when derivable from JAVA_HOME)' \
     '  METALLURGY_TEST_EVIDENCE_DIR      Evidence root (default: target/test-evidence)' \
     '  METALLURGY_TEST_RUN_ID            Run identity when --run-id is omitted' \
     '  METALLURGY_TEST_SHARD_TIMEOUT_SECONDS  Per-class timeout (default: 120)' \
@@ -100,22 +101,21 @@ else
   fail 'GNU timeout is required (gtimeout on macOS, timeout on Linux)'
 fi
 
-[ -n "${JAVA_HOME:-}" ] || fail 'JAVA_HOME must point to JetBrains Runtime 25'
+[ -n "${JAVA_HOME:-}" ] || fail 'JAVA_HOME must point to the verified IntelliJ SDK JBR'
 [ -x "$JAVA_HOME/bin/java" ] || fail "JAVA_HOME has no executable java: $JAVA_HOME"
 
-java_settings=$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1)
-java_vendor=$(printf '%s\n' "$java_settings" | sed -n 's/^[[:space:]]*java.vendor = //p' | head -1)
-java_version=$(printf '%s\n' "$java_settings" | sed -n 's/^[[:space:]]*java.runtime.version = //p' | head -1)
-case "$java_vendor" in
-  *JetBrains*) ;;
-  *) fail "JAVA_HOME is not a JetBrains Runtime: $java_vendor" ;;
-esac
-case "$java_version" in
-  25.*) ;;
-  *) fail "JAVA_HOME is not Java 25: $java_version" ;;
-esac
-
 repo_root=$(git rev-parse --show-toplevel)
+intellij_home=${METALLURGY_INTELLIJ_HOME:-}
+if [ -z "$intellij_home" ]; then
+  case "$JAVA_HOME" in
+    */jbr/Contents/Home) intellij_home=${JAVA_HOME%/jbr/Contents/Home} ;;
+    */jbr) intellij_home=${JAVA_HOME%/jbr} ;;
+    *) fail 'METALLURGY_INTELLIJ_HOME is required when JAVA_HOME is not below <intellij-home>/jbr' ;;
+  esac
+fi
+"$JAVA_HOME/bin/java" "$repo_root/scripts/MetallurgyBaselineVerifier.java" host "$intellij_home" ||
+  fail "JAVA_HOME and IntelliJ SDK do not match the Metallurgy baseline: $intellij_home"
+
 manifest_directory=$(cd "$(dirname "$manifest_argument")" && pwd)
 manifest="$manifest_directory/$(basename "$manifest_argument")"
 [ -f "$manifest" ] || fail "manifest not found: $manifest"

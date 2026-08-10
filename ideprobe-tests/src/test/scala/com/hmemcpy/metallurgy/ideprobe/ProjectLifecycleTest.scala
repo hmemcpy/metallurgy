@@ -16,6 +16,29 @@ import org.virtuslab.ideprobe.{IdeProbeFixture, WaitLogic}
 
 import pureconfig.generic.auto._
 
+private[ideprobe] object IsolatedDogfoodBaseline {
+  private val Manifest = Path.of("project", "metallurgy-baseline.properties")
+
+  def prepare(repoRoot: Path, dogfoodWorkspace: Path): Path = {
+    val source = repoRoot.resolve(Manifest)
+    if (!Files.isRegularFile(source))
+      throw new IllegalStateException(s"Metallurgy baseline manifest is missing: $source")
+    val target = dogfoodWorkspace.getParent.resolve(Manifest)
+    val _      = Files.createDirectories(target.getParent)
+    Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+    verify(source, target)
+    target
+  }
+
+  def verify(source: Path, target: Path): Unit = {
+    if (!Files.isRegularFile(target))
+      throw new IllegalStateException(s"Copied Metallurgy baseline manifest is missing: $target")
+    val mismatch = Files.mismatch(source, target)
+    if (mismatch != -1L)
+      throw new IllegalStateException(s"Copied Metallurgy baseline manifest differs at byte $mismatch: $target")
+  }
+}
+
 final class ProjectLifecycleTest extends IdeProbeFixture {
   private val StatusEndpoint = Request[FileRef, Map[String, String]]("metallurgy/status")
   private val ReplaceWithSupportedSyntaxEndpoint =
@@ -33,6 +56,7 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
 
     val fixture = fixtureFromConfig("ideprobe.conf")
       .withAfterWorkspaceSetup { (_, workspace) =>
+        val _ = IsolatedDogfoodBaseline.prepare(repoRoot, workspace)
         writeProjectSettings(workspace)
       }
       .withAfterIntelliJInstall { (_, intelliJ) =>

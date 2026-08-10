@@ -2,12 +2,24 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-intellij_sdk="$HOME/.metallurgyPluginIC/sdk/261.26222.65"
+verifier="$repo_root/scripts/MetallurgyBaselineVerifier.java"
+bootstrap_java="${JAVA_HOME:+$JAVA_HOME/bin/java}"
+if [[ -z "$bootstrap_java" || ! -x "$bootstrap_java" ]]; then
+  bootstrap_java="$(command -v java)"
+fi
+intellij_build="$("$bootstrap_java" "$verifier" value intellij.build)"
+intellij_sdk="${METALLURGY_INTELLIJ_HOME:-$HOME/.metallurgyPluginIC/sdk/$intellij_build}"
 
-if [[ ! -x "$intellij_sdk/jbr/bin/java" ]]; then
+if [[ -x "$intellij_sdk/jbr/Contents/Home/bin/java" ]]; then
+  intellij_jbr="$intellij_sdk/jbr/Contents/Home"
+elif [[ -x "$intellij_sdk/jbr/bin/java" ]]; then
+  intellij_jbr="$intellij_sdk/jbr"
+else
   echo "Pinned IntelliJ JBR is missing; rerun .agents/setup" >&2
   exit 1
 fi
+
+"$intellij_jbr/bin/java" "$verifier" host "$intellij_sdk"
 
 if [[ ! -x "$HOME/.local/bin/sbt" ]]; then
   echo "sbt is missing; rerun .agents/setup" >&2

@@ -123,6 +123,44 @@ final class IdeaLaunchEnvironmentTest {
     assertEquals(None, result.environment.get(JavaOptionsVariable))
   }
 
+  @Test
+  def isolatedDogfoodWorkspaceUsesExactCanonicalBaseline(): Unit =
+    withTemporaryDirectory("ideprobe-dogfood-baseline") { root =>
+      val repository = root.resolve("repository")
+      val source     = repository.resolve("project/metallurgy-baseline.properties")
+      val workspace  = root.resolve("isolated/dogfood")
+      val unrelated  = Files.createDirectories(root.resolve("unrelated"))
+      val _          = Files.createDirectories(source.getParent)
+      val expected   = "scala.compiler.version=3.7.4\n".getBytes(StandardCharsets.US_ASCII)
+      Files.write(source, expected)
+
+      val previousDirectory = System.getProperty("user.dir")
+      try {
+        System.setProperty("user.dir", unrelated.toString)
+        val copied = IsolatedDogfoodBaseline.prepare(repository.toAbsolutePath, workspace.toAbsolutePath)
+        assertEquals(workspace.getParent.resolve("project/metallurgy-baseline.properties").toAbsolutePath, copied)
+        assertTrue(java.util.Arrays.equals(expected, Files.readAllBytes(copied)))
+
+        Files.writeString(copied, "scala.compiler.version=changed\n", StandardCharsets.US_ASCII)
+        assertFailureContains(
+          () => IsolatedDogfoodBaseline.verify(source, copied),
+          "differs at byte"
+        )
+
+        Files.delete(copied)
+        assertFailureContains(
+          () => IsolatedDogfoodBaseline.verify(source, copied),
+          "Copied Metallurgy baseline manifest is missing"
+        )
+
+        Files.delete(source)
+        assertFailureContains(
+          () => IsolatedDogfoodBaseline.prepare(repository, workspace),
+          "Metallurgy baseline manifest is missing"
+        )
+      } finally System.setProperty("user.dir", previousDirectory)
+    }
+
   private def launch(os: String, architecture: String, arguments: Seq[String]): String = {
     val renderedArguments = arguments.map(value => s"\"$value\"").mkString(",")
     s"""{"os":"$os","arch":"$architecture","additionalJvmArguments":[$renderedArguments]}"""
@@ -190,6 +228,16 @@ final class IdeaLaunchEnvironmentTest {
   private def assertFailureContains(result: IdeaLaunchProcessResult, expected: String): Unit = {
     assertFalse(s"Expected failure containing '$expected'", result.exitCode == 0)
     assertTrue(result.stderr, result.stderr.contains(expected))
+  }
+
+  private def assertFailureContains(action: () => Unit, expected: String): Unit = {
+    val error = try {
+      action()
+      None
+    } catch {
+      case exception: IllegalStateException => Some(exception)
+    }
+    assertTrue(s"Expected failure containing '$expected'", error.exists(_.getMessage.contains(expected)))
   }
 
   private def withTemporaryDirectory[A](prefix: String)(body: Path => A): A = {

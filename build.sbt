@@ -3,7 +3,49 @@ import org.jetbrains.sbtidea.packaging.artifact.DistBuilder
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.Properties
 import scala.sys.process.Process
+
+lazy val metallurgyBaseline = settingKey[Map[String, String]]("Exact Metallurgy toolchain and host baseline")
+lazy val verifyMetallurgyBaseline = taskKey[Unit]("Verify the exact Metallurgy toolchain and host baseline")
+
+def loadMetallurgyBaseline(file: File): Map[String, String] = {
+  val required = Set(
+    "dogfood.sbt.version",
+    "ide.probe.version",
+    "intellij.build",
+    "intellij.product.code",
+    "intellij.release",
+    "java.bytecode.release",
+    "jbr.java.runtime.version",
+    "jbr.java.vendor",
+    "jbr.java.vendor.version",
+    "sbt.version",
+    "scala.compiler.version",
+    "scala.plugin.id",
+    "scala.plugin.version",
+    "testkit.scala.version"
+  )
+  if (!file.isFile) sys.error(s"Metallurgy baseline manifest is missing: $file")
+  val properties = new Properties
+  val input      = Files.newInputStream(file.toPath)
+  try properties.load(input)
+  finally input.close()
+  val actual = properties.stringPropertyNames().toArray(new Array[String](0)).toSet
+  if (actual != required)
+    sys.error(s"Metallurgy baseline keys differ: missing=${required -- actual}, extra=${actual -- required}")
+  val values = required.iterator.map { name =>
+    val value = properties.getProperty(name)
+    if (value == null || value.isEmpty) sys.error(s"Metallurgy baseline value is missing or empty: $name")
+    name -> value
+  }.toMap
+  try values("java.bytecode.release").toInt
+  catch {
+    case _: NumberFormatException =>
+      sys.error(s"Metallurgy baseline value is not an integer: java.bytecode.release=${values("java.bytecode.release")}")
+  }
+  values
+}
 
 def updateTestInputDigest(digest: MessageDigest, file: File): Unit = {
   val input  = Files.newInputStream(file.toPath)
@@ -32,15 +74,17 @@ def testInputSha256(root: File): String = {
   digest.digest().map(byte => f"${byte & 0xff}%02x").mkString
 }
 
-ThisBuild / scalaVersion       := "3.7.4"
+ThisBuild / metallurgyBaseline := loadMetallurgyBaseline((ThisBuild / baseDirectory).value / "project" / "metallurgy-baseline.properties")
+
+ThisBuild / scalaVersion       := metallurgyBaseline.value("scala.compiler.version")
 ThisBuild / version            := "0.1.0-SNAPSHOT"
 ThisBuild / intellijPluginName := "metallurgy"
-ThisBuild / intellijBuild      := "261.26222.65"
+ThisBuild / intellijBuild      := metallurgyBaseline.value("intellij.build")
 
 Global / intellijAttachSources := true
 
 addCommandAlias("fmt", "scalafmtAll")
-addCommandAlias("check", ";verifyCopiedIntellijTests;scalafmtCheckAll")
+addCommandAlias("check", ";verifyMetallurgyBaseline;verifyCopiedIntellijTests;scalafmtCheckAll")
 addCommandAlias("testHeadless", "test")
 addCommandAlias("compilerTypeAcceptance", "testOnly com.hmemcpy.metallurgy.compilertype.*Test")
 addCommandAlias(
@@ -51,7 +95,7 @@ addCommandAlias(
     "com.hmemcpy.metallurgy.generated.intellijscala.typeInference.NamedTypeArgumentsInferenceTest"
 )
 
-Global / javacOptions := Seq("--release", "17")
+Global / javacOptions := Seq("--release", metallurgyBaseline.value("java.bytecode.release"))
 
 ThisBuild / resolvers ++= Seq(
   "JetBrains IntelliJ Repository" at "https://www.jetbrains.com/intellij-repository/releases",
@@ -73,26 +117,34 @@ ThisBuild / scalacOptions ++= Seq(
   "-language:unsafeNulls"
 )
 
-lazy val scalaPluginVersion           = "2026.1.20"
+lazy val scalaPluginVersion           = settingKey[String]("Pinned Scala plugin version")
 // revision of scala-library paired with the Scala 3.7.x toolchain
-lazy val scala2LibraryVersion         = "2.13.16"
-lazy val intellijTestFrameworkVersion = "261.26222.65"
+lazy val scala2LibraryVersion         = settingKey[String]("Scala 2 library paired with the Scala 3 toolchain")
+lazy val intellijTestFrameworkVersion = settingKey[String]("Pinned IntelliJ test framework version")
 
-lazy val intellijTestFrameworkDependencies = Seq(
-  "com.jetbrains.intellij.platform" % "test-framework-core"         % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.platform" % "test-framework-common"       % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.platform" % "test-framework"              % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.platform" % "test-framework-junit5"       % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.java"     % "java-test-framework-shared"  % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.java"     % "java-test-framework-backend" % intellijTestFrameworkVersion,
-  "com.jetbrains.intellij.java"     % "java-test-framework"         % intellijTestFrameworkVersion
-).map(_.exclude("com.google.protobuf", "protobuf-java"))
+ThisBuild / scalaPluginVersion           := metallurgyBaseline.value("scala.plugin.version")
+ThisBuild / scala2LibraryVersion         := metallurgyBaseline.value("testkit.scala.version")
+ThisBuild / intellijTestFrameworkVersion := metallurgyBaseline.value("intellij.build")
 
-lazy val intellijPluginDependencies = Seq(
-  "com.intellij.java".toPlugin,
-  "JUnit".toPlugin,
-  s"org.intellij.scala:$scalaPluginVersion".toPlugin
-)
+lazy val intellijTestFrameworkDependencies = Def.setting {
+  Seq(
+    "com.jetbrains.intellij.platform" % "test-framework-core"         % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.platform" % "test-framework-common"       % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.platform" % "test-framework"              % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.platform" % "test-framework-junit5"       % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.java"     % "java-test-framework-shared"  % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.java"     % "java-test-framework-backend" % intellijTestFrameworkVersion.value,
+    "com.jetbrains.intellij.java"     % "java-test-framework"         % intellijTestFrameworkVersion.value
+  ).map(_.exclude("com.google.protobuf", "protobuf-java"))
+}
+
+lazy val intellijPluginDependencies = Def.setting {
+  Seq(
+    "com.intellij.java".toPlugin,
+    "JUnit".toPlugin,
+    s"org.intellij.scala:${scalaPluginVersion.value}".toPlugin
+  )
+}
 
 lazy val compileTestkit         = taskKey[Unit]("Compile the in-tree Scala plugin TestKit backport")
 lazy val prepareIntellijTestSdk = taskKey[Unit]("Prepare SDK resources expected by IntelliJ light fixtures")
@@ -124,7 +176,7 @@ lazy val root =
         "junit"             % "junit"             % "4.13.2" % Test,
         "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
         "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test
-      ) ++ intellijTestFrameworkDependencies.map(_ % Test),
+      ) ++ intellijTestFrameworkDependencies.value.map(_ % Test),
       Test / testReportsDirectory :=
         sys.props.get("metallurgy.test.reports").map(file).getOrElse((Test / target).value / "test-reports"),
       Test / javaOptions ++= {
@@ -200,6 +252,11 @@ lazy val root =
         ).!
         if (exitCode != 0) sys.error(s"Copied IntelliJ test generation failed with exit code $exitCode")
       },
+      verifyMetallurgyBaseline := {
+        val verifier = baseDirectory.value / "scripts" / "MetallurgyBaselineVerifier.java"
+        val exitCode = Process(Seq(sys.props("java.home") + "/bin/java", verifier.getPath, "static"), baseDirectory.value).!
+        if (exitCode != 0) sys.error(s"Metallurgy baseline verification failed with exit code $exitCode")
+      },
       writeTestInventory        := {
         val inventory = sys.props
           .get("metallurgy.test.inventory")
@@ -229,9 +286,18 @@ lazy val root =
             s"plugin.scala.version=${scalaVersion.value}",
             s"sbt.version=${sbtVersion.value}",
             s"test.fixture.compiler=org.scala-lang:scala3-compiler_3:3.5.2",
-            s"scala.plugin.version=$scalaPluginVersion",
+            s"scala.plugin.version=${scalaPluginVersion.value}",
             s"test.fixture.scala.version=3.5.2",
-            s"testkit.scala.version=$scala2LibraryVersion"
+            s"testkit.scala.version=${scala2LibraryVersion.value}",
+            s"baseline.intellij.product.code=${metallurgyBaseline.value("intellij.product.code")}",
+            s"baseline.intellij.release=${metallurgyBaseline.value("intellij.release")}",
+            s"baseline.jbr.java.runtime.version=${metallurgyBaseline.value("jbr.java.runtime.version")}",
+            s"baseline.jbr.java.vendor=${metallurgyBaseline.value("jbr.java.vendor")}",
+            s"baseline.jbr.java.vendor.version=${metallurgyBaseline.value("jbr.java.vendor.version")}",
+            s"baseline.java.bytecode.release=${metallurgyBaseline.value("java.bytecode.release")}",
+            s"baseline.scala.plugin.id=${metallurgyBaseline.value("scala.plugin.id")}",
+            s"baseline.ide.probe.version=${metallurgyBaseline.value("ide.probe.version")}",
+            s"baseline.dogfood.sbt.version=${metallurgyBaseline.value("dogfood.sbt.version")}"
           )
         )
         IO.writeLines(
@@ -247,11 +313,11 @@ lazy val root =
       },
       testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-s", "-a", "+c", "+q"),
       buildIntellijOptionsIndex := {},
-      intellijPlugins           := intellijPluginDependencies,
+      intellijPlugins           := intellijPluginDependencies.value,
       // the bundled Scala plugin supplies the Scala runtime from its own classloader at runtime,
       // so neither scala-library nor scala3-library is bundled here
       packageLibraryMappings := Seq(
-        "org.scala-lang" % "scala-library"     % scala2LibraryVersion -> None,
+        "org.scala-lang" % "scala-library"     % scala2LibraryVersion.value -> None,
         "org.scala-lang" % "scala3-library_3" % scalaVersion.value   -> None
       )
     )
