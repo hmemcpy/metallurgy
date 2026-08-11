@@ -47,6 +47,10 @@ if [ "$#" -lt 1 ]; then
 fi
 
 manifest_argument=$1
+case "$manifest_argument" in
+  /*) ;;
+  *) manifest_argument="$PWD/$manifest_argument" ;;
+esac
 shift
 plan_only=false
 run_id=${METALLURGY_TEST_RUN_ID:-}
@@ -90,6 +94,7 @@ require_command grep
 require_command sed
 require_command sort
 require_command comm
+require_command python3
 
 if [ -x /opt/homebrew/bin/gtimeout ]; then
   timeout_command=/opt/homebrew/bin/gtimeout
@@ -104,7 +109,8 @@ fi
 [ -n "${JAVA_HOME:-}" ] || fail 'JAVA_HOME must point to the verified IntelliJ SDK JBR'
 [ -x "$JAVA_HOME/bin/java" ] || fail "JAVA_HOME has no executable java: $JAVA_HOME"
 
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root" || fail "cannot enter repository root: $repo_root"
 intellij_home=${METALLURGY_INTELLIJ_HOME:-}
 if [ -z "$intellij_home" ]; then
   case "$JAVA_HOME" in
@@ -129,6 +135,9 @@ lane=$(basename "$manifest" .txt)
 case "$lane" in
   ''|*[!A-Za-z0-9._-]*) fail "invalid lane name: $lane" ;;
 esac
+
+python3 "$repo_root/scripts/test_lane_mapping.py" check --lane "$manifest" ||
+  fail "lane mapping check failed: $lane"
 
 if [ -z "$run_id" ]; then
   run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$$"

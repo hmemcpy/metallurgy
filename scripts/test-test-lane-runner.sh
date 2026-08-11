@@ -2,7 +2,10 @@
 
 set -euo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+python3 "$repo_root/scripts/test_test_lane_mapping.py"
+
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/metallurgy-test-runner.XXXXXX")
 evidence_root="$temporary_root/evidence"
 
@@ -23,10 +26,24 @@ run_plan() {
 run_plan first
 run_plan second
 
+(
+  cd "$temporary_root"
+  METALLURGY_TEST_EVIDENCE_DIR="$evidence_root" \
+    "$repo_root/scripts/run-test-lane.sh" \
+    "$repo_root/test-lanes/ci.txt" \
+    --plan-only \
+    --run-id unrelated
+)
+
 first_selection="$evidence_root/ci/first/selection.json"
 second_selection="$evidence_root/ci/second/selection.json"
+unrelated_selection="$evidence_root/ci/unrelated/selection.json"
 cmp "$first_selection" "$second_selection" || {
   printf '%s\n' 'identical plans produced different selections' >&2
+  exit 1
+}
+cmp "$first_selection" "$unrelated_selection" || {
+  printf '%s\n' 'unrelated working directory changed the selection' >&2
   exit 1
 }
 

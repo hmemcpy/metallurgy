@@ -1,8 +1,27 @@
 # Deterministic test lanes
 
-Each `<lane>.txt` file is a bytewise-sorted, duplicate-free list of fully qualified test-suite classes. Its
-`<lane>.invocations.txt` companion lists every expected `class<TAB>test-name` identity. Selection is explicit: wildcards
-and runtime discovery never decide which suites or test methods a lane intends to execute.
+Each `<lane>.invocations.txt` file is the reviewed source of truth for that lane. It lists every expected
+`class<TAB>test-name` identity in bytewise order. Rows for one suite stay together. The tracked `<lane>.txt` companion
+is a generated suite view that keeps the first occurrence of each suite. The runner, CI, contributor commands, and
+evidence paths continue to consume that view. Selection is explicit: wildcards and runtime discovery never decide
+which suites or test methods a lane intends to execute.
+
+Check every mapping after editing an invocation file:
+
+```sh
+python3 scripts/test_lane_mapping.py check
+```
+
+Generate the suite views, review their readable row diff, and check again:
+
+```sh
+python3 scripts/test_lane_mapping.py write
+python3 scripts/test_lane_mapping.py check
+```
+
+`write` changes only suite views and never rewrites invocation files. A lane membership change owns the invocation row
+first. Missing, extra, reordered, duplicate, malformed, wildcard, empty, and copied generated-suite mismatches stop the
+check with lane names and readable row indexes rather than hash-only output.
 
 `ci.txt` is the representative ordinary check for the currently admitted grammar and backend surface.
 `compatibility.txt` is the complete locally owned Scala 3 compatibility area, including tests that remain red while
@@ -45,8 +64,9 @@ Useful options:
 --timeout-seconds <per-suite-seconds>
 ```
 
-The runner rejects unsorted manifests, duplicates, invalid identities, mismatched suite/invocation manifests, or a
-selected class absent from sbt test discovery.
+The runner checks the selected suite and invocation pair before discovery. It rejects unsorted invocation rows,
+duplicates, invalid identities, non-contiguous suite groups, a stale generated suite view, or a selected class absent
+from sbt test discovery.
 
 ## Evidence
 
@@ -72,5 +92,6 @@ reports, masked failures, and process failures have distinct statuses. The runne
 missing, and unexpected invocation identities for each shard, completes every selected shard, publishes the summary,
 and returns nonzero unless all shards pass.
 
-`scripts/test-test-lane-runner.sh` proves that identical plans produce byte-identical selections, invalid or missing
-selections fail, every shard runs after a timeout or test failure, and zero-invocation reports cannot pass.
+`scripts/test-test-lane-runner.sh` first runs the mapping mutation suite. It then proves that identical plans produce
+byte-identical selections, invalid or missing selections fail, every shard runs after a timeout or test failure, and
+zero-invocation reports cannot pass.
