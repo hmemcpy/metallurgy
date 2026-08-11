@@ -22,11 +22,14 @@ import org.virtuslab.ideprobe.protocol
 import org.virtuslab.ideprobe.protocol.FileRef
 
 object Highlighting extends IntelliJApi {
+  private val EditorLoadPollIntervalNanos = TimeUnit.MILLISECONDS.toNanos(100)
+  private val EditorLoadDeadlineNanos     = TimeUnit.MINUTES.toNanos(2)
+
   def infos(fileRef: FileRef): Seq[protocol.HighlightInfo] = {
-    val psiFile = PSI.resolve(fileRef)
-    val project = psiFile.getProject
+    val psiFile    = PSI.resolve(fileRef)
+    val project    = psiFile.getProject
     DumbService.getInstance(project).waitForSmartMode()
-    val document = PSI.getDocument(psiFile)
+    val document   = PSI.getDocument(psiFile)
     runHighlighting(psiFile)
     val highlights = read(DaemonCodeAnalyzerImpl.getHighlights(document, null, project).asScala.toVector)
     highlights.flatMap(format(_, fileRef, document))
@@ -78,17 +81,37 @@ object Highlighting extends IntelliJApi {
     }
   }
 
+  private[handlers] def waitForEditorLoad(
+      filePath: String,
+      loaded: () => Boolean,
+      dispatchUiEvents: () => Unit,
+      nanoTime: () => Long,
+      parkNanos: Long => Unit
+  ): Unit = {
+    val startedAt = nanoTime()
+    dispatchUiEvents()
+    while (!loaded()) {
+      if (nanoTime() - startedAt >= EditorLoadDeadlineNanos)
+        throw new AssertionError(
+          s"Editor loading did not finish for $filePath within the two-minute editor-load deadline"
+        )
+      parkNanos(EditorLoadPollIntervalNanos)
+      dispatchUiEvents()
+    }
+  }
+
   private def createEditor(project: Project, file: VirtualFile): Editor = {
     PsiDocumentManager.getInstance(project).commitAllDocuments()
     val editor = FileEditorManager.getInstance(project).openTextEditor(new OpenFileDescriptor(project, file), false)
     if (editor == null) error(s"Could not open editor for ${file.getPath}")
-    if (EditorUtil.isRealFileEditor(editor)) {
-      UIUtil.dispatchAllInvocationEvents()
-      while (!AsyncEditorLoader.isEditorLoaded(editor)) {
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        UIUtil.dispatchAllInvocationEvents()
-      }
-    }
+    if (EditorUtil.isRealFileEditor(editor))
+      waitForEditorLoad(
+        file.getPath,
+        () => AsyncEditorLoader.isEditorLoaded(editor),
+        () => UIUtil.dispatchAllInvocationEvents(),
+        () => System.nanoTime(),
+        nanos => LockSupport.parkNanos(nanos)
+      )
     editor
   }
 }
