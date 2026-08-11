@@ -69,7 +69,7 @@ final class Scala3TypeAtomParserInventoryTest:
       val start    = SourcePrefix.length
       assertEquals(
         Vector(
-          (ParserScannerTokenKind.Other, "x", 0, 1, ParserPositionProvenance.SourceDerived),
+          (ParserScannerTokenKind.Identifier, "x", 0, 1, ParserPositionProvenance.SourceDerived),
           (ParserScannerTokenKind.Dot, ".", 1, 2, ParserPositionProvenance.SourceDerived),
           (ParserScannerTokenKind.TypeKeyword, "type", 2, 6, ParserPositionProvenance.SourceDerived)
         ),
@@ -247,31 +247,42 @@ final class Scala3TypeAtomParserInventoryTest:
     "fbdc6f14ccdbd339e52e6860ac391d2631c70e057163b6bd759ffffba13a4288"
   )
   private val ScannerFingerprints  = Vector(
-    "f58742b2aaefee70b2f693718ce2fb39ce908325991ad5d716a9fdee669cd75c",
-    "03d8725a469384b4a98a54493e9a89bbbe8b224efb20f600dc3e0c29aa950aa2",
-    "91d8067463c356980e3cbd7fbd423404e1805253d8fff55d12033855a0c05a9b",
-    "077140332c75a3d62c1b180f0d03c5c3b153389093e03251a4a68fa3bd0fe692",
-    "c13316846500b4d209bb65883a246b623ae8129c49d7a2dad1a5f48ef9a69309",
-    "0e300e9d67e9b5f57173f7df66f605211d62a49d5627cea3661212a5312b9d0b",
-    "0672e3d28e01283590d8020bb13e732a9f596e6a575a81e111096983dcfc1910",
-    "99788f84a62f9145cd8d1aafa88f72ff93240360ea009f80831088707a2ad730",
-    "767ba999c20085e65df4146df9cdeca73f1ef208640f6fa43b300c0a0e18c5b6",
-    "42eeef1fa39a9b22e1b99764a6a378ae633e58a466be5f8f8a84d4d28a3f7b2a",
-    "21356d8c9c7d402da277844d5e0df2b817ee38d224c4cf10d41ad549485e53d3",
-    "55d6b02517509fb6e090aebd57711ab280a5f8c928f93c4214b06fe156d12983",
-    "b8887206e33136269a7697fd21955033243ba812bb9b261d27b33f766dfe197f",
-    "f35e7fbe94159e4deb1a7ecc5f5157593ed0c36d711cf68461a7ce14287bcfd5"
+    "1db31e784b89c666e7f3059d6d35abbad0dec889cb781524c0b905c606d6ba94",
+    "2ec75dadae7787eba33951a1f1a734e14e312b22978c4b36cf920f517c57879c",
+    "bdb5e264042cb6454f1c2198f1c72381724678c560256cbca76e9aee0610f8fb",
+    "68c8aaf4d5cc762ed656f9b441162045aa828c67767814b57a525bf93c4f0d05",
+    "2ad82e80591ec0f085f96bc7b93a6a3912682dfeaa3fb5562918368898884611",
+    "ae9d7c2cd83559dca15e6e359b19f0f6765e56284ad8b9bd3afd823239c35f14",
+    "0414d7261b0d888e33fe531504adaca0a80423d5de22ab34874007a5b6e35836",
+    "05084d22f547ddb5fcf3b5cc8fee7c5bcfee342ff5f19a4600218d0d1791f987",
+    "3d496f90527a7398773cd4a7740c718515a98a4f9e0152c0d969500d51a88550",
+    "3d9706403c3ed88a0b7f2a7e0edf679420c65db7aaf40dcfdf97a7e4db0b0220",
+    "13b83845a2c154d8ef39d5e4c0f498272cb2a8a4310319ba7f6c0edb57fb6acb",
+    "9eafd11f2ef8181a2fe2ca1c94b186bfc638cc2cf33b76cdf519507bead22d68",
+    "a86fd661b627144cdc9c761a1ce345e731e314d72e6423879e0eb1acb050d41f",
+    "207b203a9e215c14e0e46bb5438202b639b3e3622efa0fcb457b458e2b8cf65c"
   )
 
   private val Cases = Vector(
-    AtomCase(source("A"), "Ident", 0, Vector("name"), Vector(positioned("Ident", "A", 0)), Vector.empty),
+    AtomCase(
+      source("A"),
+      "Ident",
+      0,
+      Vector("name"),
+      Vector(positioned("Ident", "A", 0)),
+      Vector(token(ParserScannerTokenKind.Identifier, "A", 0, 1))
+    ),
     AtomCase(
       source("p.A"),
       "Select",
       2,
       Vector("qualifier", "name"),
       Vector(positioned("Select", "p.A", 2), positioned("Ident", "p", 0)),
-      Vector(token(ParserScannerTokenKind.Dot, ".", 1, 2))
+      Vector(
+        token(ParserScannerTokenKind.Identifier, "p", 0, 1),
+        token(ParserScannerTokenKind.Dot, ".", 1, 2),
+        token(ParserScannerTokenKind.Identifier, "A", 2, 3)
+      )
     ),
     AtomCase(
       source("T#A"),
@@ -279,7 +290,11 @@ final class Scala3TypeAtomParserInventoryTest:
       2,
       Vector("qualifier", "name"),
       Vector(positioned("Select", "T#A", 2), positioned("Ident", "T", 0)),
-      Vector(token(ParserScannerTokenKind.Hash, "#", 1, 2))
+      Vector(
+        token(ParserScannerTokenKind.Identifier, "T", 0, 1),
+        token(ParserScannerTokenKind.Hash, "#", 1, 2),
+        token(ParserScannerTokenKind.Identifier, "A", 2, 3)
+      )
     ),
     AtomCase(
       source("x.type"),
@@ -288,6 +303,7 @@ final class Scala3TypeAtomParserInventoryTest:
       Vector("ref"),
       Vector(positioned("SingletonTypeTree", "x.type", 0), positioned("Ident", "x", 0)),
       Vector(
+        token(ParserScannerTokenKind.Identifier, "x", 0, 1),
         token(ParserScannerTokenKind.Dot, ".", 1, 2),
         token(ParserScannerTokenKind.TypeKeyword, "type", 2, 6)
       )
@@ -303,7 +319,9 @@ final class Scala3TypeAtomParserInventoryTest:
         positioned("Ident", "p", 0)
       ),
       Vector(
+        token(ParserScannerTokenKind.Identifier, "p", 0, 1),
         token(ParserScannerTokenKind.Dot, ".", 1, 2),
+        token(ParserScannerTokenKind.Identifier, "x", 2, 3),
         token(ParserScannerTokenKind.Dot, ".", 3, 4),
         token(ParserScannerTokenKind.TypeKeyword, "type", 4, 8)
       )
@@ -329,7 +347,10 @@ final class Scala3TypeAtomParserInventoryTest:
         positioned("SingletonTypeTree", "-42", 0, ParserPositionProvenance.Synthetic),
         positioned("Literal", "-42", 0)
       ),
-      Vector(token(ParserScannerTokenKind.Literal, "42", 1, 3)),
+      Vector(
+        token(ParserScannerTokenKind.Identifier, "-", 0, 1),
+        token(ParserScannerTokenKind.Literal, "42", 1, 3)
+      ),
       ParserPositionProvenance.Synthetic
     ),
     AtomCase(
@@ -412,6 +433,7 @@ final class Scala3TypeAtomParserInventoryTest:
       Vector(positioned("Parens", "(A)", 0), positioned("Ident", "A", 1)),
       Vector(
         token(ParserScannerTokenKind.LeftParenthesis, "(", 0, 1),
+        token(ParserScannerTokenKind.Identifier, "A", 1, 2),
         token(ParserScannerTokenKind.RightParenthesis, ")", 2, 3)
       )
     )

@@ -4,6 +4,7 @@ import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
   CompilerRuntimeInventory,
   NativePsiElementBindings,
+  PlanningWorkObserver,
   PhysicalLeafOwner,
   Scala3PsiProductionCatalog,
   ScalaPsiSurfaceInventory,
@@ -339,7 +340,7 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "69c0334e6a8a8a55dc85968f6710384a26a30ed9c3d8415c1cba5c1b44d76cfe"
+          "ebbd17e5a34258c83a1c134bc8df37a7e354214fc6cbf676faad53748b56199e"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
@@ -353,25 +354,25 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
         ScalaPsiSurfaceInventory.installed().fold(message => throw new AssertionError(message), identity)
       )
       def assertPlan(source: String, uri: String, depth: Int, productionPrefix: String): Unit =
-        val snapshot  = parse(bridge, source, uri)
+        val snapshot                         = parse(bridge, source, uri)
         assertEquals(snapshot, parse(bridge, source, uri))
-        val nodes     = snapshot.nodes.map(node => node.id -> node).toMap
-        val indices   = snapshot.nodes.zipWithIndex.map((node, index) => node.id -> index).toMap
-        val anchor    =
+        val nodes                            = snapshot.nodes.map(node => node.id -> node).toMap
+        val indices                          = snapshot.nodes.zipWithIndex.map((node, index) => node.id -> index).toMap
+        val anchor                           =
           if productionPrefix == "package-stable" then nodes(snapshot.rootNodeId) -> "pid"
           else
             val statement = if source.startsWith("export") then "Export" else "Import"
             snapshot.nodes.find(_.production == statement).get -> "expr"
-        val firstId   = anchor._1.fields.collectFirst {
+        val firstId                          = anchor._1.fields.collectFirst {
           case ParserSyntaxField(field, ParserFieldValue.Node(id), _) if field == anchor._2 => id
         }.get
-        val lineage   = Vector.newBuilder[ParserSyntaxNode]
-        var current   = nodes(firstId)
+        val lineage                          = Vector.newBuilder[ParserSyntaxNode]
+        var current                          = nodes(firstId)
         assertEquals(
           Vector(ParserNodeOccurrence(anchor._1.id, Vector(ParserFieldPathSegment.NamedField(anchor._2)))),
           current.occurrences
         )
-        var complete  = false
+        var complete                         = false
         while !complete do
           lineage += current
           current.production match
@@ -387,30 +388,31 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
               current = next
             case "Ident"  => complete = true
             case other    => throw new AssertionError(s"deep stable path contains $other")
-        val chain     = lineage.result()
+        val chain                            = lineage.result()
         assertEquals(depth, chain.size)
         assertEquals(Vector.fill(depth - 1)("Select") :+ "Ident", chain.map(_.production))
         assertTrue(chain.map(node => indices(node.id)).sliding(2).forall {
           case Vector(left, right) => right == left + 1
           case _                   => true
         })
-        val evidence  = ProvisionalSourceEvidencePlanner
+        val evidence                         = ProvisionalSourceEvidencePlanner
           .plan(snapshot)
           .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
-        val runtime   = CompilerRuntimeInventory
+        val runtime                          = CompilerRuntimeInventory
           .from(snapshot)
           .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
-        val aggregate = AggregatedCompilerProductionInventory
+        val aggregate                        = AggregatedCompilerProductionInventory
           .aggregate(Vector(runtime))
           .fold(error => throw new AssertionError(error.toString), identity)
-        val prepared  = PreparedProductionCatalog
+        val prepared                         = PreparedProductionCatalog
           .prepareRuntimeSubset(Scala3PsiProductionCatalog.Reviewed, runtime, aggregate, surfaces)
           .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
-        def plan()    = WholeFileProductionPlanner
-          .plan(snapshot, evidence, prepared)
+        val observer                         = CountingPlanningWorkObserver()
+        def plan(work: PlanningWorkObserver) = WholeFileProductionPlanner
+          .plan(snapshot, evidence, prepared, work)
           .fold(error => throw new AssertionError(error.toString), identity)
-        val first     = plan()
-        val repeated  = Option.when(depth == 1024)(plan())
+        val first                            = plan(observer)
+        val repeated                         = Option.when(depth == 1024)(plan(PlanningWorkObserver.NoOp))
 
         assertEquals(depth - 1, snapshot.nodes.count(_.production == "Select"))
         val stable = first.composites.filter(_.productionId.startsWith(productionPrefix))
@@ -430,8 +432,12 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
         )
         assertFalse(first.physicalLeafOwnership.exists(leaf => leaf.start == leaf.end))
         assertEquals(evidence.structural.map(_.id), first.structuralEvidenceOwnership.map(_.eventId))
+        assertTrue(
+          s"depth=$depth finalOwnership=${observer.finalOwnership} terminal=${observer.terminal}",
+          observer.finalOwnership <= 4L * depth && observer.terminal <= 3L * depth
+        )
 
-      Vector(1024, 4096).foreach: depth =>
+      Vector(64, 256, 1024).foreach: depth =>
         val segments = Vector.tabulate(depth)(index => s"p$index")
         assertPlan(
           s"package ${segments.mkString(".")}\n",
@@ -439,17 +445,26 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
           depth,
           "package-stable"
         )
+      Vector(64, 256).foreach: depth =>
+        val segments = Vector.tabulate(depth)(index => s"p$index")
         assertPlan(
           s"import ${segments.mkString(".")}.target\n",
           s"file:///VeryDeepStableImportPath$depth.scala",
           depth,
           "import-path"
         )
-        if depth == 1024 then
-          assertPlan(
-            s"export ${segments.mkString(".")}.target\n",
-            s"file:///VeryDeepStableExportPath$depth.scala",
-            depth,
-            "import-path"
-          )
+        assertPlan(
+          s"export ${segments.mkString(".")}.target\n",
+          s"file:///VeryDeepStableExportPath$depth.scala",
+          depth,
+          "import-path"
+        )
     finally bridge.close()
+
+  private final case class CountingPlanningWorkObserver() extends PlanningWorkObserver:
+    var finalOwnership: Long = 0L
+    var terminal: Long       = 0L
+
+    override def finalOwnershipEntries(count: Int): Unit    = finalOwnership += count
+    override def terminalLexicalEntries(count: Int): Unit   = terminal += count
+    override def terminalCandidateEntries(count: Int): Unit = terminal += count

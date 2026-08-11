@@ -127,6 +127,25 @@ These goals are the project's reason for existing and take precedence over every
   its real exit. With output formatters, enable `pipefail`.
 - **No `Thread.sleep` in production code.** Use latches, futures, alarms, and cancellation.
 
+## Command execution policy
+
+- Every command, test, build, and probe must have a hard timeout. The default command ceiling is 10 minutes.
+- Most commands should finish within 2 minutes with active output. Split broad work into small, focused commands with
+  visible progress.
+- If a command shows no useful output or test phase progress for 2 minutes, inspect it immediately. Stop it unless its
+  health is proven.
+- A justified final complete suite or heavy stress gate may use a longer measured timeout without separate routine
+  approval. Run an unchanged complete or heavy gate at most once per packet, feature, or epic, at the very end after
+  focused and ordinary gates are green. Record the exact command, reason, expected duration, progress plan, and stop
+  conditions before it starts.
+- Monitor an approved longer run at least every 30 seconds. Investigate after 2 minutes without phase or test progress.
+  Stop after 5 minutes without proven progress unless a known silent phase was documented before the run.
+- Never rerun an unchanged command that timed out. Diagnose the cause, narrow the command, or fix the problem first.
+  A second complete or heavy run requires a concrete fix or changed evidence from smaller probes.
+- Consume output while commands run, use timestamped logs, and preserve the logs when stopping a command.
+- Explain command results and blockers in plain English. Work in the sole-writer `idea261.x` checkout without feature
+  branches or pull requests.
+
 ## Source-code comments
 
 Source code is self-contained. Omit obvious comments. A necessary comment states a non-obvious present-tense constraint

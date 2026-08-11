@@ -9,8 +9,10 @@ com.hmemcpy.metallurgy.pc.Scala3BoundsWildcardLambdaParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3CaptureCapabilityTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3InfixTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3MatchTypeParserInventoryTest
+com.hmemcpy.metallurgy.pc.Scala3ParserVerticalSliceTest
 com.hmemcpy.metallurgy.pc.Scala3RefinementAnnotatedTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3TupleFunctionTypeParserInventoryTest
+com.hmemcpy.metallurgy.pc.Scala3TypeAtomParserInventoryTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3BoundsWildcardLambdaPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3CaptureCapabilityTypePsiTest

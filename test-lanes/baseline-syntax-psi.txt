@@ -1,3 +1,5 @@
+com.hmemcpy.metallurgy.pc.Scala3ParserVerticalSliceTest
+com.hmemcpy.metallurgy.pc.Scala3TypeAtomParserInventoryTest
 com.hmemcpy.metallurgy.psiproducer.DialectFileLoadingTest
 com.hmemcpy.metallurgy.psiproducer.DialectProjectReopenTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
