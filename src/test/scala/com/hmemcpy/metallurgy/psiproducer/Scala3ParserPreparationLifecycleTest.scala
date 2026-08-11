@@ -15,7 +15,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.FileContentUtilCore
 import org.junit.Assert.{assertEquals, assertFalse, assertSame, assertTrue}
-import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.{Executor, RejectedExecutionException}
@@ -91,7 +91,7 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       assertTrue(prepared.surfaces.rows.nonEmpty)
       assertTrue(
         prepared.catalog.productions
-          .find(_.id == "integer-literal-number")
+          .find(_.id == "atomic-literal-integer")
           .exists(_.targetRequirement == TargetRequirement.Native)
       )
       assertTrue(statuses.exists:
@@ -149,7 +149,7 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
     val file       = myFixture.addFileToProject("src/Compatible.scala", "val value = 1\n").getVirtualFile
     val preparer   = new DeferredPreparer
     val activation = new ControlledActivation
-    val target     = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/TestCompatibleIntegerLiteral"
+    val target     = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/TestCompatibleElement"
     val catalog    = Scala3PsiProductionCatalog.Reviewed.copy(productions =
       Scala3PsiProductionCatalog.Reviewed.productions.map(
         _.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible)
@@ -228,18 +228,10 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
     finally lifecycle.dispose()
 
   def testCapabilityProvenCompatibleTargetBindsItsElementType(): Unit =
-    val file       = myFixture.addFileToProject("src/CompatibleBound.scala", "val value = 1\n").getVirtualFile
+    val file       = myFixture.addFileToProject("src/CompatibleBound.scala", "val value = source.member\n").getVirtualFile
     val preparer   = new DeferredPreparer
     val activation = new ControlledActivation
-    val target     = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
-    val catalog    =
-      Scala3PsiProductionCatalog.Reviewed.copy(productions = Scala3PsiProductionCatalog.Reviewed.productions.map:
-        production =>
-          if production.id == "integer-literal-number" then
-            production.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible)
-          else production
-      )
-    val lifecycle  = lifecycleFor(preparer, Vector(file), activation, _ => Right(catalog))
+    val lifecycle  = lifecycleFor(preparer, Vector(file), activation)
 
     try
       val _        = lifecycle.prepare(getModule)
@@ -248,7 +240,10 @@ final class Scala3ParserPreparationLifecycleTest extends BasePlatformTestCase:
       await(lifecycle)(_.isInstanceOf[ParserPreparationState.Activating])
       activation.runNext()
       val prepared = lifecycle.parserFor(getModule).get
-      assertSame(MetallurgyIntegerLiteral.ElementType, prepared.bindings.outputRoles(PsiOutputRoleId.IntegerLiteral))
+      assertSame(
+        MetallurgyExpressionPayload.ElementType,
+        prepared.bindings.outputRoles(PsiOutputRoleId.ExpressionPayload)
+      )
     finally lifecycle.dispose()
 
   def testNativePsiCapabilityExceptionClosesTheBridgeAndPublishesFailure(): Unit =

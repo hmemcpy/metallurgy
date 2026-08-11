@@ -1,8 +1,11 @@
+com.hmemcpy.metallurgy.pc.AtomicExpressionProbeTest
 com.hmemcpy.metallurgy.pc.Scala3ParserVerticalSliceTest
 com.hmemcpy.metallurgy.pc.Scala3TypeAtomParserInventoryTest
 com.hmemcpy.metallurgy.psiproducer.DialectFileLoadingTest
 com.hmemcpy.metallurgy.psiproducer.DialectProjectReopenTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3AtomicExpressionNativeSurfaceTest
+com.hmemcpy.metallurgy.psiproducer.Scala3AtomicExpressionPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3BoundsWildcardLambdaPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3CaptureCapabilityTypePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderTest

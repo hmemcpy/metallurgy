@@ -12,6 +12,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScTypeLambdaTypeElement,
   ScWildcardTypeElement
 }
+import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScPatternDefinition, ScTypeAliasDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
@@ -23,17 +24,18 @@ import scala.jdk.CollectionConverters.*
 
 final class Scala3RepresentativeScalePsiTest extends Scala3CompatTestCase:
 
-  def testMixedGenericDefinitionsAndRhsPayloadsRetainExactSourceOrder(): Unit =
+  def testMixedGenericDefinitionsAndAtomicIntegerRhsRetainExactSourceOrder(): Unit =
     val count  = 32
     val source = (0 until count).map(index => s"class Generic$index[T$index]()()\nval value$index = $index\n").mkString
     val file   = physical("Case9.scala", source)
 
     val classes  = ordered(file, classOf[ScClass])
     val patterns = ordered(file, classOf[ScPatternDefinition])
-    val payloads = ordered(file, classOf[MetallurgyExpressionPayload])
+    val integers = ordered(file, classOf[ScIntegerLiteral])
     assertEquals(count, classes.size)
     assertEquals(count, patterns.size)
-    assertEquals(count, payloads.size)
+    assertEquals(count, integers.size)
+    assertTrue(ordered(file, classOf[MetallurgyExpressionPayload]).isEmpty)
     representativeIndices(count).foreach: index =>
       val owner = classes(index)
       assertEquals(s"class Generic$index[T$index]()()", owner.getText)
@@ -42,9 +44,10 @@ final class Scala3RepresentativeScalePsiTest extends Scala3CompatTestCase:
       assertEquals(Vector("()", "()"), owner.constructor.get.parameterList.clauses.map(_.getText).toVector)
       owner.constructor.get.parameterList.clauses.foreach(clause => assertSame(owner.constructor.get, clause.owner))
       assertEquals(s"val value$index = $index", patterns(index).getText)
-      assertEquals(index.toString, payloads(index).getText)
-      assertEquals(payloads(index).getText, payloads(index).getTextRange.substring(source))
-      assertSame(patterns(index), payloads(index).getParent)
+      assertEquals(index.toString, integers(index).getText)
+      assertEquals(index, integers(index).getValue)
+      assertEquals(integers(index).getText, integers(index).getTextRange.substring(source))
+      assertSame(patterns(index), integers(index).getParent)
 
   def testNestedGenericOwnersRetainEveryAdjacentParentAndExactAccessors(): Unit =
     val depth  = 16

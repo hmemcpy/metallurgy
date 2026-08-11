@@ -54,6 +54,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScReferenceExpression, ScThisReference}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScBooleanLiteral,
   ScCharLiteral,
@@ -61,6 +62,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScFloatLiteral,
   ScIntegerLiteral,
   ScLongLiteral,
+  ScNullLiteral,
   ScStringLiteral
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
@@ -105,7 +107,6 @@ import org.jetbrains.plugins.scala.lang.psi.stubs.{
 import org.jetbrains.plugins.scala.lang.psi.stubs.index.ScalaIndexKeys
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.{
   MetallurgyExpressionPayload,
-  MetallurgyIntegerLiteral,
   MetallurgyNamedTypeArgument,
   MetallurgyParameterType,
   MetallurgyTypeArguments
@@ -207,6 +208,12 @@ private[metallurgy] object NativePsiElementBindings:
   val ContextBoundAsTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#AsKeyword"
   val AssignmentTokenSurface               = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tASSIGN"
   val ValueKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kVAL"
+  val IntegerLiteralTokenSurface           = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#Integer"
+  val LongLiteralTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#Long"
+  val FloatLiteralTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#Float"
+  val DoubleLiteralTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#Double"
+  val CharLiteralTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCHAR"
+  val StringLiteralTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tSTRING"
   val TypePathDotTokenSurface              = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tDOT"
   val TypeProjectionHashTokenSurface       = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tINNER_CLASS"
   val SingletonTypeKeywordTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#kTYPE"
@@ -259,7 +266,7 @@ private[metallurgy] object NativePsiElementBindings:
       )
 
   private def probeInReadAction(project: Project): Either[String, NativePsiElementBindings] =
-    val file                     = PsiFileFactory
+    val file                                                   = PsiFileFactory
       .getInstance(project)
       .createFileFromText(
         "NativeBindingProbe.scala",
@@ -293,6 +300,18 @@ private[metallurgy] object NativePsiElementBindings:
           |def directFunction = 1
           |val directValue = 1
           |var directVariable = 1
+          |val atomicReference = singletonValue
+          |val atomicInteger = 0x7f_ff
+          |val atomicLong = 9_223L
+          |val atomicFloat = 1.25f
+          |val atomicDouble = 2.5d
+          |val atomicBoolean = true
+          |val atomicChar = '\n'
+          |val atomicString = "a\tb"
+          |val atomicNull = null
+          |class AtomicThisProbe:
+          |  def unqualifiedThis = this
+          |  def qualifiedThis = AtomicThisProbe.this
           |trait DefinitionOwner extends TraitProbe:
           |  self: TraitProbe =>
           |  type DirectAbstract
@@ -326,7 +345,7 @@ private[metallurgy] object NativePsiElementBindings:
           |def ParameterTypeProbe(thunk: => Lower, values: Upper*): Lower = thunk
           |""".stripMargin
       )
-    val packageLayoutFile        = PsiFileFactory
+    val packageLayoutFile                                      = PsiFileFactory
       .getInstance(project)
       .createFileFromText(
         "NativePackageLayoutBindingProbe.scala",
@@ -341,236 +360,274 @@ private[metallurgy] object NativePsiElementBindings:
           |end outer
           |""".stripMargin
       )
-    val packaging                = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
-    val layoutPackagings         = PsiTreeUtil
+    val packaging                                              = PsiTreeUtil.findChildOfType(file, classOf[ScPackaging])
+    val layoutPackagings                                       = PsiTreeUtil
       .findChildrenOfType(packageLayoutFile, classOf[ScPackaging])
       .asScala
       .toVector
-    val bracedPackaging          = layoutPackagings.find(_.fullPackageName == "braced").orNull
-    val outerPackaging           = layoutPackagings.find(_.fullPackageName == "outer").orNull
-    val innerPackaging           = layoutPackagings.find(_.fullPackageName == "outer.inner").orNull
-    val layoutEnds               = PsiTreeUtil.findChildrenOfType(packageLayoutFile, classOf[ScEnd]).asScala.toVector
-    val innerEnd                 = layoutEnds.find(_.getName == "inner").orNull
-    val outerEnd                 = layoutEnds.find(_.getName == "outer").orNull
-    val bracedImport             = Option(bracedPackaging)
+    val bracedPackaging                                        = layoutPackagings.find(_.fullPackageName == "braced").orNull
+    val outerPackaging                                         = layoutPackagings.find(_.fullPackageName == "outer").orNull
+    val innerPackaging                                         = layoutPackagings.find(_.fullPackageName == "outer.inner").orNull
+    val layoutEnds                                             = PsiTreeUtil.findChildrenOfType(packageLayoutFile, classOf[ScEnd]).asScala.toVector
+    val innerEnd                                               = layoutEnds.find(_.getName == "inner").orNull
+    val outerEnd                                               = layoutEnds.find(_.getName == "outer").orNull
+    val bracedImport                                           = Option(bracedPackaging)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScImportStmt])))
       .orNull
-    val innerExport              = Option(innerPackaging)
+    val innerExport                                            = Option(innerPackaging)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScExportStmt])))
       .orNull
-    val reference                = Option(packaging).flatMap(_.reference).orNull
-    val qualifier                = Option(reference).flatMap(_.qualifier).orNull
-    val statements               = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
-    val expressions              = statements.flatMap(_.importExprs)
-    val selectorSets             = expressions.flatMap(_.selectorSet)
-    val selectors                = selectorSets.flatMap(_.selectors)
-    val exportStatements         = PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector
-    val exportExpressions        = exportStatements.flatMap(_.importExprs)
-    val exportSelectorSets       = exportExpressions.flatMap(_.selectorSet)
-    val exportSelectors          = exportSelectorSets.flatMap(_.selectors)
-    val aliasSelectors           = selectors.filter(_.isAliasedImport)
-    val aliasAsElement           = aliasSelectors.headOption
+    val reference                                              = Option(packaging).flatMap(_.reference).orNull
+    val qualifier                                              = Option(reference).flatMap(_.qualifier).orNull
+    val statements                                             = PsiTreeUtil.findChildrenOfType(file, classOf[ScImportStmt]).asScala.toVector
+    val expressions                                            = statements.flatMap(_.importExprs)
+    val selectorSets                                           = expressions.flatMap(_.selectorSet)
+    val selectors                                              = selectorSets.flatMap(_.selectors)
+    val exportStatements                                       = PsiTreeUtil.findChildrenOfType(file, classOf[ScExportStmt]).asScala.toVector
+    val exportExpressions                                      = exportStatements.flatMap(_.importExprs)
+    val exportSelectorSets                                     = exportExpressions.flatMap(_.selectorSet)
+    val exportSelectors                                        = exportSelectorSets.flatMap(_.selectors)
+    val aliasSelectors                                         = selectors.filter(_.isAliasedImport)
+    val aliasAsElement                                         = aliasSelectors.headOption
       .flatMap(selector => leafAtText(selector, "as"))
       .orNull
-    val aliasArrowElement        = aliasSelectors
+    val aliasArrowElement                                      = aliasSelectors
       .lift(1)
       .flatMap(selector => leafAtText(selector, "=>"))
       .orNull
-    val givenSelector            = selectors.find(_.isGivenSelector)
-    val wildcardSelector         = selectors.find(_.isWildcardSelector)
-    val wildcardElement          = wildcardSelector.flatMap(_.wildcardElement).orNull
-    val legacyWildcardElement    = expressions.lastOption.flatMap(_.wildcardElement).orNull
-    val givenType                = givenSelector.flatMap(_.givenTypeElement).orNull
-    val parameterizedType        = PsiTreeUtil.findChildOfType(file, classOf[ScParameterizedTypeElement])
-    val typeArguments            = Option(parameterizedType).map(_.typeArgList).orNull
-    val leftTypeBracket          = Option(typeArguments).flatMap(leafAtText(_, "[")).orNull
-    val rightTypeBracket         = Option(typeArguments).flatMap(leafAtText(_, "]")).orNull
-    val parameterizedBase        = Option(parameterizedType).map(_.typeElement).orNull
-    val parameterizedArgs        = Option(typeArguments).map(_.typeArgs.toVector).getOrElse(Vector.empty)
-    val givenReference           = Option(givenType)
+    val givenSelector                                          = selectors.find(_.isGivenSelector)
+    val wildcardSelector                                       = selectors.find(_.isWildcardSelector)
+    val wildcardElement                                        = wildcardSelector.flatMap(_.wildcardElement).orNull
+    val legacyWildcardElement                                  = expressions.lastOption.flatMap(_.wildcardElement).orNull
+    val givenType                                              = givenSelector.flatMap(_.givenTypeElement).orNull
+    val parameterizedType                                      = PsiTreeUtil.findChildOfType(file, classOf[ScParameterizedTypeElement])
+    val typeArguments                                          = Option(parameterizedType).map(_.typeArgList).orNull
+    val leftTypeBracket                                        = Option(typeArguments).flatMap(leafAtText(_, "[")).orNull
+    val rightTypeBracket                                       = Option(typeArguments).flatMap(leafAtText(_, "]")).orNull
+    val parameterizedBase                                      = Option(parameterizedType).map(_.typeElement).orNull
+    val parameterizedArgs                                      = Option(typeArguments).map(_.typeArgs.toVector).getOrElse(Vector.empty)
+    val givenReference                                         = Option(givenType)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScStableCodeReference])))
       .orNull
-    val qualifiedType            = selectors
+    val qualifiedType                                          = selectors
       .flatMap(_.givenTypeElement)
       .collectFirst { case value: ScSimpleTypeElement if value.getText == "alpha.gamma.Bound" => value }
       .orNull
-    val qualifiedReference       = Option(qualifiedType).flatMap(_.reference).orNull
-    val qualifiedQualifier       = Option(qualifiedReference).flatMap(_.qualifier).orNull
-    val wildcardType             = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
-    val wildcardLower            = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
-    val wildcardUpper            = Option(wildcardType).flatMap(_.upperTypeElement).orNull
-    val contextBound             = PsiTreeUtil.findChildOfType(file, classOf[ScContextBound])
-    val typeLambda               = PsiTreeUtil.findChildOfType(file, classOf[ScTypeLambdaTypeElement])
-    val wildcardQuestion         = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
-    val lowerBoundToken          = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
-    val upperBoundToken          = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
-    val infixType                = PsiTreeUtil
+    val qualifiedReference                                     = Option(qualifiedType).flatMap(_.reference).orNull
+    val qualifiedQualifier                                     = Option(qualifiedReference).flatMap(_.qualifier).orNull
+    val wildcardType                                           = PsiTreeUtil.findChildOfType(file, classOf[ScWildcardTypeElement])
+    val wildcardLower                                          = Option(wildcardType).flatMap(_.lowerTypeElement).orNull
+    val wildcardUpper                                          = Option(wildcardType).flatMap(_.upperTypeElement).orNull
+    val contextBound                                           = PsiTreeUtil.findChildOfType(file, classOf[ScContextBound])
+    val typeLambda                                             = PsiTreeUtil.findChildOfType(file, classOf[ScTypeLambdaTypeElement])
+    val wildcardQuestion                                       = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
+    val lowerBoundToken                                        = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
+    val upperBoundToken                                        = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
+    val infixType                                              = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScInfixTypeElement])
       .asScala
       .find(_.getText == "Left | Middle & Right")
       .orNull
-    val nestedInfixType          =
+    val nestedInfixType                                        =
       Option(infixType).flatMap(_.rightOption).collect { case value: ScInfixTypeElement => value }.orNull
-    val infixLeft                = Option(infixType).map(_.left).orNull
-    val infixRight               = Option(infixType).flatMap(_.rightOption).orNull
-    val infixOperation           = Option(infixType).map(_.operation).orNull
-    val integerLiteral           = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
-    val typeProjection           = PsiTreeUtil
+    val infixLeft                                              = Option(infixType).map(_.left).orNull
+    val infixRight                                             = Option(infixType).flatMap(_.rightOption).orNull
+    val infixOperation                                         = Option(infixType).map(_.operation).orNull
+    val integerLiteral                                         = PsiTreeUtil.findChildOfType(file, classOf[ScIntegerLiteral])
+    val typeProjection                                         = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScTypeProjection])
       .asScala
       .find(_.getText == "DefinitionOwner#DirectAbstract")
       .orNull
-    val literalTypes             = PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteralTypeElement]).asScala.toVector
-    val integerLiteralType       = literalTypes.find(_.getText == "42").orNull
-    val longLiteralType          = literalTypes.find(_.getText == "1L").orNull
-    val floatLiteralType         = literalTypes.find(_.getText == "1.0f").orNull
-    val doubleLiteralType        = literalTypes.find(_.getText == "1.0").orNull
-    val charLiteralType          = literalTypes.find(_.getText == "'a'").orNull
-    val stringLiteralType        = literalTypes.find(_.getText == "\"literal\"").orNull
-    val booleanLiteralType       = literalTypes.find(_.getText == "true").orNull
-    val integerLiteralValue      =
+    val literalTypes                                           = PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteralTypeElement]).asScala.toVector
+    val integerLiteralType                                     = literalTypes.find(_.getText == "42").orNull
+    val longLiteralType                                        = literalTypes.find(_.getText == "1L").orNull
+    val floatLiteralType                                       = literalTypes.find(_.getText == "1.0f").orNull
+    val doubleLiteralType                                      = literalTypes.find(_.getText == "1.0").orNull
+    val charLiteralType                                        = literalTypes.find(_.getText == "'a'").orNull
+    val stringLiteralType                                      = literalTypes.find(_.getText == "\"literal\"").orNull
+    val booleanLiteralType                                     = literalTypes.find(_.getText == "true").orNull
+    val integerLiteralValue                                    =
       Option(integerLiteralType).map(_.getLiteral).collect { case value: ScIntegerLiteral => value }.orNull
-    val longLiteralValue         =
+    val longLiteralValue                                       =
       Option(longLiteralType).map(_.getLiteral).collect { case value: ScLongLiteral => value }.orNull
-    val floatLiteralValue        =
+    val floatLiteralValue                                      =
       Option(floatLiteralType).map(_.getLiteral).collect { case value: ScFloatLiteral => value }.orNull
-    val doubleLiteralValue       =
+    val doubleLiteralValue                                     =
       Option(doubleLiteralType).map(_.getLiteral).collect { case value: ScDoubleLiteral => value }.orNull
-    val charLiteralValue         =
+    val charLiteralValue                                       =
       Option(charLiteralType).map(_.getLiteral).collect { case value: ScCharLiteral => value }.orNull
-    val stringLiteralValue       =
+    val stringLiteralValue                                     =
       Option(stringLiteralType).map(_.getLiteral).collect { case value: ScStringLiteral => value }.orNull
-    val booleanLiteralValue      =
+    val booleanLiteralValue                                    =
       Option(booleanLiteralType).map(_.getLiteral).collect { case value: ScBooleanLiteral => value }.orNull
-    val parenthesizedType        = PsiTreeUtil
+    val parenthesizedType                                      = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScParenthesisedTypeElement])
       .asScala
       .find(_.getText == "(alpha.gamma.Bound)")
       .orNull
-    val tupleType                = PsiTreeUtil
+    val tupleType                                              = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScTupleTypeElement])
       .asScala
       .find(_.getText == "(Lower, Upper)")
       .orNull
-    val tupleTypes               = Option(tupleType).map(_.typeList).orNull
-    val namedTupleType           = PsiTreeUtil.findChildOfType(file, classOf[ScNamedTupleTypeElement])
-    val namedTupleComponents     = Option(namedTupleType).map(_.components.toVector).getOrElse(Vector.empty)
-    val functionalTypes          = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionalTypeElement]).asScala.toVector
-    val functionType             = functionalTypes.find(_.getText == "(Lower, Upper) => Bound").orNull
-    val contextFunctionType      = functionalTypes.find(_.getText == "Bound ?=> Lower").orNull
-    val dependentFunctionType    = PsiTreeUtil.findChildOfType(file, classOf[ScDependentFunctionTypeElement])
-    val polyFunctionType         = PsiTreeUtil.findChildOfType(file, classOf[ScPolyFunctionTypeElement])
-    val matchType                = PsiTreeUtil.findChildOfType(file, classOf[ScMatchTypeElement])
-    val matchTypeCases           = Option(matchType).flatMap(_.cases).orNull
-    val matchCases               = Option(matchTypeCases).map(_.cases.toVector).getOrElse(Vector.empty)
-    val matchTypeVariable        = matchCases.headOption
+    val tupleTypes                                             = Option(tupleType).map(_.typeList).orNull
+    val namedTupleType                                         = PsiTreeUtil.findChildOfType(file, classOf[ScNamedTupleTypeElement])
+    val namedTupleComponents                                   = Option(namedTupleType).map(_.components.toVector).getOrElse(Vector.empty)
+    val functionalTypes                                        = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionalTypeElement]).asScala.toVector
+    val functionType                                           = functionalTypes.find(_.getText == "(Lower, Upper) => Bound").orNull
+    val contextFunctionType                                    = functionalTypes.find(_.getText == "Bound ?=> Lower").orNull
+    val dependentFunctionType                                  = PsiTreeUtil.findChildOfType(file, classOf[ScDependentFunctionTypeElement])
+    val polyFunctionType                                       = PsiTreeUtil.findChildOfType(file, classOf[ScPolyFunctionTypeElement])
+    val matchType                                              = PsiTreeUtil.findChildOfType(file, classOf[ScMatchTypeElement])
+    val matchTypeCases                                         = Option(matchType).flatMap(_.cases).orNull
+    val matchCases                                             = Option(matchTypeCases).map(_.cases.toVector).getOrElse(Vector.empty)
+    val matchTypeVariable                                      = matchCases.headOption
       .flatMap(_.pattern)
       .toVector
       .flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScTypeVariableTypeElement]).asScala)
       .headOption
       .orNull
-    val matchKeyword             = Option(matchType).flatMap(leafAtText(_, "match")).orNull
-    val caseKeyword              = matchCases.headOption.flatMap(leafAtText(_, "case")).orNull
-    val matchCaseArrow           = matchCases.headOption.flatMap(leafAtText(_, "=>")).orNull
-    val matchCaseSemicolon       = Option(matchTypeCases).flatMap(leafAtText(_, ";")).orNull
-    val compoundType             = PsiTreeUtil
+    val matchKeyword                                           = Option(matchType).flatMap(leafAtText(_, "match")).orNull
+    val caseKeyword                                            = matchCases.headOption.flatMap(leafAtText(_, "case")).orNull
+    val matchCaseArrow                                         = matchCases.headOption.flatMap(leafAtText(_, "=>")).orNull
+    val matchCaseSemicolon                                     = Option(matchTypeCases).flatMap(leafAtText(_, ";")).orNull
+    val compoundType                                           = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScCompoundTypeElement])
       .asScala
       .find(_.getText.startsWith("AnyRef { type RefinedElem"))
       .orNull
-    val refinement               = Option(compoundType).flatMap(_.refinement).orNull
-    val annotatedType            = PsiTreeUtil
+    val refinement                                             = Option(compoundType).flatMap(_.refinement).orNull
+    val annotatedType                                          = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScAnnotTypeElement])
       .asScala
       .find(_.getText == "TraitProbe @unchecked")
       .orNull
-    val typeAnnotationContainer  = Option(annotatedType)
+    val typeAnnotationContainer                                = Option(annotatedType)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScAnnotations])))
       .orNull
-    val typeAnnotation           = Option(typeAnnotationContainer)
+    val typeAnnotation                                         = Option(typeAnnotationContainer)
       .flatMap(value => Option(PsiTreeUtil.findChildOfType(value, classOf[ScAnnotation])))
       .orNull
-    val ordinaryFunctionArrow    = Option(functionType).flatMap(leafAtText(_, "=>")).orNull
-    val contextFunctionArrow     = Option(contextFunctionType).flatMap(leafAtText(_, "?=>")).orNull
-    val singletonType            = PsiTreeUtil
+    val ordinaryFunctionArrow                                  = Option(functionType).flatMap(leafAtText(_, "=>")).orNull
+    val contextFunctionArrow                                   = Option(contextFunctionType).flatMap(leafAtText(_, "?=>")).orNull
+    val singletonType                                          = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScSimpleTypeElement])
       .asScala
       .find(_.getText == "singletonValue.type")
       .orNull
-    val modifierLists            = PsiTreeUtil.findChildrenOfType(file, classOf[ScModifierList]).asScala.toVector
-    val annotatedModifiers       = modifierLists.find(_.getText == "private[scope] abstract").orNull
-    val memberModifiers          = modifierLists.find(_.getText.contains("protected[this]")).orNull
-    val accessModifiers          = PsiTreeUtil.findChildrenOfType(file, classOf[ScAccessModifier]).asScala.toVector
-    val annotationsContainers    = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotations]).asScala.toVector
-    val annotationContainer      = annotationsContainers.find(_.getText.startsWith("@ann")).orNull
-    val annotations              = Option(annotationContainer).toVector.flatMap(_.getAnnotations)
-    val annotationExpressions    =
+    val modifierLists                                          = PsiTreeUtil.findChildrenOfType(file, classOf[ScModifierList]).asScala.toVector
+    val annotatedModifiers                                     = modifierLists.find(_.getText == "private[scope] abstract").orNull
+    val memberModifiers                                        = modifierLists.find(_.getText.contains("protected[this]")).orNull
+    val accessModifiers                                        = PsiTreeUtil.findChildrenOfType(file, classOf[ScAccessModifier]).asScala.toVector
+    val annotationsContainers                                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScAnnotations]).asScala.toVector
+    val annotationContainer                                    = annotationsContainers.find(_.getText.startsWith("@ann")).orNull
+    val annotations                                            = Option(annotationContainer).toVector.flatMap(_.getAnnotations)
+    val annotationExpressions                                  =
       annotations.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScAnnotationExpr]).asScala)
-    val deprecatedAnnotation     = annotations.find(_.getText == "@deprecated(\"m\", \"1\")").orNull
-    val constructorInvocations   = annotationExpressions.flatMap(value =>
+    val deprecatedAnnotation                                   = annotations.find(_.getText == "@deprecated(\"m\", \"1\")").orNull
+    val constructorInvocations                                 = annotationExpressions.flatMap(value =>
       PsiTreeUtil.findChildrenOfType(value, classOf[ScConstructorInvocation]).asScala
     )
-    val argumentLists            = constructorInvocations.flatMap(_.args)
-    val classes                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector
-    val traits                   = PsiTreeUtil.findChildrenOfType(file, classOf[ScTrait]).asScala.toVector
-    val objects                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScObject]).asScala.toVector
-    val enums                    = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnum]).asScala.toVector
-    val enumCases                = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumCases]).asScala.toVector
-    val enumSingletonCases       = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumSingletonCase]).asScala.toVector
-    val enumClassCases           = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumClassCase]).asScala.toVector
-    val extendsBlocks            = PsiTreeUtil.findChildrenOfType(file, classOf[ScExtendsBlock]).asScala.toVector
-    val templateBodies           = PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateBody]).asScala.toVector
-    val primaryConstructors      = PsiTreeUtil.findChildrenOfType(file, classOf[ScPrimaryConstructor]).asScala.toVector
-    val parameterClauses         = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameters]).asScala.toVector
-    val parameterClause          = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterClause]).asScala.toVector
-    val typeParameterClauses     = PsiTreeUtil
+    val argumentLists                                          = constructorInvocations.flatMap(_.args)
+    val classes                                                = PsiTreeUtil.findChildrenOfType(file, classOf[ScClass]).asScala.toVector
+    val traits                                                 = PsiTreeUtil.findChildrenOfType(file, classOf[ScTrait]).asScala.toVector
+    val objects                                                = PsiTreeUtil.findChildrenOfType(file, classOf[ScObject]).asScala.toVector
+    val enums                                                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnum]).asScala.toVector
+    val enumCases                                              = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumCases]).asScala.toVector
+    val enumSingletonCases                                     = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumSingletonCase]).asScala.toVector
+    val enumClassCases                                         = PsiTreeUtil.findChildrenOfType(file, classOf[ScEnumClassCase]).asScala.toVector
+    val extendsBlocks                                          = PsiTreeUtil.findChildrenOfType(file, classOf[ScExtendsBlock]).asScala.toVector
+    val templateBodies                                         = PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateBody]).asScala.toVector
+    val primaryConstructors                                    = PsiTreeUtil.findChildrenOfType(file, classOf[ScPrimaryConstructor]).asScala.toVector
+    val parameterClauses                                       = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameters]).asScala.toVector
+    val parameterClause                                        = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterClause]).asScala.toVector
+    val typeParameterClauses                                   = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScTypeParamClause])
       .asScala
       .filter(_.getText == "[+A, -B, C]")
       .toVector
-    val typeParameters           = typeParameterClauses.flatMap(_.typeParameters)
-    val boundsParameters         = traits.find(_.name == "BoundsProbe").toVector.flatMap(_.typeParameters)
-    val parameters               = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).asScala.toVector
-    val classParameters          = PsiTreeUtil.findChildrenOfType(file, classOf[ScClassParameter]).asScala.toVector
-    val parameterTypes           = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterType]).asScala.toVector
-    val templateParents          = PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateParents]).asScala.toVector
-    val selfTypes                = PsiTreeUtil.findChildrenOfType(file, classOf[ScSelfTypeElement]).asScala.toVector
-    val derivesClauses           = PsiTreeUtil.findChildrenOfType(file, classOf[ScDerivesClause]).asScala.toVector
-    val functionDefinitions      = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).asScala.toVector
-    val functionDeclarations     = PsiTreeUtil
+    val typeParameters                                         = typeParameterClauses.flatMap(_.typeParameters)
+    val boundsParameters                                       = traits.find(_.name == "BoundsProbe").toVector.flatMap(_.typeParameters)
+    val parameters                                             = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameter]).asScala.toVector
+    val classParameters                                        = PsiTreeUtil.findChildrenOfType(file, classOf[ScClassParameter]).asScala.toVector
+    val parameterTypes                                         = PsiTreeUtil.findChildrenOfType(file, classOf[ScParameterType]).asScala.toVector
+    val templateParents                                        = PsiTreeUtil.findChildrenOfType(file, classOf[ScTemplateParents]).asScala.toVector
+    val selfTypes                                              = PsiTreeUtil.findChildrenOfType(file, classOf[ScSelfTypeElement]).asScala.toVector
+    val derivesClauses                                         = PsiTreeUtil.findChildrenOfType(file, classOf[ScDerivesClause]).asScala.toVector
+    val functionDefinitions                                    = PsiTreeUtil.findChildrenOfType(file, classOf[ScFunctionDefinition]).asScala.toVector
+    val functionDeclarations                                   = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScFunctionDeclaration])
       .asScala
       .filter(_.name == "declaredFunction")
       .toVector
-    val patternDefinitions       = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).asScala.toVector
-    val valueDeclarations        = PsiTreeUtil
+    val patternDefinitions                                     = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternDefinition]).asScala.toVector
+    def patternExpression(name: String): Option[ScExpression]  = patternDefinitions
+      .find(_.bindings.exists(_.name == name))
+      .flatMap(_.expr)
+    def functionExpression(name: String): Option[ScExpression] = functionDefinitions
+      .find(_.name == name)
+      .flatMap(_.body)
+    val atomicReference                                        = patternExpression("atomicReference").collect:
+      case value: ScReferenceExpression => value
+    val atomicUnqualifiedThis                                  = functionExpression("unqualifiedThis").collect:
+      case value: ScThisReference => value
+    val atomicQualifiedThis                                    = functionExpression("qualifiedThis").collect:
+      case value: ScThisReference => value
+    val atomicInteger                                          = patternExpression("atomicInteger").collect:
+      case value: ScIntegerLiteral => value
+    val atomicLong                                             = patternExpression("atomicLong").collect:
+      case value: ScLongLiteral => value
+    val atomicFloat                                            = patternExpression("atomicFloat").collect:
+      case value: ScFloatLiteral => value
+    val atomicDouble                                           = patternExpression("atomicDouble").collect:
+      case value: ScDoubleLiteral => value
+    val atomicBoolean                                          = patternExpression("atomicBoolean").collect:
+      case value: ScBooleanLiteral => value
+    val atomicChar                                             = patternExpression("atomicChar").collect:
+      case value: ScCharLiteral => value
+    val atomicString                                           = patternExpression("atomicString").collect:
+      case value: ScStringLiteral => value
+    val atomicNull                                             = patternExpression("atomicNull").collect:
+      case value: ScNullLiteral => value
+    val atomicLiterals                                         = Vector(
+      atomicInteger,
+      atomicLong,
+      atomicFloat,
+      atomicDouble,
+      atomicBoolean,
+      atomicChar,
+      atomicString,
+      atomicNull
+    ).flatten
+    val valueDeclarations                                      = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScValueDeclaration])
       .asScala
       .filter(_.declaredElements.exists(_.getName == "declaredValue"))
       .toVector
-    val variableDefinitions      = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).asScala.toVector
-    val variableDeclarations     = PsiTreeUtil
+    val variableDefinitions                                    = PsiTreeUtil.findChildrenOfType(file, classOf[ScVariableDefinition]).asScala.toVector
+    val variableDeclarations                                   = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScVariableDeclaration])
       .asScala
       .filter(_.declaredElements.exists(_.getName == "declaredVariable"))
       .toVector
-    val typeAliasDeclarations    = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector
-    val typeAliasDefinitions     = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDefinition]).asScala.toVector
-    val patternLists             = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternList]).asScala.toVector
-    val referencePatterns        = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferencePattern]).asScala.toVector
-    val identifierLists          = (valueDeclarations.map(_.getIdList) ++ variableDeclarations.map(_.getIdList)).toVector
-    val fieldIds                 = identifierLists.flatMap(_.fieldIds)
-    val directFunction           = functionDefinitions.find(_.name == "directFunction").orNull
-    val directPattern            = patternDefinitions.find(_.bindings.exists(_.name == "directValue")).orNull
-    val directVariable           = variableDefinitions.find(_.bindings.exists(_.name == "directVariable")).orNull
-    val directPatternList        = Option(directPattern).map(_.pList).orNull
-    val directReferencePattern   = referencePatterns.find(_.name == "directValue").orNull
-    val directTypeAlias          = typeAliasDeclarations.find(_.name == "DirectAbstract").orNull
-    val annotationPayloads       =
+    val typeAliasDeclarations                                  = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDeclaration]).asScala.toVector
+    val typeAliasDefinitions                                   = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypeAliasDefinition]).asScala.toVector
+    val patternLists                                           = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternList]).asScala.toVector
+    val referencePatterns                                      = PsiTreeUtil.findChildrenOfType(file, classOf[ScReferencePattern]).asScala.toVector
+    val identifierLists                                        = (valueDeclarations.map(_.getIdList) ++ variableDeclarations.map(_.getIdList)).toVector
+    val fieldIds                                               = identifierLists.flatMap(_.fieldIds)
+    val directFunction                                         = functionDefinitions.find(_.name == "directFunction").orNull
+    val directPattern                                          = patternDefinitions.find(_.bindings.exists(_.name == "directValue")).orNull
+    val directVariable                                         = variableDefinitions.find(_.bindings.exists(_.name == "directVariable")).orNull
+    val directPatternList                                      = Option(directPattern).map(_.pList).orNull
+    val directReferencePattern                                 = referencePatterns.find(_.name == "directValue").orNull
+    val directTypeAlias                                        = typeAliasDeclarations.find(_.name == "DirectAbstract").orNull
+    val annotationPayloads                                     =
       annotationExpressions.flatMap(value => PsiTreeUtil.findChildrenOfType(value, classOf[ScExpression]).asScala)
-    val manager                  = PsiManager.getInstance(project)
-    val persistenceFailure       = probePersistence(file).left.toOption
-    val candidates               =
+    val manager                                                = PsiManager.getInstance(project)
+    val persistenceFailure                                     = probePersistence(file).left.toOption
+    val candidates                                             =
       Vector(
         packaging,
         bracedPackaging,
@@ -602,6 +659,9 @@ private[metallurgy] object NativePsiElementBindings:
         infixRight,
         infixOperation,
         integerLiteral,
+        atomicReference.orNull,
+        atomicUnqualifiedThis.orNull,
+        atomicQualifiedThis.orNull,
         typeProjection,
         integerLiteralType,
         longLiteralType,
@@ -639,7 +699,7 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -650,8 +710,8 @@ private[metallurgy] object NativePsiElementBindings:
         variableDeclarations ++ typeAliasDeclarations ++
         typeAliasDefinitions ++ patternLists ++
         referencePatterns ++ identifierLists ++ fieldIds
-    val nativeNamedTypeArguments = probeNativeNamedTypeArguments(project)
-    val allCandidates            =
+    val nativeNamedTypeArguments                               = probeNativeNamedTypeArguments(project)
+    val allCandidates                                          =
       candidates ++ nativeNamedTypeArguments.toOption.flatten.toVector.flatMap(value => Vector(value.list, value.entry))
     if nativeNamedTypeArguments.isLeft then Left(nativeNamedTypeArguments.left.toOption.get)
     else if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
@@ -803,6 +863,30 @@ private[metallurgy] object NativePsiElementBindings:
     then Left("native annotated type accessors are inconsistent")
     else if integerLiteral == null || integerLiteral.getText != "1" then
       Left("native integer literal PSI is inconsistent")
+    else if atomicReference.isEmpty || atomicUnqualifiedThis.isEmpty || atomicQualifiedThis.isEmpty ||
+      atomicLiterals.size != 8
+    then Left("native atomic expression PSI probe is incomplete")
+    else if atomicReference.exists(reference =>
+        reference.qualifier.nonEmpty || reference.refName != "singletonValue" ||
+          reference.nameId.getText != "singletonValue" || reference.getFirstChild != reference.nameId
+      ) || atomicUnqualifiedThis.exists(_.reference.nonEmpty) ||
+      atomicQualifiedThis.exists(reference =>
+        reference.reference.forall(_.getText != "AtomicThisProbe") ||
+          reference.reference.exists(_.getParent != reference)
+      ) ||
+      atomicLiterals.exists(literal =>
+        literal.getTextRange.isEmpty || literal.contentRange.isEmpty || literal.contentRangeInParent.isEmpty ||
+          literal.contentText == null
+      ) ||
+      atomicInteger.exists(_.getValue != Integer.valueOf(32767)) ||
+      atomicLong.exists(_.getValue != java.lang.Long.valueOf(9223L)) ||
+      atomicFloat.exists(_.getValue != java.lang.Float.valueOf(1.25f)) ||
+      atomicDouble.exists(_.getValue != java.lang.Double.valueOf(2.5d)) ||
+      atomicBoolean.exists(_.getValue != java.lang.Boolean.TRUE) ||
+      atomicChar.exists(_.getValue != Character.valueOf('\n')) || atomicString.exists(_.getValue != "a\tb") ||
+      atomicNull.exists(_.getValue != null) || !atomicLiterals.init.forall(_.isSimpleLiteral) ||
+      atomicNull.exists(_.isSimpleLiteral)
+    then Left("native atomic expression accessors or direct children are inconsistent")
     else if typeProjection == null || integerLiteralType == null || longLiteralType == null || floatLiteralType == null ||
       doubleLiteralType == null || charLiteralType == null || stringLiteralType == null || booleanLiteralType == null ||
       integerLiteralValue == null || longLiteralValue == null || floatLiteralValue == null || doubleLiteralValue == null ||
@@ -1058,6 +1142,10 @@ private[metallurgy] object NativePsiElementBindings:
           directTypeAlias
         ).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
       then Left("native definition stub-bearing PSI element type cannot produce stubs")
+      else if (Vector(atomicReference, atomicUnqualifiedThis, atomicQualifiedThis).flatten ++ atomicLiterals).exists(
+          _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
+        )
+      then Left("native atomic expression element type unexpectedly produces stubs")
       else if (Vector(annotatedModifiers, annotationContainer) ++ accessModifiers ++ annotations).exists(value =>
           !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         ) || annotationExpressions.exists(value => value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
@@ -1093,8 +1181,6 @@ private[metallurgy] object NativePsiElementBindings:
                 ScalaElementType.CAPTURE_REF) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl"      ->
                 ScalaElementType.CAPTURE_FILTER) +
-              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"    ->
-                MetallurgyIntegerLiteral.ElementType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload" ->
                 MetallurgyExpressionPayload.ElementType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyTypeArguments"     ->
@@ -1121,6 +1207,12 @@ private[metallurgy] object NativePsiElementBindings:
               Map(ContextBoundAsTokenSurface -> ScalaTokenType.AsKeyword) ++
               Map(AssignmentTokenSurface -> ScalaTokenTypes.tASSIGN) ++
               Map(ValueKeywordTokenSurface -> ScalaTokenTypes.kVAL) ++
+              Map(IntegerLiteralTokenSurface -> ScalaTokenType.Integer) ++
+              Map(LongLiteralTokenSurface -> ScalaTokenType.Long) ++
+              Map(FloatLiteralTokenSurface -> ScalaTokenType.Float) ++
+              Map(DoubleLiteralTokenSurface -> ScalaTokenType.Double) ++
+              Map(CharLiteralTokenSurface -> ScalaTokenTypes.tCHAR) ++
+              Map(StringLiteralTokenSurface -> ScalaTokenTypes.tSTRING) ++
               Map(TypePathDotTokenSurface -> ScalaTokenTypes.tDOT) ++
               Map(TypeProjectionHashTokenSurface -> ScalaTokenTypes.tINNER_CLASS) ++
               Map(SingletonTypeKeywordTokenSurface -> ScalaTokenTypes.kTYPE) ++
@@ -1201,7 +1293,16 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.CaptureSet            -> ScalaElementType.CAPTURE_SET,
               PsiOutputRoleId.CaptureReference      -> ScalaElementType.CAPTURE_REF,
               PsiOutputRoleId.CaptureFilter         -> ScalaElementType.CAPTURE_FILTER,
-              PsiOutputRoleId.IntegerLiteral        -> integerLiteral.getNode.getElementType,
+              PsiOutputRoleId.TermReference         -> atomicReference.get.getNode.getElementType,
+              PsiOutputRoleId.ThisReference         -> atomicUnqualifiedThis.get.getNode.getElementType,
+              PsiOutputRoleId.IntegerExpression     -> atomicInteger.get.getNode.getElementType,
+              PsiOutputRoleId.LongExpression        -> atomicLong.get.getNode.getElementType,
+              PsiOutputRoleId.FloatExpression       -> atomicFloat.get.getNode.getElementType,
+              PsiOutputRoleId.DoubleExpression      -> atomicDouble.get.getNode.getElementType,
+              PsiOutputRoleId.BooleanExpression     -> atomicBoolean.get.getNode.getElementType,
+              PsiOutputRoleId.CharExpression        -> atomicChar.get.getNode.getElementType,
+              PsiOutputRoleId.StringExpression      -> atomicString.get.getNode.getElementType,
+              PsiOutputRoleId.NullExpression        -> atomicNull.get.getNode.getElementType,
               PsiOutputRoleId.ModifierList          -> annotatedModifiers.getNode.getElementType,
               PsiOutputRoleId.AccessModifier        -> accessModifiers.head.getNode.getElementType,
               PsiOutputRoleId.Annotations           -> annotationContainer.getNode.getElementType,
@@ -1298,7 +1399,16 @@ private[metallurgy] object NativePsiElementBindings:
                 "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureRefImpl",
               PsiOutputRoleId.CaptureFilter         ->
                 "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl",
-              PsiOutputRoleId.IntegerLiteral        -> surfaceId(integerLiteral.getClass),
+              PsiOutputRoleId.TermReference         -> surfaceId(atomicReference.get.getClass),
+              PsiOutputRoleId.ThisReference         -> surfaceId(atomicUnqualifiedThis.get.getClass),
+              PsiOutputRoleId.IntegerExpression     -> surfaceId(atomicInteger.get.getClass),
+              PsiOutputRoleId.LongExpression        -> surfaceId(atomicLong.get.getClass),
+              PsiOutputRoleId.FloatExpression       -> surfaceId(atomicFloat.get.getClass),
+              PsiOutputRoleId.DoubleExpression      -> surfaceId(atomicDouble.get.getClass),
+              PsiOutputRoleId.BooleanExpression     -> surfaceId(atomicBoolean.get.getClass),
+              PsiOutputRoleId.CharExpression        -> surfaceId(atomicChar.get.getClass),
+              PsiOutputRoleId.StringExpression      -> surfaceId(atomicString.get.getClass),
+              PsiOutputRoleId.NullExpression        -> surfaceId(atomicNull.get.getClass),
               PsiOutputRoleId.ModifierList          -> surfaceId(annotatedModifiers.getClass),
               PsiOutputRoleId.AccessModifier        -> surfaceId(accessModifiers.head.getClass),
               PsiOutputRoleId.Annotations           -> surfaceId(annotationContainer.getClass),
@@ -1471,6 +1581,54 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native value keyword token")
+              ),
+              ScalaPsiSurfaceRow(
+                IntegerLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native integer literal token")
+              ),
+              ScalaPsiSurfaceRow(
+                LongLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native long literal token")
+              ),
+              ScalaPsiSurfaceRow(
+                FloatLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native float literal token")
+              ),
+              ScalaPsiSurfaceRow(
+                DoubleLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native double literal token")
+              ),
+              ScalaPsiSurfaceRow(
+                CharLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native character literal token")
+              ),
+              ScalaPsiSurfaceRow(
+                StringLiteralTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native string literal token")
               ),
               ScalaPsiSurfaceRow(
                 TypePathDotTokenSurface,

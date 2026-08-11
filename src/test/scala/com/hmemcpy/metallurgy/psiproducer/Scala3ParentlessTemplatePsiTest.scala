@@ -16,7 +16,8 @@ import com.intellij.psi.stubs.{
 }
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.{ScAnnotations, ScEnd, ScModifierList}
-import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
+import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScEnumCase,
   ScEnumCases,
@@ -79,10 +80,20 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     assertEquals(Vector("var"), variables.map(_.keywordToken.getText))
     assertEquals(Vector("1"), values.flatMap(_.expr.map(_.getText)))
     assertEquals(Vector("f"), variables.flatMap(_.expr.map(_.getText)))
+    val integer   = values.flatMap(_.expr).head
+    val reference = variables.flatMap(_.expr).head
+    assertTrue(integer.getClass.getName, integer.isInstanceOf[ScIntegerLiteral])
+    assertTrue(reference.getClass.getName, reference.isInstanceOf[ScReferenceExpression])
+    assertSame(values.head, integer.getParent)
+    assertSame(variables.head, reference.getParent)
+    Vector(integer, reference).foreach(expression =>
+      assertEquals(expression.getText, expression.getTextRange.substring(source))
+      assertFalse(payloads.exists(_.getTextRange == expression.getTextRange))
+    )
     assertEquals(Vector("A"), aliases.map(_.name))
     assertTrue(aliases.forall(alias => alias.lowerTypeElement.isEmpty && alias.upperTypeElement.isEmpty))
     assertEquals(
-      Vector("List(1).head", "List(1)", "List", "1", "1", "f", "(x, y)", "x", "y"),
+      Vector("List(1).head", "List(1)", "List", "1", "(x, y)", "x", "y"),
       payloads.map(_.getText)
     )
     assertTrue(

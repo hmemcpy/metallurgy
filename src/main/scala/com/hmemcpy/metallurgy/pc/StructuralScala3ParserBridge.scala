@@ -50,33 +50,42 @@ private[pc] object StructuralScala3ParserBridge:
 
   private def discover(loader: Scala3ParserClassLoader, artifacts: Seq[File]): Either[String, ParserRuntime] =
     try
-      val contextBaseClass  = loader.loadClass("dotty.tools.dotc.core.Contexts$ContextBase")
-      val contextClass      = loader.loadClass("dotty.tools.dotc.core.Contexts$Context")
-      val freshContextClass = loader.loadClass("dotty.tools.dotc.core.Contexts$FreshContext")
-      val reporterClass     = loader.loadClass("dotty.tools.dotc.reporting.Reporter")
-      val storeReporter     = loader.loadClass("dotty.tools.dotc.reporting.StoreReporter")
-      val driverClass       = loader.loadClass("dotty.tools.dotc.Driver")
-      val compilerClass     = loader.loadClass("dotty.tools.dotc.Compiler")
-      val runClass          = loader.loadClass("dotty.tools.dotc.Run")
-      val sourceFileClass   = loader.loadClass("dotty.tools.dotc.util.SourceFile")
-      val sourceModule      = module(loader, "dotty.tools.dotc.util.SourceFile$")
-      val parserClass       = loader.loadClass("dotty.tools.dotc.parsing.Parsers$Parser")
-      val scannerClass      = loader.loadClass("dotty.tools.dotc.parsing.Scanners$Scanner")
-      val treeClass         = loader.loadClass("dotty.tools.dotc.ast.Trees$Tree")
-      val defTreeClass      = loader.loadClass("dotty.tools.dotc.ast.Trees$DefTree")
-      val lazyFieldsReader  =
+      val contextBaseClass   = loader.loadClass("dotty.tools.dotc.core.Contexts$ContextBase")
+      val contextClass       = loader.loadClass("dotty.tools.dotc.core.Contexts$Context")
+      val freshContextClass  = loader.loadClass("dotty.tools.dotc.core.Contexts$FreshContext")
+      val reporterClass      = loader.loadClass("dotty.tools.dotc.reporting.Reporter")
+      val storeReporter      = loader.loadClass("dotty.tools.dotc.reporting.StoreReporter")
+      val driverClass        = loader.loadClass("dotty.tools.dotc.Driver")
+      val compilerClass      = loader.loadClass("dotty.tools.dotc.Compiler")
+      val runClass           = loader.loadClass("dotty.tools.dotc.Run")
+      val sourceFileClass    = loader.loadClass("dotty.tools.dotc.util.SourceFile")
+      val sourceModule       = module(loader, "dotty.tools.dotc.util.SourceFile$")
+      val parserClass        = loader.loadClass("dotty.tools.dotc.parsing.Parsers$Parser")
+      val scannerClass       = loader.loadClass("dotty.tools.dotc.parsing.Scanners$Scanner")
+      val treeClass          = loader.loadClass("dotty.tools.dotc.ast.Trees$Tree")
+      val defTreeClass       = loader.loadClass("dotty.tools.dotc.ast.Trees$DefTree")
+      val lazyFieldsReader   =
         try
           val owner = loader.loadClass("dotty.tools.dotc.ast.Trees$WithLazyFields")
           Some(LazyFieldsReader(owner, owner.getMethod("forceFields", contextClass)))
         catch case NonFatal(_) => None
-      val positionedClass   = loader.loadClass("dotty.tools.dotc.ast.Positioned")
-      val productClass      = loader.loadClass("scala.Product")
-      val optionClass       = loader.loadClass("scala.Option")
-      val iterableClass     = loader.loadClass("scala.collection.Iterable")
-      val nameClass         = loader.loadClass("dotty.tools.dotc.core.Names$Name")
-      val uniqueNameKind    = loader.loadClass("dotty.tools.dotc.core.NameKinds$UniqueNameKind")
-      val spansModule       = module(loader, "dotty.tools.dotc.util.Spans$Span$")
-      val declaredProducts  =
+      val positionedClass    = loader.loadClass("dotty.tools.dotc.ast.Positioned")
+      val productClass       = loader.loadClass("scala.Product")
+      val optionClass        = loader.loadClass("scala.Option")
+      val iterableClass      = loader.loadClass("scala.collection.Iterable")
+      val nameClass          = loader.loadClass("dotty.tools.dotc.core.Names$Name")
+      val uniqueNameKind     = loader.loadClass("dotty.tools.dotc.core.NameKinds$UniqueNameKind")
+      val spansModule        = module(loader, "dotty.tools.dotc.util.Spans$Span$")
+      val constantClass      = loader.loadClass("dotty.tools.dotc.core.Constants$Constant")
+      val constantApply      = constantClass.getMethod("apply", classOf[Object])
+      val constantTag        = constantClass.getMethod("tag")
+      val nullConstant       = constantApply.invoke(null, Array[AnyRef](null)*)
+      val nullConstantReader = NullConstantReader(
+        constantClass,
+        constantTag,
+        constantTag.invoke(nullConstant).asInstanceOf[java.lang.Integer].intValue()
+      )
+      val declaredProducts   =
         readDeclaredProducts(artifacts).fold(message => throw new IllegalStateException(message), identity)
 
       val sourceFactory    = discoverSourceFactory(sourceModule, sourceFileClass)
@@ -152,6 +161,7 @@ private[pc] object StructuralScala3ParserBridge:
         nameClass,
         uniqueNameKind,
         spansModule,
+        nullConstantReader,
         declaredProducts
       )
       Right(runtime)
@@ -439,9 +449,14 @@ private[pc] object StructuralScala3ParserBridge:
       nameClass: Class[?],
       uniqueNameKindClass: Class[?],
       spansModule: AnyRef,
+      nullConstantReader: NullConstantReader,
       declaredProducts: DeclaredProducts
   ):
     def close(): Unit = loader.close()
+
+  private final case class NullConstantReader(owner: Class[?], tag: Method, nullTag: Int):
+    def isNullConstant(value: AnyRef): Boolean =
+      owner.isInstance(value) && tag.invoke(value).asInstanceOf[java.lang.Integer].intValue() == nullTag
 
   private final case class RunContextFactory(
       compilerConstructor: Constructor[?],
@@ -842,7 +857,8 @@ private final class StructuralScala3ParserBridge private (
       final case class EvaluateFieldValue(
           value: AnyRef,
           ownerNodeId: Long,
-          path: Vector[ParserFieldPathSegment]
+          path: Vector[ParserFieldPathSegment],
+          nullIsConstant: Boolean = false
       ) extends EvaluationFrame
       case object FinishNodeValue                                                        extends EvaluationFrame
       case object FinishPositionedValue                                                  extends EvaluationFrame
@@ -990,7 +1006,9 @@ private final class StructuralScala3ParserBridge private (
               val value     = product.productElement(index)
               val fieldPath = path :+ ParserFieldPathSegment.NamedField(product.productElementName(index))
               stack.push(FinishProductField(product, arity, ownerNodeId, path, index, fields, fieldName))
-              stack.push(EvaluateFieldValue(value, ownerNodeId, fieldPath))
+              stack.push(
+                EvaluateFieldValue(value, ownerNodeId, fieldPath, active.nullConstantReader.isNullConstant(product))
+              )
               result = null
           case FinishProductField(product, arity, ownerNodeId, path, index, fields, fieldName) =>
             val field = ParserSyntaxField(
@@ -1000,8 +1018,10 @@ private final class StructuralScala3ParserBridge private (
             )
             stack.push(EvaluateProductField(product, arity, ownerNodeId, path, index + 1, fields :+ field))
             result = null
-          case EvaluateFieldValue(value, ownerNodeId, path)                                    =>
-            if value == null then result = FieldValueResult(ParserFieldValue.Optional(None))
+          case EvaluateFieldValue(value, ownerNodeId, path, nullIsConstant)                    =>
+            if value == null && nullIsConstant then
+              result = FieldValueResult(ParserFieldValue.Scalar(ParserScalar.NullValue))
+            else if value == null then result = FieldValueResult(ParserFieldValue.Optional(None))
             else if active.treeClass.isInstance(value) then
               stack.push(FinishNodeValue)
               stack.push(EnterTree(value, Some(ParserNodeOccurrence(ownerNodeId, path))))

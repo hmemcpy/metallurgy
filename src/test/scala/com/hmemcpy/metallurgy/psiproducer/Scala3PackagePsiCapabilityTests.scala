@@ -47,7 +47,7 @@ private[psiproducer] trait Scala3PackagePsiCapabilityTests extends Scala3Package
       failure.copy(
         sourceDigest = ParserSyntaxSnapshot.digest("import c.d\n"),
         detail = "second unsupported forest",
-        requirement = Scala3SyntaxCapabilityRequirement.OutputRole(Some(PsiOutputRoleId.IntegerLiteral.value))
+        requirement = Scala3SyntaxCapabilityRequirement.OutputRole(Some(PsiOutputRoleId.IntegerExpression.value))
       )
     )
     assertEquals(
@@ -59,7 +59,7 @@ private[psiproducer] trait Scala3PackagePsiCapabilityTests extends Scala3Package
     assertEquals(super.getModule.getName, published.scope.moduleName)
     assertEquals(Scala3SyntaxCapabilityOperation.ProduceWholeFilePsi, published.scope.operation)
     assertEquals(
-      Scala3SyntaxCapabilityRequirement.OutputRole(Some(PsiOutputRoleId.IntegerLiteral.value)),
+      Scala3SyntaxCapabilityRequirement.OutputRole(Some(PsiOutputRoleId.IntegerExpression.value)),
       published.requirement
     )
     assertEquals(Scala3SyntaxCapabilityState.Unavailable, published.state)

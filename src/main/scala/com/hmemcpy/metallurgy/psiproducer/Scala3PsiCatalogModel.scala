@@ -1,6 +1,5 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.compilerbackend.*
 import com.hmemcpy.metallurgy.pc.*
 
 private[metallurgy] enum FieldDispositionKind:
@@ -55,8 +54,18 @@ private[metallurgy] object GrammarRoleId:
   val CaptureReference          = GrammarRoleId("scala.type.capture-reference")
   val CaptureFilter             = GrammarRoleId("scala.type.capture-filter")
   val CaptureSynthetic          = GrammarRoleId("scala.type.capture.synthetic")
-  val IntegerLiteral            = GrammarRoleId("scala.literal.integer")
   val ExpressionPayload         = GrammarRoleId("scala.expression.payload")
+  val TermReference             = GrammarRoleId("scala.expression.reference.term")
+  val ThisReference             = GrammarRoleId("scala.expression.reference.this")
+  val QualifiedThisReference    = GrammarRoleId("scala.expression.reference.this-qualified")
+  val ExpressionIntegerLiteral  = GrammarRoleId("scala.expression.literal.integer")
+  val ExpressionLongLiteral     = GrammarRoleId("scala.expression.literal.long")
+  val ExpressionFloatLiteral    = GrammarRoleId("scala.expression.literal.float")
+  val ExpressionDoubleLiteral   = GrammarRoleId("scala.expression.literal.double")
+  val ExpressionBooleanLiteral  = GrammarRoleId("scala.expression.literal.boolean")
+  val ExpressionCharLiteral     = GrammarRoleId("scala.expression.literal.char")
+  val ExpressionStringLiteral   = GrammarRoleId("scala.expression.literal.string")
+  val ExpressionNullLiteral     = GrammarRoleId("scala.expression.literal.null")
   val Modifiers                 = GrammarRoleId("scala.modifiers")
   val AccessModifier            = GrammarRoleId("scala.modifier.access")
   val KeywordModifier           = GrammarRoleId("scala.modifier.keyword")
@@ -269,8 +278,17 @@ private[metallurgy] object PsiOutputRoleId:
   val CaptureSet            = PsiOutputRoleId("scala.type.capture-set")
   val CaptureReference      = PsiOutputRoleId("scala.type.capture-reference")
   val CaptureFilter         = PsiOutputRoleId("scala.type.capture-filter")
-  val IntegerLiteral        = PsiOutputRoleId("scala.literal.integer")
   val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
+  val TermReference         = PsiOutputRoleId("scala.expression.reference.term")
+  val ThisReference         = PsiOutputRoleId("scala.expression.reference.this")
+  val IntegerExpression     = PsiOutputRoleId("scala.expression.literal.integer")
+  val LongExpression        = PsiOutputRoleId("scala.expression.literal.long")
+  val FloatExpression       = PsiOutputRoleId("scala.expression.literal.float")
+  val DoubleExpression      = PsiOutputRoleId("scala.expression.literal.double")
+  val BooleanExpression     = PsiOutputRoleId("scala.expression.literal.boolean")
+  val CharExpression        = PsiOutputRoleId("scala.expression.literal.char")
+  val StringExpression      = PsiOutputRoleId("scala.expression.literal.string")
+  val NullExpression        = PsiOutputRoleId("scala.expression.literal.null")
   val ModifierList          = PsiOutputRoleId("scala.modifiers")
   val AccessModifier        = PsiOutputRoleId("scala.modifier.access")
   val Annotations           = PsiOutputRoleId("scala.annotations")
@@ -366,8 +384,18 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.CaptureReference,
       GrammarRoleId.CaptureFilter,
       GrammarRoleId.CaptureSynthetic,
-      GrammarRoleId.IntegerLiteral,
       GrammarRoleId.ExpressionPayload,
+      GrammarRoleId.TermReference,
+      GrammarRoleId.ThisReference,
+      GrammarRoleId.QualifiedThisReference,
+      GrammarRoleId.ExpressionIntegerLiteral,
+      GrammarRoleId.ExpressionLongLiteral,
+      GrammarRoleId.ExpressionFloatLiteral,
+      GrammarRoleId.ExpressionDoubleLiteral,
+      GrammarRoleId.ExpressionBooleanLiteral,
+      GrammarRoleId.ExpressionCharLiteral,
+      GrammarRoleId.ExpressionStringLiteral,
+      GrammarRoleId.ExpressionNullLiteral,
       GrammarRoleId.Modifiers,
       GrammarRoleId.AccessModifier,
       GrammarRoleId.KeywordModifier,
@@ -446,8 +474,17 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.CaptureSet,
       PsiOutputRoleId.CaptureReference,
       PsiOutputRoleId.CaptureFilter,
-      PsiOutputRoleId.IntegerLiteral,
       PsiOutputRoleId.ExpressionPayload,
+      PsiOutputRoleId.TermReference,
+      PsiOutputRoleId.ThisReference,
+      PsiOutputRoleId.IntegerExpression,
+      PsiOutputRoleId.LongExpression,
+      PsiOutputRoleId.FloatExpression,
+      PsiOutputRoleId.DoubleExpression,
+      PsiOutputRoleId.BooleanExpression,
+      PsiOutputRoleId.CharExpression,
+      PsiOutputRoleId.StringExpression,
+      PsiOutputRoleId.NullExpression,
       PsiOutputRoleId.ModifierList,
       PsiOutputRoleId.AccessModifier,
       PsiOutputRoleId.Annotations,
@@ -754,10 +791,3 @@ private[metallurgy] final case class Scala3PsiProduction(
     if outputRealizations.nonEmpty then outputRealizations
     else defaultOutputTemplate.toVector.map(OutputRealization("self", Vector.empty, _))
   def effectiveOutputTemplate: LocalOutputCompositeTemplate               = effectiveOutputRealizations.head.template
-private[metallurgy] enum CatalogCapabilityFailure:
-  case MissingProduction(id: String)
-  case InvalidTargetRequirement(id: String, requirement: TargetRequirement)
-  case IntegerLiteralTargetsUnavailable(
-      native: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]],
-      compatible: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]]
-  )

@@ -451,6 +451,17 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     typeDefinitionTermParameterProduction
 
   private val payloadExpressionProductionIds = Set(
+    "atomic-term-ident",
+    "atomic-literal-integer",
+    "atomic-literal-long",
+    "atomic-literal-float",
+    "atomic-literal-double",
+    "atomic-literal-boolean",
+    "atomic-literal-char",
+    "atomic-literal-string",
+    "atomic-literal-null",
+    "atomic-this-unqualified",
+    "atomic-this-qualified",
     "definition-payload-number",
     "definition-payload-ident",
     "definition-payload-apply",
@@ -472,7 +483,8 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     "payload-descendant-type-apply-named"
   )
 
-  private val payloadRootIds = payloadExpressionProductionIds.filter(_.startsWith("definition-payload-"))
+  private val payloadRootIds =
+    payloadExpressionProductionIds.filter(id => id.startsWith("definition-payload-") || id.startsWith("atomic-"))
 
   private def zeroOutput(
       id: String,

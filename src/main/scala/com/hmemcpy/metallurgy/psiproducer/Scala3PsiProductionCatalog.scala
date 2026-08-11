@@ -1,6 +1,5 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.compilerbackend.*
 import com.hmemcpy.metallurgy.pc.CanonicalByteEncoder
 
 private[metallurgy] final case class Scala3PsiProductionCatalog(
@@ -324,10 +323,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiPackageImportExportProductions.PackageImportExportGivenSegment ++
       Scala3PsiCompoundTypeProductions.CompoundInfixSegment ++
       Scala3PsiPackageImportExportProductions.PackageImportExportStablePathSegment ++
-      Scala3PsiTypeAtomProductions.IntegerLiteralSegment ++
       Scala3PsiModifierAnnotationProductions.ModifierAnnotationSegment ++
       Scala3PsiTemplateProductions.TemplateSegment ++
       Scala3PsiDefinitionProductions.DefinitionSegment ++
+      Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiDefinitionPayloadProductions.DefinitionPayloadSegment ++
       Scala3PsiTupleFunctionTypeProductions.TupleFunctionPrefixSegment ++
       Scala3PsiCaptureTypeProductions.CaptureFunctionSegment ++
@@ -339,69 +338,3 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiTypeAtomProductions.TypeAtomSegment,
     StableRoleInventory.Reviewed
   )
-
-  def withIntegerLiteralTarget(
-      native: Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]],
-      compatible: () => Either[IntegerLiteralProbeFailure, Vector[NativeIntegerLiteralObservation]]
-  ): Either[CatalogCapabilityFailure, Scala3PsiProductionCatalog] =
-    val id = Scala3PsiProductionSupport.IntegerLiteralProductionId
-    Reviewed.productions.find(_.id == id) match
-      case None                                                                                  => Left(CatalogCapabilityFailure.MissingProduction(id))
-      case Some(production) if production.targetRequirement != TargetRequirement.NativeCandidate =>
-        Left(CatalogCapabilityFailure.InvalidTargetRequirement(id, production.targetRequirement))
-      case Some(production)                                                                      =>
-        def expectedBehavior(observation: NativeIntegerLiteralObservation): Boolean =
-          observation.publicSurfaceId ==
-            "org/jetbrains/plugins/scala/lang/psi/api/base/literals/ScIntegerLiteral" &&
-            observation.text == observation.contentText &&
-            observation.valueClass == "java.lang.Integer" &&
-            observation.contentStart == 0 && observation.contentEnd == observation.text.length
-        val expectedValues                                                          = Vector("0" -> "0", "42" -> "42", "0x2a" -> "42", "1_000" -> "1000")
-        def validBehavior(values: Vector[NativeIntegerLiteralObservation]): Boolean =
-          values.map(value => value.text -> value.valueText) == expectedValues && values.forall(expectedBehavior)
-        def commonBehavior(observation: NativeIntegerLiteralObservation): Boolean   =
-          observation.isSimpleLiteral && observation.literalTypeIdentity &&
-            observation.literalType == observation.valueText && observation.widenedType == "Int" &&
-            observation.visitorDispatched && observation.visitorElementIdentity && observation.navigationIdentity &&
-            observation.validPsi && observation.validContainingFile && observation.validParent &&
-            observation.nodePsiIdentity && observation.projectIdentity && observation.exactTextRange &&
-            observation.directChildCount == 1 && observation.directChildText == observation.text &&
-            observation.integerTokenIdentity && !observation.stubBasedPsi && !observation.stubElementType
-        val nativeValid                                                             = native.exists(values =>
-          validBehavior(values) && values.forall(observation =>
-            observation.implementationSurfaceId == production.targetSurfaceId &&
-              observation.elementType == "IntegerLiteral" && observation.isScalaIntegerLiteralElementType &&
-              !observation.compatibleElementTypeIdentity && commonBehavior(observation)
-          )
-        )
-        if nativeValid then promote(production, TargetRequirement.Native, production.targetSurfaceId)
-        else
-          val compatibleResult = compatible()
-          val compatibleValid  = compatibleResult.exists(values =>
-            validBehavior(values) && values.forall(observation =>
-              observation.implementationSurfaceId ==
-                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral" &&
-                observation.elementType == "METALLURGY_INTEGER_LITERAL" && !observation.isScalaIntegerLiteralElementType &&
-                observation.compatibleElementTypeIdentity && commonBehavior(observation)
-            )
-          )
-          if compatibleValid then
-            promote(
-              production,
-              TargetRequirement.Compatible,
-              "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
-            )
-          else Left(CatalogCapabilityFailure.IntegerLiteralTargetsUnavailable(native, compatibleResult))
-
-  private def promote(
-      production: Scala3PsiProduction,
-      requirement: TargetRequirement,
-      targetSurfaceId: String
-  ): Either[CatalogCapabilityFailure, Scala3PsiProductionCatalog] =
-    Right(
-      Reviewed.copy(productions = Reviewed.productions.map:
-        case value if value.id == production.id =>
-          value.copy(targetSurfaceId = targetSurfaceId, targetRequirement = requirement)
-        case value                              => value
-      )
-    )

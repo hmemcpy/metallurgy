@@ -366,6 +366,7 @@ private[metallurgy] object CanonicalByteEncoder:
     case ParserScalar.Character(v)    => e.tag(6); e.char(v)
     case ParserScalar.UnitValue       => e.tag(7)
     case ParserScalar.FloatDecimal(v) => e.tag(8); e.int(java.lang.Float.floatToRawIntBits(v))
+    case ParserScalar.NullValue       => e.tag(9)
 
   private def writePosition(value: ParserNodePosition, e: CanonicalByteEncoder): Unit = value match
     case ParserNodePosition.Absent                           => e.tag(0)
@@ -428,6 +429,7 @@ private[metallurgy] enum ParserScalar:
   case Logical(value: Boolean)
   case Character(value: Char)
   case UnitValue
+  case NullValue
 
 private[metallurgy] enum ParserNodePosition:
   case Absent

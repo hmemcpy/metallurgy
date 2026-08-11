@@ -631,13 +631,7 @@ private[psiproducer] trait Scala3PsiCatalogPreparer:
 
 private[psiproducer] object NativeScala3PsiCatalogPreparer extends Scala3PsiCatalogPreparer:
   override def prepare(project: Project): Either[String, Scala3PsiProductionCatalog] =
-    Scala3PsiProductionCatalog
-      .withIntegerLiteralTarget(
-        ScalaPluginSemanticBridge.probeNativeIntegerLiterals(project),
-        () => ScalaPluginSemanticBridge.probeCompatibleIntegerLiterals(project)
-      )
-      .left
-      .map(_.toString)
+    Right(Scala3PsiProductionCatalog.Reviewed)
 
 private[psiproducer] trait Scala3ParserPreparer:
   def prepare(module: Module): CompletableFuture[Either[String, Scala3ParserBridge]]

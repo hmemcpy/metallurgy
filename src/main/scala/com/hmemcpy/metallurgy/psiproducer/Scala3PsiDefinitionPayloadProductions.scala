@@ -1,5 +1,7 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.pc.ParserScannerTokenKind
+
 import Scala3PsiProductionSupport.*
 
 private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
@@ -40,6 +42,44 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       )
     )
 
+  private def nonAtomicDefinitionChildOccurrences(field: String) =
+    Vector("DefDef", "ValDef").map(owner =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentWithAncestor(
+          InventoryKind.Node,
+          owner,
+          Vector(CatalogPathSegment.NamedField(field)),
+          InventoryAncestor(
+            InventoryKind.Node,
+            "RefinedTypeTree",
+            Vector(CatalogPathSegment.NamedField("refinements"), CatalogPathSegment.RepeatedElement)
+          )
+        ),
+        SourceClassification.SourceReachable
+      )
+    ) ++
+      localDefinitionChildOccurrences(field, SourceClassification.SourceReachable)
+
+  private def negativeNumberOccurrences(field: String) =
+    Vector("DefDef", "ValDef").flatMap(owner =>
+      Vector("PackageDef" -> "stats", "Template" -> "preBody").map((ancestor, ancestorField) =>
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithAncestor(
+            InventoryKind.Node,
+            owner,
+            Vector(CatalogPathSegment.NamedField(field)),
+            InventoryAncestor(
+              InventoryKind.Node,
+              ancestor,
+              Vector(CatalogPathSegment.NamedField(ancestorField), CatalogPathSegment.RepeatedElement)
+            )
+          ),
+          SourceClassification.SourceReachable,
+          ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Identifier))
+        )
+      )
+    )
+
   private val payloadExpressionProductionIds = Set(
     "definition-payload-number",
     "definition-payload-ident",
@@ -69,7 +109,10 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       id: String,
       prefix: String,
       fields: Vector[CompilerFieldPattern],
-      children: Vector[ChildDeclaration]
+      children: Vector[ChildDeclaration],
+      occurrences: Vector[CompilerProductionContextPattern] =
+        definitionChildOccurrences("preRhs").map(_.copy(sourceClassification = SourceClassification.SourceReachable)) ++
+          localDefinitionChildOccurrences("preRhs", SourceClassification.SourceReachable)
   ) = Scala3PsiProduction(
     id,
     GrammarRoleId.ExpressionPayload,
@@ -77,8 +120,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       InventoryKind.Node,
       prefix,
       fields,
-      definitionChildOccurrences("preRhs").map(_.copy(sourceClassification = SourceClassification.SourceReachable)) ++
-        localDefinitionChildOccurrences("preRhs", SourceClassification.SourceReachable)
+      occurrences
     ),
     fields.map(field =>
       FieldDisposition(
@@ -493,13 +535,15 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
             .Product("Whole", Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer"))))
         )
       ),
-      Vector.empty
+      Vector.empty,
+      nonAtomicDefinitionChildOccurrences("preRhs") ++ negativeNumberOccurrences("preRhs")
     ),
     payloadRoot(
       "definition-payload-ident",
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
-      Vector.empty
+      Vector.empty,
+      nonAtomicDefinitionChildOccurrences("preRhs")
     ),
     payloadRoot(
       "definition-payload-apply",

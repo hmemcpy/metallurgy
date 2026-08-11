@@ -111,12 +111,6 @@ final class ProjectLifecycleTest extends IdeProbeFixture {
       val unavailable = status.filter { case (key, value) => key.startsWith("module.") && value.startsWith("Unavailable(") }
       assertTrue(s"Metallurgy parser preparation failed: $unavailable", unavailable.isEmpty)
       assertTrue(s"Metallurgy parser never became ready: $status", status.values.exists(_.startsWith("Ready(")))
-      assertEquals("false", status("compatibleIntegerLiteral.loadedBeforeProbe"))
-      assertEquals("true", status("compatibleIntegerLiteral.loadedAfterProbe"))
-      assertTrue(
-        s"Compatible integer literal probe failed: ${status("compatibleIntegerLiteral.probe")}",
-        status("compatibleIntegerLiteral.probe").startsWith("Right(Vector(")
-      )
       record(timeline, "metallurgy-parser-ready", formatMap(status).trim)
       assertEquals("true", status("syntaxWidget.present"))
       assertEquals("true", status("syntaxWidget.componentVisible"))

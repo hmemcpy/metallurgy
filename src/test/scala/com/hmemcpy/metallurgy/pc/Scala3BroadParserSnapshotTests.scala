@@ -288,18 +288,14 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
       )
       assertTrue(report, report.contains("### `Node.Number`"))
       assertTrue(report, report.contains("- Validation: **incomplete**"))
-      assertTrue(
-        report,
-        report.contains("catalog-alternatives=integer-literal-number,payload-descendant-number")
-      )
-      assertTrue(report, report.contains("missing-boundary=neutral-grammar-role-selection"))
+      assertTrue(report, report.contains("catalog-alternative=payload-descendant-number"))
       assertTrue(report, report.contains("### `Node.PackageDef`"))
       assertTrue(report, report.contains("compiler-context=root:SourceReachable"))
       assertTrue(report, report.contains("missing-boundary=bridge-normalization-or-neutral-grammar-role"))
       assertTrue(
         report,
         report.contains(
-          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:integer-literal-number,type-atom-literal-value-integer**"
+          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:atomic-literal-integer,type-atom-literal-value-integer**"
         )
       )
       assertNoUnsupportedValues(first)

@@ -1,7 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
 private[psiproducer] object Scala3PsiProductionSupport:
-  val IntegerLiteralProductionId                       = "integer-literal-number"
   def emptyModifiers(flags: Long): CatalogValuePattern = CatalogValuePattern.Product(
     "Modifiers",
     Vector(
@@ -63,6 +62,12 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val StringLiteralSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStringLiteralImpl"
   val BooleanLiteralSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScBooleanLiteralImpl"
+  val NullLiteralSurface           =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScNullLiteralImpl"
+  val ReferenceExpressionSurface   =
+    "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScReferenceExpressionImpl"
+  val ThisReferenceSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScThisReferenceImpl"
   val ParameterizedTypeSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
   val TypeArgumentsSurface         =
@@ -470,13 +475,13 @@ private[psiproducer] object Scala3PsiProductionSupport:
     val first = CompoundTypeProductionIds.toVector.sorted.head
     ChildDeclaration(role, field, cardinality, first, CompoundTypeProductionIds - first)
 
-  val ImportStatementAccessors       = Vector(
+  val ImportStatementAccessors          = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportOrExportStmt#importExprs()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  val ExportStatementAccessors       = ImportStatementAccessors ++ Vector(
+  val ExportStatementAccessors          = ImportStatementAccessors ++ Vector(
     AccessorObligation(
       s"$ExportStatementApi#isTopLevel()Z",
       required = true,
@@ -488,7 +493,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val PackageAccessors               = Vector(
+  val PackageAccessors                  = Vector(
     AccessorObligation(s"$PackageSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$PackageSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(
@@ -511,7 +516,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$PackageSurface#isEnclosedByColon()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$PackageSurface#end()Lscala/Option;", required = true)
   )
-  val EndAccessors                   = Vector(
+  val EndAccessors                      = Vector(
     AccessorObligation(s"$EndSurface#begin()Lscala/Option;", required = true),
     AccessorObligation(s"$EndSurface#keyword()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(s"$EndSurface#tag()Lcom/intellij/psi/PsiElement;", required = true),
@@ -527,18 +532,18 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$EndSurface#isSoft()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$EndSurface#getCanonicalText()Ljava/lang/String;", required = true, SurfaceFactKind.Method)
   )
-  val ImportExpressionAccessors      = Vector(
+  val ImportExpressionAccessors         = Vector(
     AccessorObligation(s"$ImportExpressionSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#selectorSet()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportExpressionSurface#qualifier()Lscala/Option;", required = true)
   )
-  val ImportSelectorsAccessors       = Vector(
+  val ImportSelectorsAccessors          = Vector(
     AccessorObligation(
       s"$ImportSelectorsSurface#selectors()Lscala/collection/immutable/Seq;",
       required = true
     )
   )
-  val ImportSelectorAccessors        = Vector(
+  val ImportSelectorAccessors           = Vector(
     AccessorObligation(
       s"$ImportSelectorSurface#parentImportExpression()Lorg/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScImportExpr;",
       required = true
@@ -546,14 +551,14 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$ImportSelectorSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ImportSelectorSurface#givenTypeElement()Lscala/Option;", required = true)
   )
-  val StableReferenceAccessors       = Vector(
+  val StableReferenceAccessors          = Vector(
     AccessorObligation(s"$StableReferenceSurface#qualifier()Lscala/Option;", required = true),
     AccessorObligation(
       s"$StableReferenceSurface#nameId()Lcom/intellij/psi/PsiElement;",
       required = true
     )
   )
-  val SimpleTypeAccessors            = Vector(
+  val SimpleTypeAccessors               = Vector(
     AccessorObligation(s"$SimpleTypeSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(
       s"$SimpleTypeSurface#pathElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPathElement;",
@@ -561,7 +566,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
     ),
     AccessorObligation(s"$SimpleTypeSurface#isSingleton()Z", required = true, SurfaceFactKind.Method)
   )
-  val TypeProjectionAccessors        = Vector(
+  val TypeProjectionAccessors           = Vector(
     AccessorObligation(
       s"$TypeProjectionSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -569,31 +574,31 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$TypeProjectionSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(s"$TypeProjectionSurface#qualifier()Lscala/Option;", required = true)
   )
-  val LiteralTypeAccessors           = Vector(
+  val LiteralTypeAccessors              = Vector(
     AccessorObligation(
       s"$LiteralTypeSurface#getLiteral()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral;",
       required = true
     ),
     AccessorObligation(s"$LiteralTypeSurface#isSingleton()Z", required = true, SurfaceFactKind.Method)
   )
-  val ParenthesizedTypeAccessors     = Vector(
+  val ParenthesizedTypeAccessors        = Vector(
     AccessorObligation(s"$ParenthesizedTypeSurface#innerElement()Lscala/Option;", required = true),
     AccessorObligation(s"$ParenthesizedTypeSurface#sameTreeParent()Lscala/Option;", required = true)
   )
-  val TupleTypeAccessors             = Vector(
+  val TupleTypeAccessors                = Vector(
     AccessorObligation(
       s"$TupleTypeSurface#typeList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypes;",
       required = true
     ),
     AccessorObligation(s"$TupleTypeSurface#components()Lscala/collection/immutable/Seq;", required = true)
   )
-  val TupleTypesAccessors            = Vector(
+  val TupleTypesAccessors               = Vector(
     AccessorObligation(s"$TupleTypesSurface#types()Lscala/collection/immutable/Seq;", required = true)
   )
-  val NamedTupleTypeAccessors        = Vector(
+  val NamedTupleTypeAccessors           = Vector(
     AccessorObligation(s"$NamedTupleTypeSurface#components()Lscala/collection/immutable/Seq;", required = true)
   )
-  val NamedTupleComponentAccessors   = Vector(
+  val NamedTupleComponentAccessors      = Vector(
     AccessorObligation(
       s"$NamedTupleComponentSurface#namedTuple()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScNamedTupleTypeElement;",
       required = true
@@ -601,7 +606,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$NamedTupleComponentSurface#nameElement()Lscala/Option;", required = true),
     AccessorObligation(s"$NamedTupleComponentSurface#typeElement()Lscala/Option;", required = true)
   )
-  val FunctionTypeAccessors          = Vector(
+  val FunctionTypeAccessors             = Vector(
     AccessorObligation(
       s"$FunctionTypeSurface#paramTypeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -610,19 +615,19 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$FunctionTypeSurface#isContext()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$FunctionTypeSurface#isPure()Z", required = true, SurfaceFactKind.Method)
   )
-  val DependentFunctionTypeAccessors = Vector(
+  val DependentFunctionTypeAccessors    = Vector(
     AccessorObligation(
       s"$DependentFunctionTypeSurface#parameterClause()Lorg/jetbrains/plugins/scala/lang/psi/api/statements/params/ScParameterClause;",
       required = true
     ),
     AccessorObligation(s"$DependentFunctionTypeSurface#returnTypeElement()Lscala/Option;", required = true)
   )
-  val PolyFunctionTypeAccessors      = Vector(
+  val PolyFunctionTypeAccessors         = Vector(
     AccessorObligation(s"$PolyFunctionTypeSurface#resultTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$PolyFunctionTypeSurface#typeParameters()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$PolyFunctionTypeSurface#typeParametersClause()Lscala/Option;", required = true)
   )
-  val LiteralValueAccessors          = Vector(
+  val LiteralValueAccessors             = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#getValue()Ljava/lang/Object;",
       required = true,
@@ -639,7 +644,59 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val ParameterizedTypeAccessors     = Vector(
+  private val AtomicExpressionAccessors = Vector(
+    AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)
+  )
+  val AtomicLiteralAccessors            = AtomicExpressionAccessors ++ Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#getValue()Ljava/lang/Object;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentRange()Lcom/intellij/openapi/util/TextRange;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentRangeInParent()Lcom/intellij/openapi/util/TextRange;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#contentText()Ljava/lang/String;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#isSimpleLiteral()Z",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral#literalType()Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val TermReferenceAccessors            = AtomicExpressionAccessors ++ Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScReference#refName()Ljava/lang/String;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/ScReference#nameId()Lcom/intellij/psi/PsiElement;",
+      required = true
+    ),
+    AccessorObligation(s"$ReferenceExpressionSurface#qualifier()Lscala/Option;", required = true)
+  )
+  val ThisReferenceAccessors            = AtomicExpressionAccessors ++ Vector(
+    AccessorObligation(s"$ThisReferenceSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(s"$ThisReferenceSurface#refTemplate()Lscala/Option;", required = true)
+  )
+  val ParameterizedTypeAccessors        = Vector(
     AccessorObligation(
       s"$ParameterizedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -649,10 +706,10 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val TypeArgumentsAccessors         = Vector(
+  val TypeArgumentsAccessors            = Vector(
     AccessorObligation(s"$TypeArgumentsSurface#typeArgs()Lscala/collection/immutable/Seq;", required = true)
   )
-  val NamedTypeArgumentsAccessors    = Vector(
+  val NamedTypeArgumentsAccessors       = Vector(
     AccessorObligation(
       s"$NamedTypeArgumentsSurface#logicalTypeArguments()Lscala/collection/immutable/Seq;",
       required = true,
@@ -669,7 +726,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val NamedTypeArgumentAccessors     = Vector(
+  val NamedTypeArgumentAccessors        = Vector(
     AccessorObligation(s"$NamedTypeArgumentSurface#name()Lscala/Option;", required = true, SurfaceFactKind.Method),
     AccessorObligation(
       s"$NamedTypeArgumentSurface#nameElement()Lscala/Option;",
@@ -688,11 +745,11 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val WildcardTypeAccessors          = Vector(
+  val WildcardTypeAccessors             = Vector(
     AccessorObligation(s"$WildcardTypeSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$WildcardTypeSurface#upperTypeElement()Lscala/Option;", required = true)
   )
-  val ContextBoundAccessors          = Vector(
+  val ContextBoundAccessors             = Vector(
     AccessorObligation(
       s"$ContextBoundSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -700,12 +757,12 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$ContextBoundSurface#nameIdOpt()Lscala/Option;", required = true),
     AccessorObligation(s"$ContextBoundSurface#parentTypeParam()Lscala/Option;", required = true)
   )
-  val TypeLambdaAccessors            = Vector(
+  val TypeLambdaAccessors               = Vector(
     AccessorObligation(s"$TypeLambdaSurface#resultTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$TypeLambdaSurface#typeParameters()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$TypeLambdaSurface#typeParametersClause()Lscala/Option;", required = true)
   )
-  val InfixTypeAccessors             = Vector(
+  val InfixTypeAccessors                = Vector(
     AccessorObligation(
       s"$InfixTypeSurface#left()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -716,49 +773,49 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val MatchTypeAccessors             = Vector(
+  val MatchTypeAccessors                = Vector(
     AccessorObligation(
       s"$MatchTypeSurface#scrutineeTypeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
     ),
     AccessorObligation(s"$MatchTypeSurface#cases()Lscala/Option;", required = true)
   )
-  val MatchTypeCasesAccessors        = Vector(
+  val MatchTypeCasesAccessors           = Vector(
     AccessorObligation(
       s"$MatchTypeCasesSurface#firstCase()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScMatchTypeCase;",
       required = true
     ),
     AccessorObligation(s"$MatchTypeCasesSurface#cases()Lscala/collection/immutable/Seq;", required = true)
   )
-  val MatchTypeCaseAccessors         = Vector(
+  val MatchTypeCaseAccessors            = Vector(
     AccessorObligation(s"$MatchTypeCaseSurface#pattern()Lscala/Option;", required = true),
     AccessorObligation(s"$MatchTypeCaseSurface#result()Lscala/Option;", required = true)
   )
-  val MatchTypeVariableAccessors     = Vector(
+  val MatchTypeVariableAccessors        = Vector(
     AccessorObligation(s"$MatchTypeVariableSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
   )
-  val CompoundTypeAccessors          = Vector(
+  val CompoundTypeAccessors             = Vector(
     AccessorObligation(s"$CompoundTypeSurface#components()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$CompoundTypeSurface#refinement()Lscala/Option;", required = true)
   )
-  val RefinementAccessors            = Vector(
+  val RefinementAccessors               = Vector(
     AccessorObligation(s"$RefinementSurface#holders()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$RefinementSurface#types()Lscala/collection/immutable/Seq;", required = true)
   )
-  val AnnotatedTypeAccessors         = Vector(
+  val AnnotatedTypeAccessors            = Vector(
     AccessorObligation(
       s"$AnnotatedTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
     )
   )
-  val CaptureTypeAccessors           = Vector(
+  val CaptureTypeAccessors              = Vector(
     AccessorObligation(
       s"$CaptureTypeSurface#innerElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
     ),
     AccessorObligation(s"$CaptureTypeSurface#captureSet()Lscala/Option;", required = true)
   )
-  val CaptureReferenceAccessors      = Vector(
+  val CaptureReferenceAccessors         = Vector(
     AccessorObligation(s"$CaptureReferenceSurface#captureRef()Lscala/Option;", required = true),
     AccessorObligation(
       s"$CaptureReferenceSurface#hasCapabilityReach()Z",
@@ -772,13 +829,13 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val CaptureFilterAccessors         = Vector(
+  val CaptureFilterAccessors            = Vector(
     AccessorObligation(
       s"$CaptureFilterSurface#filterId()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScReference;",
       required = true
     )
   )
-  val ModifierListAccessors          = Vector(
+  val ModifierListAccessors             = Vector(
     AccessorObligation(s"$ModifierListSurface#accessModifier()Lscala/Option;", required = true),
     AccessorObligation(s"$ModifierListSurface#modifiers()I", required = true, SurfaceFactKind.Method),
     AccessorObligation(
@@ -787,20 +844,20 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val AccessModifierAccessors        = Vector(
+  val AccessModifierAccessors           = Vector(
     AccessorObligation(s"$AccessModifierSurface#idText()Lscala/Option;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isPrivate()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isProtected()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AccessModifierSurface#isThis()Z", required = true, SurfaceFactKind.Method)
   )
-  val AnnotationsAccessors           = Vector(
+  val AnnotationsAccessors              = Vector(
     AccessorObligation(
       s"$AnnotationsSurface#getAnnotations()[Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotation;",
       required = true,
       SurfaceFactKind.Method
     )
   )
-  val AnnotationAccessors            = Vector(
+  val AnnotationAccessors               = Vector(
     AccessorObligation(
       s"$AnnotationSurface#annotationExpr()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScAnnotationExpr;",
       required = true
@@ -814,7 +871,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val AnnotationExprAccessors        = Vector(
+  val AnnotationExprAccessors           = Vector(
     AccessorObligation(
       s"$AnnotationExprSurface#constructorInvocation()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScConstructorInvocation;",
       required = true
@@ -825,7 +882,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val ConstructorAccessors           = Vector(
+  val ConstructorAccessors              = Vector(
     AccessorObligation(
       s"$ConstructorSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -836,17 +893,17 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$ConstructorSurface#arguments()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$ConstructorSurface#reference()Lscala/Option;", required = true)
   )
-  val AnnotationArgumentsAccessors   = Vector(
+  val AnnotationArgumentsAccessors      = Vector(
     AccessorObligation(s"$AnnotationArgumentsSurface#exprs()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$AnnotationArgumentsSurface#isUsing()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#isArgsInParens()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#getArgsCount()I", required = true, SurfaceFactKind.Method)
   )
-  val ExpressionPayloadAccessors     = Vector(
+  val ExpressionPayloadAccessors        = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)
   )
-  private val FunctionAccessors      = Vector(
+  private val FunctionAccessors         = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/ScFunction#hasAssign()Z",
       required = true,
@@ -869,10 +926,10 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val FunctionDefinitionAccessors    =
+  val FunctionDefinitionAccessors       =
     AccessorObligation(s"$FunctionDefinitionSurface#body()Lscala/Option;", required = true) +: FunctionAccessors
-  val FunctionDeclarationAccessors   = FunctionAccessors
-  val PropertyDefinitionAccessors    = Vector(
+  val FunctionDeclarationAccessors      = FunctionAccessors
+  val PropertyDefinitionAccessors       = Vector(
     AccessorObligation(
       s"$PatternDefinitionSurface#pList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPatternList;",
       required = true
@@ -883,7 +940,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val VariableDefinitionAccessors    = Vector(
+  val VariableDefinitionAccessors       = Vector(
     AccessorObligation(
       s"$VariableDefinitionSurface#pList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScPatternList;",
       required = true
@@ -894,7 +951,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val PropertyDeclarationAccessors   = Vector(
+  val PropertyDeclarationAccessors      = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/ScValueOrVariableDeclaration#getIdList()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScIdList;",
       required = true
@@ -904,25 +961,25 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val PatternListAccessors           = Vector(
+  val PatternListAccessors              = Vector(
     AccessorObligation(s"$PatternListSurface#bindings()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(s"$PatternListSurface#simplePatterns()Z", required = true, SurfaceFactKind.Method)
   )
-  val ReferencePatternAccessors      = Vector(
+  val ReferencePatternAccessors         = Vector(
     AccessorObligation(s"$ReferencePatternSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
   )
-  val IdentifierListAccessors        = Vector(
+  val IdentifierListAccessors           = Vector(
     AccessorObligation(s"$IdentifierListSurface#fieldIds()Lscala/collection/immutable/Seq;", required = true)
   )
-  val FieldIdAccessors               = Vector(
+  val FieldIdAccessors                  = Vector(
     AccessorObligation(s"$FieldIdSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true)
   )
-  val TypeAliasDeclarationAccessors  = Vector(
+  val TypeAliasDeclarationAccessors     = Vector(
     AccessorObligation(s"$TypeAliasDeclarationSurface#nameId()Lcom/intellij/psi/PsiElement;", required = true),
     AccessorObligation(s"$TypeAliasDeclarationSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$TypeAliasDeclarationSurface#upperTypeElement()Lscala/Option;", required = true)
   )
-  val TypeAliasDefinitionAccessors   = Vector(
+  val TypeAliasDefinitionAccessors      = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/ScTypeAliasDefinition#aliasedTypeElement()Lscala/Option;",
       required = true
@@ -930,19 +987,19 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$TypeAliasDefinitionSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$TypeAliasDefinitionSurface#upperTypeElement()Lscala/Option;", required = true)
   )
-  val ParameterAccessors             = Vector(
+  val ParameterAccessors                = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/params/ScParameter#typeElement()Lscala/Option;",
       required = true
     )
   )
-  val ParameterTypeAccessors         = Vector(
+  val ParameterTypeAccessors            = Vector(
     AccessorObligation(
       s"$ParameterTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
     )
   )
-  val PureParameterTypeAccessors     = Vector(
+  val PureParameterTypeAccessors        = Vector(
     AccessorObligation(
       s"$PureParameterTypeSurface#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
       required = true
@@ -952,7 +1009,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val TemplateParentsAccessors       = Vector(
+  val TemplateParentsAccessors          = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/toplevel/templates/ScTemplateParents#typeElements()Lscala/collection/immutable/Seq;",
       required = true
@@ -962,17 +1019,17 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val SelfTypeAccessors              = Vector(
+  val SelfTypeAccessors                 = Vector(
     AccessorObligation(s"$SelfTypeSurface#typeElement()Lscala/Option;", required = true)
   )
-  val DerivesClauseAccessors         = Vector(
+  val DerivesClauseAccessors            = Vector(
     AccessorObligation(s"$DerivesClauseSurface#derivedReferences()Lscala/collection/immutable/Seq;", required = true),
     AccessorObligation(
       s"$DerivesClauseSurface#owner()Lorg/jetbrains/plugins/scala/lang/psi/api/toplevel/typedef/ScDerivesClauseOwner;",
       required = true
     )
   )
-  val TypeParameterAccessors         = Vector(
+  val TypeParameterAccessors            = Vector(
     AccessorObligation(s"$TypeParameterSurface#lowerTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$TypeParameterSurface#upperTypeElement()Lscala/Option;", required = true),
     AccessorObligation(s"$TypeParameterSurface#contextBounds()Lscala/collection/immutable/Seq;", required = true),

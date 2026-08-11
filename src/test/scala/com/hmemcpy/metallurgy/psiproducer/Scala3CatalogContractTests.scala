@@ -16,6 +16,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "import-expression-absent",
         "import-selector-absent",
         "import-selector-given-bound-absent",
+        "atomic-this-empty-qualifier",
         "template-absent-tree"
       ),
       GrammarRoleId.StableReference           -> Set(
@@ -32,8 +33,20 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "annotation-designator-qualifier-select",
         "type-atom-singleton-reference-ident",
         "type-atom-singleton-reference-select",
-        "capture-reference-ident"
+        "capture-reference-ident",
+        "atomic-this-qualifier"
       ),
+      GrammarRoleId.TermReference             -> Set("atomic-term-ident"),
+      GrammarRoleId.ThisReference             -> Set("atomic-this-unqualified"),
+      GrammarRoleId.QualifiedThisReference    -> Set("atomic-this-qualified"),
+      GrammarRoleId.ExpressionIntegerLiteral  -> Set("atomic-literal-integer"),
+      GrammarRoleId.ExpressionLongLiteral     -> Set("atomic-literal-long"),
+      GrammarRoleId.ExpressionFloatLiteral    -> Set("atomic-literal-float"),
+      GrammarRoleId.ExpressionDoubleLiteral   -> Set("atomic-literal-double"),
+      GrammarRoleId.ExpressionBooleanLiteral  -> Set("atomic-literal-boolean"),
+      GrammarRoleId.ExpressionCharLiteral     -> Set("atomic-literal-char"),
+      GrammarRoleId.ExpressionStringLiteral   -> Set("atomic-literal-string"),
+      GrammarRoleId.ExpressionNullLiteral     -> Set("atomic-literal-null"),
       GrammarRoleId.ImportSelector            -> Set("import-selector-direct", "import-selector-braced"),
       GrammarRoleId.ImportSelectorName        -> Set(
         "import-selector-name",
@@ -169,7 +182,6 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-type-pattern-variable",
         "match-type-pattern-wildcard"
       ),
-      GrammarRoleId.IntegerLiteral            -> Set("integer-literal-number"),
       GrammarRoleId.Modifiers                 -> Set(
         "modifiers-annotations-synthetic",
         "modifiers-annotations-source",
@@ -687,7 +699,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
   @Test def coverageReportRendersCapabilityProbedCompatibleTargets(): Unit =
     val runtime  = inventory(snapshot("/report", 1, Vector.empty))
     val base     = completeCatalog(runtime)
-    val target   = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyIntegerLiteral"
+    val target   = "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
     val catalog  = base.copy(productions =
       base.productions.head.copy(targetSurfaceId = target, targetRequirement = TargetRequirement.Compatible) +:
         base.productions.tail
