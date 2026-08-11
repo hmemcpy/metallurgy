@@ -187,8 +187,14 @@ final class Scala3DotcFileElementType
       .getOrElse(s"file:///metallurgy/Detached-$digest-${System.identityHashCode(psi.getContainingFile)}.scala")
 
 private[metallurgy] object Scala3DotcFileElementType:
-  val ExternalId                     = "metallurgy.scala3.file"
-  val DebugName                      = "METALLURGY_SCALA3_FILE"
-  val SchemaVersion                  = 14
-  lazy val SchemaFingerprint: String =
-    Scala3PsiProductionCatalog.persistenceSchemaFingerprint(Scala3PsiProductionCatalog.Reviewed)
+  val ExternalId    = "metallurgy.scala3.file"
+  val DebugName     = "METALLURGY_SCALA3_FILE"
+  val SchemaVersion = 14
+
+  lazy val PersistenceSchemaFingerprint: String =
+    Scala3PsiProductionCatalog
+      .persistedSchemaStructure(Scala3PsiProductionCatalog.Reviewed, SchemaVersion, ExternalId)
+      .fingerprint
+
+  lazy val CatalogPlanFingerprint: String =
+    Scala3PsiProductionCatalog.catalogPlanStructure(Scala3PsiProductionCatalog.Reviewed).fingerprint

@@ -7,78 +7,316 @@ private[metallurgy] final case class Scala3PsiProductionCatalog(
     productions: Vector[Scala3PsiProduction],
     stableRoles: StableRoleInventory
 )
+
+private[metallurgy] final case class PersistedSchemaStructure(rows: Vector[String]):
+  lazy val canonicalBytes: Array[Byte] = StructuralRows.canonicalBytes(rows)
+  lazy val fingerprint: String         = CanonicalByteEncoder.sha256Hex(canonicalBytes)
+  def text: String                     = StructuralRows.text(rows)
+
+private[metallurgy] final case class CatalogPlanStructure(rows: Vector[String]):
+  lazy val canonicalBytes: Array[Byte] = StructuralRows.canonicalBytes(rows)
+  lazy val fingerprint: String         = CanonicalByteEncoder.sha256Hex(canonicalBytes)
+  def text: String                     = StructuralRows.text(rows)
+
+private[psiproducer] object StructuralRows:
+  def row(kind: String, values: Any*): String =
+    (kind +: values.map(value => escape(String.valueOf(value)))).mkString("\t")
+
+  def canonicalBytes(rows: Vector[String]): Array[Byte] =
+    val encoder = CanonicalByteEncoder()
+    encoder.sequence(rows)(encoder.string)
+    encoder.result()
+
+  def text(rows: Vector[String]): String = rows.mkString("\n") + "\n"
+
+  def diff(expected: Vector[String], actual: Vector[String]): String =
+    val expectedCounts = expected.groupMapReduce(identity)(_ => 1)(_ + _)
+    val actualCounts   = actual.groupMapReduce(identity)(_ => 1)(_ + _)
+    val missing        =
+      expected.distinct.flatMap(row => Vector.fill((expectedCounts(row) - actualCounts.getOrElse(row, 0)).max(0))(row))
+    val extra          =
+      actual.distinct.flatMap(row => Vector.fill((actualCounts(row) - expectedCounts.getOrElse(row, 0)).max(0))(row))
+    val reordered      =
+      if missing.isEmpty && extra.isEmpty && expected != actual then
+        expected
+          .zip(actual)
+          .zipWithIndex
+          .collect:
+            case ((left, right), index) if left != right => s"$index\texpected=$left\tactual=$right"
+      else Vector.empty
+    val changed        = Vector.empty
+    Vector(
+      s"practical meaning: ${missing.size} missing, ${extra.size} extra, ${changed.size} changed, ${reordered.size} reordered rows",
+      section("missing", missing),
+      section("extra", extra),
+      section("changed", changed),
+      section("reordered", reordered),
+      s"expected hash: ${CanonicalByteEncoder.sha256Hex(canonicalBytes(expected))}",
+      s"actual hash: ${CanonicalByteEncoder.sha256Hex(canonicalBytes(actual))}"
+    ).mkString("\n")
+
+  private def section(name: String, rows: Vector[String]): String =
+    s"$name:\n${if rows.isEmpty then "  none" else rows.map(row => s"  $row").mkString("\n")}"
+
+  private def escape(value: String): String = value
+    .replace("\\", "\\\\")
+    .replace("\t", "\\t")
+    .replace("\r", "\\r")
+    .replace("\n", "\\n")
+
 private[metallurgy] object Scala3PsiProductionCatalog:
   val Empty: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(Vector.empty, StableRoleInventory.Empty)
 
   private val PersistenceExternalIds =
     TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds
 
-  def persistenceSchemaFingerprint(catalog: Scala3PsiProductionCatalog): String =
-    persistenceSchemaFingerprint(catalog, PersistenceExternalIds)
-
-  private[psiproducer] def persistenceSchemaFingerprint(
+  def persistedSchemaStructure(
       catalog: Scala3PsiProductionCatalog,
+      schemaVersion: Int,
+      rootExternalId: String
+  ): PersistedSchemaStructure =
+    persistedSchemaStructure(catalog, schemaVersion, rootExternalId, PersistenceExternalIds)
+
+  private[psiproducer] def persistedSchemaStructure(
+      catalog: Scala3PsiProductionCatalog,
+      schemaVersion: Int,
+      rootExternalId: String,
       externalIds: Map[PsiOutputRoleId, String]
-  ): String =
-    val encoder = CanonicalByteEncoder()
-    encoder.sequence(catalog.stableRoles.outputRoles.toVector.sortBy(_.value))(role => encoder.string(role.value))
-    encoder.sequence(catalog.productions.sortBy(_.id)): production =>
-      encoder.string(production.id)
-      encoder.string(production.pattern.kind.toString)
-      encoder.string(production.pattern.prefix)
-      encoder.sequence(production.pattern.fields): field =>
-        encoder.string(field.name)
-        encoder.string(field.value.toString)
-      encoder.sequence(production.pattern.occurrences.sortBy(_.toString))(occurrence =>
-        encoder.string(occurrence.toString)
-      )
-      encoder.sequence(production.pattern.directNodeEvidence.sortBy(_.fieldName)): evidence =>
-        encoder.string(evidence.fieldName)
-        encoder.string(evidence.sourceClassification.toString)
-      encoder.sequence(production.grammarRoleIds.toVector.sortBy(_.value))(role => encoder.string(role.value))
-      encoder.sequence(production.children.sortBy(_.roleId)): child =>
-        encoder.string(child.roleId)
-        encoder.string(child.fieldName)
-        encoder.sequence(child.productionIds.toVector.sorted)(encoder.string)
-        encoder.string(child.cardinality.toString)
-        encoder.string(child.slice.toString)
-      encoder.sequence(production.terminals): terminal =>
-        encoder.string(terminal.id)
-        encoder.string(terminal.selector.toString)
-        encoder.string(terminal.target.toString)
-        encoder.string(terminal.cardinality.toString)
-        encoder.string(terminal.outputRoleId.value)
-      encoder.sequence(production.effectiveOutputRealizations.sortBy(_.id)): realization =>
-        encoder.string(realization.id)
-        encoder.sequence(realization.conditions.sortBy(_.toString))(condition => encoder.string(condition.toString))
-        encoder.sequence(realization.evidenceConditions.sortBy(_.toString))(condition =>
-          encoder.string(condition.toString)
+  ): PersistedSchemaStructure =
+    val directlyPersistedIds = catalog.productions.collect:
+      case production
+          if production.effectiveOutputRealizations.exists(
+            _.template.composites.exists(_.persistence != PersistenceObligations.NotApplicable)
+          ) =>
+        production.id
+    val productionsById      = catalog.productions.map(production => production.id -> production).toMap
+    var persistedRoutingIds  = directlyPersistedIds.toSet
+    var expanded             = true
+    while expanded do
+      val routingParents        = catalog.productions.collect:
+        case production if production.children.exists(_.productionIds.exists(persistedRoutingIds.contains)) =>
+          production.id
+      val conditionDependencies = catalog.productions
+        .filter(production => persistedRoutingIds.contains(production.id))
+        .flatMap: production =>
+          production.effectiveOutputRealizations
+            .flatMap(_.conditions)
+            .flatMap: condition =>
+              production.children
+                .filter(_.roleId == condition.roleId)
+                .flatMap: child =>
+                  condition.expected match
+                    case ChildOutcomeExpectation.Production(productionId)   =>
+                      child.productionIds.filter(_ == productionId)
+                    case ChildOutcomeExpectation.Realization(realizationId) =>
+                      child.productionIds.filter(productionId =>
+                        productionsById
+                          .get(productionId)
+                          .exists(_.effectiveOutputRealizations.exists(_.id == realizationId))
+                      )
+      val next                  = persistedRoutingIds ++ routingParents ++ conditionDependencies
+      expanded = next.size != persistedRoutingIds.size
+      persistedRoutingIds = next
+    val rows                 = Vector.newBuilder[String]
+    rows += StructuralRows.row("schema", schemaVersion)
+    rows += StructuralRows.row("root", rootExternalId)
+    catalog.productions
+      .filter(production => persistedRoutingIds.contains(production.id))
+      .zipWithIndex
+      .foreach: (production, productionIndex) =>
+        val relevantChildren = production.children.filter(_.productionIds.exists(persistedRoutingIds.contains))
+        rows += StructuralRows.row(
+          "persisted-production",
+          productionIndex,
+          production.id,
+          production.pattern.kind,
+          production.pattern.prefix,
+          production.pattern.fields.mkString(","),
+          production.pattern.occurrences.mkString(","),
+          production.pattern.directNodeEvidence.mkString(","),
+          production.grammarRoleId.value,
+          production.dispositions.map(value => s"${value.fieldName}:${value.kind}").mkString(","),
+          relevantChildren
+            .map(child =>
+              s"${child.roleId}:${child.fieldName}:${child.productionIds.filter(persistedRoutingIds.contains).toVector.sorted.mkString("+")}:${child.cardinality}:${child.slice}"
+            )
+            .mkString(",")
         )
-        encoder.sequence(realization.template.composites): output =>
-          encoder.string(output.id)
-          encoder.string(output.parentId.getOrElse(""))
-          encoder.string(output.range.toString)
-          encoder.string(output.outputRoleId.value)
-          encoder.string(output.targetSurfaceId)
-          encoder.string(externalIds.getOrElse(output.outputRoleId, ""))
-          encoder.string(output.targetRequirement.toString)
-          encoder.sequence(output.accessors.sortBy(_.toString))(accessor => encoder.string(accessor.toString))
-          encoder.string(output.navigation.toString)
-          encoder.string(output.ownsStructuralEvidence.toString)
-          encoder.string(output.requiresCompilerEndMarker.toString)
-          encoder.string(output.realization.toString)
-          output.persistence match
-            case PersistenceObligations.NotApplicable                                   => encoder.tag(0)
-            case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
-              encoder.tag(1)
-              encoder.string(stub)
-              encoder.string(serializer)
-              encoder.sequence(indices.sorted)(encoder.string)
-              encoder.string(navigation)
-        encoder.sequence(realization.template.childMounts.toVector.sortBy(_._1)): (role, parent) =>
-          encoder.string(role)
-          encoder.string(parent.getOrElse(""))
-    CanonicalByteEncoder.sha256Hex(encoder.result())
+        production.effectiveOutputRealizations.zipWithIndex
+          .foreach: (realization, realizationIndex) =>
+            val childMounts        = realization.template.childMounts.toVector
+              .sortBy(_._1)
+              .map((role, parent) => s"$role:${parent.getOrElse("")}")
+              .mkString(",")
+            val childSelections    = realization.template.childOutputSelections.toVector
+              .sortBy(_._1)
+              .map((role, selected) => s"$role:${selected.value}")
+              .mkString(",")
+            val conditions         = realization.conditions.zipWithIndex
+              .map((condition, index) => s"$index:$condition")
+              .mkString(",")
+            val evidenceConditions = realization.evidenceConditions.zipWithIndex
+              .map((condition, index) => s"$index:$condition")
+              .mkString(",")
+            rows += StructuralRows.row(
+              "persisted-realization",
+              productionIndex,
+              production.id,
+              realizationIndex,
+              realization.id,
+              conditions,
+              evidenceConditions,
+              childMounts,
+              childSelections
+            )
+            realization.template.composites
+              .filter(_.persistence != PersistenceObligations.NotApplicable)
+              .zipWithIndex
+              .foreach: (output, outputIndex) =>
+                output.persistence match
+                  case PersistenceObligations.NotApplicable                                   => throw new AssertionError("filtered persisted output")
+                  case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
+                    rows += StructuralRows.row(
+                      "persisted-output",
+                      productionIndex,
+                      production.id,
+                      realizationIndex,
+                      realization.id,
+                      outputIndex,
+                      output.id,
+                      output.parentId.getOrElse(""),
+                      output.realization,
+                      output.outputRoleId.value,
+                      output.targetSurfaceId,
+                      externalIds.getOrElse(output.outputRoleId, ""),
+                      stub,
+                      serializer,
+                      indices.mkString(","),
+                      navigation,
+                      output.navigation
+                    )
+    PersistedSchemaStructure(rows.result())
+
+  def catalogPlanStructure(catalog: Scala3PsiProductionCatalog): CatalogPlanStructure =
+    val rows = Vector.newBuilder[String]
+    catalog.stableRoles.grammarRoles.toVector
+      .sortBy(_.value)
+      .foreach(role => rows += StructuralRows.row("grammar-role", role.value))
+    catalog.stableRoles.outputRoles.toVector
+      .sortBy(_.value)
+      .foreach(role => rows += StructuralRows.row("output-role", role.value))
+    catalog.productions.zipWithIndex.foreach: (production, productionIndex) =>
+      val prefix = Vector(productionIndex, production.id)
+      rows += StructuralRows.row(
+        "production",
+        (prefix ++ Vector(
+          production.pattern.kind,
+          production.pattern.prefix,
+          production.grammarRoleId.value,
+          production.targetSurfaceId,
+          production.targetRequirement,
+          production.persistence,
+          production.navigation,
+          production.outputRoleId
+        ))*
+      )
+      production.pattern.fields.zipWithIndex.foreach((field, index) =>
+        rows += StructuralRows.row("pattern-field", (prefix ++ Vector(index, field.name, field.value))*)
+      )
+      production.pattern.occurrences.zipWithIndex.foreach((occurrence, index) =>
+        rows += StructuralRows.row("pattern-occurrence", (prefix ++ Vector(index, occurrence))*)
+      )
+      production.pattern.directNodeEvidence.zipWithIndex.foreach((evidence, index) =>
+        rows += StructuralRows.row(
+          "direct-evidence",
+          (prefix ++ Vector(index, evidence.fieldName, evidence.sourceClassification))*
+        )
+      )
+      production.grammarRoleIds.toVector
+        .sortBy(_.value)
+        .foreach(role => rows += StructuralRows.row("production-grammar-role", (prefix :+ role.value)*))
+      production.dispositions.zipWithIndex.foreach((disposition, index) =>
+        rows += StructuralRows.row(
+          "field-disposition",
+          (prefix ++ Vector(index, disposition.fieldName, disposition.kind))*
+        )
+      )
+      production.children.zipWithIndex.foreach((child, index) =>
+        rows += StructuralRows.row(
+          "child",
+          (prefix ++ Vector(
+            index,
+            child.roleId,
+            child.fieldName,
+            child.productionIds.toVector.sorted.mkString(","),
+            child.cardinality,
+            child.slice
+          ))*
+        )
+      )
+      production.terminals.zipWithIndex.foreach((terminal, index) =>
+        rows += StructuralRows.row(
+          "terminal",
+          (prefix ++ Vector(
+            index,
+            terminal.id,
+            terminal.selector,
+            terminal.target,
+            terminal.cardinality,
+            terminal.outputRoleId.value,
+            terminal.ownsStructuralEvidence,
+            terminal.claimsStructuralEvidence
+          ))*
+        )
+      )
+      production.layouts.zipWithIndex.foreach((layout, index) =>
+        rows += StructuralRows.row("layout", (prefix ++ Vector(index, layout))*)
+      )
+      rows += StructuralRows.row("recovery", (prefix :+ production.recovery)*)
+      production.accessors.zipWithIndex.foreach((accessor, index) =>
+        rows += StructuralRows.row("production-accessor", (prefix ++ Vector(index, accessor))*)
+      )
+      production.effectiveOutputRealizations.zipWithIndex.foreach: (realization, realizationIndex) =>
+        val realizationPrefix = prefix ++ Vector(realizationIndex, realization.id)
+        rows += StructuralRows.row("realization", realizationPrefix*)
+        realization.conditions.zipWithIndex.foreach((condition, index) =>
+          rows += StructuralRows.row("realization-condition", (realizationPrefix ++ Vector(index, condition))*)
+        )
+        realization.evidenceConditions.zipWithIndex.foreach((condition, index) =>
+          rows += StructuralRows.row("realization-evidence", (realizationPrefix ++ Vector(index, condition))*)
+        )
+        realization.template.composites.zipWithIndex.foreach: (output, outputIndex) =>
+          val outputPrefix = realizationPrefix ++ Vector(outputIndex, output.id)
+          rows += StructuralRows.row(
+            "output",
+            (outputPrefix ++ Vector(
+              output.parentId.getOrElse(""),
+              output.range,
+              output.outputRoleId.value,
+              output.targetSurfaceId,
+              PersistenceExternalIds.getOrElse(output.outputRoleId, ""),
+              output.targetRequirement,
+              output.persistence,
+              output.navigation,
+              output.ownsStructuralEvidence,
+              output.requiresCompilerEndMarker,
+              output.realization
+            ))*
+          )
+          output.accessors.zipWithIndex.foreach((accessor, index) =>
+            rows += StructuralRows.row("output-accessor", (outputPrefix ++ Vector(index, accessor))*)
+          )
+        realization.template.childMounts.toVector
+          .sortBy(_._1)
+          .foreach((role, parent) =>
+            rows += StructuralRows.row("child-mount", (realizationPrefix ++ Vector(role, parent.getOrElse("")))*)
+          )
+        realization.template.childOutputSelections.toVector
+          .sortBy(_._1)
+          .foreach((role, selected) =>
+            rows += StructuralRows.row("child-selection", (realizationPrefix ++ Vector(role, selected.value))*)
+          )
+    CatalogPlanStructure(rows.result())
 
   lazy val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
     Scala3PsiPackageImportExportProductions.PackageImportExportPrefixSegment ++

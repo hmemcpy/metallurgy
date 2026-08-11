@@ -215,3 +215,95 @@ private[metallurgy] final case class WholeFileProductionPlan(
     stubAssertions: Vector[PlannedStubAssertion],
     navigationAssertions: Vector[PlannedNavigationAssertion]
 )
+
+private[metallurgy] final case class WholeFilePlanStructure(rows: Vector[String]):
+  def text: String = StructuralRows.text(rows)
+
+private[metallurgy] object WholeFileProductionPlanRenderer:
+  def structure(plan: WholeFileProductionPlan): WholeFilePlanStructure =
+    val rows = Vector.newBuilder[String]
+    rows += StructuralRows.row(
+      "source",
+      plan.sourceUri.value,
+      plan.sourceDigest,
+      plan.parserEvidenceFingerprint
+    )
+    plan.lexicalContract.atoms.zipWithIndex.foreach((atom, index) =>
+      rows += StructuralRows.row("lexical", index, atom.start, atom.end, atom.kind)
+    )
+    plan.composites.zipWithIndex.foreach: (composite, index) =>
+      rows += StructuralRows.row(
+        "composite",
+        index,
+        composite.instance,
+        composite.instance.origin,
+        composite.productionId,
+        composite.range.startOffset,
+        composite.range.endOffset,
+        composite.fieldDispositions.mkString(",")
+      )
+      composite.children.zipWithIndex.foreach((child, childIndex) =>
+        rows += StructuralRows.row(
+          "composite-child",
+          index,
+          childIndex,
+          composite.instance,
+          child.roleId,
+          child.fieldPath.mkString("/"),
+          child.child
+        )
+      )
+    plan.physicalLeafOwnership.zipWithIndex.foreach((leaf, index) =>
+      rows += StructuralRows.row(
+        "physical-leaf",
+        index,
+        leaf.atomId,
+        leaf.start,
+        leaf.end,
+        leaf.owner,
+        leaf.sourceOwner,
+        leaf.sourceOwner.occurrence,
+        leaf.terminalId,
+        leaf.target
+      )
+    )
+    plan.structuralEvidenceOwnership.zipWithIndex.foreach((ownership, index) =>
+      rows += StructuralRows.row(
+        "structural-event",
+        index,
+        ownership.eventId,
+        ownership.owner.role.value,
+        ownership.owner.identity
+      )
+    )
+    plan.virtualLayout.zipWithIndex.foreach((layout, index) =>
+      rows += StructuralRows.row("virtual-layout", index, layout.owner, layout.anchor, layout.ordinalAtAnchor)
+    )
+    plan.targetAssertions.zipWithIndex.foreach((assertion, index) =>
+      rows += StructuralRows.row("target", index, assertion.owner, assertion.targetIdentity, assertion.kind)
+    )
+    plan.accessorAssertions.zipWithIndex.foreach((assertion, index) =>
+      rows += StructuralRows.row(
+        "accessor",
+        index,
+        assertion.owner,
+        assertion.surfaceId,
+        assertion.required,
+        assertion.surfaceKind
+      )
+    )
+    plan.stubAssertions.zipWithIndex.foreach((assertion, index) =>
+      rows += StructuralRows.row(
+        "persistence",
+        index,
+        assertion.owner,
+        assertion.stubSurfaceId,
+        assertion.serializerSurfaceId,
+        assertion.indexSurfaceIds.mkString(","),
+        assertion.navigationSurfaceId
+      )
+    )
+    plan.navigationAssertions.zipWithIndex.foreach((assertion, index) =>
+      rows += StructuralRows.row("navigation", index, assertion.owner, assertion.obligation)
+    )
+    WholeFilePlanStructure(rows.result())

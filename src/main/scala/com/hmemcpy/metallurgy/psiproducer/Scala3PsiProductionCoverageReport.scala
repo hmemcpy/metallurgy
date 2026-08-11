@@ -121,6 +121,25 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
             s"unmapped:${row.classification}:missing-boundary=stable-output-role-or-compatibility-binding"
           case None                                                               => s"unmapped:${row.classification}"
         lines += s"- `${row.kind}:${row.id}` — **${row.status}:$status**"
+    val persisted         = Scala3PsiProductionCatalog.persistedSchemaStructure(
+      catalog,
+      Scala3DotcFileElementType.SchemaVersion,
+      Scala3DotcFileElementType.ExternalId
+    )
+    val plan              = Scala3PsiProductionCatalog.catalogPlanStructure(catalog)
+    lines += ""
+    lines += "## Persisted schema structure"
+    lines += ""
+    persisted.rows.foreach(row => lines += s"- `$row`")
+    lines += ""
+    lines += "## Catalog and plan structure"
+    lines += ""
+    plan.rows.foreach(row => lines += s"- `$row`")
+    lines += ""
+    lines += "## Structural fingerprints"
+    lines += ""
+    lines += s"- Persistence schema: `${persisted.fingerprint}`"
+    lines += s"- Catalog and plan: `${plan.fingerprint}`"
     lines.result().mkString("\n") + "\n"
 
   private def missingBoundary(

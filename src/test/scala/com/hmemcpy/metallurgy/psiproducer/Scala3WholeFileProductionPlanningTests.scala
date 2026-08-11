@@ -3,12 +3,67 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.hmemcpy.metallurgy.pc.*
 import org.junit.Assert.*
 import org.junit.Test
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path}
+import java.security.MessageDigest
 
 private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3PsiProductionCatalogTestSupport:
   private val TransparentRootGrammarRole = GrammarRoleId("test.grammar.transparent-root")
   private val SharedProductGrammarRole   = GrammarRoleId("test.grammar.shared-product")
   private val StructuralEventGrammarRole = GrammarRoleId("test.grammar.structural-event")
   private val SharedOutputRole           = PsiOutputRoleId("test.output.shared-composite")
+
+  @Test def representativeWholeFilePlanHasExactReadableStructure(): Unit =
+    val value      = annotationModifierSnapshot
+    val runtime    = inventory(value)
+    val root       = syntheticModifierOwnerProduction
+    val catalog    = Scala3PsiProductionCatalog.Reviewed.copy(
+      productions = Scala3PsiProductionCatalog.Reviewed.productions :+ root
+    )
+    val compiler   = aggregate(Vector(runtime))
+    val prepared   = PreparedProductionCatalog
+      .prepareRuntimeSubset(catalog, runtime, compiler, contractSurfaces(catalog))
+      .fold(errors => throw new AssertionError(errors.mkString("\n")), identity)
+    val evidence   = ProvisionalSourceEvidencePlanner
+      .plan(value)
+      .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+    val plan       = WholeFileProductionPlanner
+      .plan(value, evidence, prepared)
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    val structure  = WholeFileProductionPlanRenderer.structure(plan)
+    val categories = structure.rows.map(_.takeWhile(_ != '\t'))
+
+    assertEquals(
+      StructuralRows.row("source", value.sourceUri.value, value.sourceDigest, evidence.parserEvidenceFingerprint),
+      structure.rows.head
+    )
+    assertEquals(
+      Vector(
+        "source",
+        "lexical",
+        "composite",
+        "composite-child",
+        "physical-leaf",
+        "structural-event",
+        "target",
+        "accessor",
+        "persistence",
+        "navigation"
+      ),
+      categories.distinct
+    )
+    assertTrue(structure.rows.exists(row => row.startsWith("composite\t") && row.contains("\t22\t27\t")))
+    assertTrue(structure.rows.exists(row => row.startsWith("physical-leaf\t0\t") && row.contains("\t0\t1\t")))
+    assertTrue(structure.rows.exists(_.contains(PsiOutputRoleId.ModifierList.value)))
+    assertTrue(structure.rows.exists(_.contains(PsiOutputRoleId.AnnotationArguments.value)))
+    assertTrue(structure.rows.exists(_.contains(ModifierAnnotationPersistenceSurfaces.ModifierSerializer)))
+    assertEquals(structure, WholeFileProductionPlanRenderer.structure(plan))
+
+    sys.env
+      .get("METALLURGY_CATALOG_STRUCTURE_RUN_ID")
+      .foreach: runId =>
+        require(runId.matches("[A-Za-z0-9._-]+"), s"invalid catalog structure run ID: $runId")
+        writeStructureEvidence(runId, structure)
 
   @Test def syntheticDefinitionRoutePlansExactModifierAnnotationAndOpaquePayloadRanges(): Unit =
     val value            = annotationModifierSnapshot
@@ -1593,3 +1648,45 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
       )
     )
     value.copy(nodes = Vector(root, leaf), positioned = Vector(positioned))
+
+  private def writeStructureEvidence(runId: String, wholeFilePlan: WholeFilePlanStructure): Unit =
+    val output      = Path.of("target", "catalog-structure", runId)
+    val persistence = Scala3PsiProductionCatalog.persistedSchemaStructure(
+      Scala3PsiProductionCatalog.Reviewed,
+      Scala3DotcFileElementType.SchemaVersion,
+      Scala3DotcFileElementType.ExternalId
+    )
+    val catalog     = Scala3PsiProductionCatalog.catalogPlanStructure(Scala3PsiProductionCatalog.Reviewed)
+    Files.createDirectories(output.getParent)
+    Files.createDirectory(output)
+    write(output.resolve("persisted-schema.tsv"), persistence.text)
+    write(output.resolve("catalog-plan.tsv"), catalog.text)
+    write(output.resolve("representative-whole-file-plan-modifier-annotation.tsv"), wholeFilePlan.text)
+    write(
+      output.resolve("fingerprints.txt"),
+      Vector(
+        s"source-revision\t${sys.env("METALLURGY_CATALOG_SOURCE_REVISION")}",
+        s"source-tree\t${sys.env("METALLURGY_CATALOG_SOURCE_TREE")}",
+        s"source-status\t${sys.env("METALLURGY_CATALOG_SOURCE_STATUS")}",
+        s"jbr\t${sys.env("METALLURGY_CATALOG_JBR")}",
+        s"persistence-schema\t${persistence.fingerprint}",
+        s"catalog-plan\t${catalog.fingerprint}"
+      ).mkString("\n") + "\n"
+    )
+    val files       = Vector(
+      "catalog-plan.tsv",
+      "fingerprints.txt",
+      "persisted-schema.tsv",
+      "representative-whole-file-plan-modifier-annotation.tsv"
+    )
+    write(
+      output.resolve("SHA256SUMS"),
+      files.map(name => s"${sha256(Files.readAllBytes(output.resolve(name)))}  $name").mkString("\n") + "\n"
+    )
+
+  private def write(path: Path, value: String): Unit =
+    Files.writeString(path, value, StandardCharsets.UTF_8)
+    ()
+
+  private def sha256(bytes: Array[Byte]): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).map(byte => f"${byte & 0xff}%02x").mkString

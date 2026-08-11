@@ -496,38 +496,193 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       exportProduction.children.find(_.roleId == "selectors").get.productionIds
     )
 
-  @Test def definitionExternalIdsParticipateInThePersistenceSchemaFingerprint(): Unit =
-    val catalog = Scala3PsiProductionCatalog.Reviewed
-    val ids     = TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds
-    val current = Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog, ids)
-
-    DefinitionPersistenceSurfaces.ExternalIds.foreach: (role, externalId) =>
-      assertNotEquals(
-        role.value,
-        current,
-        Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog, ids.updated(role, s"$externalId.changed"))
-      )
-
-  @Test def astOnlyCatalogPlansChangeTheFingerprintWithoutChangingTheStubSchema(): Unit =
-    val catalog = Scala3PsiProductionCatalog.Reviewed
-    val astOnly = catalog.productions
-      .find(
-        _.effectiveOutputRealizations.forall(
+  @Test def astOnlyCatalogPlansChangeCatalogIdentityWithoutChangingPersistedIdentity(): Unit =
+    val catalog               = Scala3PsiProductionCatalog.Reviewed
+    val astOnly               = catalog.productions
+      .find(production =>
+        production.children.isEmpty && production.effectiveOutputRealizations.forall(
           _.template.composites.forall(_.persistence == PersistenceObligations.NotApplicable)
         )
       )
       .get
       .copy(id = "ast-only-fingerprint-contract")
-    val changed = catalog.copy(productions = catalog.productions :+ astOnly)
+    val changed               = catalog.copy(productions = astOnly +: catalog.productions)
+    val currentPersistence    = persisted(catalog)
+    val changedPersistence    = persisted(changed)
+    val withAstOnlyOutput     = mutatePersistedRealization(catalog, _.template.composites.nonEmpty)(realization =>
+      realization.copy(template =
+        realization.template.copy(composites =
+          realization.template.composites.head.copy(
+            id = "ast-only-output",
+            persistence = PersistenceObligations.NotApplicable
+          ) +: realization.template.composites
+        )
+      )
+    )
+    val withoutAstAlternative = catalog.copy(productions =
+      catalog.productions.map(production =>
+        production.copy(children = production.children.map: child =>
+          val retained = (child.productionIds - "modifier-keyword-abstract").toVector.sorted
+          if retained.size == child.productionIds.size then child
+          else child.copy(productionId = retained.head, additionalProductionIds = retained.tail.toSet)
+        )
+      )
+    )
 
     assertNotEquals(
-      Scala3PsiProductionCatalog.persistenceSchemaFingerprint(catalog),
-      Scala3PsiProductionCatalog.persistenceSchemaFingerprint(changed)
+      Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
+      Scala3PsiProductionCatalog.catalogPlanStructure(changed).fingerprint
     )
+    assertEquals(currentPersistence.rows, changedPersistence.rows)
+    assertEquals(currentPersistence.fingerprint, changedPersistence.fingerprint)
+    assertNotEquals(
+      Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
+      Scala3PsiProductionCatalog.catalogPlanStructure(withAstOnlyOutput).fingerprint
+    )
+    assertEquals(currentPersistence.rows, persisted(withAstOnlyOutput).rows)
+    assertEquals(currentPersistence.fingerprint, persisted(withAstOnlyOutput).fingerprint)
+    assertNotEquals(
+      Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
+      Scala3PsiProductionCatalog.catalogPlanStructure(withoutAstAlternative).fingerprint
+    )
+    assertEquals(currentPersistence.rows, persisted(withoutAstAlternative).rows)
+    assertEquals(currentPersistence.fingerprint, persisted(withoutAstAlternative).fingerprint)
     assertEquals(
       Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 14),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
+
+  @Test def conditionOutcomeMatchersChangePersistedIdentity(): Unit =
+    val catalog = Scala3PsiProductionCatalog.Reviewed
+    val current = persisted(catalog)
+    val changed = persisted(
+      mutateProduction(catalog, "import-expression-absent")(production =>
+        production.copy(pattern = production.pattern.copy(prefix = s"${production.pattern.prefix}-changed"))
+      )
+    )
+
+    assertTrue(current.rows.exists(_.contains("\timport-expression-absent\t")))
+    assertTrue(current.rows.exists(_.contains("\timport-selector-absent\t")))
+    assertNotEquals(current.rows, changed.rows)
+    assertNotEquals(current.fingerprint, changed.fingerprint)
+
+  @Test def everyPersistedCompatibilityObligationChangesPersistedIdentity(): Unit =
+    val catalog      = Scala3PsiProductionCatalog.Reviewed
+    val current      = persisted(catalog)
+    val externalIds  = TemplatePersistenceSurfaces.ExternalIds ++ DefinitionPersistenceSurfaces.ExternalIds
+    val externalRole = catalog.productions
+      .flatMap(_.effectiveOutputRealizations)
+      .flatMap(_.template.composites)
+      .find(output =>
+        externalIds.contains(output.outputRoleId) && output.persistence != PersistenceObligations.NotApplicable
+      )
+      .map(_.outputRoleId)
+      .get
+    val changedIds   = Scala3PsiProductionCatalog.persistedSchemaStructure(
+      catalog,
+      Scala3DotcFileElementType.SchemaVersion,
+      Scala3DotcFileElementType.ExternalId,
+      externalIds.updated(externalRole, s"${externalIds(externalRole)}.changed")
+    )
+    val mutations    = Vector(
+      "schema number"               -> Scala3PsiProductionCatalog.persistedSchemaStructure(
+        catalog,
+        Scala3DotcFileElementType.SchemaVersion + 1,
+        Scala3DotcFileElementType.ExternalId
+      ),
+      "root external ID"            -> Scala3PsiProductionCatalog.persistedSchemaStructure(
+        catalog,
+        Scala3DotcFileElementType.SchemaVersion,
+        s"${Scala3DotcFileElementType.ExternalId}.changed"
+      ),
+      "child external ID"           -> changedIds,
+      "stub surface"                -> persisted(mutatePersistedOutput(catalog): output =>
+        output.copy(persistence = required(output).copy(stubSurfaceId = s"${required(output).stubSurfaceId}.changed"))),
+      "serializer surface"          -> persisted(mutatePersistedOutput(catalog): output =>
+        output.copy(persistence =
+          required(output).copy(serializerSurfaceId = s"${required(output).serializerSurfaceId}.changed")
+        )),
+      "declared index order"        -> persisted(
+        mutatePersistedOutput(
+          catalog,
+          output => required(output).indexSurfaceIds.size > 1
+        ): output =>
+          output.copy(persistence = required(output).copy(indexSurfaceIds = required(output).indexSurfaceIds.reverse))
+      ),
+      "navigation identity"         -> persisted(mutatePersistedOutput(catalog): output =>
+        output.copy(persistence =
+          required(output).copy(navigationSurfaceId = s"${required(output).navigationSurfaceId}.changed")
+        )),
+      "persisted ancestry"          -> persisted(
+        mutatePersistedOutput(catalog)(output => output.copy(parentId = Some("changed-parent")))
+      ),
+      "persisted topology"          -> persisted(
+        mutatePersistedChild(catalog)(child => child.copy(fieldName = s"${child.fieldName}-changed"))
+      ),
+      "persisted routing closure"   -> persisted(
+        mutateProduction(catalog, "ordinary-refinement-type")(production =>
+          production.copy(children = production.children.map:
+            case child if child.roleId == "members" => child.copy(cardinality = ChildCardinality.Optional)
+            case child                              => child
+          )
+        )
+      ),
+      "persisted child mount"       -> persisted(
+        mutatePersistedRealization(catalog, _.template.childMounts.nonEmpty)(realization =>
+          realization.copy(template =
+            realization.template.copy(childMounts =
+              realization.template.childMounts.updated(
+                realization.template.childMounts.keys.head,
+                Some("changed-parent")
+              )
+            )
+          )
+        )
+      ),
+      "persisted child selection"   -> persisted(
+        mutatePersistedRealization(catalog, _.template.childOutputSelections.nonEmpty)(realization =>
+          realization.copy(template =
+            realization.template.copy(childOutputSelections =
+              realization.template.childOutputSelections.updated(
+                realization.template.childOutputSelections.keys.head,
+                PsiOutputRoleId("changed.output.role")
+              )
+            )
+          )
+        )
+      ),
+      "realization condition"       -> persisted(
+        mutatePersistedRealization(catalog, _.conditions.nonEmpty)(realization =>
+          realization.copy(conditions = realization.conditions :+ realization.conditions.head)
+        )
+      ),
+      "realization evidence"        -> persisted(
+        mutatePersistedRealization(catalog, _.evidenceConditions.nonEmpty)(realization =>
+          realization.copy(evidenceConditions = realization.evidenceConditions :+ realization.evidenceConditions.head)
+        )
+      ),
+      "persisted field disposition" -> persisted(
+        mutatePersistedProduction(catalog)(production =>
+          production.copy(dispositions = production.dispositions.reverse)
+        )
+      )
+    )
+    mutations.foreach: (meaning, changed) =>
+      assertNotEquals(meaning, current.rows, changed.rows)
+      assertNotEquals(meaning, current.fingerprint, changed.fingerprint)
+
+  @Test def structuralDiffExplainsRowsBeforeHashes(): Unit =
+    val report    = StructuralRows.diff(Vector("a", "b"), Vector("b", "c"))
+    assertTrue(report, report.startsWith("practical meaning:"))
+    assertTrue(report, report.indexOf("missing:") < report.indexOf("expected hash:"))
+    assertTrue(report, report.indexOf("extra:") < report.indexOf("actual hash:"))
+    assertTrue(report, report.contains("changed:"))
+    assertTrue(report, report.contains("changed:\n  none"))
+    assertTrue(report, report.contains("reordered:"))
+    val insertion = StructuralRows.diff(Vector("a", "b", "c"), Vector("a", "inserted", "b", "c"))
+    assertTrue(insertion, insertion.contains("1 extra"))
+    assertTrue(insertion, insertion.contains("changed:\n  none"))
+    assertFalse(insertion, insertion.contains("expected=b\tactual=inserted"))
 
   @Test def coverageReportRendersCapabilityProbedCompatibleTargets(): Unit =
     val runtime  = inventory(snapshot("/report", 1, Vector.empty))
@@ -553,8 +708,126 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertEquals(
       report,
       Scala3PsiProductionCoverageReport.markdown(
-        catalog.copy(productions = catalog.productions.reverse),
+        catalog,
         aggregate(Vector(runtime.copy(shapes = runtime.shapes.reverse, nodes = runtime.nodes.reverse))),
         surface.copy(rows = surface.rows.reverse)
       )
     )
+
+  private def persisted(catalog: Scala3PsiProductionCatalog): PersistedSchemaStructure =
+    Scala3PsiProductionCatalog.persistedSchemaStructure(
+      catalog,
+      Scala3DotcFileElementType.SchemaVersion,
+      Scala3DotcFileElementType.ExternalId
+    )
+
+  private def persistedOutput(
+      catalog: Scala3PsiProductionCatalog,
+      predicate: OutputCompositeDeclaration => Boolean
+  ): (OutputCompositeDeclaration, Int, Int, Int) =
+    catalog.productions.zipWithIndex
+      .flatMap: (production, productionIndex) =>
+        production.effectiveOutputRealizations.zipWithIndex.flatMap: (realization, realizationIndex) =>
+          realization.template.composites.zipWithIndex.collect:
+            case (output, outputIndex)
+                if output.persistence != PersistenceObligations.NotApplicable && predicate(output) =>
+              (output, productionIndex, realizationIndex, outputIndex)
+      .head
+
+  private def mutatePersistedOutput(
+      catalog: Scala3PsiProductionCatalog,
+      predicate: OutputCompositeDeclaration => Boolean = _ => true
+  )(mutation: OutputCompositeDeclaration => OutputCompositeDeclaration): Scala3PsiProductionCatalog =
+    val (output, productionIndex, realizationIndex, outputIndex) = persistedOutput(catalog, predicate)
+    val production                                               = catalog.productions(productionIndex)
+    val realization                                              = production.effectiveOutputRealizations(realizationIndex)
+    val template                                                 = realization.template.copy(
+      composites = realization.template.composites.updated(outputIndex, mutation(output))
+    )
+    catalog.copy(productions =
+      catalog.productions.updated(
+        productionIndex,
+        production.copy(outputRealizations =
+          production.effectiveOutputRealizations.updated(
+            realizationIndex,
+            realization.copy(template = template)
+          )
+        )
+      )
+    )
+
+  private def mutatePersistedProduction(
+      catalog: Scala3PsiProductionCatalog,
+      predicate: Scala3PsiProduction => Boolean = _ => true
+  )(mutation: Scala3PsiProduction => Scala3PsiProduction): Scala3PsiProductionCatalog =
+    val productionIndex = catalog.productions.indexWhere(production =>
+      predicate(production) && production.effectiveOutputRealizations.exists(
+        _.template.composites.exists(_.persistence != PersistenceObligations.NotApplicable)
+      )
+    )
+    catalog.copy(productions =
+      catalog.productions.updated(productionIndex, mutation(catalog.productions(productionIndex)))
+    )
+
+  private def mutateProduction(
+      catalog: Scala3PsiProductionCatalog,
+      productionId: String
+  )(mutation: Scala3PsiProduction => Scala3PsiProduction): Scala3PsiProductionCatalog =
+    val productionIndex = catalog.productions.indexWhere(_.id == productionId)
+    catalog.copy(productions =
+      catalog.productions.updated(productionIndex, mutation(catalog.productions(productionIndex)))
+    )
+
+  private def mutatePersistedChild(
+      catalog: Scala3PsiProductionCatalog
+  )(mutation: ChildDeclaration => ChildDeclaration): Scala3PsiProductionCatalog =
+    val persistedProductionIds = catalog.productions.collect:
+      case production
+          if production.effectiveOutputRealizations.exists(
+            _.template.composites.exists(_.persistence != PersistenceObligations.NotApplicable)
+          ) =>
+        production.id
+    val productionIndex        = catalog.productions.indexWhere(production =>
+      production.effectiveOutputRealizations.exists(
+        _.template.composites.exists(_.persistence != PersistenceObligations.NotApplicable)
+      ) && production.children.exists(_.productionIds.exists(persistedProductionIds.contains))
+    )
+    val production             = catalog.productions(productionIndex)
+    val childIndex             = production.children.indexWhere(_.productionIds.exists(persistedProductionIds.contains))
+    catalog.copy(productions =
+      catalog.productions.updated(
+        productionIndex,
+        production.copy(children = production.children.updated(childIndex, mutation(production.children(childIndex))))
+      )
+    )
+
+  private def mutatePersistedRealization(
+      catalog: Scala3PsiProductionCatalog,
+      predicate: OutputRealization => Boolean
+  )(mutation: OutputRealization => OutputRealization): Scala3PsiProductionCatalog =
+    val (productionIndex, realizationIndex) = catalog.productions.zipWithIndex
+      .flatMap: (production, productionIndex) =>
+        production.effectiveOutputRealizations.zipWithIndex.collect:
+          case (realization, realizationIndex)
+              if predicate(realization) && realization.template.composites.exists(
+                _.persistence != PersistenceObligations.NotApplicable
+              ) =>
+            (productionIndex, realizationIndex)
+      .head
+    val production                          = catalog.productions(productionIndex)
+    catalog.copy(productions =
+      catalog.productions.updated(
+        productionIndex,
+        production.copy(outputRealizations =
+          production.effectiveOutputRealizations.updated(
+            realizationIndex,
+            mutation(production.effectiveOutputRealizations(realizationIndex))
+          )
+        )
+      )
+    )
+
+  private def required(output: OutputCompositeDeclaration): PersistenceObligations.Required =
+    output.persistence match
+      case value: PersistenceObligations.Required => value
+      case PersistenceObligations.NotApplicable   => throw new AssertionError("expected persisted output")
