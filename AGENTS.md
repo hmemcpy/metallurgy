@@ -24,7 +24,30 @@ detailed raw evidence in internal evidence files or threads and link to it inste
 Decide routine implementation choices, compiler artifacts, test fixes, and bounded refactor mechanics without asking.
 Ask only for destructive or irreversible production actions, credentials or privileged access, material scope or
 behavior changes, data loss, weaker acceptance criteria, or choices with meaningful user-visible effects. Follow the
-repository's existing force-push and sole-owner rules.
+repository's direct-delivery and sole-owner rules.
+
+## Direct delivery to `idea261.x`
+
+All ongoing implementation is committed directly to `idea261.x` from one clean sole-writer local worktree based on the
+latest remote target. Do not create or push feature or task branches, and do not use pull requests for this sole-owner
+delivery path.
+
+Before work, fetch and reconcile remote state. Require the local base to be clean and exactly equal to remote
+`idea261.x`, confirm there is one writer and no conflicting task process, and preserve unrelated divergent or recovery
+worktrees. Local recovery checkpoints for uncommitted work are allowed when useful, but they must not create remote
+task refs.
+
+Before push, run the packet's required tests and an independent Medium review. Inspect the exact author and committer,
+which must both be `Igal Tabachnik <hmemcpy@gmail.com>`, and reject automated attribution, trailers, signatures, or
+extra commit headers. Reconfirm that remote `idea261.x` has not advanced. Push only an explicit normal non-force
+fast-forward from `HEAD` to `refs/heads/idea261.x`.
+
+After push, confirm minimally with a fresh `ls-remote` and fetch that remote `idea261.x` equals the commit. Repeat full
+validation or integration audit only after an ambiguous push, drift, corruption, or material risk.
+
+Audit stale remote branches against current content and history. Remove only branches whose work is fully represented,
+using exact leases. Preserve unique or ambiguous branches pending a user decision. Never alter tags during branch
+cleanup.
 
 ## Primary goals (immutable)
 
@@ -64,8 +87,8 @@ These goals are the project's reason for existing and take precedence over every
   commit trailer, header, or message attribution naming Amp, ampagent, ampcode, an Amp email/domain, or an automated
   agent.
 - **Keep sole ownership explicit.** Metallurgy is a sole-owner research project. Its only owner, user, author, and
-  committer is `Igal Tabachnik <hmemcpy@gmail.com>`. History may be rewritten to enforce this policy when active work
-  is preserved and recoverable local backups exist.
+  committer is `Igal Tabachnik <hmemcpy@gmail.com>`. Unpushed local history may be rewritten to enforce this policy
+  when active work is preserved and recoverable local backups exist. Never rewrite or force-push remote `idea261.x`.
 - **Prevent attribution injection.** Hooks, ship prompts, commit templates, and tooling must not inject such
   attribution.
 - **Inspect commits before push.** Inspect the complete raw commit object and message plus author and committer fields;

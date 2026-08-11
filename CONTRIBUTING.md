@@ -37,17 +37,26 @@ Increase the 120-second limit only when evidence justifies it.
 
 ## Branches
 
-This repo uses one long-lived branch per IntelliJ platform version: `idea261.x` is current. PRs target the active branch.
+This repo uses one long-lived branch per IntelliJ platform version; `idea261.x` is current. Ongoing implementation is
+committed directly from one clean sole-writer local checkout that exactly matches the latest remote `idea261.x`. Do not
+create or push feature or task branches, and do not use pull requests for this sole-owner delivery path.
+
+Before work, fetch and reconcile the remote target, confirm the checkout is clean and exactly equal to it, and confirm
+that no other writer or task process conflicts. Preserve unrelated divergent and recovery worktrees. Local recovery
+checkpoints may protect uncommitted work, but must not create remote task refs.
+
+Run the packet's required tests and independent Medium review before push. Verify that both author and committer are
+exactly `Igal Tabachnik <hmemcpy@gmail.com>` and that the commit has no automated attribution, trailers, signatures, or
+extra headers. Reconfirm the remote target has not advanced, then push only an explicit normal non-force fast-forward
+from `HEAD` to `refs/heads/idea261.x`. Confirm the result with a fresh `ls-remote` and fetch. Repeat broader validation
+only if the push is ambiguous or there is drift, corruption, or material risk.
+
+Stale remote branches are removed under exact leases only after their content and history are proven fully represented.
+Unique or ambiguous branches remain until the user decides. Tags are not part of branch cleanup and remain untouched.
 
 ## Commit messages
 
-Reference the issue number at the start of the summary:
-
-```
-#42: Short description of the change
-
-Body explaining the why and how.
-```
+Use the packet's required subject. Keep messages plain and do not add automated attribution or metadata.
 
 ## Tests
 
