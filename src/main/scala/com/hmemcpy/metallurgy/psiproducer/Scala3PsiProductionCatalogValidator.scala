@@ -26,6 +26,22 @@ private[metallurgy] enum CatalogValidationError:
       roleId: String,
       occurrence: ChildOccurrenceSelector
   )
+  case DuplicateChildClosureAbsorption(productionId: String, realizationId: String, roleId: String)
+  case UnknownChildClosureAbsorptionRole(productionId: String, realizationId: String, roleId: String)
+  case InvalidChildRootOutcome(
+      productionId: String,
+      realizationId: String,
+      roleId: String,
+      outcome: ChildRootOutcome,
+      reason: String
+  )
+  case ConflictingChildClosureParticipation(
+      productionId: String,
+      realizationId: String,
+      roleId: String,
+      reason: String
+  )
+  case InvalidAbsorbingRealization(productionId: String, realizationId: String, reason: String)
   case UnknownConditionProductionId(productionId: String, realizationId: String, childProductionId: String)
   case UnknownConditionRealizationId(productionId: String, realizationId: String, childRealizationId: String)
   case UnknownConditionOutputRole(productionId: String, realizationId: String, role: PsiOutputRoleId)
@@ -577,6 +593,118 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                       ) =>
                   errors += CatalogValidationError.UnknownConditionOutputRole(p.id, realization.id, role)
                 case _                                                                  => ()
+        duplicates(realization.childClosureAbsorptions.map(_.roleId)).foreach(roleId =>
+          errors += CatalogValidationError.DuplicateChildClosureAbsorption(p.id, realization.id, roleId)
+        )
+        realization.childClosureAbsorptions.foreach: absorption =>
+          p.children.find(_.roleId == absorption.roleId) match
+            case None        =>
+              errors += CatalogValidationError.UnknownChildClosureAbsorptionRole(
+                p.id,
+                realization.id,
+                absorption.roleId
+              )
+            case Some(child) =>
+              val validCardinality = absorption.rootOutcome match
+                case ChildRootOutcome.One(_) => child.cardinality == ChildCardinality.ExactlyOne
+                case ChildRootOutcome.All(_) => child.cardinality.isInstanceOf[ChildCardinality.Repeated]
+              if !validCardinality then
+                errors += CatalogValidationError.InvalidChildRootOutcome(
+                  p.id,
+                  realization.id,
+                  absorption.roleId,
+                  absorption.rootOutcome,
+                  "outcome does not match child cardinality"
+                )
+              val expected         = absorption.rootOutcome match
+                case ChildRootOutcome.One(value) => value
+                case ChildRootOutcome.All(value) => value
+              expected match
+                case ChildOutcomeExpectation.Production(id) if !child.productionIds(id) =>
+                  errors += CatalogValidationError.InvalidChildRootOutcome(
+                    p.id,
+                    realization.id,
+                    absorption.roleId,
+                    absorption.rootOutcome,
+                    "unknown child production"
+                  )
+                case ChildOutcomeExpectation.Realization(id)
+                    if !catalog.productions
+                      .filter(production => child.productionIds(production.id))
+                      .exists(_.effectiveOutputRealizations.exists(_.id == id)) =>
+                  errors += CatalogValidationError.InvalidChildRootOutcome(
+                    p.id,
+                    realization.id,
+                    absorption.roleId,
+                    absorption.rootOutcome,
+                    "unknown child realization"
+                  )
+                case ChildOutcomeExpectation.OutputRole(role)
+                    if !catalog.productions
+                      .filter(production => child.productionIds(production.id))
+                      .exists(
+                        _.effectiveOutputRealizations.exists(
+                          _.template.composites.exists(output => output.parentId.isEmpty && output.outputRoleId == role)
+                        )
+                      ) =>
+                  errors += CatalogValidationError.InvalidChildRootOutcome(
+                    p.id,
+                    realization.id,
+                    absorption.roleId,
+                    absorption.rootOutcome,
+                    "unknown child root output role"
+                  )
+                case _                                                                  => ()
+          if realization.template.childMounts.get(absorption.roleId).flatten.nonEmpty then
+            errors += CatalogValidationError.ConflictingChildClosureParticipation(
+              p.id,
+              realization.id,
+              absorption.roleId,
+              "absorbed child output is mounted"
+            )
+          if realization.template.childOutputSelections.contains(absorption.roleId) then
+            errors += CatalogValidationError.ConflictingChildClosureParticipation(
+              p.id,
+              realization.id,
+              absorption.roleId,
+              "absorbed child output is selected"
+            )
+          val outputSelectors = p.terminals.exists(_.selector match
+            case TerminalIntervalSelector.BeforeChildOutputs(role)                             => role == absorption.roleId
+            case TerminalIntervalSelector.ChildOutputGap(left, right)                          =>
+              left == absorption.roleId || right == absorption.roleId
+            case TerminalIntervalSelector.ChildOutputSeparators(role)                          => role == absorption.roleId
+            case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role)      =>
+              role == absorption.roleId
+            case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, left, right) =>
+              left == absorption.roleId || right == absorption.roleId
+            case _                                                                             => false
+          )
+          if outputSelectors then
+            errors += CatalogValidationError.ConflictingChildClosureParticipation(
+              p.id,
+              realization.id,
+              absorption.roleId,
+              "terminal selector requires absorbed child output"
+            )
+        if realization.childClosureAbsorptions.nonEmpty then
+          val roots        = realization.template.composites.filter(_.parentId.isEmpty)
+          if roots.size != 1 || roots.head.realization != OutputCompositeRealization.Once then
+            errors += CatalogValidationError.InvalidAbsorbingRealization(
+              p.id,
+              realization.id,
+              "absorbing realization must have one local root"
+            )
+          val parentClaims = p.terminals.filter(terminal =>
+            terminal.selector == TerminalIntervalSelector.WholeProduction &&
+              terminal.target == TerminalLeafTarget.Parent && terminal.claimsStructuralEvidence
+          )
+          if parentClaims.size != 1 then
+            errors += CatalogValidationError.InvalidAbsorbingRealization(
+              p.id,
+              realization.id,
+              "absorbing production must have one whole-production parent claim"
+            )
       )
       realizations.foreach { realization =>
         val template                                             = realization.template; val outputIds = template.composites.map(_.id)

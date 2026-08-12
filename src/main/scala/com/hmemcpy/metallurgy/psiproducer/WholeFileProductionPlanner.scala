@@ -611,6 +611,19 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
 
+      val participation    = ProductionParticipationPlanner
+        .plan(active.toVector, selected, compilerChildren, resolvedRealizations, position)
+        .fold(
+          failure => break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(failure))),
+          identity
+        )
+      val participating    = participation.retained
+      val participatingSet = participating.toSet
+      def participatingCompilerChildren(
+          instance: ProductionInstanceId
+      ): Vector[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)] =
+        compilerChildren.getOrElse(instance, Vector.empty).filter((_, _, child) => participatingSet(child))
+
       val outputRoots                                                   = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
       val localOutputRoots                                              = collection.mutable.Map.empty[ProductionInstanceId, Vector[CompositeInstanceId]]
       val outputRows                                                    = collection.mutable.Map
@@ -692,7 +705,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         while mergedOutputRoots.contains(current) do current = mergedOutputRoots(current)
         current
       snapshot.endMarkers.foreach: marker =>
-        val owners           = active.toVector.filter(instance =>
+        val owners           = participating.filter(instance =>
           instance.kind == InventoryKind.Node && instance.valueId == marker.ownerNodeId
         )
         val markerOwnerRoles = Set(
@@ -711,7 +724,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-      active.toVector.reverse.foreach: instance =>
+      participating.reverse.foreach: instance =>
         val template = resolvedRealizations(instance).template
         def positionedRange(
             target: ProductionInstanceId,
@@ -1660,8 +1673,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 canonical,
                 PcSourceRange(rows.head._3.startOffset, rows.last._3.endOffset)
               )
-        val exported             = compilerChildren
-          .getOrElse(instance, Vector.empty)
+        val exported             = participatingCompilerChildren(instance)
           .flatMap: (role, _, child) =>
             val mount = template.childMounts.getOrElse(
               role,
@@ -1678,7 +1690,7 @@ private[metallurgy] object WholeFileProductionPlanner:
 
       val outputRangesById                                      = outputRows.valuesIterator.flatten.map(row => row._2 -> row._3).toMap
       val promotedChildOutputs                                  = collection.mutable.LinkedHashSet.empty[CompositeInstanceId]
-      val rawComposites                                         = active.toVector.flatMap: instance =>
+      val rawComposites                                         = participating.flatMap: instance =>
         val production = selected(instance)
         val template   = resolvedRealizations(instance).template
         outputRows(instance).map: (declaration, id, range) =>
@@ -1686,8 +1698,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             case (child, childId, _) if child.parentId.contains(declaration.id) =>
               PlannedChild("output", Vector.empty, childId)
           }
-          val mounted       = compilerChildren
-            .getOrElse(instance, Vector.empty)
+          val mounted       = participatingCompilerChildren(instance)
             .flatMap: (role, path, child) =>
               val ordinalMatches = declaration.realization match
                 case OutputCompositeRealization.PerChildRole(roleId)                           =>
@@ -2039,13 +2050,13 @@ private[metallurgy] object WholeFileProductionPlanner:
 
       val knownEvidenceRoles  = (
         outputRows.valuesIterator.flatten.map(_._1.outputRoleId) ++
-          active.iterator.flatMap(instance => selected(instance).terminals.map(_.outputRoleId))
+          participating.iterator.flatMap(instance => selected(instance).terminals.map(_.outputRoleId))
       ).toSet
       val requestedBoundaries = Vector.newBuilder[(PsiOutputRoleId, Int)]
       outputRows.valuesIterator.flatten.foreach: (declaration, _, range) =>
         requestedBoundaries += declaration.outputRoleId -> range.startOffset
         requestedBoundaries += declaration.outputRoleId -> range.endOffset
-      active.foreach: instance =>
+      participating.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
           val intervals = terminalIntervals(instance, production, terminal)
@@ -2106,9 +2117,10 @@ private[metallurgy] object WholeFileProductionPlanner:
             ownershipEntry.get(descendant).exists(_ >= entry) &&
               ownershipExit.get(descendant).exists(_ <= ownershipExit(ancestor))
           )
-      val activeClaimOwners                                                                               = active.toVector
+      val participatingClaimOwners                                                                        = participating
         .groupMap(instance => instance.kind -> instance.valueId)(identity)
-      val activeOrder                                                                                     = active.toVector.zipWithIndex.toMap
+      val activeClaimOwners                                                                               = participatingClaimOwners
+      val activeOrder                                                                                     = participating.zipWithIndex.toMap
       def ancestorsIncluding(instance: ProductionInstanceId): Vector[ProductionInstanceId]                =
         val ancestors = Vector.newBuilder[ProductionInstanceId]
         var current   = Option(instance)
@@ -2119,12 +2131,21 @@ private[metallurgy] object WholeFileProductionPlanner:
       val outputClaimOwners                                                                               = activeClaimOwners.view
         .mapValues(_.filter(instance => localOutputRoots(instance).nonEmpty))
         .toMap
+      def transferredOwners(claim: SourceClaim): Vector[ProductionInstanceId]                             =
+        participation
+          .transferredOwner(claim)
+          .fold(
+            failure => break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(failure))),
+            _.toVector
+          )
       def claimOwners(atom: SourceAtom, owners: Map[(InventoryKind, Long), Vector[ProductionInstanceId]]) =
         atom.claims
           .flatMap:
-            case SourceClaim.Node(id, _)       => owners.getOrElse(InventoryKind.Node -> id, Vector.empty)
-            case SourceClaim.Positioned(id, _) => owners.getOrElse(InventoryKind.Positioned -> id, Vector.empty)
-            case SourceClaim.Diagnostic(_)     => Vector.empty
+            case claim @ SourceClaim.Node(id, _)       =>
+              owners.getOrElse(InventoryKind.Node -> id, Vector.empty) ++ transferredOwners(claim)
+            case claim @ SourceClaim.Positioned(id, _) =>
+              owners.getOrElse(InventoryKind.Positioned -> id, Vector.empty) ++ transferredOwners(claim)
+            case SourceClaim.Diagnostic(_)             => Vector.empty
           .distinct
           .sortBy(ownershipEntry)
       def stableDistinctSourceAtoms(atoms: Vector[SourceAtom]): Vector[SourceAtom]                        =
@@ -2192,7 +2213,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       val sourceExtendedAtomSets                                                                          = sourceExtendedAtoms.view
         .mapValues(_.toSet)
         .toMap
-      val distinctParentClaimAtoms                                                                        = active.iterator
+      val distinctParentClaimAtoms                                                                        = participating.iterator
         .filter(instance => selected(instance).terminals.exists(_.target == TerminalLeafTarget.Parent))
         .map: instance =>
           val flattened =
@@ -2204,7 +2225,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       val candidates                                                                                      =
         collection.mutable.Map.empty[SourceAtomId, Vector[PlannedPhysicalLeaf]].withDefaultValue(Vector.empty)
       val resolvedTerminals                                                                               = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
-      active.foreach: instance =>
+      participating.foreach: instance =>
         val production = selected(instance)
         production.terminals.foreach: terminal =>
           val intervals            = terminalIntervals(instance, production, terminal)
@@ -2324,10 +2345,11 @@ private[metallurgy] object WholeFileProductionPlanner:
         )
       val eventOwnership                                                                                  = refinedEvidence.structural.flatMap: event =>
         val sources    = event.claim match
-          case SourceClaim.Node(id, _)       => activeClaimOwners.getOrElse(InventoryKind.Node -> id, Vector.empty)
-          case SourceClaim.Positioned(id, _) =>
-            activeClaimOwners.getOrElse(InventoryKind.Positioned -> id, Vector.empty)
-          case SourceClaim.Diagnostic(_)     => Vector.empty
+          case claim @ SourceClaim.Node(id, _)       =>
+            activeClaimOwners.getOrElse(InventoryKind.Node -> id, Vector.empty) ++ transferredOwners(claim)
+          case claim @ SourceClaim.Positioned(id, _) =>
+            activeClaimOwners.getOrElse(InventoryKind.Positioned -> id, Vector.empty) ++ transferredOwners(claim)
+          case SourceClaim.Diagnostic(_)             => Vector.empty
         val owners     =
           if sources.isEmpty then Vector(root)
           else
@@ -2369,7 +2391,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         )
       val inactiveOutputs                                                                                 =
         mergedOutputRoots.keySet ++ suppressedChildRoots
-      val targets                                                                                         = active.toVector.flatMap: instance =>
+      val targets                                                                                         = participating.flatMap: instance =>
         val production = selected(instance)
         val composites = outputRows(instance).collect:
           case (declaration, id, _) if !inactiveOutputs(id) =>
@@ -2400,7 +2422,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               TargetAssertionKind.Token
             )
         composites ++ terminals
-      val accessors                                                                                       = active.toVector.flatMap(instance =>
+      val accessors                                                                                       = participating.flatMap(instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if inactiveOutputs(id) => Vector.empty
           case (declaration, id, _)              =>
@@ -2408,7 +2430,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               PlannedAccessorAssertion(id, obligation.surfaceId, obligation.required, obligation.surfaceKind)
             )
       )
-      val stubs                                                                                           = active.toVector.flatMap: instance =>
+      val stubs                                                                                           = participating.flatMap: instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if inactiveOutputs(id) => Vector.empty
           case (declaration, id, _)              =>
@@ -2416,7 +2438,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               case PersistenceObligations.NotApplicable                                   => Vector.empty
               case PersistenceObligations.Required(stub, serializer, indices, navigation) =>
                 Vector(PlannedStubAssertion(id, stub, serializer, indices, navigation))
-      val navigation                                                                                      = active.toVector.flatMap: instance =>
+      val navigation                                                                                      = participating.flatMap: instance =>
         outputRows(instance).flatMap:
           case (_, id, _) if inactiveOutputs(id) => Vector.empty
           case (declaration, id, _)              =>
@@ -2435,7 +2457,8 @@ private[metallurgy] object WholeFileProductionPlanner:
         targets,
         accessors,
         stubs,
-        navigation
+        navigation,
+        participation.absorptions
       )
       Right(plan)
 

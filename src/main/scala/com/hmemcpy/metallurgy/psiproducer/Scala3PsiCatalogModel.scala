@@ -745,6 +745,13 @@ private[metallurgy] final case class ChildOutcomeCondition(
     occurrence: ChildOccurrenceSelector,
     expected: ChildOutcomeExpectation
 )
+private[metallurgy] enum ChildRootOutcome:
+  case One(expected: ChildOutcomeExpectation)
+  case All(expected: ChildOutcomeExpectation)
+private[metallurgy] final case class ChildClosureAbsorption(
+    roleId: String,
+    rootOutcome: ChildRootOutcome
+)
 private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)
@@ -756,7 +763,8 @@ private[metallurgy] final case class OutputRealization(
     id: String,
     conditions: Vector[ChildOutcomeCondition],
     template: LocalOutputCompositeTemplate,
-    evidenceConditions: Vector[EvidenceCondition] = Vector.empty
+    evidenceConditions: Vector[EvidenceCondition] = Vector.empty,
+    childClosureAbsorptions: Vector[ChildClosureAbsorption] = Vector.empty
 )
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,

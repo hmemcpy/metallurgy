@@ -99,12 +99,19 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         .filter(production => persistedRoutingIds.contains(production.id))
         .flatMap: production =>
           production.effectiveOutputRealizations
-            .flatMap(_.conditions)
-            .flatMap: condition =>
+            .flatMap(realization =>
+              realization.conditions.map(condition => condition.roleId -> condition.expected) ++
+                realization.childClosureAbsorptions.map: absorption =>
+                  val expected = absorption.rootOutcome match
+                    case ChildRootOutcome.One(value) => value
+                    case ChildRootOutcome.All(value) => value
+                  absorption.roleId -> expected
+            )
+            .flatMap: (roleId, expected) =>
               production.children
-                .filter(_.roleId == condition.roleId)
+                .filter(_.roleId == roleId)
                 .flatMap: child =>
-                  condition.expected match
+                  expected match
                     case ChildOutcomeExpectation.Production(productionId)   =>
                       child.productionIds.filter(_ == productionId)
                     case ChildOutcomeExpectation.Realization(realizationId) =>
@@ -175,6 +182,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
               evidenceConditions,
               childMounts,
               childSelections
+            )
+            realization.childClosureAbsorptions.zipWithIndex.foreach((absorption, index) =>
+              rows += StructuralRows.row(
+                "persisted-child-closure-absorption",
+                productionIndex,
+                production.id,
+                realizationIndex,
+                realization.id,
+                index,
+                absorption.roleId,
+                absorption.rootOutcome
+              )
             )
             realization.template.composites
               .filter(_.persistence != PersistenceObligations.NotApplicable)
@@ -291,6 +310,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         )
         realization.evidenceConditions.zipWithIndex.foreach((condition, index) =>
           rows += StructuralRows.row("realization-evidence", (realizationPrefix ++ Vector(index, condition))*)
+        )
+        realization.childClosureAbsorptions.zipWithIndex.foreach((absorption, index) =>
+          rows += StructuralRows.row(
+            "child-closure-absorption",
+            (realizationPrefix ++ Vector(index, absorption.roleId, absorption.rootOutcome))*
+          )
         )
         realization.template.composites.zipWithIndex.foreach: (output, outputIndex) =>
           val outputPrefix = realizationPrefix ++ Vector(outputIndex, output.id)

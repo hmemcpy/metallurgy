@@ -99,6 +99,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case InvalidCompilerEndMarker(owner: ProductionInstanceId, reason: String)
   case UnknownOutputRealization(owner: ProductionInstanceId, productionId: String)
   case AmbiguousOutputRealization(owner: ProductionInstanceId, productionId: String, realizationIds: Vector[String])
+  case InvalidProductionParticipation(failure: ProductionParticipationFailure)
   case OutputChildOutsideParent(parent: CompositeInstanceId, child: CompositeInstanceId)
 
 private[metallurgy] final case class ProductionOccurrenceId(
@@ -275,6 +276,14 @@ private[metallurgy] final case class PlannedStructuralEvidenceOwnership(
     eventId: SourceEvidenceEventId,
     owner: SourceEvidenceOwner
 )
+private[metallurgy] final case class PlannedChildClosureAbsorption(
+    parent: ProductionInstanceId,
+    realizationId: String,
+    roleId: String,
+    roots: Vector[ProductionInstanceId],
+    closure: Vector[ProductionInstanceId],
+    transferredClaim: PcSourceRange
+)
 private[metallurgy] final case class WholeFileProductionPlan(
     sourceUri: ParserSourceUri,
     sourceDigest: String,
@@ -287,7 +296,8 @@ private[metallurgy] final case class WholeFileProductionPlan(
     targetAssertions: Vector[PlannedTargetAssertion],
     accessorAssertions: Vector[PlannedAccessorAssertion],
     stubAssertions: Vector[PlannedStubAssertion],
-    navigationAssertions: Vector[PlannedNavigationAssertion]
+    navigationAssertions: Vector[PlannedNavigationAssertion],
+    childClosureAbsorptions: Vector[PlannedChildClosureAbsorption] = Vector.empty
 )
 
 private[metallurgy] final case class WholeFilePlanStructure(rows: Vector[String]):
@@ -379,5 +389,19 @@ private[metallurgy] object WholeFileProductionPlanRenderer:
     )
     plan.navigationAssertions.zipWithIndex.foreach((assertion, index) =>
       rows += StructuralRows.row("navigation", index, assertion.owner, assertion.obligation)
+    )
+    plan.childClosureAbsorptions.zipWithIndex.foreach((absorption, index) =>
+      rows += StructuralRows.row(
+        "child-closure-absorption",
+        index,
+        absorption.parent,
+        absorption.realizationId,
+        absorption.roleId,
+        absorption.roots.mkString(","),
+        absorption.closure.mkString(","),
+        absorption.transferredClaim.startOffset,
+        absorption.transferredClaim.endOffset,
+        "outputs,terminals,source-atoms,events,targets,accessors,stubs,indices,navigation"
+      )
     )
     WholeFilePlanStructure(rows.result())
