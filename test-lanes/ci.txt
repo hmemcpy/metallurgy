@@ -1,6 +1,7 @@
 com.hmemcpy.metallurgy.SmokeTest
 com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest
 com.hmemcpy.metallurgy.module.EligibilityPredicateTest
+com.hmemcpy.metallurgy.pc.ApplicationExpressionProbeTest
 com.hmemcpy.metallurgy.pc.AtomicExpressionProbeTest
 com.hmemcpy.metallurgy.pc.BetastyCrossModuleTest
 com.hmemcpy.metallurgy.pc.PcClassLoaderTest
@@ -15,6 +16,7 @@ com.hmemcpy.metallurgy.pc.Scala3RefinementAnnotatedTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3TupleFunctionTypeParserInventoryTest
 com.hmemcpy.metallurgy.pc.Scala3TypeAtomParserInventoryTest
 com.hmemcpy.metallurgy.pc.SelectionExpressionProbeTest
+com.hmemcpy.metallurgy.psiproducer.Scala3ApplicationExpressionContractTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AtomicExpressionNativeSurfaceTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AtomicExpressionPsiTest

@@ -59,6 +59,7 @@ private[metallurgy] object GrammarRoleId:
   val ThisReference             = GrammarRoleId("scala.expression.reference.this")
   val QualifiedThisReference    = GrammarRoleId("scala.expression.reference.this-qualified")
   val SelectionExpression       = GrammarRoleId("scala.expression.selection")
+  val OrdinaryApplication       = GrammarRoleId("scala.expression.application.ordinary")
   val SuperReference            = GrammarRoleId("scala.expression.reference.super")
   val SelectionQualifier        = GrammarRoleId("scala.expression.selection.qualifier")
   val ExpressionIntegerLiteral  = GrammarRoleId("scala.expression.literal.integer")
