@@ -164,7 +164,6 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
       """def local =
         |    val nested = source
         |    nested
-        |val selected = source.member
         |val applied = source(1)
         |val tupled = (source, 1)
         |val negative = -1
@@ -174,7 +173,7 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScThisReference]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteral]).isEmpty)
     val payloads = PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).asScala.toVector
-    Vector("source", "nested", "source.member", "source(1)", "(source, 1)", "-1")
+    Vector("source", "source(1)", "(source, 1)", "-1")
       .foreach(text => assertTrue(text, payloads.exists(_.getText == text)))
     assertTrue(
       payloads.forall(payload =>
@@ -197,7 +196,7 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScThisReference]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteral]).isEmpty)
     val payloads   = PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).asScala.toVector
-    Vector("source", "local")
+    Vector("source")
       .foreach(text => assertTrue(text, payloads.exists(_.getText == text)))
     assertTrue(
       payloads.forall(payload =>
@@ -209,7 +208,6 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
 
   def testCoveredExcludedExpressionRootsRemainPayloadsWithoutAtomicDescendants(): Unit =
     val sources = Vector(
-      "val selected = source.member\n",
       "val applied = source(1)\n",
       "val typed = source[Int]\n",
       "val tupled = (source, 1)\n",

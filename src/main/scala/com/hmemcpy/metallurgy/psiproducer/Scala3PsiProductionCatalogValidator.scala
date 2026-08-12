@@ -28,6 +28,7 @@ private[metallurgy] enum CatalogValidationError:
   )
   case UnknownConditionProductionId(productionId: String, realizationId: String, childProductionId: String)
   case UnknownConditionRealizationId(productionId: String, realizationId: String, childRealizationId: String)
+  case UnknownConditionOutputRole(productionId: String, realizationId: String, role: PsiOutputRoleId)
   case DuplicateTerminalId(productionId: String, terminalId: String)
   case DuplicateAccessorObligation(productionId: String, surfaceId: String)
   case DuplicateOutputId(productionId: String, outputId: String)
@@ -110,6 +111,7 @@ private[metallurgy] enum CatalogValidationError:
   case AmbiguousScenarioRealization(productionId: String, realizationIds: Vector[String])
   case MissingScenarioOccurrenceOwner(instance: ProductionInstanceId, ownerNodeId: Long)
   case MissingScenarioOccurrenceContext(instance: ProductionInstanceId, occurrence: ProductionOccurrenceId)
+  case InvalidOwnedRootRoute(productionId: String, route: OwnedRootRoute, reason: String)
 
 private[metallurgy] object RuntimeRealizationSelector:
   def validate(catalog: Scala3PsiProductionCatalog, runtime: CompilerRuntimeInventory): Vector[CatalogValidationError] =
@@ -183,6 +185,20 @@ private[metallurgy] object RuntimeRealizationSelector:
     while pending.nonEmpty do
       val instance = pending.pop()
       if discovered.add(instance) then children(instance).reverseIterator.foreach(pending.push)
+    val runtimeParents                                                         = discovered.toVector
+      .flatMap(parent =>
+        children(parent).flatMap(child =>
+          child.occurrence.map(occurrence =>
+            child -> RuntimeParentEdge(parent, ProductionInstanceLineage.relativePath(parent, occurrence))
+          )
+        )
+      )
+      .groupMap(_._1)(_._2)
+    def position(instance: ProductionInstanceId): ParserNodePosition           = instance.kind match
+      case InventoryKind.Node       => nodes(instance.valueId).position
+      case InventoryKind.Product    =>
+        runtime.products.find(_.id == instance.valueId).fold[ParserNodePosition](ParserNodePosition.Absent)(_.position)
+      case InventoryKind.Positioned => ParserNodePosition.Absent
     discovered.foreach: instance =>
       val row      = rows(instance.kind -> instance.valueId)
       val contexts = instance.occurrence match
@@ -207,7 +223,16 @@ private[metallurgy] object RuntimeRealizationSelector:
             context,
             row.sourceClassification,
             row.scannerTokenKinds,
-            row.directNodeEvidence
+            row.directNodeEvidence,
+            route =>
+              OwnedRootRouteMatcher.matches(
+                instance,
+                route,
+                runtimeParents,
+                selected,
+                candidate => rows(candidate.kind -> candidate.valueId).prefix,
+                position
+              )
           )
         )
         .map(_.map(_.id))
@@ -291,8 +316,12 @@ private[metallurgy] object RuntimeRealizationSelector:
                 case ChildOccurrenceSelector.Exact(index) => values.lift(index)
               child.exists(candidate =>
                 condition.expected match
-                  case ChildOutcomeExpectation.Production(id)  => selected.get(candidate).exists(_.id == id)
-                  case ChildOutcomeExpectation.Realization(id) => resolved.get(candidate).exists(_.exists(_.id == id))
+                  case ChildOutcomeExpectation.Production(id)   => selected.get(candidate).exists(_.id == id)
+                  case ChildOutcomeExpectation.Realization(id)  => resolved.get(candidate).exists(_.exists(_.id == id))
+                  case ChildOutcomeExpectation.OutputRole(role) =>
+                    resolved
+                      .get(candidate)
+                      .exists(_.exists(_.template.composites.exists(_.outputRoleId == role)))
               )
           val matches       = matching match
             case Vector() => Vector.empty
@@ -359,9 +388,101 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
     val errors                 = Vector.newBuilder[CatalogValidationError]
     duplicates(catalog.productions.map(_.id)).foreach(id => errors += CatalogValidationError.DuplicateProductionId(id))
     val productionIds          = catalog.productions.map(_.id).toSet
+    val productionsById        = catalog.productions.groupBy(_.id)
+    val directRootOwners       = Set("DefDef", "ValDef").flatMap: owner =>
+      Set("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
+        InventoryAncestor(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("preRhs"))) ->
+          InventoryAncestor(
+            InventoryKind.Node,
+            outer,
+            Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
+          )
+    val reviewedRootOwners     = directRootOwners + (
+      InventoryAncestor(InventoryKind.Node, "ValDef", Vector(CatalogPathSegment.NamedField("preRhs"))) ->
+        InventoryAncestor(
+          InventoryKind.Node,
+          "Block",
+          Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+        )
+    )
     val compilerPrefixes       = catalog.productions.map(_.pattern.prefix).toSet ++ coverage.collect:
       case CatalogValidationError.UncoveredCompilerShape(_, prefix, _, _)    => prefix
       case CatalogValidationError.AmbiguousCompilerShape(_, prefix, _, _, _) => prefix
+    catalog.productions.foreach: production =>
+      production.pattern.occurrences.foreach:
+        case CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(routes), _, _) =>
+          if production.effectiveOutputRealizations.exists(_.template.composites.nonEmpty) then
+            routes.foreach(route =>
+              errors += CatalogValidationError.InvalidOwnedRootRoute(
+                production.id,
+                route,
+                "descendant production emits output"
+              )
+            )
+          duplicates(routes).foreach(route =>
+            errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "duplicate route")
+          )
+          val structuralClaims = production.terminals.filter(_.claimsStructuralEvidence)
+          val validClaim       = structuralClaims match
+            case Vector(terminal) =>
+              terminal.selector == TerminalIntervalSelector.WholeProduction &&
+              terminal.target == TerminalLeafTarget.Parent &&
+              Set(OccurrenceCardinality.ExactlyOne, OccurrenceCardinality.Optional)(terminal.cardinality)
+            case _                => false
+          if !validClaim then
+            routes.foreach(route =>
+              errors += CatalogValidationError.InvalidOwnedRootRoute(
+                production.id,
+                route,
+                "descendant must have one whole-production parent claim"
+              )
+            )
+          routes.foreach: route =>
+            if route.descendantPath.isEmpty then
+              errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "empty descendant path")
+            else if (route.descendantPath :+ route.rootOwner :+ route.outerOwner).exists(_.path.isEmpty) then
+              errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "empty product-field edge")
+            route.repeatedEdge.foreach: repeated =>
+              val reviewedEdge = InventoryAncestor(
+                InventoryKind.Node,
+                "Select",
+                Vector(CatalogPathSegment.NamedField("qualifier"))
+              )
+              if repeated.insertionIndex <= 0 || repeated.insertionIndex > route.descendantPath.size ||
+                repeated.edge != reviewedEdge ||
+                route.descendantPath.lift(repeated.insertionIndex - 1).forall(_ != repeated.edge)
+              then errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "invalid repeated edge")
+            if !reviewedRootOwners(route.rootOwner -> route.outerOwner) then
+              errors += CatalogValidationError.InvalidOwnedRootRoute(
+                production.id,
+                route,
+                "unreviewed root owner boundary"
+              )
+            productionsById.get(route.rootProductionId) match
+              case None                                                                 =>
+                errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "missing root production")
+              case Some(values) if values.size != 1                                     =>
+                errors += CatalogValidationError.InvalidOwnedRootRoute(
+                  production.id,
+                  route,
+                  "ambiguous root production"
+                )
+              case Some(Vector(root)) if !OwnedRootRouteMatcher.isCompletePayload(root) =>
+                errors += CatalogValidationError.InvalidOwnedRootRoute(
+                  production.id,
+                  route,
+                  "root is not one complete payload"
+                )
+              case Some(Vector(root))
+                  if route.descendantPath.last.ownerKind != root.pattern.kind ||
+                    route.descendantPath.last.ownerPrefix != root.pattern.prefix =>
+                errors += CatalogValidationError.InvalidOwnedRootRoute(
+                  production.id,
+                  route,
+                  "final edge does not identify the root production shape"
+                )
+              case _                                                                    => ()
+        case _                                                                                    => ()
     val catalogHostSurfaceIds  = catalog.productions
       .flatMap: production =>
         val terminals = production.terminals.collect:
@@ -448,6 +569,13 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                       .filter(production => child.productionIds(production.id))
                       .exists(_.effectiveOutputRealizations.exists(_.id == id)) =>
                   errors += CatalogValidationError.UnknownConditionRealizationId(p.id, realization.id, id)
+                case ChildOutcomeExpectation.OutputRole(role)
+                    if !catalog.productions
+                      .filter(production => child.productionIds(production.id))
+                      .exists(
+                        _.effectiveOutputRealizations.exists(_.template.composites.exists(_.outputRoleId == role))
+                      ) =>
+                  errors += CatalogValidationError.UnknownConditionOutputRole(p.id, realization.id, role)
                 case _                                                                  => ()
       )
       realizations.foreach { realization =>
@@ -751,26 +879,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory
   ): Vector[CatalogValidationError] =
-    val catalogProducts = catalog.productions.collect:
-      case production if production.pattern.kind == InventoryKind.Product => production.pattern.prefix
-    compiler.shapes
-      .filter(shape => shape.kind != InventoryKind.Product || catalogProducts.contains(shape.prefix))
-      .flatMap: shape =>
-        val contexts = if shape.contexts.isEmpty then Vector(None) else shape.contexts.map(Some(_))
-        for
-          context <- contexts
-          selected = CatalogShapeMatcher.select(
-                       catalog,
-                       shape.kind,
-                       shape.prefix,
-                       shape.observation,
-                       context,
-                       shape.sourceClassification,
-                       shape.scannerTokenKinds,
-                       shape.directNodeEvidence
-                     )
-          error   <- coverageError(shape.kind, shape.prefix, context, shape.sourceClassification, selected)
-        yield error
+    RuntimeRealizationSelector.validate(catalog, compiler)
 
   private def aggregatedCoverage(
       catalog: Scala3PsiProductionCatalog,

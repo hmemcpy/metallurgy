@@ -198,8 +198,7 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
     Vector(
       "import scala.language.experimental.namedTypeArguments\nval mixed = pair[Int, B = String](1, \"text\")\n",
       "import scala.language.experimental.namedTypeArguments\ntype Bad = F[A = Int]\n",
-      "import scala.language.experimental.namedTypeArguments\nval value = 1\nval bad = pair[A = Int](value, \"text\")\n",
-      "import scala.language.experimental.namedTypeArguments\nval bad = target.make[A = Int]\n"
+      "import scala.language.experimental.namedTypeArguments\nval value = 1\nval bad = pair[A = Int](value, \"text\")\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/AppliedNamedClosed${index + 1}.scala", source)
       val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
@@ -215,6 +214,19 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
+
+    val selectedSource =
+      "import scala.language.experimental.namedTypeArguments\nval bad = target.make[A = Int]\n"
+    val selected       = physical("AppliedNamedSelected.scala", selectedSource)
+    val payloads       = PsiTreeUtil
+      .findChildrenOfType(selected, classOf[MetallurgyExpressionPayload])
+      .asScala
+      .toVector
+    assertEquals(1, payloads.count(_.getText == "target.make[A = Int]"))
+    assertEquals(payloads.size, payloads.map(_.getTextRange).distinct.size)
+    assertTrue(PsiTreeUtil.findChildrenOfType(selected, classOf[ScReferenceExpression]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(selected, classOf[ScGenericCall]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(selected, classOf[ScMethodCall]).isEmpty)
 
   def testTypeInferenceFixtureSourcesKeepMarkerAndRightTriviaOutsideTheExactExpression(): Unit =
     Vector(

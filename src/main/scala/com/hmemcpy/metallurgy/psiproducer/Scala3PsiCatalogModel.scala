@@ -58,6 +58,9 @@ private[metallurgy] object GrammarRoleId:
   val TermReference             = GrammarRoleId("scala.expression.reference.term")
   val ThisReference             = GrammarRoleId("scala.expression.reference.this")
   val QualifiedThisReference    = GrammarRoleId("scala.expression.reference.this-qualified")
+  val SelectionExpression       = GrammarRoleId("scala.expression.selection")
+  val SuperReference            = GrammarRoleId("scala.expression.reference.super")
+  val SelectionQualifier        = GrammarRoleId("scala.expression.selection.qualifier")
   val ExpressionIntegerLiteral  = GrammarRoleId("scala.expression.literal.integer")
   val ExpressionLongLiteral     = GrammarRoleId("scala.expression.literal.long")
   val ExpressionFloatLiteral    = GrammarRoleId("scala.expression.literal.float")
@@ -281,6 +284,8 @@ private[metallurgy] object PsiOutputRoleId:
   val ExpressionPayload     = PsiOutputRoleId("scala.expression.payload")
   val TermReference         = PsiOutputRoleId("scala.expression.reference.term")
   val ThisReference         = PsiOutputRoleId("scala.expression.reference.this")
+  val SelectionExpression   = PsiOutputRoleId("scala.expression.selection")
+  val SuperReference        = PsiOutputRoleId("scala.expression.reference.super")
   val IntegerExpression     = PsiOutputRoleId("scala.expression.literal.integer")
   val LongExpression        = PsiOutputRoleId("scala.expression.literal.long")
   val FloatExpression       = PsiOutputRoleId("scala.expression.literal.float")
@@ -388,6 +393,9 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.TermReference,
       GrammarRoleId.ThisReference,
       GrammarRoleId.QualifiedThisReference,
+      GrammarRoleId.SelectionExpression,
+      GrammarRoleId.SuperReference,
+      GrammarRoleId.SelectionQualifier,
       GrammarRoleId.ExpressionIntegerLiteral,
       GrammarRoleId.ExpressionLongLiteral,
       GrammarRoleId.ExpressionFloatLiteral,
@@ -477,6 +485,8 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.ExpressionPayload,
       PsiOutputRoleId.TermReference,
       PsiOutputRoleId.ThisReference,
+      PsiOutputRoleId.SelectionExpression,
+      PsiOutputRoleId.SuperReference,
       PsiOutputRoleId.IntegerExpression,
       PsiOutputRoleId.LongExpression,
       PsiOutputRoleId.FloatExpression,
@@ -729,6 +739,7 @@ private[metallurgy] final case class LocalOutputCompositeTemplate(
 private[metallurgy] enum ChildOutcomeExpectation:
   case Production(productionId: String)
   case Realization(realizationId: String)
+  case OutputRole(role: PsiOutputRoleId)
 private[metallurgy] final case class ChildOutcomeCondition(
     roleId: String,
     occurrence: ChildOccurrenceSelector,

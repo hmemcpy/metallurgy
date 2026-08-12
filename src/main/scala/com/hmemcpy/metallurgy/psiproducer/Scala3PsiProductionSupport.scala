@@ -68,6 +68,8 @@ private[psiproducer] object Scala3PsiProductionSupport:
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScReferenceExpressionImpl"
   val ThisReferenceSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScThisReferenceImpl"
+  val SuperReferenceSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScSuperReferenceImpl"
   val ParameterizedTypeSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
   val TypeArgumentsSurface         =
@@ -695,6 +697,18 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val ThisReferenceAccessors            = AtomicExpressionAccessors ++ Vector(
     AccessorObligation(s"$ThisReferenceSurface#reference()Lscala/Option;", required = true),
     AccessorObligation(s"$ThisReferenceSurface#refTemplate()Lscala/Option;", required = true)
+  )
+  val SelectionExpressionAccessors      = TermReferenceAccessors
+  val SuperReferenceAccessors           = AtomicExpressionAccessors ++ Vector(
+    AccessorObligation(s"$SuperReferenceSurface#isHardCoded()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$SuperReferenceSurface#staticSuper()Lscala/Option;", required = true, SurfaceFactKind.Method),
+    AccessorObligation(
+      s"$SuperReferenceSurface#staticSuperName()Ljava/lang/String;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(s"$SuperReferenceSurface#drvTemplate()Lscala/Option;", required = true),
+    AccessorObligation(s"$SuperReferenceSurface#reference()Lscala/Option;", required = true)
   )
   val ParameterizedTypeAccessors        = Vector(
     AccessorObligation(

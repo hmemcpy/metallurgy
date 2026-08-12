@@ -17,6 +17,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "import-selector-absent",
         "import-selector-given-bound-absent",
         "atomic-this-empty-qualifier",
+        "selection-super-empty-mixin",
         "template-absent-tree"
       ),
       GrammarRoleId.StableReference           -> Set(
@@ -37,8 +38,16 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "atomic-this-qualifier"
       ),
       GrammarRoleId.TermReference             -> Set("atomic-term-ident"),
-      GrammarRoleId.ThisReference             -> Set("atomic-this-unqualified"),
-      GrammarRoleId.QualifiedThisReference    -> Set("atomic-this-qualified"),
+      GrammarRoleId.ThisReference             -> Set("atomic-this-unqualified", "selection-this-unqualified"),
+      GrammarRoleId.QualifiedThisReference    -> Set("atomic-this-qualified", "selection-this-qualified"),
+      GrammarRoleId.SelectionExpression       -> Set("selection-expression"),
+      GrammarRoleId.SuperReference            -> Set("selection-super-reference"),
+      GrammarRoleId.SelectionQualifier        -> Set(
+        "selection-qualifier-ident",
+        "selection-super-this-unqualified",
+        "selection-super-this-qualified",
+        "selection-super-mixin"
+      ),
       GrammarRoleId.ExpressionIntegerLiteral  -> Set("atomic-literal-integer"),
       GrammarRoleId.ExpressionLongLiteral     -> Set("atomic-literal-long"),
       GrammarRoleId.ExpressionFloatLiteral    -> Set("atomic-literal-float"),
@@ -315,6 +324,12 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.OutputFreeExpression      -> Set(
         "payload-descendant-val",
         "payload-descendant-var",
+        "payload-output-free-ident",
+        "payload-output-free-select",
+        "payload-descendant-named-arg",
+        "payload-qualifier-ident",
+        "payload-qualifier-this",
+        "payload-qualifier-super",
         "type-application-output-free-ident",
         "type-application-output-free-number",
         "type-application-output-free-literal"
@@ -577,6 +592,139 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertTrue(current.rows.exists(_.contains("\timport-selector-absent\t")))
     assertNotEquals(current.rows, changed.rows)
     assertNotEquals(current.fingerprint, changed.fingerprint)
+
+  @Test def outputRoleConditionsAreValidatedAndRemainAstOnly(): Unit =
+    val catalog     = Scala3PsiProductionCatalog.Reviewed
+    val selection   = catalog.productions.find(_.id == "selection-expression").get
+    val recursive   = selection.outputRealizations.find(_.id == "native-recursive").get
+    val changedRole = recursive.copy(conditions =
+      recursive.conditions.map(
+        _.copy(expected = ChildOutcomeExpectation.OutputRole(PsiOutputRoleId.ThisReference))
+      )
+    )
+    val changed     = mutateProduction(catalog, selection.id)(
+      _.copy(outputRealizations =
+        selection.outputRealizations.map(value => if value.id == recursive.id then changedRole else value)
+      )
+    )
+    val unknownRole = PsiOutputRoleId("test.output.unknown-condition")
+    val invalid     = mutateProduction(catalog, selection.id)(
+      _.copy(outputRealizations =
+        selection.outputRealizations.map(value =>
+          if value.id == recursive.id then
+            value.copy(conditions =
+              value.conditions.map(
+                _.copy(expected = ChildOutcomeExpectation.OutputRole(unknownRole))
+              )
+            )
+          else value
+        )
+      )
+    )
+    val compiler    = aggregate(Vector(inventory(snapshot("/output-role-condition", 1, Vector.empty))))
+    val errors      = Scala3PsiProductionCatalogValidator.validate(invalid, compiler, surfaces(invalid))
+
+    assertTrue(
+      errors.contains(CatalogValidationError.UnknownConditionOutputRole(selection.id, recursive.id, unknownRole))
+    )
+    assertNotEquals(
+      Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
+      Scala3PsiProductionCatalog.catalogPlanStructure(changed).fingerprint
+    )
+    assertEquals(persisted(catalog).rows, persisted(changed).rows)
+    assertEquals(persisted(catalog).fingerprint, persisted(changed).fingerprint)
+
+  @Test def validatorRejectsInvalidOwnedPayloadRootDeclarations(): Unit =
+    val reviewed                                    = Scala3PsiProductionCatalog.Reviewed
+    val descendant                                  = reviewed.productions.find(_.id == "payload-output-free-ident").get
+    val occurrence                                  = descendant.pattern.occurrences.collectFirst:
+      case value @ CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(_), _, _) => value
+    val route                                       = occurrence.get.context match
+      case ContextPattern.DescendantOfOwnedRoot(routes) => routes.head
+      case _                                            => throw new AssertionError("expected owned-root route")
+    val compiler                                    = aggregate(Vector(inventory(snapshot("/owned-root-validation", 1, Vector.empty))))
+    def errors(catalog: Scala3PsiProductionCatalog) =
+      Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces(catalog))
+    def withRoute(value: OwnedRootRoute)            = mutateProduction(reviewed, descendant.id): production =>
+      production.copy(pattern =
+        production.pattern.copy(occurrences =
+          Vector(
+            occurrence.get.copy(context = ContextPattern.DescendantOfOwnedRoot(Vector(value)))
+          )
+        )
+      )
+
+    val missingRoute = route.copy(rootProductionId = "missing-root")
+    assertTrue(
+      errors(withRoute(missingRoute)).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, missingRoute, "missing root production")
+      )
+    )
+
+    val nonPayloadRoute = route.copy(rootProductionId = "selection-expression")
+    assertTrue(
+      errors(withRoute(nonPayloadRoute)).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, nonPayloadRoute, "root is not one complete payload")
+      )
+    )
+
+    val duplicated = withRoute(route).copy(
+      productions = reviewed.productions :+ reviewed.productions.find(_.id == route.rootProductionId).get
+    )
+    assertTrue(
+      errors(duplicated).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, route, "ambiguous root production")
+      )
+    )
+
+    val rootOutput = reviewed.productions.find(_.id == route.rootProductionId).get.outputTemplate
+    val emitting   = mutateProduction(withRoute(route), descendant.id)(_.copy(outputTemplate = rootOutput))
+    assertTrue(
+      errors(emitting).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, route, "descendant production emits output")
+      )
+    )
+
+    val selectQualifier = InventoryAncestor(
+      InventoryKind.Node,
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier"))
+    )
+    val invalidIndex    = route.copy(repeatedEdge = Some(RepeatedOwnedRootEdge(0, selectQualifier)))
+    assertTrue(
+      errors(withRoute(invalidIndex)).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, invalidIndex, "invalid repeated edge")
+      )
+    )
+
+    val unknownEdge = route.copy(repeatedEdge =
+      Some(
+        RepeatedOwnedRootEdge(
+          1,
+          InventoryAncestor(
+            InventoryKind.Node,
+            "Select",
+            Vector(CatalogPathSegment.NamedField("unknown"))
+          )
+        )
+      )
+    )
+    assertTrue(
+      errors(withRoute(unknownEdge)).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(descendant.id, unknownEdge, "invalid repeated edge")
+      )
+    )
+
+    val noClaim = mutateProduction(withRoute(route), descendant.id)(_.copy(terminals = Vector.empty))
+    assertTrue(
+      errors(noClaim).contains(
+        CatalogValidationError.InvalidOwnedRootRoute(
+          descendant.id,
+          route,
+          "descendant must have one whole-production parent claim"
+        )
+      )
+    )
 
   @Test def everyPersistedCompatibilityObligationChangesPersistedIdentity(): Unit =
     val catalog      = Scala3PsiProductionCatalog.Reviewed

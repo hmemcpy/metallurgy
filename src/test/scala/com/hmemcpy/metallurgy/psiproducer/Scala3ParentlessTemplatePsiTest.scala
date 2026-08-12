@@ -93,7 +93,7 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
     assertEquals(Vector("A"), aliases.map(_.name))
     assertTrue(aliases.forall(alias => alias.lowerTypeElement.isEmpty && alias.upperTypeElement.isEmpty))
     assertEquals(
-      Vector("List(1).head", "List(1)", "List", "1", "(x, y)", "x", "y"),
+      Vector("List(1).head", "List(1)", "List", "1", "(x, y)"),
       payloads.map(_.getText)
     )
     assertTrue(
@@ -243,7 +243,6 @@ final class Scala3ParentlessTemplatePsiTest extends Scala3CompatTestCase:
       .toVector
     Vector(
       "1",
-      "topNumber",
       "List(1)",
       "List(1).head",
       "(topNumber, topIdent)",

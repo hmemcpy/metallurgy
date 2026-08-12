@@ -113,6 +113,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                           .get(productionId)
                           .exists(_.effectiveOutputRealizations.exists(_.id == realizationId))
                       )
+                    case ChildOutcomeExpectation.OutputRole(role)           =>
+                      child.productionIds.filter(productionId =>
+                        productionsById
+                          .get(productionId)
+                          .exists(
+                            _.effectiveOutputRealizations.exists(_.template.composites.exists(_.outputRoleId == role))
+                          )
+                      )
       val next                  = persistedRoutingIds ++ routingParents ++ conditionDependencies
       expanded = next.size != persistedRoutingIds.size
       persistedRoutingIds = next
@@ -327,6 +335,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiTemplateProductions.TemplateSegment ++
       Scala3PsiDefinitionProductions.DefinitionSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
+      Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
       Scala3PsiDefinitionPayloadProductions.DefinitionPayloadSegment ++
       Scala3PsiTupleFunctionTypeProductions.TupleFunctionPrefixSegment ++
       Scala3PsiCaptureTypeProductions.CaptureFunctionSegment ++

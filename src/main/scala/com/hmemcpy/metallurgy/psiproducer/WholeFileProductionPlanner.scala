@@ -204,6 +204,15 @@ private[metallurgy] object WholeFileProductionPlanner:
           children(instance).reverseIterator.foreach(pending.push)
       val ordered                                                                                 = instances.result()
       val selected                                                                                = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Scala3PsiProduction]
+      val runtimeParents                                                                          = ordered
+        .flatMap(parent =>
+          children(parent).flatMap(child =>
+            child.occurrence.map(occurrence =>
+              child -> RuntimeParentEdge(parent, ProductionInstanceLineage.relativePath(parent, occurrence))
+            )
+          )
+        )
+        .groupMap(_._1)(_._2)
       ordered.foreach: instance =>
         val row        = rows.getOrElse(
           instance.kind -> instance.valueId,
@@ -218,7 +227,16 @@ private[metallurgy] object WholeFileProductionPlanner:
             context,
             row.sourceClassification,
             row.scannerTokenKinds,
-            row.directNodeEvidence
+            row.directNodeEvidence,
+            route =>
+              OwnedRootRouteMatcher.matches(
+                instance,
+                route,
+                runtimeParents,
+                selected,
+                candidate => rows(candidate.kind -> candidate.valueId).prefix,
+                position
+              )
           )
         )
         val distinct   = selections.map(_._2.map(_.id)).distinct
@@ -516,8 +534,10 @@ private[metallurgy] object WholeFileProductionPlanner:
           val childConditions    = realization.conditions.forall(condition =>
             occurrence(condition).exists(child =>
               condition.expected match
-                case ChildOutcomeExpectation.Production(id)  => selected(child).id == id
-                case ChildOutcomeExpectation.Realization(id) => resolvedRealizations(child).id == id
+                case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
+                case ChildOutcomeExpectation.Realization(id)  => resolvedRealizations(child).id == id
+                case ChildOutcomeExpectation.OutputRole(role) =>
+                  resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
             )
           )
           val evidenceConditions = childConditions && realization.evidenceConditions.forall:

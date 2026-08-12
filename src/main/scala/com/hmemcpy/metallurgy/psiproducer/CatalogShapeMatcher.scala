@@ -3,6 +3,18 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.hmemcpy.metallurgy.pc.*
 
 private[metallurgy] object CatalogShapeMatcher:
+  private def routeLineageMayMatch(route: OwnedRootRoute, lineage: Vector[InventoryAncestor]): Boolean =
+    val expected = route.descendantPath :+ route.rootOwner :+ route.outerOwner
+    route.repeatedEdge match
+      case None           => lineage.startsWith(expected)
+      case Some(repeated) =>
+        if repeated.insertionIndex < 0 || repeated.insertionIndex > route.descendantPath.size then false
+        else
+          val before    = expected.take(repeated.insertionIndex)
+          val after     = expected.drop(repeated.insertionIndex)
+          val remaining = lineage.drop(repeated.insertionIndex).dropWhile(_ == repeated.edge)
+          lineage.startsWith(before) && remaining.startsWith(after)
+
   private def scannerEvidenceMatches(
       pattern: ScannerEvidencePattern,
       observed: Vector[ParserScannerTokenKind]
@@ -145,7 +157,11 @@ private[metallurgy] object CatalogShapeMatcher:
       .forall: (catalogField, compilerField) =>
         catalogField.name == compilerField.name && covers(catalogField.value, compilerField.value)
 
-  def contextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
+  def contextMatches(
+      pattern: ContextPattern,
+      context: Option[InventoryContext],
+      ownedRootMatches: OwnedRootRoute => Boolean = _ => false
+  ): Boolean = pattern match
     case ContextPattern.Any                                                                                  => true
     case ContextPattern.Root                                                                                 => context.isEmpty
     case ContextPattern.Parent(kind, owner, p)                                                               =>
@@ -190,6 +206,10 @@ private[metallurgy] object CatalogShapeMatcher:
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
       )
+    case ContextPattern.DescendantOfOwnedRoot(routes)                                                        =>
+      context.exists: value =>
+        val lineage = InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) +: value.ancestors
+        routes.exists(route => routeLineageMayMatch(route, lineage) && ownedRootMatches(route))
     case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -275,6 +295,8 @@ private[metallurgy] object CatalogShapeMatcher:
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
       )
+    case ContextPattern.DescendantOfOwnedRoot(routes)                                                        =>
+      false
     case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -332,18 +354,28 @@ private[metallurgy] object CatalogShapeMatcher:
       context: Option[InventoryContext],
       sourceClassification: SourceClassification,
       scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
-      directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+      directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
+      ownedRootMatches: OwnedRootRoute => Boolean = _ => false
   ): Vector[Scala3PsiProduction] =
     val matched = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
         p.pattern.occurrences.exists(occurrence =>
-          contextMatches(occurrence.context, context) && occurrence.sourceClassification == sourceClassification
+          contextMatches(occurrence.context, context, ownedRootMatches) &&
+            occurrence.sourceClassification == sourceClassification
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
     )
     val scored  = matched.map: production =>
-      val specificity = production.pattern.fields
+      val ownedRootSpecificity = production.pattern.occurrences.count:
+        case CompilerProductionContextPattern(
+              ContextPattern.DescendantOfOwnedRoot(routes),
+              `sourceClassification`,
+              scannerEvidence
+            ) =>
+          scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && routes.exists(ownedRootMatches)
+        case _ => false
+      val specificity          = production.pattern.fields
         .zip(fields)
         .count:
           case (
@@ -381,7 +413,7 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             ) && CatalogShapeMatcher.matches(CatalogValuePattern.AnyOf(values), value)
           case _ => false
-      production -> (specificity + production.pattern.directNodeEvidence.size)
+      production -> (specificity + production.pattern.directNodeEvidence.size + ownedRootSpecificity)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }
 
@@ -400,10 +432,13 @@ private[metallurgy] object CatalogShapeMatcher:
         )
     )
     val scored  = matched.map: production =>
+      val ownedRootSpecificity = production.pattern.occurrences.count:
+        case CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(_), _, _) => true
+        case _                                                                               => false
       production -> (production.pattern.fields.count(field =>
         field.value match
-          case CatalogValuePattern.LowercaseName |
-              CatalogValuePattern.NonLowercaseName | CatalogValuePattern.BacktickedName =>
+          case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |
+              CatalogValuePattern.BacktickedName =>
             true
           case CatalogValuePattern.AnyOf(values) =>
             values.exists(candidate =>
@@ -412,6 +447,6 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             )
           case _                                 => false
-      ) + production.pattern.directNodeEvidence.size)
+      ) + production.pattern.directNodeEvidence.size + ownedRootSpecificity)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }

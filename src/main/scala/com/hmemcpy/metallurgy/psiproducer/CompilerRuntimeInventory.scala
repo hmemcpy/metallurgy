@@ -30,6 +30,17 @@ private[metallurgy] final case class InventoryAncestor(
     ownerPrefix: String,
     path: Vector[CatalogPathSegment]
 )
+private[metallurgy] final case class RepeatedOwnedRootEdge(
+    insertionIndex: Int,
+    edge: InventoryAncestor
+)
+private[metallurgy] final case class OwnedRootRoute(
+    rootProductionId: String,
+    descendantPath: Vector[InventoryAncestor],
+    rootOwner: InventoryAncestor,
+    outerOwner: InventoryAncestor,
+    repeatedEdge: Option[RepeatedOwnedRootEdge] = None
+)
 private[metallurgy] final case class InventoryAncestorEvidence(
     scannerTokenKinds: Vector[ParserScannerTokenKind],
     directNodeEvidence: Vector[DirectNodeFieldEvidence]
@@ -301,6 +312,7 @@ private[metallurgy] enum ContextPattern:
       ancestors: Vector[InventoryAncestor],
       anchor: InventoryAncestor
   )
+  case DescendantOfOwnedRoot(routes: Vector[OwnedRootRoute])
   case ParentUnderAnchorThroughWithParent(
       ownerKind: InventoryKind,
       ownerPrefix: String,

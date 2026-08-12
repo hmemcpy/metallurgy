@@ -132,6 +132,80 @@ private[metallurgy] object ProductionInstanceLineage:
       case InventoryKind.Positioned | InventoryKind.Product => parent.occurrence.fold(0)(_.fieldPath.size)
     childOccurrence.fieldPath.drop(retainedPrefixLength)
 
+private[metallurgy] final case class RuntimeParentEdge(
+    parent: ProductionInstanceId,
+    path: Vector[ParserFieldPathSegment]
+)
+
+private[metallurgy] object OwnedRootRouteMatcher:
+  def isCompletePayload(production: Scala3PsiProduction): Boolean =
+    production.effectiveOutputRealizations match
+      case Vector(realization) =>
+        realization.template.composites.count(output =>
+          output.parentId.isEmpty && output.range == OutputRangeDeclaration.CompilerPosition &&
+            output.outputRoleId == PsiOutputRoleId.ExpressionPayload &&
+            output.realization == OutputCompositeRealization.Once
+        ) == 1 && realization.template.composites.count(_.parentId.isEmpty) == 1
+      case _                   => false
+
+  def matches(
+      candidate: ProductionInstanceId,
+      route: OwnedRootRoute,
+      parents: Map[ProductionInstanceId, Vector[RuntimeParentEdge]],
+      selected: collection.Map[ProductionInstanceId, Scala3PsiProduction],
+      prefix: ProductionInstanceId => String,
+      position: ProductionInstanceId => ParserNodePosition
+  ): Boolean =
+    def next(current: ProductionInstanceId, expected: InventoryAncestor): Option[ProductionInstanceId] =
+      parents.get(current) match
+        case Some(Vector(edge))
+            if prefix(edge.parent) == expected.ownerPrefix && edge.parent.kind == expected.ownerKind &&
+              InventoryContextLineage.normalized(edge.path) == expected.path =>
+          Some(edge.parent)
+        case _ => None
+
+    def repeat(values: Vector[ProductionInstanceId], edge: InventoryAncestor): Option[Vector[ProductionInstanceId]] =
+      next(values.last, edge) match
+        case Some(parent) if values.contains(parent) => None
+        case Some(parent)                            => repeat(values :+ parent, edge)
+        case None                                    => Some(values)
+    val fixedPath                                                                                                   = route.descendantPath.zipWithIndex.foldLeft(Option(Vector(candidate))):
+      case (current, (expected, index)) =>
+        current.flatMap: values =>
+          val repeated = route.repeatedEdge match
+            case Some(RepeatedOwnedRootEdge(`index`, edge)) => repeat(values, edge)
+            case _                                          => Some(values)
+          repeated.flatMap(path => next(path.last, expected).map(path :+ _))
+    val traversed                                                                                                   = fixedPath.flatMap: values =>
+      route.repeatedEdge match
+        case Some(RepeatedOwnedRootEdge(index, edge)) if index == route.descendantPath.size => repeat(values, edge)
+        case _                                                                              => Some(values)
+    traversed.exists: values =>
+      val root          = values.last
+      val intermediates = values.slice(1, values.size - 1)
+      val ownership     =
+        selected
+          .get(root)
+          .exists(production => production.id == route.rootProductionId && isCompletePayload(production)) &&
+          intermediates.forall(instance =>
+            selected
+              .get(instance)
+              .exists(_.effectiveOutputRealizations.forall(_.template.composites.isEmpty))
+          )
+      val bounded       = for
+        definition <- next(root, route.rootOwner)
+        _          <- next(definition, route.outerOwner)
+      yield ()
+      val contained     = (position(candidate), position(root)) match
+        case (
+              ParserNodePosition.Positioned(candidateRange, _, _),
+              ParserNodePosition.Positioned(rootRange, _, _)
+            ) =>
+          rootRange.startOffset <= candidateRange.startOffset && candidateRange.endOffset <= rootRange.endOffset
+        case (ParserNodePosition.Absent, ParserNodePosition.Positioned(_, _, _)) => true
+        case _                                                                   => false
+      ownership && bounded.nonEmpty && contained
+
 private[metallurgy] final case class CompositeInstanceId(
     origin: ProductionInstanceId,
     localOutputId: String,

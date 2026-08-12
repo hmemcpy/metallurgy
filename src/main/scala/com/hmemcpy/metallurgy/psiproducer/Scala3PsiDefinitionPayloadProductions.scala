@@ -99,7 +99,13 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "payload-descendant-block",
     "payload-descendant-infix",
     "payload-descendant-type-apply-positional",
-    "payload-descendant-type-apply-named"
+    "payload-descendant-type-apply-named",
+    "payload-output-free-ident",
+    "payload-output-free-select",
+    "payload-qualifier-ident",
+    "payload-qualifier-this",
+    "payload-qualifier-super",
+    "payload-descendant-named-arg"
   )
 
   private val payloadRootIds            = payloadExpressionProductionIds.filter(_.startsWith("definition-payload-"))
@@ -169,6 +175,74 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
   private val ExpressionTypeApplicationAnchors = Vector("DefDef", "ValDef").map(owner =>
     InventoryAncestor(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("preRhs")))
   )
+
+  private val DirectPayloadOwners = Vector("DefDef", "ValDef").flatMap: definition =>
+    Vector("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
+      InventoryAncestor(InventoryKind.Node, definition, Vector(CatalogPathSegment.NamedField("preRhs"))) ->
+        InventoryAncestor(
+          InventoryKind.Node,
+          outer,
+          Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
+        )
+
+  private def nodeEdge(owner: String, field: String, repeated: Boolean = false): InventoryAncestor =
+    InventoryAncestor(
+      InventoryKind.Node,
+      owner,
+      Vector(CatalogPathSegment.NamedField(field)) ++ Option.when(repeated)(CatalogPathSegment.RepeatedElement)
+    )
+
+  private def ownedRootRoutes(
+      rootProductionIds: Vector[String],
+      descendantPaths: Vector[Vector[InventoryAncestor]]
+  ): Vector[OwnedRootRoute] =
+    for
+      rootProductionId        <- rootProductionIds
+      descendantPath          <- descendantPaths
+      (rootOwner, outerOwner) <- DirectPayloadOwners
+    yield OwnedRootRoute(rootProductionId, descendantPath, rootOwner, outerOwner)
+
+  private val SelectionRootPaths =
+    Vector(
+      Vector(nodeEdge("Apply", "fun"))                                                -> Vector("definition-payload-apply"),
+      Vector(nodeEdge("Apply", "args", repeated = true))                              -> Vector("definition-payload-apply"),
+      Vector(nodeEdge("TypeApply", "fun"))                                            ->
+        Vector("definition-payload-type-apply-positional", "definition-payload-type-apply-named"),
+      Vector(nodeEdge("Tuple", "trees", repeated = true))                             -> Vector("definition-payload-tuple"),
+      Vector(nodeEdge("Block", "expr"))                                               -> Vector("definition-payload-block"),
+      Vector(nodeEdge("InfixOp", "left"))                                             -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("InfixOp", "op"))                                               -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("InfixOp", "right"))                                            -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("NamedArg", "arg"), nodeEdge("Apply", "args", repeated = true)) ->
+        Vector("definition-payload-apply")
+    ).flatMap: (path, rootIds) =>
+      ownedRootRoutes(rootIds, Vector(path)) ++
+        ownedRootRoutes(rootIds, Vector(nodeEdge("Select", "qualifier") +: path)).map(
+          _.copy(repeatedEdge = Some(RepeatedOwnedRootEdge(1, nodeEdge("Select", "qualifier"))))
+        )
+
+  private val LocalSelectionRootRoutes = Vector(
+    OwnedRootRoute(
+      "definition-payload-select",
+      Vector(nodeEdge("Select", "qualifier")),
+      nodeEdge("ValDef", "preRhs"),
+      nodeEdge("Block", "stats", repeated = true),
+      Some(RepeatedOwnedRootEdge(1, nodeEdge("Select", "qualifier")))
+    )
+  )
+
+  private val SelectionQualifierRootRoutes =
+    SelectionRootPaths.filter(_.descendantPath.headOption.contains(nodeEdge("Select", "qualifier"))) ++
+      LocalSelectionRootRoutes
+
+  private def qualifierRoutes(prefixes: Vector[Vector[InventoryAncestor]]): Vector[OwnedRootRoute] =
+    for
+      prefix <- prefixes
+      route  <- SelectionQualifierRootRoutes
+    yield route.copy(
+      descendantPath = prefix ++ route.descendantPath,
+      repeatedEdge = route.repeatedEdge.map(value => value.copy(insertionIndex = value.insertionIndex + prefix.size))
+    )
 
   private def expressionTypeApplicationRootOccurrences: Vector[CompilerProductionContextPattern] =
     definitionChildOccurrences("preRhs").map(_.copy(sourceClassification = SourceClassification.SourceReachable)) ++
@@ -415,7 +489,13 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
         FieldDisposition("args", FieldDispositionKind.Child)
       ),
       children = Vector(
-        ChildDeclaration("fun", "fun", ChildCardinality.ExactlyOne, "type-application-output-free-ident"),
+        ChildDeclaration(
+          "fun",
+          "fun",
+          ChildCardinality.ExactlyOne,
+          "type-application-output-free-ident",
+          Set("payload-descendant-select", "payload-output-free-select")
+        ),
         ChildDeclaration("arguments", "args", ChildCardinality.Repeated(1, None), argumentId)
       ),
       terminals = Vector(
@@ -584,7 +664,8 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
           payloadExpressionProductionIds.head,
           payloadExpressionProductionIds.tail
         )
-      )
+      ),
+      nonAtomicDefinitionChildOccurrences("preRhs")
     ),
     payloadRoot(
       "definition-payload-tuple",
@@ -669,20 +750,28 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       children: Vector[ChildDeclaration],
       grammarRoleId: GrammarRoleId = GrammarRoleId.ExpressionPayload
   ) =
-    val anchors = Vector("DefDef", "ValDef").map(owner =>
+    val anchors        = Vector("DefDef", "ValDef").map(owner =>
       InventoryAncestor(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("preRhs")))
     )
-    val parents = Vector(
-      "Apply"   -> Vector(CatalogPathSegment.NamedField("fun")),
-      "Apply"   -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
-      "Select"  -> Vector(CatalogPathSegment.NamedField("qualifier")),
-      "Tuple"   -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
-      "Block"   -> Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement),
-      "Block"   -> Vector(CatalogPathSegment.NamedField("expr")),
-      "InfixOp" -> Vector(CatalogPathSegment.NamedField("left")),
-      "InfixOp" -> Vector(CatalogPathSegment.NamedField("op")),
-      "InfixOp" -> Vector(CatalogPathSegment.NamedField("right"))
+    val parents        = Vector(
+      "Apply"     -> Vector(CatalogPathSegment.NamedField("fun")),
+      "Apply"     -> Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+      "TypeApply" -> Vector(CatalogPathSegment.NamedField("fun")),
+      "NamedArg"  -> Vector(CatalogPathSegment.NamedField("arg")),
+      "Select"    -> Vector(CatalogPathSegment.NamedField("qualifier")),
+      "Tuple"     -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+      "Block"     -> Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement),
+      "Block"     -> Vector(CatalogPathSegment.NamedField("expr")),
+      "InfixOp"   -> Vector(CatalogPathSegment.NamedField("left")),
+      "InfixOp"   -> Vector(CatalogPathSegment.NamedField("op")),
+      "InfixOp"   -> Vector(CatalogPathSegment.NamedField("right"))
     )
+    val contextParents =
+      if id == "payload-descendant-select" then parents.filterNot(_._1 == "Select")
+      else if id == "payload-descendant-ident" then
+        parents.filterNot(parent => Set("TypeApply", "NamedArg", "Select")(parent._1))
+      else parents.filterNot(_._1 == "TypeApply")
+    val outputFree     = Set("payload-output-free-ident", "payload-output-free-select").contains(id)
     Scala3PsiProduction(
       id,
       grammarRoleId,
@@ -690,23 +779,36 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
         InventoryKind.Node,
         prefix,
         fields,
-        anchors.flatMap(anchor =>
-          parents.map((parent, path) =>
+        if outputFree then
+          val routes =
+            if id == "payload-output-free-ident" then
+              val excluded = Set(nodeEdge("Select", "qualifier"), nodeEdge("TypeApply", "fun"))
+              SelectionRootPaths.filterNot(route => route.descendantPath.headOption.exists(excluded))
+            else SelectionRootPaths ++ LocalSelectionRootRoutes
+          Vector(
             CompilerProductionContextPattern(
-              if parent == "Apply" && path.headOption.contains(CatalogPathSegment.NamedField("args")) then
-                ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchor(
-                  InventoryKind.Node,
-                  parent,
-                  path,
-                  "fun",
-                  "TypeApply",
-                  anchor
-                )
-              else ContextPattern.ParentUnderAnchor(InventoryKind.Node, parent, path, anchor),
+              ContextPattern.DescendantOfOwnedRoot(routes),
               SourceClassification.SourceReachable
             )
           )
-        )
+        else
+          anchors.flatMap(anchor =>
+            contextParents.map((parent, path) =>
+              CompilerProductionContextPattern(
+                if parent == "Apply" && path.headOption.contains(CatalogPathSegment.NamedField("args")) then
+                  ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchor(
+                    InventoryKind.Node,
+                    parent,
+                    path,
+                    "fun",
+                    "TypeApply",
+                    anchor
+                  )
+                else ContextPattern.ParentUnderAnchor(InventoryKind.Node, parent, path, anchor),
+                SourceClassification.SourceReachable
+              )
+            )
+          )
       ),
       dispositions,
       children,
@@ -723,36 +825,46 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       RecoveryPolicy.Reject,
       ExpressionPayloadSurface,
       TargetRequirement.Compatible,
-      ExpressionPayloadAccessors,
+      if outputFree then Vector.empty else ExpressionPayloadAccessors,
       PersistenceObligations.NotApplicable,
-      Some(NavigationObligation.Self),
+      Option.when(!outputFree)(NavigationObligation.Self),
       Some(
-        LocalOutputCompositeTemplate(
-          Vector(
-            outputComposite(
-              "payload",
-              None,
-              OutputRangeDeclaration.CompilerPosition,
-              PsiOutputRoleId.ExpressionPayload,
-              ExpressionPayloadSurface,
-              ExpressionPayloadAccessors,
-              TargetRequirement.Compatible
-            )
-          ),
-          children.map(_.roleId -> Some("payload")).toMap
-        )
+        if outputFree then transparentTemplate(children.map(_.roleId)*)
+        else
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "payload",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.ExpressionPayload,
+                ExpressionPayloadSurface,
+                ExpressionPayloadAccessors,
+                TargetRequirement.Compatible
+              )
+            ),
+            children.map(_.roleId -> Some("payload")).toMap
+          )
       ),
       Vector.empty,
       None
     )
 
-  private val payloadDescendantProductions = Vector(
+  private def payloadDescendantProductions = Vector(
     payloadDescendant(
       "payload-descendant-ident",
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
       Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
       Vector.empty
+    ),
+    payloadDescendant(
+      "payload-output-free-ident",
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+      Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+      Vector.empty,
+      GrammarRoleId.OutputFreeExpression
     ),
     payloadDescendant(
       "payload-descendant-number",
@@ -813,9 +925,39 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
           "qualifier",
           ChildCardinality.ExactlyOne,
           payloadExpressionProductionIds.head,
-          payloadExpressionProductionIds.tail
+          payloadExpressionProductionIds.tail ++ Set(
+            "payload-qualifier-ident",
+            "payload-qualifier-this",
+            "payload-qualifier-super"
+          )
         )
       )
+    ),
+    payloadDescendant(
+      "payload-output-free-select",
+      "Select",
+      Vector(
+        CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
+        CompilerFieldPattern("name", CatalogValuePattern.Name)
+      ),
+      Vector(
+        FieldDisposition("qualifier", FieldDispositionKind.Child),
+        FieldDisposition("name", FieldDispositionKind.SemanticOnly)
+      ),
+      Vector(
+        ChildDeclaration(
+          "qualifier",
+          "qualifier",
+          ChildCardinality.ExactlyOne,
+          payloadExpressionProductionIds.head,
+          payloadExpressionProductionIds.tail ++ Set(
+            "payload-qualifier-ident",
+            "payload-qualifier-this",
+            "payload-qualifier-super"
+          )
+        )
+      ),
+      GrammarRoleId.OutputFreeExpression
     ),
     payloadDescendant(
       "payload-descendant-tuple",
@@ -900,7 +1042,165 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     expressionTypeApplyProduction("payload-descendant-type-apply-positional", named = false, root = false),
     expressionTypeApplyProduction("payload-descendant-type-apply-named", named = true, root = false),
     payloadLocalDefinition("payload-descendant-val", 0L, mutable = false),
-    payloadLocalDefinition("payload-descendant-var", 4097L, mutable = true)
+    payloadLocalDefinition("payload-descendant-var", 4097L, mutable = true),
+    payloadQualifierIdent,
+    payloadQualifierThis,
+    payloadQualifierSuper,
+    payloadDescendantNamedArg
+  )
+
+  private def payloadQualifierOccurrences(
+      owner: String,
+      path: Vector[CatalogPathSegment],
+      sourceClassification: SourceClassification
+  ): Vector[CompilerProductionContextPattern] =
+    val direct   = InventoryAncestor(InventoryKind.Node, owner, path)
+    val prefixes =
+      if owner == "Select" then Vector(Vector.empty)
+      else if owner == "This" then Vector(Vector(direct), Vector(direct, nodeEdge("Super", "qual")))
+      else Vector(Vector(direct))
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfOwnedRoot(qualifierRoutes(prefixes)),
+        sourceClassification
+      )
+    )
+
+  private def outputFreeQualifier(
+      id: String,
+      prefix: String,
+      fields: Vector[CompilerFieldPattern],
+      dispositions: Vector[FieldDisposition],
+      children: Vector[ChildDeclaration],
+      occurrences: Vector[CompilerProductionContextPattern],
+      directEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+  ): Scala3PsiProduction =
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.OutputFreeExpression,
+      pattern = CompilerProductionPattern(InventoryKind.Node, prefix, fields, occurrences, directEvidence),
+      dispositions = dispositions,
+      children = children,
+      terminals = Vector(
+        TerminalDeclaration(
+          s"$id-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.Optional,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = ExpressionPayloadSurface,
+      targetRequirement = TargetRequirement.Compatible,
+      accessors = Vector.empty,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = None,
+      outputTemplate = Some(transparentTemplate(children.map(_.roleId)*)),
+      outputRoleId = None
+    )
+
+  private val payloadQualifierIdent = outputFreeQualifier(
+    "payload-qualifier-ident",
+    "Ident",
+    Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
+    Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    Vector.empty,
+    payloadQualifierOccurrences(
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier")),
+      SourceClassification.SourceReachable
+    ) ++ payloadQualifierOccurrences(
+      "This",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.SourceReachable
+    ) ++ payloadQualifierOccurrences(
+      "This",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.Absent
+    ) ++ payloadQualifierOccurrences(
+      "Super",
+      Vector(CatalogPathSegment.NamedField("mix")),
+      SourceClassification.SourceReachable
+    ) ++ payloadQualifierOccurrences(
+      "Super",
+      Vector(CatalogPathSegment.NamedField("mix")),
+      SourceClassification.Absent
+    )
+  )
+
+  private val payloadQualifierThis = outputFreeQualifier(
+    "payload-qualifier-this",
+    "This",
+    Vector(CompilerFieldPattern("qual", CatalogValuePattern.NodePrefix("Ident"))),
+    Vector(FieldDisposition("qual", FieldDispositionKind.Child)),
+    Vector(ChildDeclaration("qualifier", "qual", ChildCardinality.ExactlyOne, "payload-qualifier-ident")),
+    payloadQualifierOccurrences(
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier")),
+      SourceClassification.SourceReachable
+    ) ++ payloadQualifierOccurrences(
+      "Super",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.Synthetic
+    ) ++ payloadQualifierOccurrences(
+      "Super",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private val payloadQualifierSuper = outputFreeQualifier(
+    "payload-qualifier-super",
+    "Super",
+    Vector(
+      CompilerFieldPattern("qual", CatalogValuePattern.NodePrefix("This")),
+      CompilerFieldPattern("mix", CatalogValuePattern.NodePrefix("Ident"))
+    ),
+    Vector(FieldDisposition("qual", FieldDispositionKind.Child), FieldDisposition("mix", FieldDispositionKind.Child)),
+    Vector(
+      ChildDeclaration("owner", "qual", ChildCardinality.ExactlyOne, "payload-qualifier-this"),
+      ChildDeclaration("mixin", "mix", ChildCardinality.ExactlyOne, "payload-qualifier-ident")
+    ),
+    payloadQualifierOccurrences(
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier")),
+      SourceClassification.SourceReachable
+    )
+  )
+
+  private val payloadDescendantNamedArg = outputFreeQualifier(
+    "payload-descendant-named-arg",
+    "NamedArg",
+    Vector(
+      CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)),
+      CompilerFieldPattern("arg", CatalogValuePattern.Node)
+    ),
+    Vector(
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("arg", FieldDispositionKind.Child)
+    ),
+    Vector(
+      ChildDeclaration(
+        "argument",
+        "arg",
+        ChildCardinality.ExactlyOne,
+        payloadExpressionProductionIds.head,
+        payloadExpressionProductionIds.tail
+      )
+    ),
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfOwnedRoot(
+          ownedRootRoutes(
+            Vector("definition-payload-apply"),
+            Vector(Vector(nodeEdge("Apply", "args", repeated = true)))
+          )
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
   )
 
   private def payloadLocalDefinition(id: String, flags: Long, mutable: Boolean): Scala3PsiProduction =

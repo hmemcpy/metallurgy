@@ -54,7 +54,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScReferenceExpression, ScThisReference}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScReferenceExpression, ScSuperReference, ScThisReference}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScBooleanLiteral,
   ScCharLiteral,
@@ -312,6 +312,21 @@ private[metallurgy] object NativePsiElementBindings:
           |class AtomicThisProbe:
           |  def unqualifiedThis = this
           |  def qualifiedThis = AtomicThisProbe.this
+          |trait AtomicSelectionMixin:
+          |  def member = 1
+          |class AtomicSelectionParent:
+          |  def member = 1
+          |class AtomicSelectionProbe(val source: AtomicSelectionParent) extends AtomicSelectionParent, AtomicSelectionMixin:
+          |  override def member = 2
+          |  def selected = source.member
+          |  def chained = source.toString.length
+          |  def selectedThis = this.member
+          |  def selectedQualifiedThis = AtomicSelectionProbe.this.member
+          |  def selectedSuper = super.member
+          |  def selectedMixinSuper = super[AtomicSelectionMixin].member
+          |  class Nested:
+          |    def selectedOuterSuper = AtomicSelectionProbe.super.member
+          |    def selectedOuterMixinSuper = AtomicSelectionProbe.super[AtomicSelectionMixin].member
           |trait DefinitionOwner extends TraitProbe:
           |  self: TraitProbe =>
           |  type DirectAbstract
@@ -574,6 +589,19 @@ private[metallurgy] object NativePsiElementBindings:
       case value: ScThisReference => value
     val atomicQualifiedThis                                    = functionExpression("qualifiedThis").collect:
       case value: ScThisReference => value
+    val selectionReferences                                    = Vector(
+      "selected",
+      "chained",
+      "selectedThis",
+      "selectedQualifiedThis",
+      "selectedSuper",
+      "selectedMixinSuper",
+      "selectedOuterSuper",
+      "selectedOuterMixinSuper"
+    ).flatMap(name => functionExpression(name).collect { case value: ScReferenceExpression => value })
+    val selectionSuperReferences                               = selectionReferences.flatMap(_.qualifier.collect:
+      case value: ScSuperReference => value
+    )
     val atomicInteger                                          = patternExpression("atomicInteger").collect:
       case value: ScIntegerLiteral => value
     val atomicLong                                             = patternExpression("atomicLong").collect:
@@ -662,6 +690,8 @@ private[metallurgy] object NativePsiElementBindings:
         atomicReference.orNull,
         atomicUnqualifiedThis.orNull,
         atomicQualifiedThis.orNull,
+        selectionReferences.headOption.orNull,
+        selectionSuperReferences.headOption.orNull,
         typeProjection,
         integerLiteralType,
         longLiteralType,
@@ -699,7 +729,7 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ atomicLiterals ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -866,6 +896,20 @@ private[metallurgy] object NativePsiElementBindings:
     else if atomicReference.isEmpty || atomicUnqualifiedThis.isEmpty || atomicQualifiedThis.isEmpty ||
       atomicLiterals.size != 8
     then Left("native atomic expression PSI probe is incomplete")
+    else if selectionReferences.size != 8 || selectionSuperReferences.size != 4 ||
+      selectionReferences.exists(reference =>
+        reference.qualifier.isEmpty || reference.nameId.getParent != reference || reference.refName != "member" &&
+          reference.refName != "length"
+      ) || selectionSuperReferences.map(_.getText) != Vector(
+        "super",
+        "super[AtomicSelectionMixin]",
+        "AtomicSelectionProbe.super",
+        "AtomicSelectionProbe.super[AtomicSelectionMixin]"
+      ) || selectionSuperReferences.exists(reference =>
+        reference.staticSuperName.nonEmpty != reference.getText.contains("[") ||
+          reference.reference.nonEmpty != reference.getText.startsWith("AtomicSelectionProbe.")
+      )
+    then Left("native selection or super expression accessors are inconsistent")
     else if atomicReference.exists(reference =>
         reference.qualifier.nonEmpty || reference.refName != "singletonValue" ||
           reference.nameId.getText != "singletonValue" || reference.getFirstChild != reference.nameId
@@ -941,7 +985,7 @@ private[metallurgy] object NativePsiElementBindings:
           s"expressions=${annotationExpressions.map(_.getText)}, constructors=${constructorInvocations.map(_.getText)}, " +
           s"arguments=${argumentLists.map(_.getText)}"
       )
-    else if classes.isEmpty || traits.size != 3 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
+    else if classes.isEmpty || traits.size != 4 || objects.isEmpty || enums.size != 1 || enumCases.size != 2 ||
       enumSingletonCases.size != 1 || enumClassCases.size != 1 || extendsBlocks.isEmpty || templateBodies.isEmpty ||
       primaryConstructors.isEmpty || parameterClauses.isEmpty || parameterClause.isEmpty
     then Left("native template PSI probe is incomplete")
@@ -1142,7 +1186,8 @@ private[metallurgy] object NativePsiElementBindings:
           directTypeAlias
         ).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
       then Left("native definition stub-bearing PSI element type cannot produce stubs")
-      else if (Vector(atomicReference, atomicUnqualifiedThis, atomicQualifiedThis).flatten ++ atomicLiterals).exists(
+      else if (Vector(atomicReference, atomicUnqualifiedThis, atomicQualifiedThis).flatten ++ atomicLiterals ++
+          selectionReferences ++ selectionSuperReferences).exists(
           _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
       then Left("native atomic expression element type unexpectedly produces stubs")
@@ -1295,6 +1340,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.CaptureFilter         -> ScalaElementType.CAPTURE_FILTER,
               PsiOutputRoleId.TermReference         -> atomicReference.get.getNode.getElementType,
               PsiOutputRoleId.ThisReference         -> atomicUnqualifiedThis.get.getNode.getElementType,
+              PsiOutputRoleId.SelectionExpression   -> selectionReferences.head.getNode.getElementType,
+              PsiOutputRoleId.SuperReference        -> selectionSuperReferences.head.getNode.getElementType,
               PsiOutputRoleId.IntegerExpression     -> atomicInteger.get.getNode.getElementType,
               PsiOutputRoleId.LongExpression        -> atomicLong.get.getNode.getElementType,
               PsiOutputRoleId.FloatExpression       -> atomicFloat.get.getNode.getElementType,
@@ -1401,6 +1448,8 @@ private[metallurgy] object NativePsiElementBindings:
                 "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl",
               PsiOutputRoleId.TermReference         -> surfaceId(atomicReference.get.getClass),
               PsiOutputRoleId.ThisReference         -> surfaceId(atomicUnqualifiedThis.get.getClass),
+              PsiOutputRoleId.SelectionExpression   -> surfaceId(selectionReferences.head.getClass),
+              PsiOutputRoleId.SuperReference        -> surfaceId(selectionSuperReferences.head.getClass),
               PsiOutputRoleId.IntegerExpression     -> surfaceId(atomicInteger.get.getClass),
               PsiOutputRoleId.LongExpression        -> surfaceId(atomicLong.get.getClass),
               PsiOutputRoleId.FloatExpression       -> surfaceId(atomicFloat.get.getClass),

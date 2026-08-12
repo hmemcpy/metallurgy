@@ -1,6 +1,7 @@
 com.hmemcpy.metallurgy.pc.AtomicExpressionProbeTest
 com.hmemcpy.metallurgy.pc.Scala3ParserVerticalSliceTest
 com.hmemcpy.metallurgy.pc.Scala3TypeAtomParserInventoryTest
+com.hmemcpy.metallurgy.pc.SelectionExpressionProbeTest
 com.hmemcpy.metallurgy.psiproducer.DialectFileLoadingTest
 com.hmemcpy.metallurgy.psiproducer.DialectProjectReopenTest
 com.hmemcpy.metallurgy.psiproducer.Scala3AppliedNamedTypeArgumentPsiTest
@@ -16,4 +17,5 @@ com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
 com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3RefinementAnnotatedTypePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3RepresentativeScalePsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3SelectionExpressionPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3TupleFunctionTypePsiTest

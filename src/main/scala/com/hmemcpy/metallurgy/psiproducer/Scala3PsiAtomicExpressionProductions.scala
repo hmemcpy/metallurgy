@@ -148,30 +148,34 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
   )
 
   private val thisQualifierOccurrences = Vector("DefDef", "ValDef").flatMap: owner =>
+    val anchor    = InventoryAncestor(
+      InventoryKind.Node,
+      owner,
+      Vector(CatalogPathSegment.NamedField("preRhs"))
+    )
+    val traversed = Vector(
+      InventoryAncestor(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("qualifier"))),
+      InventoryAncestor(InventoryKind.Node, "Super", Vector(CatalogPathSegment.NamedField("qual"))),
+      anchor
+    )
     Vector(
       CompilerProductionContextPattern(
-        ContextPattern.ParentUnderAnchor(
+        ContextPattern.ParentUnderAnchorThrough(
           InventoryKind.Node,
           "This",
           Vector(CatalogPathSegment.NamedField("qual")),
-          InventoryAncestor(
-            InventoryKind.Node,
-            owner,
-            Vector(CatalogPathSegment.NamedField("preRhs"))
-          )
+          traversed,
+          anchor
         ),
         SourceClassification.SourceReachable
       ),
       CompilerProductionContextPattern(
-        ContextPattern.ParentUnderAnchor(
+        ContextPattern.ParentUnderAnchorThrough(
           InventoryKind.Node,
           "This",
           Vector(CatalogPathSegment.NamedField("qual")),
-          InventoryAncestor(
-            InventoryKind.Node,
-            owner,
-            Vector(CatalogPathSegment.NamedField("preRhs"))
-          )
+          traversed,
+          anchor
         ),
         SourceClassification.Absent
       )

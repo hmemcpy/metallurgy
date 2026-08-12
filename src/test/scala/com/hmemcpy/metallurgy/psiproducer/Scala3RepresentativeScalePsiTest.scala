@@ -13,6 +13,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScWildcardTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral
+import org.jetbrains.plugins.scala.lang.psi.api.expr.ScReferenceExpression
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{ScPatternDefinition, ScTypeAliasDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.{ScTypeParam, ScTypeParamClause}
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScClass
@@ -79,17 +80,17 @@ final class Scala3RepresentativeScalePsiTest extends Scala3CompatTestCase:
     val source = s"def deep = $rhs\n"
     val file   = physical("Case11.scala", source)
 
-    val payloads = PsiTreeUtil
-      .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
+    val references = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScReferenceExpression])
       .asScala
       .toVector
       .sortBy(_.getTextLength)
-    assertEquals(depth + 1, payloads.size)
+    assertEquals(depth + 1, references.size)
     representativeIndices(depth + 1).foreach: index =>
-      val payload = payloads(index)
-      assertEquals("root" + ".next" * index, payload.getText)
-      assertEquals(payload.getText, payload.getTextRange.substring(source))
-    payloads.indices.drop(1).foreach(index => assertSame(payloads(index), payloads(index - 1).getParent))
+      val reference = references(index)
+      assertEquals("root" + ".next" * index, reference.getText)
+      assertEquals(reference.getText, reference.getTextRange.substring(source))
+    references.indices.drop(1).foreach(index => assertSame(references(index), references(index - 1).getParent))
 
   def testNestedParenthesizedSingletonAndAppliedTypesRetainExactPhysicalWrappers(): Unit =
     val depth  = 16

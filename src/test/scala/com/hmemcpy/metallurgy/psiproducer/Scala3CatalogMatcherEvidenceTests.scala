@@ -534,3 +534,216 @@ private[psiproducer] trait Scala3CatalogMatcherEvidenceTests extends Scala3PsiPr
         InventoryValueObservation.Name("name")
       )
     )
+
+  @Test def ownedRootLineagePrefilterCannotEstablishOwnership(): Unit =
+    val qualifier                                     = InventoryAncestor(
+      InventoryKind.Node,
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier"))
+    )
+    val apply                                         = InventoryAncestor(
+      InventoryKind.Node,
+      "Apply",
+      Vector(CatalogPathSegment.NamedField("fun"))
+    )
+    val owner                                         = InventoryAncestor(
+      InventoryKind.Node,
+      "ValDef",
+      Vector(CatalogPathSegment.NamedField("preRhs"))
+    )
+    val outer                                         = InventoryAncestor(
+      InventoryKind.Node,
+      "PackageDef",
+      Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+    )
+    val route                                         = OwnedRootRoute(
+      "definition-payload-apply",
+      Vector(qualifier, apply),
+      owner,
+      outer,
+      Some(RepeatedOwnedRootEdge(1, qualifier))
+    )
+    val pattern                                       = ContextPattern.DescendantOfOwnedRoot(Vector(route))
+    def context(ancestors: Vector[InventoryAncestor]) =
+      Some(InventoryContext(qualifier.ownerKind, qualifier.ownerPrefix, qualifier.path, ancestors))
+
+    var calls                                                                     = 0
+    def matches(ancestors: Vector[InventoryAncestor], ownsRoot: Boolean): Boolean =
+      calls = 0
+      val result = CatalogShapeMatcher.contextMatches(
+        pattern,
+        context(ancestors),
+        _ =>
+          calls += 1
+          ownsRoot
+      )
+      result
+
+    Vector(
+      Vector(apply, owner, outer),
+      Vector(qualifier, apply, owner, outer),
+      Vector(qualifier, qualifier, apply, owner, outer)
+    ).foreach: ancestors =>
+      assertFalse(matches(ancestors, ownsRoot = false))
+      assertEquals(1, calls)
+      assertTrue(matches(ancestors, ownsRoot = true))
+      assertEquals(1, calls)
+
+    assertFalse(matches(Vector(qualifier, owner, outer), ownsRoot = true))
+    assertEquals(0, calls)
+    assertFalse(matches(Vector(qualifier, apply, qualifier, owner, outer), ownsRoot = true))
+    assertEquals(0, calls)
+    assertFalse(CatalogShapeMatcher.contextMatches(pattern, context(Vector(apply, owner, outer))))
+    assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, context(Vector(apply, owner, outer))))
+
+  @Test def ownedRootRouteRequiresOneExactBoundedOutputFreeLineage(): Unit =
+    def instance(id: Long) = ProductionInstanceId(InventoryKind.Node, id, None)
+    val candidate          = instance(1)
+    val intermediate       = instance(2)
+    val root               = instance(3)
+    val definition         = instance(4)
+    val outer              = instance(5)
+    val repeatedOne        = instance(6)
+    val repeatedTwo        = instance(7)
+    val descendantEdge     = InventoryAncestor(
+      InventoryKind.Node,
+      "Select",
+      Vector(CatalogPathSegment.NamedField("qualifier"))
+    )
+    val rootEdge           = InventoryAncestor(
+      InventoryKind.Node,
+      "Apply",
+      Vector(CatalogPathSegment.NamedField("fun"))
+    )
+    val ownerEdge          = InventoryAncestor(
+      InventoryKind.Node,
+      "ValDef",
+      Vector(CatalogPathSegment.NamedField("preRhs"))
+    )
+    val outerEdge          = InventoryAncestor(
+      InventoryKind.Node,
+      "PackageDef",
+      Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+    )
+    val route              = OwnedRootRoute(
+      "definition-payload-apply",
+      Vector(descendantEdge, rootEdge),
+      ownerEdge,
+      outerEdge
+    )
+    val parents            = Map(
+      candidate    -> Vector(RuntimeParentEdge(intermediate, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+      intermediate -> Vector(RuntimeParentEdge(root, Vector(ParserFieldPathSegment.NamedField("fun")))),
+      root         -> Vector(RuntimeParentEdge(definition, Vector(ParserFieldPathSegment.NamedField("preRhs")))),
+      definition   -> Vector(
+        RuntimeParentEdge(
+          outer,
+          Vector(ParserFieldPathSegment.NamedField("stats"), ParserFieldPathSegment.RepeatedIndex(0))
+        )
+      )
+    )
+    val catalog            = Scala3PsiProductionCatalog.Reviewed.productions.map(p => p.id -> p).toMap
+    val selected           = Map(
+      intermediate -> catalog("payload-output-free-select"),
+      root         -> catalog(route.rootProductionId)
+    )
+    val prefixes           = Map(
+      candidate    -> "Ident",
+      intermediate -> "Select",
+      root         -> "Apply",
+      definition   -> "ValDef",
+      outer        -> "PackageDef"
+    )
+    val positions          = Map(
+      candidate    -> ParserNodePosition.Positioned(PcSourceRange(4, 7), 4, ParserPositionProvenance.SourceDerived),
+      intermediate -> ParserNodePosition.Positioned(PcSourceRange(4, 11), 4, ParserPositionProvenance.SourceDerived),
+      root         -> ParserNodePosition.Positioned(PcSourceRange(0, 12), 0, ParserPositionProvenance.SourceDerived),
+      definition   -> ParserNodePosition.Positioned(PcSourceRange(0, 12), 0, ParserPositionProvenance.SourceDerived),
+      outer        -> ParserNodePosition.Positioned(PcSourceRange(0, 12), 0, ParserPositionProvenance.SourceDerived)
+    )
+    def matches(
+        candidateValue: ProductionInstanceId = candidate,
+        routeValue: OwnedRootRoute = route,
+        parentValues: Map[ProductionInstanceId, Vector[RuntimeParentEdge]] = parents,
+        selectedValues: Map[ProductionInstanceId, Scala3PsiProduction] = selected,
+        positionValues: Map[ProductionInstanceId, ParserNodePosition] = positions
+    ) = OwnedRootRouteMatcher.matches(
+      candidateValue,
+      routeValue,
+      parentValues,
+      selectedValues,
+      prefixes,
+      positionValues
+    )
+
+    assertTrue(matches())
+    assertTrue(matches(positionValues = positions.updated(candidate, ParserNodePosition.Absent)))
+    assertFalse(matches(routeValue = route.copy(rootProductionId = "definition-payload-ident")))
+    assertFalse(matches(routeValue = route.copy(descendantPath = route.descendantPath.drop(1))))
+    assertFalse(matches(routeValue = route.copy(descendantPath = route.descendantPath :+ rootEdge)))
+    assertFalse(matches(parentValues = parents - intermediate))
+    assertFalse(matches(parentValues = parents.updated(candidate, parents(candidate) :+ parents(candidate).head)))
+    assertFalse(matches(selectedValues = selected.updated(intermediate, catalog("payload-descendant-ident"))))
+    val repeatedRoute    = route.copy(repeatedEdge = Some(RepeatedOwnedRootEdge(1, descendantEdge)))
+    assertTrue(matches(routeValue = repeatedRoute))
+    val repeatedParents  = parents ++ Map(
+      intermediate -> Vector(RuntimeParentEdge(repeatedOne, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+      repeatedOne  -> Vector(RuntimeParentEdge(repeatedTwo, Vector(ParserFieldPathSegment.NamedField("qualifier")))),
+      repeatedTwo  -> Vector(RuntimeParentEdge(root, Vector(ParserFieldPathSegment.NamedField("fun"))))
+    )
+    val repeatedSelected = selected ++ Map(
+      repeatedOne -> catalog("payload-output-free-select"),
+      repeatedTwo -> catalog("payload-output-free-select")
+    )
+    val repeatedPrefixes = prefixes ++ Map(repeatedOne -> "Select", repeatedTwo -> "Select")
+    assertTrue(
+      OwnedRootRouteMatcher.matches(
+        candidate,
+        repeatedRoute,
+        repeatedParents,
+        repeatedSelected,
+        repeatedPrefixes,
+        positions.withDefaultValue(ParserNodePosition.Absent)
+      )
+    )
+    assertFalse(
+      OwnedRootRouteMatcher.matches(
+        candidate,
+        repeatedRoute,
+        repeatedParents.updated(
+          repeatedOne,
+          Vector(RuntimeParentEdge(repeatedTwo, Vector(ParserFieldPathSegment.NamedField("unknown"))))
+        ),
+        repeatedSelected,
+        repeatedPrefixes,
+        positions.withDefaultValue(ParserNodePosition.Absent)
+      )
+    )
+    assertFalse(
+      OwnedRootRouteMatcher.matches(
+        candidate,
+        repeatedRoute,
+        repeatedParents,
+        repeatedSelected.updated(repeatedOne, catalog("payload-descendant-ident")),
+        repeatedPrefixes,
+        positions.withDefaultValue(ParserNodePosition.Absent)
+      )
+    )
+    assertFalse(
+      OwnedRootRouteMatcher.matches(
+        candidate,
+        repeatedRoute,
+        repeatedParents.updated(repeatedOne, repeatedParents(repeatedOne) :+ repeatedParents(repeatedOne).head),
+        repeatedSelected,
+        repeatedPrefixes,
+        positions.withDefaultValue(ParserNodePosition.Absent)
+      )
+    )
+    assertFalse(
+      matches(
+        positionValues = positions.updated(
+          candidate,
+          ParserNodePosition.Positioned(PcSourceRange(11, 13), 11, ParserPositionProvenance.SourceDerived)
+        )
+      )
+    )
