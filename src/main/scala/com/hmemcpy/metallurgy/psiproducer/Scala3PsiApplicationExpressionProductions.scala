@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.ParserScannerTokenKind
+import com.hmemcpy.metallurgy.pc.{ParserAttachmentValue, ParserScannerTokenKind}
 
 import Scala3PsiProductionSupport.*
 
@@ -296,6 +296,12 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
           ),
           Map("callee" -> Some("method-call"), "arguments" -> Some("arguments"))
         ),
+        evidenceConditions = Vector(
+          EvidenceCondition.RootAttachment(
+            AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
+            present = false
+          )
+        ),
         requiredChildRoots = Vector(
           RequiredChildRootOutcome("callee", ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(CalleeRoles))),
           RequiredChildRootOutcome(
@@ -321,6 +327,12 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
             )
           ),
           Map("callee" -> Some("payload"), "arguments" -> None)
+        ),
+        evidenceConditions = Vector(
+          EvidenceCondition.RootAttachment(
+            AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
+            present = true
+          )
         ),
         childClosureAbsorptions = Vector(
           ChildClosureAbsorption(

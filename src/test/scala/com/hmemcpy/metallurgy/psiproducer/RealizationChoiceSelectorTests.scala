@@ -71,6 +71,17 @@ final class RealizationChoiceSelectorTest:
       selected.reason
     )
 
+  @Test def excludedRootAttachmentIsAnExplicitReviewedInapplicability(): Unit =
+    val reason   = CandidateInapplicability.ExcludedRootAttachment(
+      AttachmentEvidence("KindOfApply", com.hmemcpy.metallurgy.pc.ParserAttachmentValue.Product("Using"))
+    )
+    val selected = RealizationChoiceSelector
+      .select(choiceProduction, Vector.empty, _ => Right(Vector(reason)))
+      .fold(error => throw new AssertionError(error.toString), identity)
+
+    assertEquals("fallback", selected.realization.id)
+    assertEquals(RealizationSelectionReason.CompleteFallback(Vector(reason)), selected.reason)
+
   @Test def candidateDefectsNeverSelectTheFallback(): Unit =
     val defect = CandidateRealizationDefect.Binding("argument[1] has two roots")
     val result = RealizationChoiceSelector.select(

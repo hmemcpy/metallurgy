@@ -325,9 +325,9 @@ private[psiproducer] trait Scala3CatalogValidationTests extends Scala3PsiProduct
     val crossed = paired.copy(productions =
       paired.productions.map(row =>
         row.copy(occurrences = row.occurrences.map {
-          case CompilerProductionContext(None, _, _, _)          =>
+          case CompilerProductionContext(None, _, _, _, _)          =>
             CompilerProductionContext(None, SourceClassification.Synthetic)
-          case CompilerProductionContext(Some(context), _, _, _) =>
+          case CompilerProductionContext(Some(context), _, _, _, _) =>
             CompilerProductionContext(Some(context), SourceClassification.SourceReachable)
         })
       )
@@ -451,6 +451,30 @@ private[psiproducer] trait Scala3CatalogValidationTests extends Scala3PsiProduct
       CatalogValidationError.UnknownTerminalChildRole(root.id, "absent")
     ).foreach(error => assertTrue(error.toString, errors.contains(error)))
     assertFalse(errors.contains(CatalogValidationError.UnknownChildProductionId(root.id, child.id)))
+
+  @Test def validatorRejectsDuplicateDeclaredRootAttachmentRequirements(): Unit =
+    val compiler                                                             = inventory(snapshot("/attachment-requirements", 1, Vector.empty))
+    val base                                                                 = completeCatalog(compiler)
+    val root                                                                 = base.productions.find(_.pattern.prefix == "Root").get
+    val requirement                                                          = AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using"))
+    def errors(updated: Scala3PsiProduction): Vector[CatalogValidationError] =
+      val catalog = base.copy(productions = base.productions.map(p => if p.id == root.id then updated else p))
+      Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces(catalog))
+
+    assertTrue(
+      errors(root.copy(pattern = root.pattern.copy(requiredAttachments = Vector(requirement, requirement))))
+        .contains(CatalogValidationError.DuplicateRequiredAttachment(root.id, requirement.keyKind))
+    )
+    val realization = root.effectiveOutputRealizations.head.copy(evidenceConditions =
+      Vector(
+        EvidenceCondition.RootAttachment(requirement, present = false),
+        EvidenceCondition.RootAttachment(requirement, present = true)
+      )
+    )
+    assertTrue(
+      errors(root.copy(outputRealizations = Vector(realization)))
+        .contains(CatalogValidationError.DuplicateRootAttachmentCondition(root.id, realization.id, requirement.keyKind))
+    )
 
   @Test def validatorRejectsEveryMalformedOutputTemplateCategory(): Unit =
     val compiler                                                                       = inventory(snapshot("/templates", 1, Vector.empty))

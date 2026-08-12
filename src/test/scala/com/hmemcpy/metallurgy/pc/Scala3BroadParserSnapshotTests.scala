@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
+  AttachmentEvidence,
   CatalogValidationError,
   CatalogShapeMatcher,
   CatalogValuePattern,
@@ -119,6 +120,12 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
       val secondInventory                                                                          = CompilerRuntimeInventory
         .from(second)
         .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      assertEquals(
+        Vector(
+          ("TypeDef", 10L, Vector(AttachmentEvidence("DocComment", ParserAttachmentValue.Product("Comment"))))
+        ),
+        firstInventory.shapes.filter(_.rootAttachments.nonEmpty).map(row => (row.prefix, row.id, row.rootAttachments))
+      )
       val firstAggregation                                                                         = AggregatedCompilerProductionInventory.aggregate(Vector(firstInventory, secondInventory))
       assertTrue(firstAggregation.toString, firstAggregation.isRight)
       def modifierAnnotations(value: InventoryValueObservation): Vector[InventoryFieldObservation] = value match
@@ -190,7 +197,7 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("1ce4737b01ad1115d03e5af0da19f9ec5bfbee532a87dd6c24529835928c59ed", aggregate.fingerprint)
+      assertEquals("9ede9f8e45ed1e336ecce84f1d47a6b5589e3963f113e3a2086928055e9bc904", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,

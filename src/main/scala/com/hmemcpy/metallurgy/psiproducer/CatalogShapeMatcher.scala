@@ -32,6 +32,23 @@ private[metallurgy] object CatalogShapeMatcher:
         requirement.hasSourceWidth.forall(expected => evidence.hasSourceWidth.contains(expected)) &&
         requirement.requiredAttachmentKinds.subsetOf(evidence.requiredAttachmentKinds)
 
+  private[psiproducer] def rootAttachmentEvidenceMatches(
+      expected: Vector[AttachmentEvidence],
+      observed: Vector[AttachmentEvidence]
+  ): Boolean =
+    expected.map(_.keyKind).distinct.size == expected.size && expected.forall: requirement =>
+      observed.filter(_.keyKind == requirement.keyKind) == Vector(requirement)
+
+  private[psiproducer] def rootAttachmentConditionMatches(
+      requirement: AttachmentEvidence,
+      present: Boolean,
+      observed: Vector[AttachmentEvidence]
+  ): Boolean =
+    observed.filter(_.keyKind == requirement.keyKind) match
+      case Vector()              => !present
+      case Vector(`requirement`) => present
+      case _                     => false
+
   def matches(pattern: CatalogValuePattern, observation: InventoryValueObservation): Boolean =
     (pattern, observation) match
       case (CatalogValuePattern.Node, InventoryValueObservation.Node(_, _))                                   => true
@@ -389,11 +406,13 @@ private[metallurgy] object CatalogShapeMatcher:
       sourceClassification: SourceClassification,
       scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
       directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
+      rootAttachments: Vector[AttachmentEvidence] = Vector.empty,
       ownedRootMatches: OwnedRootRoute => Boolean = _ => false
   ): Vector[Scala3PsiProduction] =
     val matched              = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
+        rootAttachmentEvidenceMatches(p.pattern.requiredAttachments, rootAttachments) &&
         p.pattern.occurrences.exists(occurrence =>
           contextMatches(occurrence.context, context, ownedRootMatches) &&
             occurrence.sourceClassification == sourceClassification
@@ -458,7 +477,10 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             ) && CatalogShapeMatcher.matches(CatalogValuePattern.AnyOf(values), value)
           case _ => false
-      production -> (specificity + production.pattern.directNodeEvidence.size + ownedRootSpecificity)
+      production -> (
+        specificity + production.pattern.directNodeEvidence.size + production.pattern.requiredAttachments.size +
+          ownedRootSpecificity
+      )
     val highest              = scored.map(_._2).maxOption.getOrElse(0)
     val preferred            = scored.collect { case (production, score) if score == highest => production }
     val matchedById          = matched.map(production => production.id -> production).toMap
@@ -481,6 +503,7 @@ private[metallurgy] object CatalogShapeMatcher:
     val matched = catalog.productions.filter(p =>
       p.pattern.kind == row.kind && p.pattern.prefix == row.prefix && coversFields(p.pattern.fields, row.fields) &&
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, occurrence.directNodeEvidence) &&
+        rootAttachmentEvidenceMatches(p.pattern.requiredAttachments, occurrence.rootAttachments) &&
         p.pattern.occurrences.exists(pattern =>
           aggregateContextMatches(pattern.context, occurrence.context) &&
             pattern.sourceClassification == occurrence.sourceClassification &&
@@ -499,8 +522,8 @@ private[metallurgy] object CatalogShapeMatcher:
         case _ => false
       production -> (production.pattern.fields.count(field =>
         field.value match
-          case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |
-              CatalogValuePattern.BacktickedName =>
+          case CatalogValuePattern.LowercaseName |
+              CatalogValuePattern.NonLowercaseName | CatalogValuePattern.BacktickedName =>
             true
           case CatalogValuePattern.AnyOf(values) =>
             values.exists(candidate =>
@@ -509,6 +532,6 @@ private[metallurgy] object CatalogShapeMatcher:
                 candidate == CatalogValuePattern.BacktickedName
             )
           case _                                 => false
-      ) + production.pattern.directNodeEvidence.size + ownedRootSpecificity)
+      ) + production.pattern.directNodeEvidence.size + production.pattern.requiredAttachments.size + ownedRootSpecificity)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }

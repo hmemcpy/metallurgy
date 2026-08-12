@@ -230,6 +230,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             row.sourceClassification,
             row.scannerTokenKinds,
             row.directNodeEvidence,
+            row.rootAttachments,
             route =>
               OwnedRootRouteMatcher.matches(
                 instance,
@@ -613,6 +614,12 @@ private[metallurgy] object WholeFileProductionPlanner:
                   case ParserSyntaxField(_, ParserFieldValue.Repeated(values), _) => values.size
                 .getOrElse(0)
               (repeatedCount > runtimeSupplementCount(snapshot, instance, count)) == present
+            case EvidenceCondition.RootAttachment(attachment, present)                       =>
+              CatalogShapeMatcher.rootAttachmentConditionMatches(
+                attachment,
+                present,
+                rows(instance.kind -> instance.valueId).rootAttachments
+              )
           childConditions && evidenceConditions
         )
         val matches                                                                    = matching match
@@ -645,12 +652,21 @@ private[metallurgy] object WholeFileProductionPlanner:
               val excludedTypeApplication = rows(instance.kind -> instance.valueId).observation.exists:
                 case InventoryFieldObservation("fun", InventoryValueObservation.Node(_, "TypeApply"), _) => true
                 case _                                                                                   => false
+              val excludedAttachments     = candidate.evidenceConditions.collect:
+                case EvidenceCondition.RootAttachment(attachment, false)
+                    if CatalogShapeMatcher.rootAttachmentConditionMatches(
+                      attachment,
+                      present = true,
+                      rows(instance.kind -> instance.valueId).rootAttachments
+                    ) =>
+                  CandidateInapplicability.ExcludedRootAttachment(attachment)
               if candidateRange.isLeft then candidateRange.map(_ => Vector.empty)
               else if !completeFallback then
                 Left(
                   CandidateRealizationDefect.CandidateEvidence("candidate has no retained complete payload fallback")
                 )
               else if excludedTypeApplication then Right(Vector(CandidateInapplicability.ExcludedTypeApplication))
+              else if excludedAttachments.nonEmpty then Right(excludedAttachments)
               else if !values.exists(_.id == candidate.id) then
                 Left(
                   CandidateRealizationDefect.CandidateEvidence("candidate conditions or source evidence do not match")

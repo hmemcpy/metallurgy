@@ -69,6 +69,9 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
   def testUnsupportedApplicationsRemainOneOpaquePayloadWithoutNativeDescendants(): Unit =
     val sources = Vector(
       "val value = f(name = x)"                 -> Some("f(name = x)"),
+      "val value = f(using x)"                  -> Some("f(using x)"),
+      "val value = g(using 1, \"x\")"           -> Some("g(using 1, \"x\")"),
+      "val value = h(1)(using \"x\")"           -> Some("h(1)(using \"x\")"),
       "val value = f((x, y))"                   -> Some("f((x, y))"),
       "val value = f { x }"                     -> Some("f { x }"),
       "val value = xs map f"                    -> Some("xs map f"),
@@ -81,6 +84,10 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
       expectedPayload.foreach(expected => assertEquals(source, Vector(expected), payloads.map(_.getText)))
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
+      payloads.foreach: payload =>
+        assertTrue(source, PsiTreeUtil.findChildrenOfType(payload, classOf[ScMethodCall]).isEmpty)
+        assertTrue(source, PsiTreeUtil.findChildrenOfType(payload, classOf[ScArgumentExprList]).isEmpty)
+        assertTrue(source, PsiTreeUtil.findChildrenOfType(payload, classOf[ScReferenceExpression]).isEmpty)
 
   def testExcludedTypeApplicationsKeepOnePayloadAndTheirExistingTypeArgumentPsi(): Unit =
     val source        =

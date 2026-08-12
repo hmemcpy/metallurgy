@@ -79,6 +79,26 @@ final class ApplicationExpressionProbeTest:
       assertEquals(Vector(ParserFieldPathSegment.NamedField("fun")), occurrenceFrom(first, curried.id).fieldPath)
       assertTrue(positioned(first).range.endOffset <= positioned(curried).range.endOffset)
 
+      val regular      = directRhs(nodes, "zero")
+      assertTrue(snapshot.attachments.filter(_.ownerNodeId == regular.id).isEmpty)
+      Vector("usingArgument", "usingMany").foreach: name =>
+        val application = directRhs(nodes, name)
+        assertEquals(name, "Apply", application.production)
+        assertEquals(
+          name,
+          Vector(ParserTreeAttachment(application.id, 0, "KindOfApply", ParserAttachmentValue.Product("Using"))),
+          snapshot.attachments.filter(_.ownerNodeId == application.id)
+        )
+      val usingCurried = directRhs(nodes, "usingCurried")
+      val regularInner = child(nodes, usingCurried, "fun")
+      assertEquals("Apply", regularInner.production)
+      assertEquals("h(1)", text(snapshot, regularInner))
+      assertTrue(snapshot.attachments.filter(_.ownerNodeId == regularInner.id).isEmpty)
+      assertEquals(
+        Vector(ParserTreeAttachment(usingCurried.id, 0, "KindOfApply", ParserAttachmentValue.Product("Using"))),
+        snapshot.attachments.filter(_.ownerNodeId == usingCurried.id)
+      )
+
       Vector(
         "typeApplied"         -> ("generic[Int](x)", "generic[Int]", "Ident"),
         "selectedTypeApplied" -> ("source.generic[String](x)", "source.generic[String]", "Select"),
@@ -119,6 +139,8 @@ final class ApplicationExpressionProbeTest:
         "namedTypeApplied" -> ("Apply", "TypeApply"),
         "namedArgument"    -> ("Apply", "Ident"),
         "usingArgument"    -> ("Apply", "Ident"),
+        "usingMany"        -> ("Apply", "Ident"),
+        "usingCurried"     -> ("Apply", "Apply"),
         "repeatedArgument" -> ("Apply", "Ident"),
         "tupleArgument"    -> ("Apply", "Ident"),
         "blockArgument"    -> ("Apply", "Ident"),
@@ -185,6 +207,35 @@ final class ApplicationExpressionProbeTest:
           .ownerNodeId
       )
       assertTrue(anonymousTemplate.occurrences.exists(occurrence => nodes(occurrence.ownerNodeId).production == "New"))
+
+  @Test
+  def malformedUsingApplicationRetainsAttachmentAndParserDiagnostic(): Unit =
+    val source = "def f(using value: String): String = value\nval malformed = f(using)\n"
+    val bridge = Scala3ParserBridge
+      .open(
+        Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", "3.7.4"),
+        compilerDistribution.map(_.toFile)
+      )
+      .fold(error => throw new AssertionError(error.toString), identity)
+    try
+      val snapshot = bridge
+        .parse(
+          Scala3ParserRequest(
+            ParserSourceUri.from("file:///MalformedUsingApplication.scala").fold(sys.error, identity),
+            source,
+            Vector.empty
+          )
+        )
+        .fold(error => throw new AssertionError(error.toString), identity)
+      val nodes    = snapshot.nodes.map(node => node.id -> node).toMap
+      val root     = directRhs(nodes, "malformed")
+      assertEquals("Apply", root.production)
+      assertTrue(snapshot.diagnostics.nonEmpty)
+      assertEquals(
+        Vector(ParserTreeAttachment(root.id, 0, "KindOfApply", ParserAttachmentValue.Product("Using"))),
+        snapshot.attachments.filter(_.ownerNodeId == root.id)
+      )
+    finally bridge.close()
 
   private def withSnapshot(body: ParserSyntaxSnapshot => Unit): Unit =
     val bridge = Scala3ParserBridge
@@ -343,6 +394,8 @@ final class ApplicationExpressionProbeTest:
       |def f(x: Int, y: Int): Int = x + y
       |def f(using x: String): String = x
       |def g(x: Int): Int = x
+      |def g(using x: Int, y: String): String = s"$x:$y"
+      |def h(x: Int)(using y: String): String = s"$x:$y"
       |def curried(x: Int)(y: Int): Int = x + y
       |def generic[A](x: A): A = x
       |def named(x: Int): Int = x
@@ -367,6 +420,8 @@ final class ApplicationExpressionProbeTest:
       |val namedTypeApplied = generic[A = Int](x)
       |val namedArgument = named(x = 1)
       |val usingArgument = f(using summon[String])
+      |val usingMany = g(using 1, "x")
+      |val usingCurried = h(1)(using "x")
       |val repeatedArgument = repeated(xs*)
       |val tupleArgument = f((x, 1)._1)
       |val blockArgument = f({ x })

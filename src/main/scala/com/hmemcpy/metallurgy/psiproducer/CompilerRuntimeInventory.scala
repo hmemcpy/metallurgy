@@ -235,6 +235,7 @@ private[metallurgy] final case class DirectNodeFieldEvidence(
     hasSourceWidth: Option[Boolean] = None,
     requiredAttachmentKinds: Set[String] = Set.empty
 )
+private[metallurgy] final case class AttachmentEvidence(keyKind: String, value: ParserAttachmentValue)
 private[metallurgy] final case class AncestorEvidencePattern(
     scannerEvidence: ScannerEvidencePattern = ScannerEvidencePattern(),
     directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
@@ -249,7 +250,8 @@ private[metallurgy] final case class CompilerProductionPattern(
     prefix: String,
     fields: Vector[CompilerFieldPattern],
     occurrences: Vector[CompilerProductionContextPattern],
-    directNodeEvidence: Vector[DirectNodeFieldEvidence]
+    directNodeEvidence: Vector[DirectNodeFieldEvidence],
+    requiredAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
 private[metallurgy] object CompilerProductionPattern:
   def apply(
@@ -257,7 +259,8 @@ private[metallurgy] object CompilerProductionPattern:
       prefix: String,
       fields: Vector[CompilerFieldPattern],
       occurrences: Vector[CompilerProductionContextPattern]
-  ): CompilerProductionPattern = CompilerProductionPattern(kind, prefix, fields, occurrences, Vector.empty)
+  ): CompilerProductionPattern =
+    CompilerProductionPattern(kind, prefix, fields, occurrences, Vector.empty, Vector.empty)
 private[metallurgy] enum ContextPattern:
   case Any
   case Root
@@ -380,7 +383,8 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     contexts: Vector[InventoryContext],
     sourceClassification: SourceClassification,
     scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
-    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
+    rootAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
 private[metallurgy] final case class CompilerRuntimeInventory(
     identity: CompilerRuntimeIdentity,
@@ -400,7 +404,8 @@ private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
     sourceClassification: SourceClassification,
     scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
-    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty
+    directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
+    rootAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
 private[metallurgy] final case class AggregatedCompilerProductionRow(
     kind: InventoryKind,
@@ -534,7 +539,8 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
                     _,
                     row.sourceClassification,
                     row.scannerTokenKinds,
-                    row.directNodeEvidence
+                    row.directNodeEvidence,
+                    row.rootAttachments
                   )
                 )
             )(writeProductionContext)
@@ -730,6 +736,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
       e.sequence(row.scannerTokenKinds)(kind => e.tag(kind.ordinal))
       writeDirectNodeEvidence(row.directNodeEvidence, e)
+      if row.rootAttachments.nonEmpty then writeAttachmentEvidence(row.rootAttachments, e)
 
   private def writeObservation(value: InventoryValueObservation, e: CanonicalByteEncoder): Unit = value match
     case InventoryValueObservation.Node(id, prefix)                      => e.tag(1); e.long(id); e.string(prefix)
@@ -780,6 +787,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
     e.sequence(context.scannerTokenKinds)(kind => e.tag(kind.ordinal))
     writeDirectNodeEvidence(context.directNodeEvidence, e)
+    if context.rootAttachments.nonEmpty then writeAttachmentEvidence(context.rootAttachments, e)
 
   private def writeDirectNodeEvidence(
       evidence: Vector[DirectNodeFieldEvidence],
@@ -789,6 +797,30 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.string(value.fieldName); e.tag(value.sourceClassification.ordinal)
       value.hasSourceWidth.fold(e.tag(0))(width => { e.tag(1); e.boolean(width) })
       e.sequence(value.requiredAttachmentKinds.toVector.sorted)(e.string)
+
+  private def writeAttachmentEvidence(
+      attachments: Vector[AttachmentEvidence],
+      e: CanonicalByteEncoder
+  ): Unit =
+    e.tag(18)
+    e.sequence(attachments): attachment =>
+      e.string(attachment.keyKind)
+      attachment.value match
+        case ParserAttachmentValue.Product(production) => e.tag(1); e.string(production)
+        case ParserAttachmentValue.Name(value)         => e.tag(2); e.string(value)
+        case ParserAttachmentValue.Scalar(value)       => e.tag(3); writeAttachmentScalar(value, e)
+        case ParserAttachmentValue.RuntimeKind(kind)   => e.tag(4); e.string(kind)
+
+  private def writeAttachmentScalar(value: ParserScalar, e: CanonicalByteEncoder): Unit = value match
+    case ParserScalar.Text(value)         => e.tag(1); e.string(value)
+    case ParserScalar.Integer(value)      => e.tag(2); e.int(value)
+    case ParserScalar.LongInteger(value)  => e.tag(3); e.long(value)
+    case ParserScalar.Decimal(value)      => e.tag(4); e.double(value)
+    case ParserScalar.FloatDecimal(value) => e.tag(5); e.int(java.lang.Float.floatToRawIntBits(value))
+    case ParserScalar.Logical(value)      => e.tag(6); e.boolean(value)
+    case ParserScalar.Character(value)    => e.tag(7); e.char(value)
+    case ParserScalar.UnitValue           => e.tag(8)
+    case ParserScalar.NullValue           => e.tag(9)
 
   private def writeField(field: CompilerFieldPattern, e: CanonicalByteEncoder): Unit =
     e.string(field.name); writePattern(field.value, e)
@@ -1277,6 +1309,12 @@ private[metallurgy] object CompilerRuntimeInventory:
                   .toSet
                 DirectNodeFieldEvidence(field.name, childClassification, hasSourceWidth, attachmentKinds)
           case _                              => None
+      val rootAttachments    =
+        if kind == InventoryKind.Node then
+          snapshot.attachments
+            .filter(_.ownerNodeId == id)
+            .map(attachment => AttachmentEvidence(attachment.keyKind, attachment.value))
+        else Vector.empty
       CompilerShapeInventoryRow(
         kind,
         id,
@@ -1286,7 +1324,8 @@ private[metallurgy] object CompilerRuntimeInventory:
         occurrences.flatMap(contexts(kind, id, _)).distinct,
         classification,
         scannerTokenKinds,
-        directNodeEvidence
+        directNodeEvidence,
+        rootAttachments
       )
     val found                                                                                                      = failures.result()
     if found.nonEmpty then Left(found.distinct.sortBy(_.toString))

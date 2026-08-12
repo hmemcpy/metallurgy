@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.pc
 
 import com.hmemcpy.metallurgy.psiproducer.{
   AggregatedCompilerProductionInventory,
+  AttachmentEvidence,
   CompilerRuntimeInventory,
   NativePsiElementBindings,
   PlanningWorkObserver,
@@ -312,6 +313,22 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
             assertLineage(snapshot, pathId, statement.id, "expr")
 
       val runtimes  = snapshots.map(snapshot => CompilerRuntimeInventory.from(snapshot).toOption.get)
+      assertEquals(
+        Vector(
+          3 -> Vector(
+            (
+              "Ident",
+              19L,
+              Vector(AttachmentEvidence("Backquoted", ParserAttachmentValue.RuntimeKind("BoxedUnit")))
+            )
+          )
+        ),
+        runtimes.zipWithIndex.flatMap: (runtime, index) =>
+          val attached = runtime.shapes
+            .filter(_.rootAttachments.nonEmpty)
+            .map(row => (row.prefix, row.id, row.rootAttachments))
+          Option.when(attached.nonEmpty)(index -> attached)
+      )
       val aggregate = AggregatedCompilerProductionInventory.aggregate(runtimes).toOption.get
       val surfaces  = withImportTokenSurfaces(ScalaPsiSurfaceInventory.installed().toOption.get)
       snapshots
@@ -340,7 +357,7 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "ebbd17e5a34258c83a1c134bc8df37a7e354214fc6cbf676faad53748b56199e"
+          "00bbc1c5d2339f9a267586bb5db4b99a174422aad7a1b03ae896ca0bb20081c1"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )

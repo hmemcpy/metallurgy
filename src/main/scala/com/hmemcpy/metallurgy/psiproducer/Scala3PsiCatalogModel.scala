@@ -786,6 +786,7 @@ private[metallurgy] enum EvidenceCondition:
   case ProductionStartsWith(kind: ClosedSourceLexicalKind, present: Boolean)
   case RuntimeSupplementPositive(fieldName: String, present: Boolean)
   case LeadingBeforeRuntimeTailPresent(repeatedFieldName: String, countFieldName: String, present: Boolean)
+  case RootAttachment(attachment: AttachmentEvidence, present: Boolean)
 private[metallurgy] final case class OutputRealization(
     id: String,
     conditions: Vector[ChildOutcomeCondition],

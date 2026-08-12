@@ -273,6 +273,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           (prefix ++ Vector(index, evidence.fieldName, evidence.sourceClassification))*
         )
       )
+      production.pattern.requiredAttachments.zipWithIndex.foreach((attachment, index) =>
+        rows += StructuralRows.row(
+          "required-attachment",
+          (prefix ++ Vector(index, attachment.keyKind, attachment.value))*
+        )
+      )
       production.grammarRoleIds.toVector
         .sortBy(_.value)
         .foreach(role => rows += StructuralRows.row("production-grammar-role", (prefix :+ role.value)*))

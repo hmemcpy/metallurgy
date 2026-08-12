@@ -131,7 +131,8 @@ final class Scala3CaptureCapabilityTypeParserInventoryTest:
             Some(context),
             row.sourceClassification,
             row.scannerTokenKinds,
-            row.directNodeEvidence
+            row.directNodeEvidence,
+            row.rootAttachments
           )
         )
       assertTrue(selected.toString, selected.forall(!_.id.startsWith("capture-")))

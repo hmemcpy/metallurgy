@@ -563,10 +563,12 @@ final class Scala3DefinitionParserInventoryTest:
     assertTrue(snapshot.endMarkers.forall(marker => snapshot.nodes.exists(_.id == marker.ownerNodeId)))
     assertEquals(Vector("InventoryParent", "Nested", "DefinitionProbe", "InventorySignal"), endMarkerNames(snapshot))
     assertTrue(snapshot.attachments.exists(_.keyKind == "DocComment"))
-    assertTrue(
-      snapshot.attachments.exists(attachment =>
-        attachment.keyKind == "KindOfApply" && attachment.value == ParserAttachmentValue.Product("Using")
-      )
+    val explicitOrdering = namedNode(snapshot, "DefDef", "explicitOrdering")
+    val usingApplication = snapshot.nodes.find(_.id == nodeField(explicitOrdering, "preRhs")).get
+    assertEquals("Apply", usingApplication.production)
+    assertEquals(
+      Vector(ParserTreeAttachment(usingApplication.id, 0, "KindOfApply", ParserAttachmentValue.Product("Using"))),
+      snapshot.attachments.filter(_.ownerNodeId == usingApplication.id)
     )
     assertTrue(snapshot.attachments.forall(attachment => snapshot.nodes.exists(_.id == attachment.ownerNodeId)))
     assertTrue(

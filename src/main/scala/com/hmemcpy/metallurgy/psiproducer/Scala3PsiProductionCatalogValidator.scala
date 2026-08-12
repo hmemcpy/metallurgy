@@ -10,6 +10,7 @@ private[metallurgy] enum CatalogValidationError:
   case UnreferencedGrammarRole(grammarRoleId: GrammarRoleId)
   case EmptyOccurrencePatterns(productionId: String)
   case DuplicateOccurrencePattern(productionId: String, pattern: CompilerProductionContextPattern)
+  case DuplicateRequiredAttachment(productionId: String, keyKind: String)
   case DuplicateChildRoleId(productionId: String, roleId: String)
   case UnknownChildProductionId(productionId: String, childProductionId: String)
   case EmptyOutputRealizations(productionId: String)
@@ -26,6 +27,7 @@ private[metallurgy] enum CatalogValidationError:
       roleId: String,
       occurrence: ChildOccurrenceSelector
   )
+  case DuplicateRootAttachmentCondition(productionId: String, realizationId: String, keyKind: String)
   case DuplicateChildClosureAbsorption(productionId: String, realizationId: String, roleId: String)
   case UnknownChildClosureAbsorptionRole(productionId: String, realizationId: String, roleId: String)
   case InvalidChildRootOutcome(
@@ -240,6 +242,7 @@ private[metallurgy] object RuntimeRealizationSelector:
             row.sourceClassification,
             row.scannerTokenKinds,
             row.directNodeEvidence,
+            row.rootAttachments,
             route =>
               OwnedRootRouteMatcher.matches(
                 instance,
@@ -319,6 +322,8 @@ private[metallurgy] object RuntimeRealizationSelector:
           right.evidenceConditions.contains(
             EvidenceCondition.LeadingBeforeRuntimeTailPresent(repeated, count, !leftPresent)
           )
+        case EvidenceCondition.RootAttachment(attachment, leftPresent)                       =>
+          right.evidenceConditions.contains(EvidenceCondition.RootAttachment(attachment, !leftPresent))
     discovered.toVector.reverse.foreach: key =>
       selected
         .get(key)
@@ -578,6 +583,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       duplicates(realizations.map(_.id)).foreach(id =>
         errors += CatalogValidationError.DuplicateOutputRealizationId(p.id, id)
       )
+      duplicates(p.pattern.requiredAttachments.map(_.keyKind)).foreach(keyKind =>
+        errors += CatalogValidationError.DuplicateRequiredAttachment(p.id, keyKind)
+      )
       realizations.foreach(realization =>
         realization.terminalIds.foreach: ids =>
           val declared = p.terminals.map(_.id).toSet
@@ -590,6 +598,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               roleId,
               occurrence
             )
+        duplicates(realization.evidenceConditions.collect { case EvidenceCondition.RootAttachment(a, _) => a.keyKind })
+          .foreach(key => errors += CatalogValidationError.DuplicateRootAttachmentCondition(p.id, realization.id, key))
         realization.conditions.foreach: condition =>
           if !childRoles(condition.roleId) then
             errors += CatalogValidationError.UnknownRealizationConditionRole(p.id, realization.id, condition.roleId)
@@ -1117,6 +1127,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                     CatalogShapeMatcher.directNodeEvidenceMatches(
                       production.pattern.directNodeEvidence,
                       occurrence.directNodeEvidence
+                    ) && CatalogShapeMatcher.rootAttachmentEvidenceMatches(
+                      production.pattern.requiredAttachments,
+                      occurrence.rootAttachments
                     )
                 )
             )

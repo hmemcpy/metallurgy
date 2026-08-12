@@ -102,6 +102,43 @@ private[psiproducer] trait Scala3CompilerRuntimeInventoryTests extends Scala3Psi
       result.productions.head.occurrences.toSet
     )
 
+  @Test def rootAttachmentEvidenceTransfersInOrderAndChangesCanonicalInventoryOnlyForItsOwner(): Unit =
+    val base          = snapshot("/one", 1, Vector.empty)
+    val usingEvidence = AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using"))
+    val diagnostic    = AttachmentEvidence("Other", ParserAttachmentValue.Name("value"))
+    val attached      = base.copy(attachments =
+      Vector(
+        ParserTreeAttachment(1L, 0, usingEvidence.keyKind, usingEvidence.value),
+        ParserTreeAttachment(1L, 1, diagnostic.keyKind, diagnostic.value),
+        ParserTreeAttachment(2L, 0, "ChildOnly", ParserAttachmentValue.Product("Child")),
+        ParserTreeAttachment(99L, 0, "WrongOwner", ParserAttachmentValue.Product("Ignored"))
+      )
+    )
+    val runtime       = inventory(attached)
+    assertEquals(
+      Vector(usingEvidence, diagnostic),
+      runtime.shapes.find(row => row.kind == InventoryKind.Node && row.id == 1L).get.rootAttachments
+    )
+    assertEquals(
+      Vector(AttachmentEvidence("ChildOnly", ParserAttachmentValue.Product("Child"))),
+      runtime.shapes.find(row => row.kind == InventoryKind.Node && row.id == 2L).get.rootAttachments
+    )
+    assertFalse(runtime.shapes.exists(_.rootAttachments.exists(_.keyKind == "WrongOwner")))
+
+    val aggregateWithAttachments = aggregate(Vector(runtime))
+    val rootOccurrence           = aggregateWithAttachments.productions
+      .find(_.prefix == "Root")
+      .get
+      .occurrences
+      .find(_.context.isEmpty)
+      .get
+    assertEquals(Vector(usingEvidence, diagnostic), rootOccurrence.rootAttachments)
+    assertNotEquals(aggregate(Vector(inventory(base))).fingerprint, aggregateWithAttachments.fingerprint)
+    assertNotEquals(
+      aggregateWithAttachments.fingerprint,
+      aggregate(Vector(inventory(attached.copy(attachments = attached.attachments.reverse)))).fingerprint
+    )
+
   @Test def inventoryLineageResolutionIsOrderedIterativeAndFailClosed(): Unit =
     val position                                                                        = ParserNodePosition.Positioned(PcSourceRange(0, 1), 0, ParserPositionProvenance.SourceDerived)
     val child                                                                           = Vector(ParserFieldPathSegment.NamedField("child"))

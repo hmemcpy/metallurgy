@@ -149,7 +149,17 @@ private[psiproducer] trait Scala3ApplicationExpressionContractTests extends Scal
       Scala3DotcFileElementType.SchemaVersion,
       Scala3DotcFileElementType.ExternalId
     )
-    assertEquals("3b63ff76a40185804fc6fdff13ee5c685e69910e79e7a0167ec7d04cc5504bdc", catalog.fingerprint)
+    val application = Scala3PsiProductionCatalog.Reviewed.productions.find(_.id == "ordinary-application-candidate").get
+    val attachment  = AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using"))
+    assertEquals(
+      Vector(
+        Vector(EvidenceCondition.RootAttachment(attachment, present = false)),
+        Vector(EvidenceCondition.RootAttachment(attachment, present = true))
+      ),
+      application.effectiveOutputRealizations.map(_.evidenceConditions)
+    )
+    assertEquals(2, catalog.rows.count(_.contains("RootAttachment(AttachmentEvidence(KindOfApply,Product(Using))")))
+    assertEquals("1799153f6296da6114776021cbd0aea1e44299922e32471e97cbcc70f17535f0", catalog.fingerprint)
     assertEquals("6c513793137193022cbf2ffd5a1b90d364534b5c8ccc8e04dcdf162d1aae7a4a", persistence.fingerprint)
     assertTrue(
       Scala3PsiProductionCatalog.Reviewed.stableRoles.grammarRoles.contains(GrammarRoleId.OrdinaryApplication)

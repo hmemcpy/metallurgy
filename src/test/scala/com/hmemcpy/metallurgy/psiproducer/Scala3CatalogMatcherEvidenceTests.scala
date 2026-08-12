@@ -535,6 +535,70 @@ private[psiproducer] trait Scala3CatalogMatcherEvidenceTests extends Scala3PsiPr
       )
     )
 
+  @Test def rootAttachmentRequirementsMatchOneExactNeutralKeyAndValueOnTheSelectedRoot(): Unit =
+    val compiler                                                       = inventory(snapshot("/one", 1, Vector.empty))
+    val shape                                                          = compiler.shapes.find(_.prefix == "Root").get
+    val requirement                                                    = AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using"))
+    val base                                                           = completeCatalog(compiler).productions.find(_.id == "Root").get
+    val production                                                     = base.copy(
+      pattern = base.pattern.copy(requiredAttachments = Vector(requirement))
+    )
+    val catalog                                                        = Scala3PsiProductionCatalog(Vector(production), focusedRoleInventory(Vector(production)))
+    def selected(observed: Vector[AttachmentEvidence]): Vector[String] = CatalogShapeMatcher
+      .select(
+        catalog,
+        shape.kind,
+        shape.prefix,
+        shape.observation,
+        None,
+        shape.sourceClassification,
+        rootAttachments = observed
+      )
+      .map(_.id)
+
+    assertEquals(Vector("Root"), selected(Vector(requirement)))
+    assertEquals(
+      Vector("Root"),
+      selected(Vector(AttachmentEvidence("Other", ParserAttachmentValue.Name("value")), requirement))
+    )
+    val wrongOwner = inventory(
+      snapshot("/wrong-owner", 2, Vector.empty)
+        .copy(attachments = Vector(ParserTreeAttachment(2L, 0, requirement.keyKind, requirement.value)))
+    )
+    assertTrue(
+      selected(
+        wrongOwner.shapes.find(row => row.kind == InventoryKind.Node && row.id == 1L).get.rootAttachments
+      ).isEmpty
+    )
+    Vector(
+      Vector.empty,
+      Vector(AttachmentEvidence("Other", requirement.value)),
+      Vector(AttachmentEvidence(requirement.keyKind, ParserAttachmentValue.Product("Regular"))),
+      Vector(requirement, requirement),
+      Vector(requirement, AttachmentEvidence(requirement.keyKind, ParserAttachmentValue.Product("Regular")))
+    ).foreach(observed => assertTrue(observed.toString, selected(observed).isEmpty))
+
+    val unrelated = AttachmentEvidence("Other", ParserAttachmentValue.Name("value"))
+    assertTrue(CatalogShapeMatcher.rootAttachmentConditionMatches(requirement, present = false, Vector.empty))
+    assertTrue(CatalogShapeMatcher.rootAttachmentConditionMatches(requirement, present = false, Vector(unrelated)))
+    assertTrue(CatalogShapeMatcher.rootAttachmentConditionMatches(requirement, present = true, Vector(requirement)))
+    Vector(
+      Vector(AttachmentEvidence(requirement.keyKind, ParserAttachmentValue.Product("Regular"))),
+      Vector(requirement, requirement),
+      Vector(requirement, AttachmentEvidence(requirement.keyKind, ParserAttachmentValue.Product("Regular")))
+    ).foreach: observed =>
+      assertFalse(CatalogShapeMatcher.rootAttachmentConditionMatches(requirement, present = false, observed))
+      assertFalse(CatalogShapeMatcher.rootAttachmentConditionMatches(requirement, present = true, observed))
+
+    val readable = Scala3PsiProductionCatalog.catalogPlanStructure(catalog)
+    assertTrue(readable.text.contains("required-attachment\t0\tRoot\t0\tKindOfApply\tProduct(Using)"))
+    assertNotEquals(
+      Scala3PsiProductionCatalog
+        .catalogPlanStructure(Scala3PsiProductionCatalog(Vector(base), focusedRoleInventory(Vector(base))))
+        .fingerprint,
+      readable.fingerprint
+    )
+
   @Test def ownedRootLineagePrefilterCannotEstablishOwnership(): Unit =
     val qualifier                                     = InventoryAncestor(
       InventoryKind.Node,
