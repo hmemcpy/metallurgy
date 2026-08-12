@@ -66,6 +66,8 @@ private[psiproducer] object Scala3PsiProductionSupport:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScNullLiteralImpl"
   val ReferenceExpressionSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScReferenceExpressionImpl"
+  val MethodCallSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScMethodCallImpl"
+  val ArgumentExpressionsSurface   = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
   val ThisReferenceSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScThisReferenceImpl"
   val SuperReferenceSurface        =
@@ -912,6 +914,26 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(s"$AnnotationArgumentsSurface#isUsing()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#isArgsInParens()Z", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$AnnotationArgumentsSurface#getArgsCount()I", required = true, SurfaceFactKind.Method)
+  )
+  val MethodCallAccessors               = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/MethodInvocation#getInvokedExpr()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/MethodInvocation#argumentExpressions()Lscala/collection/immutable/Seq;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScMethodCall#args()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScArgumentExprList;",
+      required = true
+    )
+  )
+  val ArgumentExpressionsAccessors      = Vector(
+    AccessorObligation(s"$ArgumentExpressionsSurface#exprs()Lscala/collection/immutable/Seq;", required = true),
+    AccessorObligation(s"$ArgumentExpressionsSurface#isUsing()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$ArgumentExpressionsSurface#isArgsInParens()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(s"$ArgumentExpressionsSurface#getArgsCount()I", required = true, SurfaceFactKind.Method)
   )
   val ExpressionPayloadAccessors        = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),

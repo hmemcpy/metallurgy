@@ -204,6 +204,8 @@ private[metallurgy] object WholeFileProductionPlanner:
           children(instance).reverseIterator.foreach(pending.push)
       val ordered                                                                                 = instances.result()
       val selected                                                                                = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, Scala3PsiProduction]
+      val retainedProductionMatches                                                               =
+        collection.mutable.LinkedHashMap.empty[ProductionInstanceId, RetainedProductionMatch]
       val runtimeParents                                                                          = ordered
         .flatMap(parent =>
           children(parent).flatMap(child =>
@@ -235,13 +237,31 @@ private[metallurgy] object WholeFileProductionPlanner:
                 runtimeParents,
                 selected,
                 candidate => rows(candidate.kind -> candidate.valueId).prefix,
-                position
+                position,
+                catalog
               )
           )
         )
-        val distinct   = selections.map(_._2.map(_.id)).distinct
+        val distinct   = selections.map(_._2.map(_.id).sorted).distinct
         distinct match
-          case Vector(Vector(id))          => selected += instance -> selections.flatMap(_._2).find(_.id == id).get
+          case Vector(ids) if ids.nonEmpty =>
+            val matches = ids.flatMap(id => catalog.productions.find(_.id == id))
+            ProductionMatchRetention.retain(catalog, matches) match
+              case Right(retained) =>
+                selected += instance                  -> retained.candidate
+                retainedProductionMatches += instance -> retained
+              case Left(_)         =>
+                break(
+                  Left(
+                    WholeFilePlanningFailure.AmbiguousProduction(
+                      row.kind,
+                      row.prefix,
+                      ids,
+                      selections.headOption.flatMap(_._1).map(_.ownerPrefix),
+                      instance.occurrence.map(_.fieldPath).getOrElse(Vector.empty)
+                    )
+                  )
+                )
           case Vector(Vector()) | Vector() =>
             break(
               Left(
@@ -521,7 +541,9 @@ private[metallurgy] object WholeFileProductionPlanner:
             case _                                                                                        =>
               Left("parent owner has no source-derived position")
 
-      val resolvedRealizations = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, OutputRealization]
+      val resolvedRealizations  = collection.mutable.LinkedHashMap.empty[ProductionInstanceId, OutputRealization]
+      val realizationSelections =
+        collection.mutable.LinkedHashMap.empty[ProductionInstanceId, PlannedRealizationSelection]
       active.toVector.reverse.foreach: instance =>
         val children                                                                   = compilerChildren.getOrElse(instance, Vector.empty)
         def occurrence(condition: ChildOutcomeCondition): Option[ProductionInstanceId] =
@@ -534,10 +556,12 @@ private[metallurgy] object WholeFileProductionPlanner:
           val childConditions    = realization.conditions.forall(condition =>
             occurrence(condition).exists(child =>
               condition.expected match
-                case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
-                case ChildOutcomeExpectation.Realization(id)  => resolvedRealizations(child).id == id
-                case ChildOutcomeExpectation.OutputRole(role) =>
+                case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
+                case ChildOutcomeExpectation.Realization(id)    => resolvedRealizations(child).id == id
+                case ChildOutcomeExpectation.OutputRole(role)   =>
                   resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
+                case ChildOutcomeExpectation.OutputRoles(roles) =>
+                  resolvedRealizations(child).template.composites.exists(output => roles(output.outputRoleId))
             )
           )
           val evidenceConditions = childConditions && realization.evidenceConditions.forall:
@@ -597,10 +621,129 @@ private[metallurgy] object WholeFileProductionPlanner:
             val mostSpecific = values.map(value => value.conditions.size + value.evidenceConditions.size).max
             values.filter(value => value.conditions.size + value.evidenceConditions.size == mostSpecific)
         matches match
-          case Vector(value) => resolvedRealizations += instance -> value
-          case Vector()      =>
+          case values if selected(instance).realizationChoice.nonEmpty =>
+            def rootMatches(
+                child: ProductionInstanceId,
+                expected: ChildOutcomeExpectation,
+                root: OutputCompositeDeclaration
+            ): Boolean = expected match
+              case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
+              case ChildOutcomeExpectation.Realization(id)    => resolvedRealizations(child).id == id
+              case ChildOutcomeExpectation.OutputRole(role)   => root.outputRoleId == role
+              case ChildOutcomeExpectation.OutputRoles(roles) => roles(root.outputRoleId)
+            def assess(
+                candidate: OutputRealization
+            ): Either[CandidateRealizationDefect, Vector[CandidateInapplicability]] =
+              val candidateRange          = position(instance) match
+                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => Right(range)
+                case _                                                                               =>
+                  Left(CandidateRealizationDefect.SourceOwnership("candidate root has no source-derived position"))
+              val completeFallback        = retainedProductionMatches
+                .get(instance)
+                .flatMap(_.fallback)
+                .exists(OwnedRootRouteMatcher.isCompletePayload)
+              val excludedTypeApplication = rows(instance.kind -> instance.valueId).observation.exists:
+                case InventoryFieldObservation("fun", InventoryValueObservation.Node(_, "TypeApply"), _) => true
+                case _                                                                                   => false
+              if candidateRange.isLeft then candidateRange.map(_ => Vector.empty)
+              else if !completeFallback then
+                Left(
+                  CandidateRealizationDefect.CandidateEvidence("candidate has no retained complete payload fallback")
+                )
+              else if excludedTypeApplication then Right(Vector(CandidateInapplicability.ExcludedTypeApplication))
+              else if !values.exists(_.id == candidate.id) then
+                Left(
+                  CandidateRealizationDefect.CandidateEvidence("candidate conditions or source evidence do not match")
+                )
+              else
+                boundary[Either[CandidateRealizationDefect, Vector[CandidateInapplicability]]]:
+                  val reviewed = Vector.newBuilder[CandidateInapplicability]
+                  candidate.requiredChildRoots.foreach: requirement =>
+                    val roleChildren = children.collect {
+                      case (roleId, _, child) if roleId == requirement.roleId => child
+                    }
+                    def assessChild(
+                        child: ProductionInstanceId,
+                        expected: ChildOutcomeExpectation
+                    ): Either[CandidateRealizationDefect, Unit] =
+                      val roots       = resolvedRealizations(child).template.composites.filter(_.parentId.isEmpty)
+                      val sourceOwned = position(child) match
+                        case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                          val parent = candidateRange.toOption.get
+                          parent.startOffset <= range.startOffset && range.endOffset <= parent.endOffset
+                        case _                                                                               => false
+                      if !sourceOwned then
+                        Left(
+                          CandidateRealizationDefect.SourceOwnership(
+                            s"${requirement.roleId} child $child has no contained source-derived position"
+                          )
+                        )
+                      else
+                        roots match
+                          case Vector()     =>
+                            reviewed += CandidateInapplicability.MissingChildRoot(
+                              requirement.roleId,
+                              child,
+                              selected(child).id,
+                              resolvedRealizations(child).id
+                            )
+                            Right(())
+                          case Vector(root) =>
+                            if rootMatches(child, expected, root) then Right(())
+                            else
+                              reviewed += CandidateInapplicability.UnsupportedChildRoot(
+                                requirement.roleId,
+                                child,
+                                root.outputRoleId
+                              )
+                              Right(())
+                          case many         =>
+                            Left(CandidateRealizationDefect.ChildRootAmbiguity(requirement.roleId, child, many.size))
+                    requirement.rootOutcome match
+                      case ChildRootOutcome.One(expected) =>
+                        roleChildren match
+                          case Vector(child) =>
+                            assessChild(child, expected) match
+                              case Left(reason) => break(Left(reason))
+                              case Right(_)     => ()
+                          case values        =>
+                            break(
+                              Left(
+                                CandidateRealizationDefect.CandidateEvidence(
+                                  s"${requirement.roleId} has ${values.size} children"
+                                )
+                              )
+                            )
+                      case ChildRootOutcome.All(expected) =>
+                        roleChildren.foreach(child =>
+                          assessChild(child, expected) match
+                            case Left(reason) => break(Left(reason))
+                            case Right(_)     => ()
+                        )
+                      case ChildRootOutcome.AnyReviewed   =>
+                        break(
+                          Left(
+                            CandidateRealizationDefect.CandidateEvidence(
+                              s"${requirement.roleId} uses an invalid candidate root requirement"
+                            )
+                          )
+                        )
+                  Right(reviewed.result())
+            RealizationChoiceSelector.select(selected(instance), values, assess) match
+              case Left(failure)    =>
+                break(Left(WholeFilePlanningFailure.InvalidRealizationChoice(instance, failure)))
+              case Right(selection) =>
+                resolvedRealizations += instance  -> selection.realization
+                realizationSelections += instance -> PlannedRealizationSelection(
+                  instance,
+                  selection.realization.id,
+                  selection.reason
+                )
+          case Vector(value)                                           =>
+            resolvedRealizations += instance -> value
+          case Vector()                                                =>
             break(Left(WholeFilePlanningFailure.UnknownOutputRealization(instance, selected(instance).id)))
-          case values        =>
+          case values                                                  =>
             break(
               Left(
                 WholeFilePlanningFailure.AmbiguousOutputRealization(
@@ -611,14 +754,19 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
 
-      val participation    = ProductionParticipationPlanner
+      val participation                                                                = ProductionParticipationPlanner
         .plan(active.toVector, selected, compilerChildren, resolvedRealizations, position)
         .fold(
           failure => break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(failure))),
           identity
         )
-      val participating    = participation.retained
-      val participatingSet = participating.toSet
+      val participating                                                                = participation.retained
+      val participatingSet                                                             = participating.toSet
+      def activeTerminals(instance: ProductionInstanceId): Vector[TerminalDeclaration] =
+        val production = selected(instance)
+        resolvedRealizations(instance).terminalIds match
+          case None      => production.terminals
+          case Some(ids) => production.terminals.filter(terminal => ids(terminal.id))
       def participatingCompilerChildren(
           instance: ProductionInstanceId
       ): Vector[(String, Vector[ParserFieldPathSegment], ProductionInstanceId)] =
@@ -780,11 +928,11 @@ private[metallurgy] object WholeFileProductionPlanner:
         def resolve(boundary: OutputBoundary, outputId: String)(using
             scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
         ): Int = boundary match
-          case value @ OutputBoundary.ProductionStart(policy)            =>
+          case value @ OutputBoundary.ProductionStart(policy)                                       =>
             positionedRange(instance, policy, value, outputId).startOffset
-          case value @ OutputBoundary.ProductionEnd(policy)              =>
+          case value @ OutputBoundary.ProductionEnd(policy)                                         =>
             positionedRange(instance, policy, value, outputId).endOffset
-          case OutputBoundary.ProductionPoint                            =>
+          case OutputBoundary.ProductionPoint                                                       =>
             position(instance) match
               case ParserNodePosition.Positioned(_, point, ParserPositionProvenance.SourceDerived) => point
               case _                                                                               =>
@@ -798,7 +946,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 )
-          case OutputBoundary.ProductionNameEnd                          =>
+          case OutputBoundary.ProductionNameEnd                                                     =>
             val point = resolve(OutputBoundary.ProductionPoint, outputId)
             evidence.lexicalContract.atoms
               .find(atom =>
@@ -819,7 +967,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case OutputBoundary.ParentProductionEnd                        =>
+          case OutputBoundary.ParentProductionEnd                                                   =>
             parentOwner(instance)
               .map(owner =>
                 positionedRange(
@@ -843,7 +991,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   ),
                 identity
               )
-          case OutputBoundary.TemplateLayoutStart                        =>
+          case OutputBoundary.TemplateLayoutStart                                                   =>
             templateLayoutStart(instance)
               .flatMap(_.toRight("template body layout is absent"))
               .fold(
@@ -911,7 +1059,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case value @ OutputBoundary.ChildStart(role, selector, policy) =>
+          case value @ OutputBoundary.ChildStart(role, selector, policy)                            =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
               case ChildOccurrenceSelector.First          => candidates.headOption
@@ -931,7 +1079,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
             val range         = positionedRange(child, policy, value, outputId)
             range.startOffset
-          case value @ OutputBoundary.ChildEnd(role, selector, policy)   =>
+          case value @ OutputBoundary.ChildEnd(role, selector, policy)                              =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
               case ChildOccurrenceSelector.First          => candidates.headOption
@@ -950,6 +1098,44 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
             positionedRange(child, policy, value, outputId).endOffset
+          case value @ OutputBoundary.NextScannerTokenStartAfterChild(role, selector, kind, policy) =>
+            val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
+            val selectedChild = selector match
+              case ChildOccurrenceSelector.First          => candidates.headOption
+              case ChildOccurrenceSelector.Last           => candidates.lastOption
+              case ChildOccurrenceSelector.Exact(ordinal) => candidates.lift(ordinal)
+            val childEnd      = selectedChild
+              .map(child => positionedRange(child, policy, value, outputId).endOffset)
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      value,
+                      "child occurrence is missing"
+                    )
+                  )
+                )
+              )
+            val productionEnd = positionedRange(instance, policy, value, outputId).endOffset
+            snapshot.scannerTokens
+              .find(token =>
+                token.kind == kind && childEnd <= token.range.startOffset && token.range.endOffset <= productionEnd
+              )
+              .map(_.range.startOffset)
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      value,
+                      s"scanner token $kind is missing after child"
+                    )
+                  )
+                )
+              )
           case value @ OutputBoundary.EvidenceBoundaryAfterChild(
                 role,
                 selector,
@@ -1033,7 +1219,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case value @ OutputBoundary.Advance(base, count)               =>
+          case value @ OutputBoundary.Advance(base, count)                                          =>
             val offset    = resolve(base, outputId)
             val index     = evidenceBoundaries.indexOf(offset)
             val remaining = if index < 0 then -1L else evidenceBoundaries.size.toLong - index.toLong - 1L
@@ -2003,6 +2189,44 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
               .map(_.range)
           else Vector.empty
+        case TerminalIntervalSelector.BalancedScannerTokenAfterChild(
+              kind,
+              opening,
+              closing,
+              roleId,
+              occurrence
+            ) =>
+          val childEnd = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`roleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.endOffset }
+          (position(instance), childEnd) match
+            case (ParserNodePosition.Positioned(parent, _, _), Some(start)) =>
+              val tokens       = snapshot.scannerTokens.filter(token =>
+                start <= token.range.startOffset && token.range.endOffset <= parent.endOffset
+              )
+              val openingIndex = tokens.indexWhere(_.kind == opening)
+              if openingIndex < 0 then Vector.empty
+              else
+                var depth   = 0
+                var closed  = false
+                val matches = Vector.newBuilder[PcSourceRange]
+                tokens
+                  .drop(openingIndex)
+                  .iterator
+                  .takeWhile(_ => !closed)
+                  .foreach: token =>
+                    if token.kind == opening then depth += 1
+                    if token.kind == kind && depth == 1 then matches += token.range
+                    if token.kind == closing then
+                      depth -= 1
+                      closed = depth == 0
+                val values  = if closed then matches.result() else Vector.empty
+                occurrence match
+                  case ScannerTokenOccurrence.All   => values
+                  case ScannerTokenOccurrence.First => values.headOption.toVector
+                  case ScannerTokenOccurrence.Last  => values.lastOption.toVector
+            case _                                                          => Vector.empty
         case other                                                                                   =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
@@ -2021,6 +2245,8 @@ private[metallurgy] object WholeFileProductionPlanner:
         case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerTokenInChildGap)         =>
           intervals
         case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap)   =>
+          intervals
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.BalancedScannerTokenAfterChild)         =>
           intervals
         case _                                                                                                       => Vector.empty
 
@@ -2050,7 +2276,7 @@ private[metallurgy] object WholeFileProductionPlanner:
 
       val knownEvidenceRoles  = (
         outputRows.valuesIterator.flatten.map(_._1.outputRoleId) ++
-          participating.iterator.flatMap(instance => selected(instance).terminals.map(_.outputRoleId))
+          participating.iterator.flatMap(instance => activeTerminals(instance).map(_.outputRoleId))
       ).toSet
       val requestedBoundaries = Vector.newBuilder[(PsiOutputRoleId, Int)]
       outputRows.valuesIterator.flatten.foreach: (declaration, _, range) =>
@@ -2058,7 +2284,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         requestedBoundaries += declaration.outputRoleId -> range.endOffset
       participating.foreach: instance =>
         val production = selected(instance)
-        production.terminals.foreach: terminal =>
+        activeTerminals(instance).foreach: terminal =>
           val intervals = terminalIntervals(instance, production, terminal)
           val ranges    = terminal.target match
             case _: TerminalLeafTarget.Token => terminalTokenRanges(terminal, intervals)
@@ -2214,7 +2440,7 @@ private[metallurgy] object WholeFileProductionPlanner:
         .mapValues(_.toSet)
         .toMap
       val distinctParentClaimAtoms                                                                        = participating.iterator
-        .filter(instance => selected(instance).terminals.exists(_.target == TerminalLeafTarget.Parent))
+        .filter(instance => activeTerminals(instance).exists(_.target == TerminalLeafTarget.Parent))
         .map: instance =>
           val flattened =
             eligibleParentClaimAtoms.getOrElse(instance, Vector.empty) ++
@@ -2227,7 +2453,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       val resolvedTerminals                                                                               = collection.mutable.LinkedHashSet.empty[(ProductionInstanceId, String)]
       participating.foreach: instance =>
         val production = selected(instance)
-        production.terminals.foreach: terminal =>
+        activeTerminals(instance).foreach: terminal =>
           val intervals            = terminalIntervals(instance, production, terminal)
           if !terminalLexicalContractSatisfied(terminal, intervals) then
             break(
@@ -2362,7 +2588,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             else sources.forall(source => source == instance || isAncestor(instance, source))
           if !ownsClaim then Vector.empty
           else
-            val terminals = selected(instance).terminals.collect:
+            val terminals = activeTerminals(instance).collect:
               case terminal
                   if terminal.claimsStructuralEvidence &&
                     (sources.contains(instance) || terminal.target == TerminalLeafTarget.Parent) =>
@@ -2413,7 +2639,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               PlannedTargetIdentity.OutputRole(declaration.outputRoleId),
               requirement
             )
-        val terminals  = production.terminals.collect:
+        val terminals  = activeTerminals(instance).collect:
           case TerminalDeclaration(id, _, TerminalLeafTarget.Token(surfaceId, _), _, outputRoleId, _)
               if resolvedTerminals(instance -> id) =>
             PlannedTargetAssertion(
@@ -2458,7 +2684,8 @@ private[metallurgy] object WholeFileProductionPlanner:
         accessors,
         stubs,
         navigation,
-        participation.absorptions
+        participation.absorptions,
+        realizationSelections.values.toVector
       )
       Right(plan)
 

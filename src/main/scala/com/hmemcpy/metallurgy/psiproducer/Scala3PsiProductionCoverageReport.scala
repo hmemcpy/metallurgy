@@ -68,8 +68,8 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
           .sortBy(render)
           .foreach: occurrence =>
             val selected = CatalogShapeMatcher.selectAggregated(catalog, row, occurrence)
-            val status   = selected match
-              case Vector(production) =>
+            val status   = ProductionMatchRetention.retain(catalog, selected) match
+              case Right(RetainedProductionMatch(production, fallback)) =>
                 val outputs      = production.effectiveOutputRealizations.flatMap(_.template.composites)
                 val terminals    = production.terminals
                 val requirements = outputs
@@ -85,11 +85,14 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
                 ).distinct.sorted
                 val providers    = if requirements.isEmpty then "transparent" else requirements.mkString(",")
                 val boundary     = missingBoundary(production, validation)
-                s"mapped; grammar-role=${production.grammarRoleId.value}; catalog-alternative=${production.id}; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; output-roles=${renderList(outputRoles)}; host-targets=${renderList(targets)}; providers=$providers; missing-boundary=$boundary"
-              case Vector()           =>
+                val alternative  = fallback match
+                  case None        => s"catalog-alternative=${production.id}"
+                  case Some(value) => s"catalog-alternatives=${production.id},${value.id}"
+                s"mapped; grammar-role=${production.grammarRoleId.value}; $alternative; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; output-roles=${renderList(outputRoles)}; host-targets=${renderList(targets)}; providers=$providers; missing-boundary=$boundary"
+              case Left(ProductionMatchRetentionFailure.Missing)        =>
                 s"unmapped; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; missing-boundary=bridge-normalization-or-neutral-grammar-role"
-              case productions        =>
-                s"ambiguous; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; catalog-alternatives=${productions.map(_.id).sorted.mkString(",")}; missing-boundary=neutral-grammar-role-selection"
+              case Left(ProductionMatchRetentionFailure.Ambiguous(ids)) =>
+                s"ambiguous; compiler-shape=${row.kind}.${row.prefix}; compiler-context=${render(occurrence)}; catalog-alternatives=${ids.mkString(",")}; missing-boundary=neutral-grammar-role-selection"
             lines += s"- `${render(occurrence)}` — **$status**"
         lines += ""
     lines += "## Scala PSI surfaces"

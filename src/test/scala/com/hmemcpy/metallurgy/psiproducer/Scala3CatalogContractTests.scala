@@ -41,6 +41,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.ThisReference             -> Set("atomic-this-unqualified", "selection-this-unqualified"),
       GrammarRoleId.QualifiedThisReference    -> Set("atomic-this-qualified", "selection-this-qualified"),
       GrammarRoleId.SelectionExpression       -> Set("selection-expression"),
+      GrammarRoleId.OrdinaryApplication       -> Set("ordinary-application-candidate"),
       GrammarRoleId.SuperReference            -> Set("selection-super-reference"),
       GrammarRoleId.SelectionQualifier        -> Set(
         "selection-qualifier-ident",
@@ -331,6 +332,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "payload-qualifier-this",
         "payload-qualifier-super",
         "type-application-output-free-ident",
+        "type-application-output-free-ident-argument",
         "type-application-output-free-number",
         "type-application-output-free-literal"
       ),

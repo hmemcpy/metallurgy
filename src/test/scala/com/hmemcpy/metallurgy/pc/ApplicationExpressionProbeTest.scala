@@ -79,6 +79,37 @@ final class ApplicationExpressionProbeTest:
       assertEquals(Vector(ParserFieldPathSegment.NamedField("fun")), occurrenceFrom(first, curried.id).fieldPath)
       assertTrue(positioned(first).range.endOffset <= positioned(curried).range.endOffset)
 
+      Vector(
+        "typeApplied"         -> ("generic[Int](x)", "generic[Int]", "Ident"),
+        "selectedTypeApplied" -> ("source.generic[String](x)", "source.generic[String]", "Select"),
+        "namedTypeApplied"    -> ("generic[A = Int](x)", "generic[A = Int]", "Ident")
+      ).foreach { case (name, (applicationText, typeApplicationText, calleePrefix)) =>
+        val application = directRhs(nodes, name)
+        val typeApply   = child(nodes, application, "fun")
+        assertEquals(name, "Apply", application.production)
+        assertEquals(name, applicationText, text(snapshot, application))
+        assertEquals(name, "TypeApply", typeApply.production)
+        assertEquals(name, Vector("fun", "args"), typeApply.fields.map(_.name))
+        assertEquals(name, typeApplicationText, text(snapshot, typeApply))
+        assertEquals(name, calleePrefix, child(nodes, typeApply, "fun").production)
+        assertEquals(
+          name,
+          Vector(ParserFieldPathSegment.NamedField("fun")),
+          occurrenceFrom(typeApply, application.id).fieldPath
+        )
+        assertTrue(
+          name,
+          positioned(application).range.startOffset <= positioned(typeApply).range.startOffset &&
+            positioned(typeApply).range.endOffset <= positioned(application).range.endOffset
+        )
+      }
+
+      val namedTypeArgument =
+        repeatedChildren(nodes, child(nodes, directRhs(nodes, "namedTypeApplied"), "fun"), "args").head
+      assertEquals("NamedArg", namedTypeArgument.production)
+      assertEquals(Vector("name", "arg"), namedTypeArgument.fields.map(_.name))
+      assertEquals("A = Int", text(snapshot, namedTypeArgument))
+
   @Test
   def exactBoundaryInventoryKeepsNonOrdinaryRootsAndChildrenDistinct(): Unit =
     withSnapshot: snapshot =>
@@ -318,6 +349,7 @@ final class ApplicationExpressionProbeTest:
       |def repeated(xs: Int*): Int = xs.sum
       |object source:
       |  def member(x: Int): Int = x
+      |  def generic[A](x: A): A = x
       |  val templateCall = member(1)
       |val x = 1
       |val xs = Seq(1)
@@ -331,6 +363,7 @@ final class ApplicationExpressionProbeTest:
       |val curriedCall = curried(x)(1)
       |def methodCall = f(x)
       |val typeApplied = generic[Int](x)
+      |val selectedTypeApplied = source.generic[String](x)
       |val namedTypeApplied = generic[A = Int](x)
       |val namedArgument = named(x = 1)
       |val usingArgument = f(using summon[String])

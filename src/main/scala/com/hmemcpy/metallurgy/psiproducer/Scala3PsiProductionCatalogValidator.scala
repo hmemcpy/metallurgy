@@ -247,14 +247,26 @@ private[metallurgy] object RuntimeRealizationSelector:
                 runtimeParents,
                 selected,
                 candidate => rows(candidate.kind -> candidate.valueId).prefix,
-                position
+                position,
+                catalog
               )
           )
         )
-        .map(_.map(_.id))
+        .map(_.map(_.id).sorted)
         .distinct
       matches match
-        case Vector(Vector(id))          => selected += instance -> catalog.productions.find(_.id == id).get
+        case Vector(ids) if ids.nonEmpty =>
+          val productions = ids.flatMap(id => catalog.productions.find(_.id == id))
+          ProductionMatchRetention.retain(catalog, productions) match
+            case Right(retained) => selected += instance -> retained.candidate
+            case Left(_)         =>
+              errors += CatalogValidationError.AmbiguousCompilerShape(
+                row.kind,
+                row.prefix,
+                contexts.headOption.flatten,
+                row.sourceClassification,
+                ids
+              )
         case Vector(Vector()) | Vector() =>
           errors += CatalogValidationError.UncoveredCompilerShape(
             row.kind,
@@ -332,12 +344,16 @@ private[metallurgy] object RuntimeRealizationSelector:
                 case ChildOccurrenceSelector.Exact(index) => values.lift(index)
               child.exists(candidate =>
                 condition.expected match
-                  case ChildOutcomeExpectation.Production(id)   => selected.get(candidate).exists(_.id == id)
-                  case ChildOutcomeExpectation.Realization(id)  => resolved.get(candidate).exists(_.exists(_.id == id))
-                  case ChildOutcomeExpectation.OutputRole(role) =>
+                  case ChildOutcomeExpectation.Production(id)     => selected.get(candidate).exists(_.id == id)
+                  case ChildOutcomeExpectation.Realization(id)    => resolved.get(candidate).exists(_.exists(_.id == id))
+                  case ChildOutcomeExpectation.OutputRole(role)   =>
                     resolved
                       .get(candidate)
                       .exists(_.exists(_.template.composites.exists(_.outputRoleId == role)))
+                  case ChildOutcomeExpectation.OutputRoles(roles) =>
+                    resolved
+                      .get(candidate)
+                      .exists(_.exists(_.template.composites.exists(output => roles(output.outputRoleId))))
               )
           val matches       = matching match
             case Vector() => Vector.empty
@@ -345,6 +361,10 @@ private[metallurgy] object RuntimeRealizationSelector:
               val mostSpecific = values.map(value => value.conditions.size + value.evidenceConditions.size).max
               values.filter(value => value.conditions.size + value.evidenceConditions.size == mostSpecific)
           matches match
+            case many
+                if production.realizationChoice
+                  .exists(choice => many.map(_.id).toSet == Set(choice.candidateId, choice.fallbackId)) =>
+              resolved += key -> many
             case Vector() =>
               errors += CatalogValidationError.UnknownScenarioRealization(
                 production.id,
@@ -559,6 +579,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         errors += CatalogValidationError.DuplicateOutputRealizationId(p.id, id)
       )
       realizations.foreach(realization =>
+        realization.terminalIds.foreach: ids =>
+          val declared = p.terminals.map(_.id).toSet
+          ids.diff(declared).foreach(id => errors += CatalogValidationError.DuplicateTerminalId(p.id, id))
         duplicates(realization.conditions.map(condition => condition.roleId -> condition.occurrence)).foreach:
           case (roleId, occurrence) =>
             errors += CatalogValidationError.DuplicateRealizationCondition(
@@ -606,8 +629,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               )
             case Some(child) =>
               val validCardinality = absorption.rootOutcome match
-                case ChildRootOutcome.One(_) => child.cardinality == ChildCardinality.ExactlyOne
-                case ChildRootOutcome.All(_) => child.cardinality.isInstanceOf[ChildCardinality.Repeated]
+                case ChildRootOutcome.One(_)      => child.cardinality == ChildCardinality.ExactlyOne
+                case ChildRootOutcome.All(_)      => child.cardinality.isInstanceOf[ChildCardinality.Repeated]
+                case ChildRootOutcome.AnyReviewed => true
               if !validCardinality then
                 errors += CatalogValidationError.InvalidChildRootOutcome(
                   p.id,
@@ -617,9 +641,10 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                   "outcome does not match child cardinality"
                 )
               val expected         = absorption.rootOutcome match
-                case ChildRootOutcome.One(value) => value
-                case ChildRootOutcome.All(value) => value
-              expected match
+                case ChildRootOutcome.One(value)  => Some(value)
+                case ChildRootOutcome.All(value)  => Some(value)
+                case ChildRootOutcome.AnyReviewed => None
+              expected.foreach:
                 case ChildOutcomeExpectation.Production(id) if !child.productionIds(id) =>
                   errors += CatalogValidationError.InvalidChildRootOutcome(
                     p.id,
@@ -654,14 +679,52 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                     absorption.rootOutcome,
                     "unknown child root output role"
                   )
+                case ChildOutcomeExpectation.OutputRoles(roles)
+                    if roles.isEmpty || !roles.forall(role =>
+                      catalog.productions
+                        .filter(production => child.productionIds(production.id))
+                        .exists(
+                          _.effectiveOutputRealizations.exists(
+                            _.template.composites
+                              .exists(output => output.parentId.isEmpty && output.outputRoleId == role)
+                          )
+                        )
+                    ) =>
+                  errors += CatalogValidationError.InvalidChildRootOutcome(
+                    p.id,
+                    realization.id,
+                    absorption.roleId,
+                    absorption.rootOutcome,
+                    "unknown child root output role set"
+                  )
                 case _                                                                  => ()
-          if realization.template.childMounts.get(absorption.roleId).flatten.nonEmpty then
+          if realization.template.childMounts.get(absorption.roleId).flatten.nonEmpty &&
+            absorption.retainedRootRoles.isEmpty
+          then
             errors += CatalogValidationError.ConflictingChildClosureParticipation(
               p.id,
               realization.id,
               absorption.roleId,
-              "absorbed child output is mounted"
+              "absorbed child output is mounted without a retained root role"
             )
+          absorption.retainedRootRoles.foreach: role =>
+            val knownRoot = p.children
+              .filter(_.roleId == absorption.roleId)
+              .flatMap(_.productionIds)
+              .flatMap(id => catalog.productions.find(_.id == id))
+              .exists(
+                _.effectiveOutputRealizations.exists(
+                  _.template.composites.exists(output => output.parentId.isEmpty && output.outputRoleId == role)
+                )
+              )
+            if !knownRoot then
+              errors += CatalogValidationError.InvalidChildRootOutcome(
+                p.id,
+                realization.id,
+                absorption.roleId,
+                absorption.rootOutcome,
+                s"unknown retained child root output role ${role.value}"
+              )
           if realization.template.childOutputSelections.contains(absorption.roleId) then
             errors += CatalogValidationError.ConflictingChildClosureParticipation(
               p.id,
@@ -731,7 +794,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             .filterNot(outputIds.contains)
             .foreach(parent => errors += CatalogValidationError.UnknownOutputParent(p.id, output.id, parent))
           def validateBoundary(boundary: OutputBoundary): Unit = boundary match
-            case OutputBoundary.ChildStart(role, selector, _)  =>
+            case OutputBoundary.ChildStart(role, selector, _)                         =>
               if !childRoles(role) then
                 errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
               selector match
@@ -743,7 +806,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                     "negative occurrence ordinal"
                   )
                 case _                                                 => ()
-            case OutputBoundary.ChildEnd(role, selector, _)    =>
+            case OutputBoundary.ChildEnd(role, selector, _)                           =>
               if !childRoles(role) then
                 errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
               selector match
@@ -782,15 +845,27 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                   boundary,
                   "expected delimiters must be nonempty"
                 )
-            case OutputBoundary.Advance(_, count) if count < 0 =>
+            case OutputBoundary.NextScannerTokenStartAfterChild(role, selector, _, _) =>
+              if !childRoles(role) then
+                errors += CatalogValidationError.InvalidOutputBoundary(p.id, output.id, boundary, "unknown child role")
+              selector match
+                case ChildOccurrenceSelector.Exact(index) if index < 0 =>
+                  errors += CatalogValidationError.InvalidOutputBoundary(
+                    p.id,
+                    output.id,
+                    boundary,
+                    "negative occurrence ordinal"
+                  )
+                case _                                                 => ()
+            case OutputBoundary.Advance(_, count) if count < 0                        =>
               errors += CatalogValidationError.InvalidOutputBoundary(
                 p.id,
                 output.id,
                 boundary,
                 "negative boundary advance"
               )
-            case OutputBoundary.Advance(base, _)               => validateBoundary(base)
-            case _                                             => ()
+            case OutputBoundary.Advance(base, _)                                      => validateBoundary(base)
+            case _                                                                    => ()
           output.range match
             case OutputRangeDeclaration.CompilerPosition | OutputRangeDeclaration.CompilerPositionWithPolicy(_) |
                 OutputRangeDeclaration.CompilerPositionWithTrailingBalancedBrackets(_) |
@@ -923,6 +998,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, _) |
                 TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, _, _) |
                 TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, _, _) |
+                TerminalIntervalSelector.BalancedScannerTokenAfterChild(_, _, _, _, _) |
                 TerminalIntervalSelector.LocalOutput(_) | TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
               false
           )
@@ -1020,6 +1096,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       .flatMap: row =>
         row.occurrences.flatMap: occurrence =>
           coverageError(
+            catalog,
             row.kind,
             row.prefix,
             occurrence.context,
@@ -1048,6 +1125,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
     uncovered ++ unrepresented
 
   private def coverageError(
+      catalog: Scala3PsiProductionCatalog,
       kind: InventoryKind,
       prefix: String,
       context: Option[InventoryContext],
@@ -1056,17 +1134,19 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
   ): Vector[CatalogValidationError] =
     if selected.isEmpty then
       Vector(CatalogValidationError.UncoveredCompilerShape(kind, prefix, context, sourceClassification))
-    else if selected.size > 1 then
-      Vector(
-        CatalogValidationError.AmbiguousCompilerShape(
-          kind,
-          prefix,
-          context,
-          sourceClassification,
-          selected.map(_.id).sorted
-        )
-      )
-    else Vector.empty
+    else
+      ProductionMatchRetention.retain(catalog, selected) match
+        case Right(_) => Vector.empty
+        case Left(_)  =>
+          Vector(
+            CatalogValidationError.AmbiguousCompilerShape(
+              kind,
+              prefix,
+              context,
+              sourceClassification,
+              selected.map(_.id).sorted
+            )
+          )
 
   private def valid(cardinality: ChildCardinality): Boolean = cardinality match
     case ChildCardinality.ExactlyOne | ChildCardinality.Optional => true

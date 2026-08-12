@@ -197,8 +197,7 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
   def testMixedAndOrdinaryNamedTypeArgumentsFailClosedWithoutPartialPsi(): Unit =
     Vector(
       "import scala.language.experimental.namedTypeArguments\nval mixed = pair[Int, B = String](1, \"text\")\n",
-      "import scala.language.experimental.namedTypeArguments\ntype Bad = F[A = Int]\n",
-      "import scala.language.experimental.namedTypeArguments\nval value = 1\nval bad = pair[A = Int](value, \"text\")\n"
+      "import scala.language.experimental.namedTypeArguments\ntype Bad = F[A = Int]\n"
     ).zipWithIndex.foreach: (source, index) =>
       val pending = myFixture.addFileToProject(s"src/AppliedNamedClosed${index + 1}.scala", source)
       val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
@@ -214,6 +213,20 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
+
+    val appliedSource =
+      "import scala.language.experimental.namedTypeArguments\nval value = 1\nval bad = pair[A = Int](value, \"text\")\n"
+    val applied       = physical("AppliedNamedCall.scala", appliedSource)
+    assertEquals(
+      Vector("pair[A = Int](value, \"text\")"),
+      PsiTreeUtil.findChildrenOfType(applied, classOf[MetallurgyExpressionPayload]).asScala.map(_.getText).toVector
+    )
+    assertEquals(
+      Vector("[A = Int]"),
+      PsiTreeUtil.findChildrenOfType(applied, classOf[ScTypeArgs]).asScala.map(_.getText).toVector
+    )
+    assertTrue(PsiTreeUtil.findChildrenOfType(applied, classOf[ScMethodCall]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(applied, classOf[ScReferenceExpression]).isEmpty)
 
     val selectedSource =
       "import scala.language.experimental.namedTypeArguments\nval bad = target.make[A = Int]\n"

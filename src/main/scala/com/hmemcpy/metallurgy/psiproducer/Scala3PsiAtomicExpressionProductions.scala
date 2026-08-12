@@ -39,7 +39,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
         InventoryKind.Node,
         prefix,
         fields,
-        directOwnerOccurrences.map(_.copy(scannerEvidence = scannerEvidence))
+        (directOwnerOccurrences ++ Scala3PsiApplicationExpressionProductions.ChildOccurrences)
+          .map(_.copy(scannerEvidence = scannerEvidence))
       ),
       dispositions = fields.map(field => FieldDisposition(field.name, FieldDispositionKind.TerminalOrLayout)),
       children = Vector.empty,
@@ -147,7 +148,7 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     AtomicLiteralAccessors
   )
 
-  private val thisQualifierOccurrences = Vector("DefDef", "ValDef").flatMap: owner =>
+  private val directThisQualifierOccurrences = Vector("DefDef", "ValDef").flatMap: owner =>
     val anchor    = InventoryAncestor(
       InventoryKind.Node,
       owner,
@@ -178,6 +179,25 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
           anchor
         ),
         SourceClassification.Absent
+      )
+    )
+
+  private val thisQualifierOccurrences = directThisQualifierOccurrences ++
+    Scala3PsiApplicationExpressionProductions.descendantOccurrences(
+      "This",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.SourceReachable,
+      Vector(
+        InventoryAncestor(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("qualifier"))),
+        InventoryAncestor(InventoryKind.Node, "Super", Vector(CatalogPathSegment.NamedField("qual")))
+      )
+    ) ++ Scala3PsiApplicationExpressionProductions.descendantOccurrences(
+      "This",
+      Vector(CatalogPathSegment.NamedField("qual")),
+      SourceClassification.Absent,
+      Vector(
+        InventoryAncestor(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("qualifier"))),
+        InventoryAncestor(InventoryKind.Node, "Super", Vector(CatalogPathSegment.NamedField("qual")))
       )
     )
 
@@ -266,7 +286,7 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
         InventoryKind.Node,
         "This",
         Vector(CompilerFieldPattern("qual", CatalogValuePattern.NodePrefix("Ident"))),
-        directOwnerOccurrences,
+        directOwnerOccurrences ++ Scala3PsiApplicationExpressionProductions.ChildOccurrences,
         Vector(DirectNodeFieldEvidence("qual", qualifierClassification))
       ),
       dispositions = Vector(FieldDisposition("qual", FieldDispositionKind.Child)),

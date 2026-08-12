@@ -99,6 +99,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   case InvalidCompilerEndMarker(owner: ProductionInstanceId, reason: String)
   case UnknownOutputRealization(owner: ProductionInstanceId, productionId: String)
   case AmbiguousOutputRealization(owner: ProductionInstanceId, productionId: String, realizationIds: Vector[String])
+  case InvalidRealizationChoice(owner: ProductionInstanceId, failure: RealizationChoiceFailure)
   case InvalidProductionParticipation(failure: ProductionParticipationFailure)
   case OutputChildOutsideParent(parent: CompositeInstanceId, child: CompositeInstanceId)
 
@@ -139,14 +140,21 @@ private[metallurgy] final case class RuntimeParentEdge(
 )
 
 private[metallurgy] object OwnedRootRouteMatcher:
+  private val RetainedPayloadChildRoles = Set(
+    PsiOutputRoleId.TypeArguments,
+    PsiOutputRoleId.NamedTypeArguments
+  )
+
+  private def isCompletePayload(realization: OutputRealization): Boolean =
+    realization.template.composites.count(output =>
+      output.parentId.isEmpty && output.range == OutputRangeDeclaration.CompilerPosition &&
+        output.outputRoleId == PsiOutputRoleId.ExpressionPayload &&
+        output.realization == OutputCompositeRealization.Once
+    ) == 1 && realization.template.composites.count(_.parentId.isEmpty) == 1
+
   def isCompletePayload(production: Scala3PsiProduction): Boolean =
     production.effectiveOutputRealizations match
-      case Vector(realization) =>
-        realization.template.composites.count(output =>
-          output.parentId.isEmpty && output.range == OutputRangeDeclaration.CompilerPosition &&
-            output.outputRoleId == PsiOutputRoleId.ExpressionPayload &&
-            output.realization == OutputCompositeRealization.Once
-        ) == 1 && realization.template.composites.count(_.parentId.isEmpty) == 1
+      case Vector(realization) => isCompletePayload(realization)
       case _                   => false
 
   def matches(
@@ -155,7 +163,8 @@ private[metallurgy] object OwnedRootRouteMatcher:
       parents: Map[ProductionInstanceId, Vector[RuntimeParentEdge]],
       selected: collection.Map[ProductionInstanceId, Scala3PsiProduction],
       prefix: ProductionInstanceId => String,
-      position: ProductionInstanceId => ParserNodePosition
+      position: ProductionInstanceId => ParserNodePosition,
+      catalog: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog.Reviewed
   ): Boolean =
     def next(current: ProductionInstanceId, expected: InventoryAncestor): Option[ProductionInstanceId] =
       parents.get(current) match
@@ -187,11 +196,22 @@ private[metallurgy] object OwnedRootRouteMatcher:
       val ownership     =
         selected
           .get(root)
-          .exists(production => production.id == route.rootProductionId && isCompletePayload(production)) &&
+          .exists: production =>
+            val direct      = production.id == route.rootProductionId && isCompletePayload(production)
+            val alternative = catalog.productionAlternatives.exists(value =>
+              value.candidateId == production.id && value.fallbackId == route.rootProductionId
+            ) && production.realizationChoice.exists(choice =>
+              production.effectiveOutputRealizations.find(_.id == choice.fallbackId).exists(isCompletePayload)
+            )
+            direct || alternative
+        &&
           intermediates.forall(instance =>
             selected
               .get(instance)
-              .exists(_.effectiveOutputRealizations.forall(_.template.composites.isEmpty))
+              .exists(_.effectiveOutputRealizations.forall: realization =>
+                val roots = realization.template.composites.filter(_.parentId.isEmpty)
+                roots.isEmpty || roots.forall(root => RetainedPayloadChildRoles(root.outputRoleId))
+              )
           )
       val bounded       = for
         definition <- next(root, route.rootOwner)
@@ -284,6 +304,11 @@ private[metallurgy] final case class PlannedChildClosureAbsorption(
     closure: Vector[ProductionInstanceId],
     transferredClaim: PcSourceRange
 )
+private[metallurgy] final case class PlannedRealizationSelection(
+    owner: ProductionInstanceId,
+    realizationId: String,
+    reason: RealizationSelectionReason
+)
 private[metallurgy] final case class WholeFileProductionPlan(
     sourceUri: ParserSourceUri,
     sourceDigest: String,
@@ -297,7 +322,8 @@ private[metallurgy] final case class WholeFileProductionPlan(
     accessorAssertions: Vector[PlannedAccessorAssertion],
     stubAssertions: Vector[PlannedStubAssertion],
     navigationAssertions: Vector[PlannedNavigationAssertion],
-    childClosureAbsorptions: Vector[PlannedChildClosureAbsorption] = Vector.empty
+    childClosureAbsorptions: Vector[PlannedChildClosureAbsorption] = Vector.empty,
+    realizationSelections: Vector[PlannedRealizationSelection] = Vector.empty
 )
 
 private[metallurgy] final case class WholeFilePlanStructure(rows: Vector[String]):
@@ -402,6 +428,15 @@ private[metallurgy] object WholeFileProductionPlanRenderer:
         absorption.transferredClaim.startOffset,
         absorption.transferredClaim.endOffset,
         "outputs,terminals,source-atoms,events,targets,accessors,stubs,indices,navigation"
+      )
+    )
+    plan.realizationSelections.zipWithIndex.foreach((selection, index) =>
+      rows += StructuralRows.row(
+        "realization-selection",
+        index,
+        selection.owner,
+        selection.realizationId,
+        selection.reason
       )
     )
     WholeFilePlanStructure(rows.result())

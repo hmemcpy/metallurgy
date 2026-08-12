@@ -4,8 +4,11 @@ import com.hmemcpy.metallurgy.pc.CanonicalByteEncoder
 
 private[metallurgy] final case class Scala3PsiProductionCatalog(
     productions: Vector[Scala3PsiProduction],
-    stableRoles: StableRoleInventory
+    stableRoles: StableRoleInventory,
+    productionAlternatives: Vector[ProductionAlternatives] = Vector.empty
 )
+
+private[metallurgy] final case class ProductionAlternatives(candidateId: String, fallbackId: String)
 
 private[metallurgy] final case class PersistedSchemaStructure(rows: Vector[String]):
   lazy val canonicalBytes: Array[Byte] = StructuralRows.canonicalBytes(rows)
@@ -98,36 +101,47 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       val conditionDependencies = catalog.productions
         .filter(production => persistedRoutingIds.contains(production.id))
         .flatMap: production =>
-          production.effectiveOutputRealizations
-            .flatMap(realization =>
-              realization.conditions.map(condition => condition.roleId -> condition.expected) ++
-                realization.childClosureAbsorptions.map: absorption =>
-                  val expected = absorption.rootOutcome match
-                    case ChildRootOutcome.One(value) => value
-                    case ChildRootOutcome.All(value) => value
-                  absorption.roleId -> expected
-            )
-            .flatMap: (roleId, expected) =>
-              production.children
-                .filter(_.roleId == roleId)
-                .flatMap: child =>
-                  expected match
-                    case ChildOutcomeExpectation.Production(productionId)   =>
-                      child.productionIds.filter(_ == productionId)
-                    case ChildOutcomeExpectation.Realization(realizationId) =>
-                      child.productionIds.filter(productionId =>
-                        productionsById
-                          .get(productionId)
-                          .exists(_.effectiveOutputRealizations.exists(_.id == realizationId))
-                      )
-                    case ChildOutcomeExpectation.OutputRole(role)           =>
-                      child.productionIds.filter(productionId =>
-                        productionsById
-                          .get(productionId)
-                          .exists(
-                            _.effectiveOutputRealizations.exists(_.template.composites.exists(_.outputRoleId == role))
+          def dependencies(roleId: String, expected: ChildOutcomeExpectation): Set[String] =
+            production.children
+              .filter(_.roleId == roleId)
+              .flatMap: child =>
+                expected match
+                  case ChildOutcomeExpectation.Production(productionId)   =>
+                    child.productionIds.filter(_ == productionId)
+                  case ChildOutcomeExpectation.Realization(realizationId) =>
+                    child.productionIds.filter(productionId =>
+                      productionsById
+                        .get(productionId)
+                        .exists(_.effectiveOutputRealizations.exists(_.id == realizationId))
+                    )
+                  case ChildOutcomeExpectation.OutputRole(role)           =>
+                    child.productionIds.filter(productionId =>
+                      productionsById
+                        .get(productionId)
+                        .exists(
+                          _.effectiveOutputRealizations.exists(_.template.composites.exists(_.outputRoleId == role))
+                        )
+                    )
+                  case ChildOutcomeExpectation.OutputRoles(roles)         =>
+                    child.productionIds.filter(productionId =>
+                      productionsById
+                        .get(productionId)
+                        .exists(
+                          _.effectiveOutputRealizations.exists(
+                            _.template.composites.exists(output => roles(output.outputRoleId))
                           )
-                      )
+                        )
+                    )
+              .toSet
+          production.effectiveOutputRealizations.flatMap: realization =>
+            realization.conditions.flatMap(condition => dependencies(condition.roleId, condition.expected)) ++
+              realization.childClosureAbsorptions.flatMap:
+                case ChildClosureAbsorption(roleId, ChildRootOutcome.AnyReviewed, _)   =>
+                  production.children.filter(_.roleId == roleId).flatMap(_.productionIds)
+                case ChildClosureAbsorption(roleId, ChildRootOutcome.One(expected), _) =>
+                  dependencies(roleId, expected)
+                case ChildClosureAbsorption(roleId, ChildRootOutcome.All(expected), _) =>
+                  dependencies(roleId, expected)
       val next                  = persistedRoutingIds ++ routingParents ++ conditionDependencies
       expanded = next.size != persistedRoutingIds.size
       persistedRoutingIds = next
@@ -192,7 +206,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 realization.id,
                 index,
                 absorption.roleId,
-                absorption.rootOutcome
+                absorption.rootOutcome,
+                absorption.retainedRootRoles.toVector.sortBy(_.value).map(_.value).mkString(",")
               )
             )
             realization.template.composites
@@ -314,7 +329,23 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         realization.childClosureAbsorptions.zipWithIndex.foreach((absorption, index) =>
           rows += StructuralRows.row(
             "child-closure-absorption",
-            (realizationPrefix ++ Vector(index, absorption.roleId, absorption.rootOutcome))*
+            (realizationPrefix ++ Vector(
+              index,
+              absorption.roleId,
+              absorption.rootOutcome,
+              absorption.retainedRootRoles.toVector.sortBy(_.value).map(_.value).mkString(",")
+            ))*
+          )
+        )
+        realization.requiredChildRoots.zipWithIndex.foreach((requirement, index) =>
+          rows += StructuralRows.row(
+            "required-child-root",
+            (realizationPrefix ++ Vector(index, requirement.roleId, requirement.rootOutcome))*
+          )
+        )
+        realization.terminalIds.foreach(
+          _.toVector.sorted.foreach(id =>
+            rows += StructuralRows.row("realization-terminal", (realizationPrefix ++ Vector(id))*)
           )
         )
         realization.template.composites.zipWithIndex.foreach: (output, outputIndex) =>
@@ -348,6 +379,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           .foreach((role, selected) =>
             rows += StructuralRows.row("child-selection", (realizationPrefix ++ Vector(role, selected.value))*)
           )
+      production.realizationChoice.foreach(choice =>
+        rows += StructuralRows.row("realization-choice", (prefix ++ Vector(choice.candidateId, choice.fallbackId))*)
+      )
+    catalog.productionAlternatives.zipWithIndex.foreach((alternatives, index) =>
+      rows += StructuralRows.row("production-alternatives", index, alternatives.candidateId, alternatives.fallbackId)
+    )
     CatalogPlanStructure(rows.result())
 
   lazy val Reviewed: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog(
@@ -359,6 +396,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiModifierAnnotationProductions.ModifierAnnotationSegment ++
       Scala3PsiTemplateProductions.TemplateSegment ++
       Scala3PsiDefinitionProductions.DefinitionSegment ++
+      Scala3PsiApplicationExpressionProductions.ApplicationExpressionSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
       Scala3PsiDefinitionPayloadProductions.DefinitionPayloadSegment ++
@@ -370,5 +408,24 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiCompoundTypeProductions.CompoundTypeSegment ++
       Scala3PsiCaptureTypeProductions.CaptureTypeSegment ++
       Scala3PsiTypeAtomProductions.TypeAtomSegment,
-    StableRoleInventory.Reviewed
+    StableRoleInventory.Reviewed,
+    Vector(
+      ProductionAlternatives(
+        Scala3PsiApplicationExpressionProductions.CandidateProductionId,
+        Scala3PsiApplicationExpressionProductions.FallbackProductionId
+      ),
+      ProductionAlternatives(
+        Scala3PsiApplicationExpressionProductions.CandidateProductionId,
+        "definition-payload-applied-call"
+      ),
+      ProductionAlternatives(
+        Scala3PsiApplicationExpressionProductions.CandidateProductionId,
+        "payload-descendant-apply"
+      ),
+      ProductionAlternatives("atomic-term-ident", "payload-descendant-ident"),
+      ProductionAlternatives("atomic-term-ident", "payload-output-free-ident"),
+      ProductionAlternatives("atomic-literal-integer", "payload-descendant-number"),
+      ProductionAlternatives("selection-expression", "payload-descendant-select"),
+      ProductionAlternatives("selection-expression", "payload-output-free-select")
+    )
   )

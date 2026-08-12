@@ -53,8 +53,13 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
   ScTemplateParents
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
-import org.jetbrains.plugins.scala.lang.psi.api.expr.ScExpression
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScReferenceExpression, ScSuperReference, ScThisReference}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{
+  ScExpression,
+  ScMethodCall,
+  ScReferenceExpression,
+  ScSuperReference,
+  ScThisReference
+}
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScBooleanLiteral,
   ScCharLiteral,
@@ -309,6 +314,7 @@ private[metallurgy] object NativePsiElementBindings:
           |val atomicChar = '\n'
           |val atomicString = "a\tb"
           |val atomicNull = null
+          |val nativeCall = atomicReference.toString(atomicInteger, atomicReference)
           |class AtomicThisProbe:
           |  def unqualifiedThis = this
           |  def qualifiedThis = AtomicThisProbe.this
@@ -618,6 +624,9 @@ private[metallurgy] object NativePsiElementBindings:
       case value: ScStringLiteral => value
     val atomicNull                                             = patternExpression("atomicNull").collect:
       case value: ScNullLiteral => value
+    val nativeCall                                             = patternExpression("nativeCall").collect:
+      case value: ScMethodCall => value
+    val nativeArguments                                        = nativeCall.map(_.args)
     val atomicLiterals                                         = Vector(
       atomicInteger,
       atomicLong,
@@ -729,7 +738,7 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ atomicLiterals ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -896,6 +905,18 @@ private[metallurgy] object NativePsiElementBindings:
     else if atomicReference.isEmpty || atomicUnqualifiedThis.isEmpty || atomicQualifiedThis.isEmpty ||
       atomicLiterals.size != 8
     then Left("native atomic expression PSI probe is incomplete")
+    else if nativeCall.isEmpty || nativeArguments.isEmpty ||
+      nativeCall.exists(call =>
+        call.getText != "atomicReference.toString(atomicInteger, atomicReference)" ||
+          call.getInvokedExpr.getText != "atomicReference.toString" ||
+          call.getInvokedExpr.getParent != call || call.args.getParent != call ||
+          call.argumentExpressions.map(_.getText).toVector != Vector("atomicInteger", "atomicReference")
+      ) || nativeArguments.exists(arguments =>
+        arguments.getText != "(atomicInteger, atomicReference)" ||
+          arguments.exprs.map(_.getText).toVector != Vector("atomicInteger", "atomicReference") ||
+          arguments.getArgsCount != 2 || !arguments.isArgsInParens || arguments.isUsing
+      )
+    then Left("native application expression PSI accessors are inconsistent")
     else if selectionReferences.size != 8 || selectionSuperReferences.size != 4 ||
       selectionReferences.exists(reference =>
         reference.qualifier.isEmpty || reference.nameId.getParent != reference || reference.refName != "member" &&
@@ -1186,7 +1207,11 @@ private[metallurgy] object NativePsiElementBindings:
           directTypeAlias
         ).exists(value => !value.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]])
       then Left("native definition stub-bearing PSI element type cannot produce stubs")
-      else if (Vector(atomicReference, atomicUnqualifiedThis, atomicQualifiedThis).flatten ++ atomicLiterals ++
+      else if (Vector(
+          atomicReference,
+          atomicUnqualifiedThis,
+          atomicQualifiedThis
+        ).flatten ++ atomicLiterals ++ nativeCall ++ nativeArguments ++
           selectionReferences ++ selectionSuperReferences).exists(
           _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
@@ -1341,6 +1366,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TermReference         -> atomicReference.get.getNode.getElementType,
               PsiOutputRoleId.ThisReference         -> atomicUnqualifiedThis.get.getNode.getElementType,
               PsiOutputRoleId.SelectionExpression   -> selectionReferences.head.getNode.getElementType,
+              PsiOutputRoleId.MethodCall            -> nativeCall.get.getNode.getElementType,
+              PsiOutputRoleId.ArgumentExpressions   -> nativeArguments.get.getNode.getElementType,
               PsiOutputRoleId.SuperReference        -> selectionSuperReferences.head.getNode.getElementType,
               PsiOutputRoleId.IntegerExpression     -> atomicInteger.get.getNode.getElementType,
               PsiOutputRoleId.LongExpression        -> atomicLong.get.getNode.getElementType,
@@ -1449,6 +1476,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TermReference         -> surfaceId(atomicReference.get.getClass),
               PsiOutputRoleId.ThisReference         -> surfaceId(atomicUnqualifiedThis.get.getClass),
               PsiOutputRoleId.SelectionExpression   -> surfaceId(selectionReferences.head.getClass),
+              PsiOutputRoleId.MethodCall            -> surfaceId(nativeCall.get.getClass),
+              PsiOutputRoleId.ArgumentExpressions   -> surfaceId(nativeArguments.get.getClass),
               PsiOutputRoleId.SuperReference        -> surfaceId(selectionSuperReferences.head.getClass),
               PsiOutputRoleId.IntegerExpression     -> surfaceId(atomicInteger.get.getClass),
               PsiOutputRoleId.LongExpression        -> surfaceId(atomicLong.get.getClass),

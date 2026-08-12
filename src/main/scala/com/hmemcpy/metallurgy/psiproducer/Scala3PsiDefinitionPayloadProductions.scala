@@ -100,6 +100,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "payload-descendant-infix",
     "payload-descendant-type-apply-positional",
     "payload-descendant-type-apply-named",
+    "type-application-output-free-ident-argument",
     "payload-output-free-ident",
     "payload-output-free-select",
     "payload-qualifier-ident",
@@ -204,16 +205,18 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
 
   private val SelectionRootPaths =
     Vector(
-      Vector(nodeEdge("Apply", "fun"))                                                -> Vector("definition-payload-apply"),
-      Vector(nodeEdge("Apply", "args", repeated = true))                              -> Vector("definition-payload-apply"),
-      Vector(nodeEdge("TypeApply", "fun"))                                            ->
+      Vector(nodeEdge("Apply", "fun"))                                                                -> Vector("definition-payload-apply"),
+      Vector(nodeEdge("Apply", "args", repeated = true))                                              -> Vector("definition-payload-apply"),
+      Vector(nodeEdge("TypeApply", "fun"))                                                            ->
         Vector("definition-payload-type-apply-positional", "definition-payload-type-apply-named"),
-      Vector(nodeEdge("Tuple", "trees", repeated = true))                             -> Vector("definition-payload-tuple"),
-      Vector(nodeEdge("Block", "expr"))                                               -> Vector("definition-payload-block"),
-      Vector(nodeEdge("InfixOp", "left"))                                             -> Vector("definition-payload-infix"),
-      Vector(nodeEdge("InfixOp", "op"))                                               -> Vector("definition-payload-infix"),
-      Vector(nodeEdge("InfixOp", "right"))                                            -> Vector("definition-payload-infix"),
-      Vector(nodeEdge("NamedArg", "arg"), nodeEdge("Apply", "args", repeated = true)) ->
+      Vector(nodeEdge("Select", "qualifier"), nodeEdge("TypeApply", "fun"), nodeEdge("Apply", "fun")) ->
+        Vector("definition-payload-applied-call"),
+      Vector(nodeEdge("Tuple", "trees", repeated = true))                                             -> Vector("definition-payload-tuple"),
+      Vector(nodeEdge("Block", "expr"))                                                               -> Vector("definition-payload-block"),
+      Vector(nodeEdge("InfixOp", "left"))                                                             -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("InfixOp", "op"))                                                               -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("InfixOp", "right"))                                                            -> Vector("definition-payload-infix"),
+      Vector(nodeEdge("NamedArg", "arg"), nodeEdge("Apply", "args", repeated = true))                 ->
         Vector("definition-payload-apply")
     ).flatMap: (path, rootIds) =>
       ownedRootRoutes(rootIds, Vector(path)) ++
@@ -343,6 +346,13 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
         CatalogValuePattern.Product("", Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar("Text"))))
       )
     ),
+    outputFreeAppliedCallArgumentOccurrences
+  )
+
+  private val appliedCallOutputFreeIdent = outputFreeExpressionProduction(
+    "type-application-output-free-ident-argument",
+    "Ident",
+    Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
     outputFreeAppliedCallArgumentOccurrences
   )
 
@@ -565,7 +575,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
           "args",
           ChildCardinality.Repeated(0, None),
           "type-application-output-free-number",
-          Set("type-application-output-free-literal")
+          Set("type-application-output-free-literal", "type-application-output-free-ident-argument")
         )
       ),
       terminals = Vector(
@@ -1107,7 +1117,17 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
     Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
     Vector.empty,
-    payloadQualifierOccurrences(
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.ParentWithAncestor(
+          InventoryKind.Node,
+          "Select",
+          Vector(CatalogPathSegment.NamedField("qualifier")),
+          nodeEdge("TypeApply", "fun")
+        ),
+        SourceClassification.SourceReachable
+      )
+    ) ++ payloadQualifierOccurrences(
       "Select",
       Vector(CatalogPathSegment.NamedField("qualifier")),
       SourceClassification.SourceReachable
@@ -1247,6 +1267,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
   private[psiproducer] val DefinitionPayloadSegment: Vector[Scala3PsiProduction] =
     definitionPayloadProductions ++ payloadDescendantProductions ++ Vector(
       typeApplicationOutputFreeIdent,
+      appliedCallOutputFreeIdent,
       appliedCallOutputFreeNumber,
       appliedCallOutputFreeLiteral,
       expressionPositionalTypeArgument,

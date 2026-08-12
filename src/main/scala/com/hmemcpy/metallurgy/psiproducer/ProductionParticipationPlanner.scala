@@ -74,9 +74,10 @@ private[metallurgy] object ProductionParticipationPlanner:
         expected: ChildOutcomeExpectation,
         root: OutputCompositeDeclaration
     ): Boolean = expected match
-      case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
-      case ChildOutcomeExpectation.Realization(id)  => realizations(child).id == id
-      case ChildOutcomeExpectation.OutputRole(role) => root.outputRoleId == role
+      case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
+      case ChildOutcomeExpectation.Realization(id)    => realizations(child).id == id
+      case ChildOutcomeExpectation.OutputRole(role)   => root.outputRoleId == role
+      case ChildOutcomeExpectation.OutputRoles(roles) => roles(root.outputRoleId)
 
     def roots(
         parent: ProductionInstanceId,
@@ -133,14 +134,11 @@ private[metallurgy] object ProductionParticipationPlanner:
                 Left(ProductionParticipationFailure.UnknownChildRole(parent, realization.id, absorption.roleId))
               )
             case Some(declaration) =>
-              val roleChildren = children
+              val roleChildren     = children
                 .getOrElse(parent, Vector.empty)
                 .collect { case (roleId, _, child) if roleId == absorption.roleId => child }
-              val expected     = absorption.rootOutcome match
-                case ChildRootOutcome.One(value) => value
-                case ChildRootOutcome.All(value) => value
               absorption.rootOutcome match
-                case ChildRootOutcome.One(_) =>
+                case ChildRootOutcome.One(_)      =>
                   declaration.cardinality match
                     case ChildCardinality.ExactlyOne => ()
                     case _                           =>
@@ -165,7 +163,7 @@ private[metallurgy] object ProductionParticipationPlanner:
                         )
                       )
                     )
-                case ChildRootOutcome.All(_) =>
+                case ChildRootOutcome.All(_)      =>
                   declaration.cardinality match
                     case ChildCardinality.Repeated(_, _) => ()
                     case _                               =>
@@ -178,16 +176,40 @@ private[metallurgy] object ProductionParticipationPlanner:
                           )
                         )
                       )
+                case ChildRootOutcome.AnyReviewed => ()
               roleChildren.foreach: child =>
-                roots(parent, realization, absorption.roleId, child, expected) match
-                  case Left(failure) => break(Left(failure))
-                  case Right(_)      => ()
-              val closures     = roleChildren.map(child => closure(parent, child))
+                absorption.rootOutcome match
+                  case ChildRootOutcome.One(expected) =>
+                    roots(parent, realization, absorption.roleId, child, expected) match
+                      case Left(failure) => break(Left(failure))
+                      case Right(_)      => ()
+                  case ChildRootOutcome.All(expected) =>
+                    roots(parent, realization, absorption.roleId, child, expected) match
+                      case Left(failure) => break(Left(failure))
+                      case Right(_)      => ()
+                  case ChildRootOutcome.AnyReviewed   =>
+                    val rootCount = realizations(child).template.composites.count(_.parentId.isEmpty)
+                    if rootCount > 1 then
+                      break(
+                        Left(
+                          ProductionParticipationFailure.ChildRootCount(
+                            parent,
+                            realization.id,
+                            absorption.roleId,
+                            child,
+                            rootCount
+                          )
+                        )
+                      )
+              val absorbedChildren = roleChildren.filterNot: child =>
+                val roots = realizations(child).template.composites.filter(_.parentId.isEmpty)
+                roots.size == 1 && absorption.retainedRootRoles(roots.head.outputRoleId)
+              val closures         = absorbedChildren.map(child => closure(parent, child))
               closures.collectFirst { case Left(failure) => failure } match
                 case Some(failure) => break(Left(failure))
                 case None          => ()
-              val values       = closures.collect { case Right(value) => value }.flatten.distinct
-              val valueSet     = values.toSet
+              val values           = closures.collect { case Right(value) => value }.flatten.distinct
+              val valueSet         = values.toSet
               values.foreach: child =>
                 val externalOwners = parents
                   .getOrElse(child, Vector.empty)
@@ -204,7 +226,7 @@ private[metallurgy] object ProductionParticipationPlanner:
                       Left(ProductionParticipationFailure.MultiplyAbsorbedNode(child, Vector(other, parent)))
                     )
                   case None        => absorbedBy += child -> parent
-              val parentRange  = position(parent) match
+              val parentRange      = position(parent) match
                 case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
                 case _                                                                               =>
                   break(Left(ProductionParticipationFailure.ParentHasNoSourceRange(parent)))
@@ -220,7 +242,7 @@ private[metallurgy] object ProductionParticipationPlanner:
                 parent,
                 realization.id,
                 absorption.roleId,
-                roleChildren,
+                absorbedChildren,
                 values,
                 parentRange
               )

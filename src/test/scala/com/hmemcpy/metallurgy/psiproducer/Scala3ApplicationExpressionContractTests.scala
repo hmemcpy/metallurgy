@@ -142,19 +142,19 @@ private[psiproducer] trait Scala3ApplicationExpressionContractTests extends Scal
     val nestedPlan = plan(graph).fold(error => throw new AssertionError(error.toString), identity)
     assertEquals(Vector(argument, grandchild), nestedPlan.absorptions.last.closure)
 
-  @Test def reviewedRuntimeCatalogAndPersistenceRemainUnchanged(): Unit =
+  @Test def reviewedRuntimeCatalogOwnsOrdinaryApplicationsWithoutChangingPersistence(): Unit =
     val catalog     = Scala3PsiProductionCatalog.catalogPlanStructure(Scala3PsiProductionCatalog.Reviewed)
     val persistence = Scala3PsiProductionCatalog.persistedSchemaStructure(
       Scala3PsiProductionCatalog.Reviewed,
       Scala3DotcFileElementType.SchemaVersion,
       Scala3DotcFileElementType.ExternalId
     )
-    assertEquals("b5ebf7febb8a5cbf1930204dd6da005b7af93260218a6822dbc77c6bcc619bb4", catalog.fingerprint)
+    assertEquals("3b63ff76a40185804fc6fdff13ee5c685e69910e79e7a0167ec7d04cc5504bdc", catalog.fingerprint)
     assertEquals("6c513793137193022cbf2ffd5a1b90d364534b5c8ccc8e04dcdf162d1aae7a4a", persistence.fingerprint)
-    assertFalse(
+    assertTrue(
       Scala3PsiProductionCatalog.Reviewed.stableRoles.grammarRoles.contains(GrammarRoleId.OrdinaryApplication)
     )
-    assertFalse(
+    assertTrue(
       Scala3PsiProductionCatalog.Reviewed.productions.exists(
         _.grammarRoleIds.contains(GrammarRoleId.OrdinaryApplication)
       )

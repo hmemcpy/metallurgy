@@ -40,7 +40,7 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
       path: Vector[CatalogPathSegment],
       through: Vector[InventoryAncestor] = Vector(SelectionQualifierAncestor)
   ): Vector[CompilerProductionContextPattern] =
-    DefinitionAnchorParents.map: (anchor, parent) =>
+    val direct = DefinitionAnchorParents.map: (anchor, parent) =>
       CompilerProductionContextPattern(
         ContextPattern.ParentUnderAnchorThroughWithParent(
           InventoryKind.Node,
@@ -52,6 +52,12 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
         ),
         SourceClassification.SourceReachable
       )
+    direct ++ Scala3PsiApplicationExpressionProductions.descendantOccurrences(
+      owner,
+      path,
+      SourceClassification.SourceReachable,
+      through
+    )
 
   private val recursiveSelectionOccurrences = selectionQualifierOccurrences(
     "Select",
@@ -377,7 +383,8 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
         CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
         CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))
       ),
-      directSelectionOccurrences ++ recursiveSelectionOccurrences
+      directSelectionOccurrences ++ recursiveSelectionOccurrences ++
+        Scala3PsiApplicationExpressionProductions.ChildOccurrences
     ),
     dispositions = Vector(
       FieldDisposition("qualifier", FieldDispositionKind.Child),

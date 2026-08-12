@@ -217,6 +217,23 @@ private[metallurgy] object CatalogShapeMatcher:
             .dropWhile(value => value != anchor && ancestors.contains(value))
             .startsWith(Vector(anchor, parent))
       )
+    case ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent(
+          kind,
+          owner,
+          p,
+          fieldName,
+          excluded,
+          ancestors,
+          anchor,
+          parent
+        ) =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ownerNodePrefixes.get(fieldName).forall(_ != excluded) &&
+          value.ancestors
+            .dropWhile(value => value != anchor && ancestors.contains(value))
+            .startsWith(Vector(anchor, parent))
+      )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
@@ -304,6 +321,23 @@ private[metallurgy] object CatalogShapeMatcher:
             .dropWhile(value => value != anchor && ancestors.contains(value))
             .startsWith(Vector(anchor, parent))
       )
+    case ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent(
+          kind,
+          owner,
+          p,
+          fieldName,
+          excluded,
+          ancestors,
+          anchor,
+          parent
+        ) =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ownerNodePrefixes.get(fieldName).forall(_ != excluded) &&
+          value.ancestors
+            .dropWhile(value => value != anchor && ancestors.contains(value))
+            .startsWith(Vector(anchor, parent))
+      )
     case ContextPattern.ParentWithAncestor(kind, owner, p, next)                                             =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.headOption.contains(
@@ -357,7 +391,7 @@ private[metallurgy] object CatalogShapeMatcher:
       directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
       ownedRootMatches: OwnedRootRoute => Boolean = _ => false
   ): Vector[Scala3PsiProduction] =
-    val matched = catalog.productions.filter(p =>
+    val matched              = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
         p.pattern.occurrences.exists(occurrence =>
@@ -366,7 +400,7 @@ private[metallurgy] object CatalogShapeMatcher:
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
     )
-    val scored  = matched.map: production =>
+    val scored               = matched.map: production =>
       val ownedRootSpecificity = production.pattern.occurrences.count:
         case CompilerProductionContextPattern(
               ContextPattern.DescendantOfOwnedRoot(routes),
@@ -374,6 +408,17 @@ private[metallurgy] object CatalogShapeMatcher:
               scannerEvidence
             ) =>
           scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && routes.exists(ownedRootMatches)
+        case CompilerProductionContextPattern(
+              pattern: (ContextPattern.ParentUnderAnchorThroughWithParent |
+                ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent),
+              `sourceClassification`,
+              scannerEvidence
+            ) =>
+          scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && contextMatches(
+            pattern,
+            context,
+            ownedRootMatches
+          )
         case _ => false
       val specificity          = production.pattern.fields
         .zip(fields)
@@ -414,8 +459,19 @@ private[metallurgy] object CatalogShapeMatcher:
             ) && CatalogShapeMatcher.matches(CatalogValuePattern.AnyOf(values), value)
           case _ => false
       production -> (specificity + production.pattern.directNodeEvidence.size + ownedRootSpecificity)
-    val highest = scored.map(_._2).maxOption.getOrElse(0)
-    scored.collect { case (production, score) if score == highest => production }
+    val highest              = scored.map(_._2).maxOption.getOrElse(0)
+    val preferred            = scored.collect { case (production, score) if score == highest => production }
+    val matchedById          = matched.map(production => production.id -> production).toMap
+    val retainedAlternatives = preferred.flatMap: production =>
+      Option
+        .when(production.realizationChoice.nonEmpty)(
+          catalog.productionAlternatives.flatMap: alternative =>
+            if alternative.candidateId == production.id then matchedById.get(alternative.fallbackId)
+            else None
+        )
+        .toVector
+        .flatten
+    (preferred ++ retainedAlternatives).distinct
 
   def selectAggregated(
       catalog: Scala3PsiProductionCatalog,
@@ -433,8 +489,14 @@ private[metallurgy] object CatalogShapeMatcher:
     )
     val scored  = matched.map: production =>
       val ownedRootSpecificity = production.pattern.occurrences.count:
-        case CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(_), _, _) => true
-        case _                                                                               => false
+        case CompilerProductionContextPattern(
+              ContextPattern.DescendantOfOwnedRoot(_) | _: ContextPattern.ParentUnderAnchorThroughWithParent |
+              _: ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent,
+              _,
+              _
+            ) =>
+          true
+        case _ => false
       production -> (production.pattern.fields.count(field =>
         field.value match
           case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |

@@ -134,6 +134,13 @@ private[metallurgy] enum TerminalIntervalSelector:
   case CompilerScannerTokenBeforeChildOutputs(kind: ParserScannerTokenKind, roleId: String)
   case CompilerScannerTokenInChildGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
   case CompilerScannerTokenInChildOutputGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
+  case BalancedScannerTokenAfterChild(
+      kind: ParserScannerTokenKind,
+      opening: ParserScannerTokenKind,
+      closing: ParserScannerTokenKind,
+      roleId: String,
+      occurrence: ScannerTokenOccurrence
+  )
   case LocalOutput(outputId: String)
   case RootOutsideLocalOutput(outputId: String)
   case WholeProduction, WholeSource
@@ -211,6 +218,12 @@ private[metallurgy] enum OutputBoundary:
       policy: PositionProvenancePolicy,
       fallbackToFollowingChildStart: Boolean = false
   )
+  case NextScannerTokenStartAfterChild(
+      roleId: String,
+      occurrence: ChildOccurrenceSelector,
+      kind: ParserScannerTokenKind,
+      policy: PositionProvenancePolicy
+  )
   case Advance(boundary: OutputBoundary, boundaryCount: Int)
 private[metallurgy] enum OutputRangeDeclaration:
   case CompilerPosition
@@ -286,6 +299,8 @@ private[metallurgy] object PsiOutputRoleId:
   val TermReference         = PsiOutputRoleId("scala.expression.reference.term")
   val ThisReference         = PsiOutputRoleId("scala.expression.reference.this")
   val SelectionExpression   = PsiOutputRoleId("scala.expression.selection")
+  val MethodCall            = PsiOutputRoleId("scala.expression.application.method-call")
+  val ArgumentExpressions   = PsiOutputRoleId("scala.expression.application.arguments")
   val SuperReference        = PsiOutputRoleId("scala.expression.reference.super")
   val IntegerExpression     = PsiOutputRoleId("scala.expression.literal.integer")
   val LongExpression        = PsiOutputRoleId("scala.expression.literal.long")
@@ -395,6 +410,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.ThisReference,
       GrammarRoleId.QualifiedThisReference,
       GrammarRoleId.SelectionExpression,
+      GrammarRoleId.OrdinaryApplication,
       GrammarRoleId.SuperReference,
       GrammarRoleId.SelectionQualifier,
       GrammarRoleId.ExpressionIntegerLiteral,
@@ -487,6 +503,8 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.TermReference,
       PsiOutputRoleId.ThisReference,
       PsiOutputRoleId.SelectionExpression,
+      PsiOutputRoleId.MethodCall,
+      PsiOutputRoleId.ArgumentExpressions,
       PsiOutputRoleId.SuperReference,
       PsiOutputRoleId.IntegerExpression,
       PsiOutputRoleId.LongExpression,
@@ -741,6 +759,7 @@ private[metallurgy] enum ChildOutcomeExpectation:
   case Production(productionId: String)
   case Realization(realizationId: String)
   case OutputRole(role: PsiOutputRoleId)
+  case OutputRoles(roles: Set[PsiOutputRoleId])
 private[metallurgy] final case class ChildOutcomeCondition(
     roleId: String,
     occurrence: ChildOccurrenceSelector,
@@ -749,10 +768,17 @@ private[metallurgy] final case class ChildOutcomeCondition(
 private[metallurgy] enum ChildRootOutcome:
   case One(expected: ChildOutcomeExpectation)
   case All(expected: ChildOutcomeExpectation)
+  case AnyReviewed
 private[metallurgy] final case class ChildClosureAbsorption(
+    roleId: String,
+    rootOutcome: ChildRootOutcome,
+    retainedRootRoles: Set[PsiOutputRoleId] = Set.empty
+)
+private[metallurgy] final case class RequiredChildRootOutcome(
     roleId: String,
     rootOutcome: ChildRootOutcome
 )
+private[metallurgy] final case class RealizationChoice(candidateId: String, fallbackId: String)
 private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)
@@ -765,7 +791,9 @@ private[metallurgy] final case class OutputRealization(
     conditions: Vector[ChildOutcomeCondition],
     template: LocalOutputCompositeTemplate,
     evidenceConditions: Vector[EvidenceCondition] = Vector.empty,
-    childClosureAbsorptions: Vector[ChildClosureAbsorption] = Vector.empty
+    childClosureAbsorptions: Vector[ChildClosureAbsorption] = Vector.empty,
+    requiredChildRoots: Vector[RequiredChildRootOutcome] = Vector.empty,
+    terminalIds: Option[Set[String]] = None
 )
 private[metallurgy] final case class Scala3PsiProduction(
     id: String,
@@ -784,7 +812,8 @@ private[metallurgy] final case class Scala3PsiProduction(
     outputTemplate: Option[LocalOutputCompositeTemplate] = None,
     outputRealizations: Vector[OutputRealization] = Vector.empty,
     outputRoleId: Option[PsiOutputRoleId],
-    additionalGrammarRoleIds: Set[GrammarRoleId] = Set.empty
+    additionalGrammarRoleIds: Set[GrammarRoleId] = Set.empty,
+    realizationChoice: Option[RealizationChoice] = None
 ):
   val grammarRoleIds: Set[GrammarRoleId]                                  = additionalGrammarRoleIds + grammarRoleId
   private def defaultOutputTemplate: Option[LocalOutputCompositeTemplate] = outputTemplate.orElse(

@@ -321,6 +321,16 @@ private[metallurgy] enum ContextPattern:
       anchor: InventoryAncestor,
       parent: InventoryAncestor
   )
+  case ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      fieldName: String,
+      excludedPrefix: String,
+      ancestors: Vector[InventoryAncestor],
+      anchor: InventoryAncestor,
+      parent: InventoryAncestor
+  )
   case ParentWithAncestor(
       ownerKind: InventoryKind,
       ownerPrefix: String,

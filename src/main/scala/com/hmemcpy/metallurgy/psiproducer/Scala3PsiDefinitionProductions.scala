@@ -463,6 +463,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     "atomic-this-unqualified",
     "atomic-this-qualified",
     "selection-expression",
+    Scala3PsiApplicationExpressionProductions.CandidateProductionId,
     "definition-payload-number",
     "definition-payload-ident",
     "definition-payload-apply",
@@ -486,7 +487,8 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
 
   private val payloadRootIds =
     payloadExpressionProductionIds.filter(id =>
-      id.startsWith("definition-payload-") || id.startsWith("atomic-") || id == "selection-expression"
+      id.startsWith("definition-payload-") || id.startsWith("atomic-") || id == "selection-expression" ||
+        id == Scala3PsiApplicationExpressionProductions.CandidateProductionId
     )
 
   private def zeroOutput(

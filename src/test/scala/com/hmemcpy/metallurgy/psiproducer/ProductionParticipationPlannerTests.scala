@@ -294,6 +294,35 @@ private[psiproducer] trait ProductionParticipationPlannerTests extends Scala3Psi
     assertEquals(Map.empty, result.absorbedBy)
     assertEquals(Vector.empty, result.absorptions)
 
+  @Test def reviewedIndependentRootRemainsMountedWhileCandidateExclusiveSiblingsAreAbsorbed(): Unit =
+    val base        = graphWithChildren(
+      2,
+      ChildCardinality.Repeated(0, None),
+      ChildRootOutcome.AnyReviewed
+    )
+    val independent = base.childrenOfParent.head
+    val exclusive   = base.childrenOfParent.last
+    val changed     = base.copy(
+      realizations = base.realizations
+        .updated(
+          base.parent,
+          base
+            .realizations(base.parent)
+            .copy(childClosureAbsorptions =
+              Vector(ChildClosureAbsorption("children", ChildRootOutcome.AnyReviewed, Set(ChildOut)))
+            )
+        )
+        .updated(exclusive, realization("exclusive", Vector.empty))
+    )
+    val result      = ProductionParticipationPlanner
+      .plan(changed.active, changed.selected, changed.children, changed.realizations, changed.position)
+      .fold(error => throw new AssertionError(error.toString), identity)
+
+    assertEquals(Vector(base.parent, independent), result.retained)
+    assertEquals(Map(exclusive -> base.parent), result.absorbedBy)
+    assertEquals(Vector(exclusive), result.absorptions.single.roots)
+    assertEquals(Vector(exclusive), result.absorptions.single.closure)
+
   @Test def wholeFileAbsorptionTransfersOneExactClaimAndExcludesEveryChildPhysicalStage(): Unit =
     val value          = snapshot("/whole-file-absorption", 1, Vector.empty)
     val runtime        = inventory(value)

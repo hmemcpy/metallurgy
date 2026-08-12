@@ -179,8 +179,6 @@ final class Scala3SelectionExpressionPsiTest extends Scala3CompatTestCase:
 
   def testUnsupportedSelectionRootsRemainSingleCompletePayloadsWithoutNativeDescendants(): Unit =
     val sources = Vector(
-      "val applied = source.member()\n"                         -> Some("source.member()"),
-      "val deepApplied = source.a.b.member()\n"                 -> Some("source.a.b.member()"),
       "val typed = source.member[Int]\n"                        -> Some("source.member[Int]"),
       "val deepTyped = source.a.b.member[Int]\n"                -> Some("source.a.b.member[Int]"),
       "val closed = source().member\n"                          -> Some("source().member"),
@@ -227,9 +225,7 @@ final class Scala3SelectionExpressionPsiTest extends Scala3CompatTestCase:
       assertTrue(source, failure.nonEmpty)
 
     Vector(
-      "class Parent:\n  def member = 1\nclass C extends Parent:\n  val applied = this.member()\n"  -> "this.member()",
-      "class Parent:\n  def member = 1\nclass C extends Parent:\n  val applied = super.member()\n" -> "super.member()",
-      "val named = call(arg = source.member)\n"                                                    -> "call(arg = source.member)"
+      "val named = call(arg = source.member)\n" -> "call(arg = source.member)"
     ).zipWithIndex.foreach: (entry, index) =>
       val (source, expected) = entry
       val file               = physical(s"SelectionNestedClosed${index + 1}.scala", source)
