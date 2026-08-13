@@ -249,9 +249,15 @@ isolated construct patches are not grammar mechanisms.
 
 ### 3.6 Native and compatible PSI
 
-The installed Scala plugin remains the public PSI vocabulary and an optional implementation provider. Metallurgy owns
-the stable output-role contract and prefers the plugin's element types and implementations when executable probes
-demonstrate that complete contract.
+The installed Scala plugin remains the public PSI vocabulary and an optional implementation provider. Physical syntax
+has this precedence: dotc-derived evidence and proven Metallurgy PSI, narrow Metallurgy adapters and verified
+partitioners, then a capability-probed Scala-plugin witness. Missing or conflicting evidence produces one opaque
+payload. It never selects a richer shape by guesswork.
+
+A file has one authoritative physical tree. Metallurgy may lower neutral witness facts into its own whole-file plan,
+but it never transplants, reparents, copies, or delegates to hidden Scala-plugin PSI or AST nodes. Stub and index roots
+cannot mix providers. Whole-file Scala-plugin fallback is a separate explicit file state chosen before parsing; it is
+not implemented by regional splicing.
 
 A probe verifies observable behavior:
 
@@ -267,6 +273,16 @@ Each output role binds independently. When no native production satisfies its co
 `ScalaPluginSemanticBridge` owns a source-compatible PSI and stub implementation. Native and compatible roles may
 coexist in one file. Consumers receive ordinary public IntelliJ and Scala PSI interfaces and cannot observe how a
 target was supplied.
+
+A transient physical-PSI witness may parse the complete exact source through ordinary installed `Scala3Language`.
+It selects one caller-supplied direct range, exports only immutable neutral roles, ranges, parent/child order, leaves,
+parser errors, reconstruction evidence, and a capability signature, then discards the synthetic file and tree. Its
+result is `Equal`, `Conflict`, or `Unavailable`. It does not choose a catalog production, planner result, emitted PSI,
+semantic answer, stub, index, or persistence identity. TASTy, SemanticDB, and dotc ranges may bound or confirm this
+evidence but do not own current-file concrete syntax.
+
+This package-internal proof of concept is on demand and remains unwired from the active parser, catalog, planner,
+services, and file lifecycle.
 
 Raw Scala-plugin implementation access is confined to this bridge. Production consumers do not inspect plugin versions
 or implementation class names. Concrete implementation identities remain capability evidence behind the role binding;
@@ -560,6 +576,12 @@ structural implementations are private. They export neutral DTOs, capability res
 - perform capability-probed private access when published extension points are insufficient.
 
 Consumers depend on public role interfaces, not adapter identities.
+
+Dotc is the ultimate semantic authority. A current dotc answer wins; pending, unavailable, stale, failed, or conflicting
+evidence remains explicit and cannot silently execute bundled semantics. The current bundled-result-first resolve path
+in `ScalaPluginSemanticBridge` and null fallthrough in `BundledCompilerBackendDispatcher` do not satisfy this rule and
+must be corrected before any Scala-plugin semantic fallback is admitted. The transient physical witness does not call
+either path.
 
 ### 8.3 Failure behavior
 

@@ -1,5 +1,6 @@
 com.hmemcpy.metallurgy.SmokeTest
 com.hmemcpy.metallurgy.compat.scala3.CopiedIntellijInvocationAccountingTest
+com.hmemcpy.metallurgy.compilerbackend.ScalaPluginPhysicalPsiBridgeTest
 com.hmemcpy.metallurgy.module.EligibilityPredicateTest
 com.hmemcpy.metallurgy.pc.ApplicationExpressionProbeTest
 com.hmemcpy.metallurgy.pc.AtomicExpressionProbeTest
