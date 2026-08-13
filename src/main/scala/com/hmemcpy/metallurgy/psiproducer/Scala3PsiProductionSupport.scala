@@ -66,6 +66,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScNullLiteralImpl"
   val ReferenceExpressionSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScReferenceExpressionImpl"
+  val GenericCallSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScGenericCallImpl"
   val MethodCallSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScMethodCallImpl"
   val ArgumentExpressionsSurface   = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
   val ThisReferenceSurface         =
@@ -927,6 +928,40 @@ private[psiproducer] object Scala3PsiProductionSupport:
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/expr/ScMethodCall#args()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScArgumentExprList;",
       required = true
+    )
+  )
+  val GenericCallAccessors              = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#referencedExpr()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#typeArgs()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeArgs;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#arguments()Lscala/collection/immutable/Seq;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#shapeType()Lscala/util/Either;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#multiResolve()Lscala/Option;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#bindInvokedExpr()Lscala/Option;",
+      required = true,
+      SurfaceFactKind.Method
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScGenericCall#acceptScala(Lorg/jetbrains/plugins/scala/lang/psi/api/ScalaElementVisitor;)V",
+      required = true,
+      SurfaceFactKind.Method
     )
   )
   val ArgumentExpressionsAccessors      = Vector(

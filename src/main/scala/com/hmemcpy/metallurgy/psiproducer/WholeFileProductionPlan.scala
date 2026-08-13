@@ -112,6 +112,43 @@ private[metallurgy] final case class ProductionInstanceId(
     valueId: Long,
     occurrence: Option[ProductionOccurrenceId]
 )
+private[metallurgy] final case class AtomicWholePlanCandidateRoot(
+    owner: ProductionInstanceId,
+    position: ParserNodePosition,
+    parentCount: Int
+)
+private[metallurgy] object AtomicWholePlanCandidateScope:
+  def validate(roots: Vector[AtomicWholePlanCandidateRoot], sourceLength: Int): Option[Vector[ProductionInstanceId]] =
+    val distinctOwners = roots.map(_.owner).distinct.size == roots.size
+    val positioned     = roots.flatMap: root =>
+      root.position match
+        case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived)
+            if root.parentCount == 1 && range.startOffset >= 0 && range.startOffset < range.endOffset &&
+              range.endOffset <= sourceLength && point >= range.startOffset && point <= range.endOffset =>
+          Some((root.owner, range))
+        case _ => None
+    val ordered        = positioned.sortBy: (owner, range) =>
+      (
+        range.startOffset,
+        range.endOffset,
+        owner.kind.ordinal,
+        owner.valueId,
+        owner.occurrence.fold(-1L)(_.ownerNodeId),
+        owner.occurrence.fold("")(_.fieldPath.mkString("/"))
+      )
+    val disjoint       = ordered
+      .zip(ordered.drop(1))
+      .forall: (left, right) =>
+        left._2.endOffset <= right._2.startOffset
+    Option.when(distinctOwners && positioned.size == roots.size && disjoint)(ordered.map(_._1))
+
+private[metallurgy] object AtomicWholePlanTrials:
+  def select(
+      candidates: Vector[ProductionInstanceId]
+  )(proves: Set[ProductionInstanceId] => Boolean): Set[ProductionInstanceId] =
+    val accepted = candidates.filter(root => proves(Set(root))).toSet
+    if accepted.nonEmpty && proves(accepted) then accepted else Set.empty
+
 private[metallurgy] object ProductionInstanceLineage:
   def child(
       parent: ProductionInstanceId,
@@ -145,7 +182,7 @@ private[metallurgy] object OwnedRootRouteMatcher:
     PsiOutputRoleId.NamedTypeArguments
   )
 
-  private def isCompletePayload(realization: OutputRealization): Boolean =
+  def isCompletePayload(realization: OutputRealization): Boolean =
     realization.template.composites.count(output =>
       output.parentId.isEmpty && output.range == OutputRangeDeclaration.CompilerPosition &&
         output.outputRoleId == PsiOutputRoleId.ExpressionPayload &&
@@ -157,6 +194,11 @@ private[metallurgy] object OwnedRootRouteMatcher:
       case Vector(realization) => isCompletePayload(realization)
       case _                   => false
 
+  def hasCompletePayloadFallback(production: Scala3PsiProduction): Boolean =
+    isCompletePayload(production) || production.realizationChoice.exists(choice =>
+      production.effectiveOutputRealizations.find(_.id == choice.fallbackId).exists(isCompletePayload)
+    )
+
   def matches(
       candidate: ProductionInstanceId,
       route: OwnedRootRoute,
@@ -164,7 +206,9 @@ private[metallurgy] object OwnedRootRouteMatcher:
       selected: collection.Map[ProductionInstanceId, Scala3PsiProduction],
       prefix: ProductionInstanceId => String,
       position: ProductionInstanceId => ParserNodePosition,
-      catalog: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog.Reviewed
+      catalog: Scala3PsiProductionCatalog = Scala3PsiProductionCatalog.Reviewed,
+      enabledAtomicRoots: Set[ProductionInstanceId] = Set.empty,
+      candidateRoute: Boolean = false
   ): Boolean =
     def next(current: ProductionInstanceId, expected: InventoryAncestor): Option[ProductionInstanceId] =
       parents.get(current) match
@@ -197,22 +241,24 @@ private[metallurgy] object OwnedRootRouteMatcher:
         selected
           .get(root)
           .exists: production =>
-            val direct      = production.id == route.rootProductionId && isCompletePayload(production)
+            val atomic      = production.realizationChoice.exists(_.policy == RealizationChoicePolicy.AtomicWholePlan)
+            val atomicState = if atomic then enabledAtomicRoots(root) == candidateRoute else !candidateRoute
+            val direct      = production.id == route.rootProductionId && atomicState &&
+              (atomic || isCompletePayload(production))
             val alternative = catalog.productionAlternatives.exists(value =>
               value.candidateId == production.id && value.fallbackId == route.rootProductionId
             ) && production.realizationChoice.exists(choice =>
               production.effectiveOutputRealizations.find(_.id == choice.fallbackId).exists(isCompletePayload)
             )
-            direct || alternative
-        &&
-          intermediates.forall(instance =>
-            selected
-              .get(instance)
-              .exists(_.effectiveOutputRealizations.forall: realization =>
-                val roots = realization.template.composites.filter(_.parentId.isEmpty)
-                roots.isEmpty || roots.forall(root => RetainedPayloadChildRoles(root.outputRoleId))
-              )
-          )
+            direct || (!candidateRoute && alternative)
+        && (candidateRoute || intermediates.forall(instance =>
+          selected
+            .get(instance)
+            .exists(_.effectiveOutputRealizations.forall: realization =>
+              val roots = realization.template.composites.filter(_.parentId.isEmpty)
+              roots.isEmpty || roots.forall(root => RetainedPayloadChildRoles(root.outputRoleId))
+            )
+        ))
       val bounded       = for
         definition <- next(root, route.rootOwner)
         _          <- next(definition, route.outerOwner)

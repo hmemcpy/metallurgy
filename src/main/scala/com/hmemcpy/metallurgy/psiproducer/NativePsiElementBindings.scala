@@ -13,6 +13,7 @@ import com.intellij.util.io.AbstractStringEnumerator
 import org.jetbrains.plugins.scala.Scala3Language
 import org.jetbrains.plugins.scala.lang.lexer.{ScalaTokenType, ScalaTokenTypes}
 import org.jetbrains.plugins.scala.lang.parser.ScalaElementType
+import org.jetbrains.plugins.scala.lang.psi.api.ScalaElementVisitor
 import org.jetbrains.plugins.scala.lang.psi.ScExportsHolder
 import org.jetbrains.plugins.scala.lang.psi.api.base.{
   ScAccessModifier,
@@ -55,6 +56,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{
   ScExpression,
+  ScGenericCall,
   ScMethodCall,
   ScReferenceExpression,
   ScSuperReference,
@@ -315,6 +317,8 @@ private[metallurgy] object NativePsiElementBindings:
           |val atomicChar = '\n'
           |val atomicString = "a\tb"
           |val atomicNull = null
+          |def nativeGeneric[A, B]: A = ???
+          |val nativeGenericCall = nativeGeneric[Int, List[String]]
           |val nativeCall = atomicReference.toString(atomicInteger, atomicReference)
           |def nativeUsing(using first: Int, second: Int) = first + second
           |val nativeUsingCall = nativeUsing(using atomicInteger, atomicReference)
@@ -630,6 +634,8 @@ private[metallurgy] object NativePsiElementBindings:
     val nativeCall                                             = patternExpression("nativeCall").collect:
       case value: ScMethodCall => value
     val nativeArguments                                        = nativeCall.map(_.args)
+    val nativeGenericCall                                      = patternExpression("nativeGenericCall").collect:
+      case value: ScGenericCall => value
     val nativeUsingCall                                        = patternExpression("nativeUsingCall").collect:
       case value: ScMethodCall => value
     val nativeUsingArguments                                   = nativeUsingCall.map(_.args)
@@ -747,7 +753,7 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ nativeGenericCall ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -914,6 +920,23 @@ private[metallurgy] object NativePsiElementBindings:
     else if atomicReference.isEmpty || atomicUnqualifiedThis.isEmpty || atomicQualifiedThis.isEmpty ||
       atomicLiterals.size != 8
     then Left("native atomic expression PSI probe is incomplete")
+    else if nativeGenericCall.isEmpty || nativeGenericCall.exists(call =>
+        var visited = false
+        call.accept(
+          new ScalaElementVisitor:
+            override def visitGenericCallExpression(value: ScGenericCall): Unit = visited = value eq call
+        )
+        call.getText != "nativeGeneric[Int, List[String]]" ||
+        call.referencedExpr.getText != "nativeGeneric" || call.referencedExpr.getParent != call ||
+        call.typeArgs.getText != "[Int, List[String]]" || call.typeArgs.getParent != call ||
+        call.arguments.map(_.getText).toVector != Vector("Int", "List[String]") ||
+        call.getChildren.toVector.collect { case value: org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement =>
+          value
+        } !=
+          Vector(call.referencedExpr, call.typeArgs) || !visited ||
+          call.shapeType == null || call.multiResolve == null || call.bindInvokedExpr == null
+      )
+    then Left("native generic-call PSI accessors are inconsistent")
     else if nativeCall.isEmpty || nativeArguments.isEmpty ||
       nativeCall.exists(call =>
         call.getText != "atomicReference.toString(atomicInteger, atomicReference)" ||
@@ -1238,7 +1261,7 @@ private[metallurgy] object NativePsiElementBindings:
           atomicReference,
           atomicUnqualifiedThis,
           atomicQualifiedThis
-        ).flatten ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++
+        ).flatten ++ atomicLiterals ++ nativeGenericCall ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++
           selectionReferences ++ selectionSuperReferences).exists(
           _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
@@ -1394,6 +1417,7 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TermReference         -> atomicReference.get.getNode.getElementType,
               PsiOutputRoleId.ThisReference         -> atomicUnqualifiedThis.get.getNode.getElementType,
               PsiOutputRoleId.SelectionExpression   -> selectionReferences.head.getNode.getElementType,
+              PsiOutputRoleId.GenericCall           -> nativeGenericCall.get.getNode.getElementType,
               PsiOutputRoleId.MethodCall            -> nativeCall.get.getNode.getElementType,
               PsiOutputRoleId.ArgumentExpressions   -> nativeArguments.get.getNode.getElementType,
               PsiOutputRoleId.SuperReference        -> selectionSuperReferences.head.getNode.getElementType,
@@ -1504,6 +1528,7 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TermReference         -> surfaceId(atomicReference.get.getClass),
               PsiOutputRoleId.ThisReference         -> surfaceId(atomicUnqualifiedThis.get.getClass),
               PsiOutputRoleId.SelectionExpression   -> surfaceId(selectionReferences.head.getClass),
+              PsiOutputRoleId.GenericCall           -> surfaceId(nativeGenericCall.get.getClass),
               PsiOutputRoleId.MethodCall            -> surfaceId(nativeCall.get.getClass),
               PsiOutputRoleId.ArgumentExpressions   -> surfaceId(nativeArguments.get.getClass),
               PsiOutputRoleId.SuperReference        -> surfaceId(selectionSuperReferences.head.getClass),

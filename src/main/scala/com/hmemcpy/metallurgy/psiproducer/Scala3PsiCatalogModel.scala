@@ -316,6 +316,7 @@ private[metallurgy] object PsiOutputRoleId:
   val TermReference         = PsiOutputRoleId("scala.expression.reference.term")
   val ThisReference         = PsiOutputRoleId("scala.expression.reference.this")
   val SelectionExpression   = PsiOutputRoleId("scala.expression.selection")
+  val GenericCall           = PsiOutputRoleId("scala.expression.type-application.generic-call")
   val MethodCall            = PsiOutputRoleId("scala.expression.application.method-call")
   val ArgumentExpressions   = PsiOutputRoleId("scala.expression.application.arguments")
   val SuperReference        = PsiOutputRoleId("scala.expression.reference.super")
@@ -520,6 +521,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.TermReference,
       PsiOutputRoleId.ThisReference,
       PsiOutputRoleId.SelectionExpression,
+      PsiOutputRoleId.GenericCall,
       PsiOutputRoleId.MethodCall,
       PsiOutputRoleId.ArgumentExpressions,
       PsiOutputRoleId.SuperReference,
@@ -795,7 +797,15 @@ private[metallurgy] final case class RequiredChildRootOutcome(
     roleId: String,
     rootOutcome: ChildRootOutcome
 )
-private[metallurgy] final case class RealizationChoice(candidateIds: Vector[String], fallbackId: String)
+private[metallurgy] enum RealizationChoicePolicy:
+  case LocalAssessment
+  case AtomicWholePlan
+private[metallurgy] final case class RealizationChoice(
+    candidateIds: Vector[String],
+    fallbackId: String,
+    policy: RealizationChoicePolicy = RealizationChoicePolicy.LocalAssessment,
+    trialEligibility: Vector[RequiredChildRootOutcome] = Vector.empty
+)
 private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)

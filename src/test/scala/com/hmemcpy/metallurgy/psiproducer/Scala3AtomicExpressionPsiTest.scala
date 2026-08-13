@@ -18,7 +18,12 @@ import com.intellij.psi.stubs.{
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.base.ScLiteral
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.*
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScExpression, ScReferenceExpression, ScThisReference}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{
+  ScExpression,
+  ScGenericCall,
+  ScReferenceExpression,
+  ScThisReference
+}
 import org.jetbrains.plugins.scala.lang.psi.api.statements.{
   ScFunctionDefinition,
   ScPatternDefinition,
@@ -205,16 +210,25 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
       )
     )
 
-  def testCoveredExcludedExpressionRootsRemainPayloadsWithoutAtomicDescendants(): Unit =
+  def testPositionalTypeApplicationIsNativeWhileExcludedExpressionRootsRemainCompletePayloads(): Unit =
+    val positionalSource = "val typed = source[Int]\n"
+    val positionalFile   = physical("AtomicBoundary1.scala", positionalSource)
+    val positional       = PsiTreeUtil.findChildOfType(positionalFile, classOf[ScGenericCall])
+    assertEquals("source[Int]", positional.getText)
+    assertEquals("source", positional.referencedExpr.getText)
+    assertEquals("[Int]", positional.typeArgs.getText)
+    assertSame(positional, positional.referencedExpr.getParent)
+    assertSame(positional, positional.typeArgs.getParent)
+    assertTrue(PsiTreeUtil.findChildrenOfType(positionalFile, classOf[MetallurgyExpressionPayload]).isEmpty)
+
     val sources = Vector(
-      "val typed = source[Int]\n",
       "val tupled = (source, 1)\n",
       "val blocked = { source }\n",
       "val infixed = source + 1\n",
       "val negative = -1\n"
     )
     sources.zipWithIndex.foreach: (source, index) =>
-      val file     = physical(s"AtomicBoundary${index + 1}.scala", source)
+      val file     = physical(s"AtomicBoundary${index + 2}.scala", source)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScThisReference]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScLiteral]).isEmpty)

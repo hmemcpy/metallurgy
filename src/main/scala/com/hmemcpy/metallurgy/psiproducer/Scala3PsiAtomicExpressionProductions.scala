@@ -30,7 +30,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       surface: String,
       accessors: Vector[AccessorObligation],
       tokenSurface: Option[String] = None,
-      scannerEvidence: ScannerEvidencePattern = ScannerEvidencePattern()
+      scannerEvidence: ScannerEvidencePattern = ScannerEvidencePattern(),
+      additionalOccurrences: Vector[CompilerProductionContextPattern] = Vector.empty
   ): Scala3PsiProduction =
     Scala3PsiProduction(
       id = id,
@@ -39,7 +40,7 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
         InventoryKind.Node,
         prefix,
         fields,
-        (directOwnerOccurrences ++ Scala3PsiApplicationExpressionProductions.ChildOccurrences)
+        (directOwnerOccurrences ++ Scala3PsiApplicationExpressionProductions.ChildOccurrences ++ additionalOccurrences)
           .map(_.copy(scannerEvidence = scannerEvidence))
       ),
       dispositions = fields.map(field => FieldDisposition(field.name, FieldDispositionKind.TerminalOrLayout)),
@@ -106,7 +107,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
     PsiOutputRoleId.TermReference,
     ReferenceExpressionSurface,
-    TermReferenceAccessors
+    TermReferenceAccessors,
+    additionalOccurrences = Scala3PsiDefinitionPayloadProductions.PositionalCandidateFunOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.PositionalCandidateTermArgumentOccurrences
   )
 
   private val integerLiteral = atomicExpression(

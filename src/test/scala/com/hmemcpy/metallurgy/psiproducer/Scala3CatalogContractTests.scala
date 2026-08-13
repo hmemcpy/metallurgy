@@ -109,7 +109,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.AppliedType               -> Set(
         "import-selector-bound-applied-type",
         "ordinary-applied-type",
-        "type-argument-applied"
+        "type-argument-applied",
+        "expression-type-argument-applied"
       ),
       GrammarRoleId.TypeBounds                -> Set(
         "higher-kinded-result-bounds",
@@ -135,15 +136,19 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "import-selector-bound-applied-type",
         "ordinary-applied-type",
         "type-argument-applied",
+        "expression-type-argument-applied",
         "definition-payload-type-apply-positional",
         "definition-payload-type-apply-named",
         "payload-descendant-type-apply-positional",
-        "payload-descendant-type-apply-named"
+        "payload-descendant-type-apply-named",
+        "positional-applied-type-apply-candidate"
       ),
       GrammarRoleId.PositionalTypeArgument    -> Set(
         "type-argument-ident",
         "type-argument-applied",
-        "expression-type-argument-ident"
+        "expression-type-argument-ident",
+        "expression-nested-type-ident",
+        "expression-type-argument-applied"
       ),
       GrammarRoleId.NamedTypeArgument         -> Set("expression-named-type-argument"),
       GrammarRoleId.WildcardType              -> Set(
@@ -341,7 +346,9 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "definition-payload-type-apply-named",
         "definition-payload-applied-call",
         "payload-descendant-type-apply-positional",
-        "payload-descendant-type-apply-named"
+        "payload-descendant-type-apply-named",
+        "positional-applied-call-candidate",
+        "positional-applied-type-apply-candidate"
       ),
       GrammarRoleId.ExpressionPayload         -> Set(
         "annotation-argument-literal-payload",

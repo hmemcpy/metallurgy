@@ -97,6 +97,69 @@ private[metallurgy] object WholeFileProductionPlanner:
       compiler: CompilerRuntimeInventory,
       workObserver: PlanningWorkObserver
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
+    compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, Set.empty).flatMap: baseline =>
+      def provesCandidates(plan: WholeFileProductionPlan, roots: Set[ProductionInstanceId]): Boolean =
+        val selections = plan.realizationSelections.map(value => value.owner -> value.reason).toMap
+        roots.forall(root => selections.get(root).contains(RealizationSelectionReason.PreferredCandidate))
+      val candidateOwners                                                                            = baseline.realizationSelections.collect:
+        case PlannedRealizationSelection(owner, _, RealizationSelectionReason.AtomicWholePlanFallback) => owner
+      val candidateRoots                                                                             = candidateOwners.flatMap(owner => atomicCandidateRoot(snapshot, compiler, owner))
+      AtomicWholePlanCandidateScope
+        .validate(candidateRoots, snapshot.sourceLength)
+        .filter(_ => candidateRoots.size == candidateOwners.size) match
+        case Some(candidates) if candidates.nonEmpty =>
+          val accepted = AtomicWholePlanTrials.select(candidates): roots =>
+            compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, roots).exists(plan =>
+              provesCandidates(plan, roots)
+            )
+          compileAttempt(snapshot, evidence, catalog, compiler, workObserver, accepted)
+        case _                                       =>
+          compileAttempt(snapshot, evidence, catalog, compiler, workObserver, Set.empty)
+
+  private def atomicCandidateRoot(
+      snapshot: ParserSyntaxSnapshot,
+      compiler: CompilerRuntimeInventory,
+      owner: ProductionInstanceId
+  ): Option[AtomicWholePlanCandidateRoot] =
+    def occurrenceCount[A](values: Vector[A], occurrence: A => ProductionOccurrenceId): Int =
+      owner.occurrence.fold(0)(expected => values.count(value => occurrence(value) == expected))
+    owner.kind match
+      case InventoryKind.Node       =>
+        snapshot.nodes
+          .find(_.id == owner.valueId)
+          .map: node =>
+            val count = occurrenceCount(
+              node.occurrences,
+              value => ProductionOccurrenceId(value.ownerNodeId, value.fieldPath)
+            )
+            AtomicWholePlanCandidateRoot(owner, node.position, count)
+      case InventoryKind.Positioned =>
+        snapshot.positioned
+          .find(_.id == owner.valueId)
+          .map: positioned =>
+            val count = occurrenceCount(
+              positioned.occurrences,
+              value => ProductionOccurrenceId(value.ownerNodeId, value.fieldPath)
+            )
+            AtomicWholePlanCandidateRoot(owner, positioned.position, count)
+      case InventoryKind.Product    =>
+        compiler.products
+          .find(_.id == owner.valueId)
+          .map: product =>
+            val count = occurrenceCount(
+              product.occurrences,
+              value => ProductionOccurrenceId(value.ownerNodeId, value.fieldPath)
+            )
+            AtomicWholePlanCandidateRoot(owner, product.position, count)
+
+  private def compileAttempt(
+      snapshot: ParserSyntaxSnapshot,
+      evidence: ProvisionalSourceEvidencePlan,
+      catalog: Scala3PsiProductionCatalog,
+      compiler: CompilerRuntimeInventory,
+      workObserver: PlanningWorkObserver,
+      enabledAtomicRoots: Set[ProductionInstanceId]
+  ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
     boundary[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]:
       val lexicalAtoms                                                                            = evidence.lexicalContract.atoms
       val lexicalRangeIndex                                                                       = new SourceOrderedRangeIndex(
@@ -239,7 +302,20 @@ private[metallurgy] object WholeFileProductionPlanner:
                 selected,
                 candidate => rows(candidate.kind -> candidate.valueId).prefix,
                 position,
-                catalog
+                catalog,
+                enabledAtomicRoots
+              ),
+            route =>
+              OwnedRootRouteMatcher.matches(
+                instance,
+                route,
+                runtimeParents,
+                selected,
+                candidate => rows(candidate.kind -> candidate.valueId).prefix,
+                position,
+                catalog,
+                enabledAtomicRoots,
+                candidateRoute = true
               )
           )
         )
@@ -547,6 +623,29 @@ private[metallurgy] object WholeFileProductionPlanner:
         collection.mutable.LinkedHashMap.empty[ProductionInstanceId, PlannedRealizationSelection]
       active.toVector.reverse.foreach: instance =>
         val children                                                                   = compilerChildren.getOrElse(instance, Vector.empty)
+        val trialEligibility                                                           = selected(instance).realizationChoice
+          .filter(_.policy == RealizationChoicePolicy.AtomicWholePlan)
+          .map(_.trialEligibility)
+          .getOrElse(Vector.empty)
+        val trialEligible                                                              = trialEligibility.forall: requirement =>
+          val roleChildren                                                                     = children.collect { case (roleId, _, child) if roleId == requirement.roleId => child }
+          def matches(child: ProductionInstanceId, expected: ChildOutcomeExpectation): Boolean = expected match
+            case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
+            case ChildOutcomeExpectation.OutputRole(role) =>
+              resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
+            case _                                        => false
+          requirement.rootOutcome match
+            case ChildRootOutcome.One(expected) =>
+              roleChildren match
+                case Vector(child) => matches(child, expected)
+                case _             => false
+            case ChildRootOutcome.All(expected) => roleChildren.forall(matches(_, expected))
+            case ChildRootOutcome.AnyReviewed   => false
+        if trialEligibility.nonEmpty && !trialEligible && !enabledAtomicRoots(instance) then
+          retainedProductionMatches
+            .get(instance)
+            .flatMap(_.fallback)
+            .foreach(fallback => selected.update(instance, fallback))
         def occurrence(condition: ChildOutcomeCondition): Option[ProductionInstanceId] =
           val values = children.collect { case (condition.roleId, _, child) => child }
           condition.occurrence match
@@ -641,18 +740,17 @@ private[metallurgy] object WholeFileProductionPlanner:
             def assess(
                 candidate: OutputRealization
             ): Either[CandidateRealizationDefect, Vector[CandidateInapplicability]] =
-              val candidateRange          = position(instance) match
+              val candidateRange      = position(instance) match
                 case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => Right(range)
                 case _                                                                               =>
                   Left(CandidateRealizationDefect.SourceOwnership("candidate root has no source-derived position"))
-              val completeFallback        = retainedProductionMatches
+              val completeFallback    = retainedProductionMatches
                 .get(instance)
                 .flatMap(_.fallback)
-                .exists(OwnedRootRouteMatcher.isCompletePayload)
-              val excludedTypeApplication = rows(instance.kind -> instance.valueId).observation.exists:
-                case InventoryFieldObservation("fun", InventoryValueObservation.Node(_, "TypeApply"), _) => true
-                case _                                                                                   => false
-              val excludedAttachments     = candidate.evidenceConditions.collect:
+                .exists(OwnedRootRouteMatcher.isCompletePayload) ||
+                selected(instance).realizationChoice.exists(_.policy == RealizationChoicePolicy.AtomicWholePlan) &&
+                OwnedRootRouteMatcher.hasCompletePayloadFallback(selected(instance))
+              val excludedAttachments = candidate.evidenceConditions.collect:
                 case EvidenceCondition.RootAttachment(attachment, false)
                     if CatalogShapeMatcher.rootAttachmentConditionMatches(
                       attachment,
@@ -665,7 +763,6 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Left(
                   CandidateRealizationDefect.CandidateEvidence("candidate has no retained complete payload fallback")
                 )
-              else if excludedTypeApplication then Right(Vector(CandidateInapplicability.ExcludedTypeApplication))
               else if excludedAttachments.nonEmpty then Right(excludedAttachments)
               else if !values.exists(_.id == candidate.id) then
                 Left(
@@ -745,7 +842,18 @@ private[metallurgy] object WholeFileProductionPlanner:
                           )
                         )
                   Right(reviewed.result())
-            RealizationChoiceSelector.select(selected(instance), values, assess) match
+            val production = selected(instance)
+            val forced     = production.realizationChoice
+              .filter(_.policy == RealizationChoicePolicy.AtomicWholePlan)
+              .filterNot(_ => enabledAtomicRoots(instance))
+              .flatMap(choice => production.effectiveOutputRealizations.find(_.id == choice.fallbackId))
+              .map(SelectedRealization(_, RealizationSelectionReason.AtomicWholePlanFallback))
+            forced
+              .toRight(())
+              .fold(
+                _ => RealizationChoiceSelector.select(production, values, assess),
+                value => Right(value)
+              ) match
               case Left(failure)    =>
                 break(Left(WholeFilePlanningFailure.InvalidRealizationChoice(instance, failure)))
               case Right(selection) =>

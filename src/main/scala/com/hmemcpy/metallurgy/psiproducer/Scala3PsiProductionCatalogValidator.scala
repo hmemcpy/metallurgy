@@ -130,6 +130,8 @@ private[metallurgy] enum CatalogValidationError:
   case MissingScenarioOccurrenceOwner(instance: ProductionInstanceId, ownerNodeId: Long)
   case MissingScenarioOccurrenceContext(instance: ProductionInstanceId, occurrence: ProductionOccurrenceId)
   case InvalidOwnedRootRoute(productionId: String, route: OwnedRootRoute, reason: String)
+  case InvalidEnabledCandidateRootRoute(productionId: String, route: OwnedRootRoute, reason: String)
+  case InvalidAtomicWholePlanChoice(productionId: String, reason: String)
 
 private[metallurgy] object RuntimeRealizationSelector:
   def validate(catalog: Scala3PsiProductionCatalog, runtime: CompilerRuntimeInventory): Vector[CatalogValidationError] =
@@ -450,8 +452,60 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       case CatalogValidationError.UncoveredCompilerShape(_, prefix, _, _)    => prefix
       case CatalogValidationError.AmbiguousCompilerShape(_, prefix, _, _, _) => prefix
     catalog.productions.foreach: production =>
+      production.realizationChoice
+        .filter(_.policy == RealizationChoicePolicy.AtomicWholePlan)
+        .foreach: choice =>
+          val byId        = production.effectiveOutputRealizations.map(value => value.id -> value).toMap
+          val fallback    = byId.get(choice.fallbackId)
+          if choice.candidateIds.size != 1 then
+            errors += CatalogValidationError.InvalidAtomicWholePlanChoice(
+              production.id,
+              "atomic choice requires exactly one candidate"
+            )
+          if !fallback.exists(OwnedRootRouteMatcher.isCompletePayload) then
+            errors += CatalogValidationError.InvalidAtomicWholePlanChoice(
+              production.id,
+              "fallback must be one complete compiler-position payload"
+            )
+          choice.candidateIds.headOption.flatMap(byId.get) match
+            case Some(candidate) if !OwnedRootRouteMatcher.isCompletePayload(candidate) => ()
+            case _                                                                      =>
+              errors += CatalogValidationError.InvalidAtomicWholePlanChoice(
+                production.id,
+                "candidate must be one existing richer realization"
+              )
+          val absorptions = fallback.toVector.flatMap(_.childClosureAbsorptions)
+          if absorptions.map(_.roleId).toSet != production.children.map(_.roleId).toSet ||
+            absorptions
+              .exists(value => value.rootOutcome != ChildRootOutcome.AnyReviewed || value.retainedRootRoles.nonEmpty)
+          then
+            errors += CatalogValidationError.InvalidAtomicWholePlanChoice(
+              production.id,
+              "fallback must absorb every child closure without retained roots"
+            )
       production.pattern.occurrences.foreach:
-        case CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(routes), _, _) =>
+        case CompilerProductionContextPattern(ContextPattern.DescendantOfEnabledCandidateRoot(routes), _, _) =>
+          duplicates(routes).foreach(route =>
+            errors += CatalogValidationError.InvalidEnabledCandidateRootRoute(production.id, route, "duplicate route")
+          )
+          routes.foreach: route =>
+            def invalid(reason: String): Unit =
+              errors += CatalogValidationError.InvalidEnabledCandidateRootRoute(production.id, route, reason)
+            if route.descendantPath.isEmpty then invalid("empty descendant path")
+            else if (route.descendantPath :+ route.rootOwner :+ route.outerOwner).exists(_.path.isEmpty) then
+              invalid("empty product-field edge")
+            if route.repeatedEdge.nonEmpty then invalid("repeated candidate-root edge is unsupported")
+            productionsById.get(route.rootProductionId) match
+              case Some(Vector(root))
+                  if root.realizationChoice
+                    .exists(choice => choice.policy == RealizationChoicePolicy.AtomicWholePlan) =>
+                if route.descendantPath.last.ownerKind != root.pattern.kind ||
+                  route.descendantPath.last.ownerPrefix != root.pattern.prefix
+                then invalid("final edge does not identify the candidate root shape")
+              case Some(Vector(_)) => invalid("root is not an atomic whole-plan choice")
+              case Some(_)         => invalid("ambiguous root production")
+              case None            => invalid("missing root production")
+        case CompilerProductionContextPattern(ContextPattern.DescendantOfOwnedRoot(routes), _, _)            =>
           if production.effectiveOutputRealizations.exists(_.template.composites.nonEmpty) then
             routes.foreach(route =>
               errors += CatalogValidationError.InvalidOwnedRootRoute(
@@ -500,15 +554,15 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 "unreviewed root owner boundary"
               )
             productionsById.get(route.rootProductionId) match
-              case None                                                                 =>
+              case None                                                                          =>
                 errors += CatalogValidationError.InvalidOwnedRootRoute(production.id, route, "missing root production")
-              case Some(values) if values.size != 1                                     =>
+              case Some(values) if values.size != 1                                              =>
                 errors += CatalogValidationError.InvalidOwnedRootRoute(
                   production.id,
                   route,
                   "ambiguous root production"
                 )
-              case Some(Vector(root)) if !OwnedRootRouteMatcher.isCompletePayload(root) =>
+              case Some(Vector(root)) if !OwnedRootRouteMatcher.hasCompletePayloadFallback(root) =>
                 errors += CatalogValidationError.InvalidOwnedRootRoute(
                   production.id,
                   route,
@@ -522,8 +576,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                   route,
                   "final edge does not identify the root production shape"
                 )
-              case _                                                                    => ()
-        case _                                                                                    => ()
+              case _                                                                             => ()
+        case _                                                                                               => ()
     val catalogHostSurfaceIds  = catalog.productions
       .flatMap: production =>
         val terminals = production.terminals.collect:

@@ -1,6 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
-import com.hmemcpy.metallurgy.pc.ParserScannerTokenKind
+import com.hmemcpy.metallurgy.pc.{ParserAttachmentValue, ParserScannerTokenKind}
 
 import Scala3PsiProductionSupport.*
 
@@ -91,6 +91,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "definition-payload-type-apply-positional",
     "definition-payload-type-apply-named",
     "definition-payload-applied-call",
+    "positional-applied-call-candidate",
     "payload-descendant-number",
     "payload-descendant-ident",
     "payload-descendant-apply",
@@ -109,7 +110,9 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "payload-descendant-named-arg"
   )
 
-  private val payloadRootIds            = payloadExpressionProductionIds.filter(_.startsWith("definition-payload-"))
+  private val payloadRootIds            = payloadExpressionProductionIds.filter(id =>
+    id.startsWith("definition-payload-") || id == "positional-applied-call-candidate"
+  )
   private val payloadLocalDefinitionIds = Set("payload-descendant-val", "payload-descendant-var")
 
   private def payloadRoot(
@@ -202,6 +205,78 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       descendantPath          <- descendantPaths
       (rootOwner, outerOwner) <- DirectPayloadOwners
     yield OwnedRootRoute(rootProductionId, descendantPath, rootOwner, outerOwner)
+
+  private def positionalCandidateRoutes(
+      descendantPath: Vector[InventoryAncestor],
+      applied: Boolean
+  ): Vector[OwnedRootRoute] =
+    val rootId = if applied then "positional-applied-call-candidate" else "definition-payload-type-apply-positional"
+    DirectPayloadOwners.map: (rootOwner, outerOwner) =>
+      OwnedRootRoute(
+        rootId,
+        descendantPath ++ Option.when(applied)(nodeEdge("Apply", "fun")),
+        rootOwner,
+        outerOwner
+      )
+
+  private[psiproducer] val PositionalCandidateFunOccurrences =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfEnabledCandidateRoot(
+          positionalCandidateRoutes(Vector(nodeEdge("TypeApply", "fun")), applied = false) ++
+            positionalCandidateRoutes(Vector(nodeEdge("TypeApply", "fun")), applied = true)
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
+
+  private val PositionalCandidateTypeApplyOccurrences =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfEnabledCandidateRoot(
+          DirectPayloadOwners.map: (rootOwner, outerOwner) =>
+            OwnedRootRoute(
+              "positional-applied-call-candidate",
+              Vector(nodeEdge("Apply", "fun")),
+              rootOwner,
+              outerOwner
+            )
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
+
+  private[psiproducer] val PositionalCandidateSelectionQualifierOccurrences =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfEnabledCandidateRoot(
+          positionalCandidateRoutes(
+            Vector(nodeEdge("Select", "qualifier"), nodeEdge("TypeApply", "fun")),
+            applied = false
+          ) ++ positionalCandidateRoutes(
+            Vector(nodeEdge("Select", "qualifier"), nodeEdge("TypeApply", "fun")),
+            applied = true
+          )
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
+
+  private[psiproducer] val PositionalCandidateTermArgumentOccurrences =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.DescendantOfEnabledCandidateRoot(
+          DirectPayloadOwners.map: (rootOwner, outerOwner) =>
+            OwnedRootRoute(
+              "positional-applied-call-candidate",
+              Vector(nodeEdge("Apply", "args", repeated = true)),
+              rootOwner,
+              outerOwner
+            )
+        ),
+        SourceClassification.SourceReachable
+      )
+    )
 
   private val SelectionRootPaths =
     Vector(
@@ -373,6 +448,39 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     GrammarRoleId.PositionalTypeArgument
   )
 
+  private val expressionNestedTypeIdent = expressionTypeArgumentIdent(
+    "expression-nested-type-ident",
+    expressionTypeApplicationChildOccurrences("AppliedTypeTree", "tpt") ++
+      expressionTypeApplicationChildOccurrences("AppliedTypeTree", "args"),
+    GrammarRoleId.PositionalTypeArgument
+  )
+
+  private val expressionAppliedTypeArgument =
+    Scala3PsiAppliedTypeProductions
+      .appliedTypeProduction(
+        "expression-type-argument-applied",
+        expressionTypeApplicationChildOccurrences("TypeApply", "args") ++
+          expressionTypeApplicationChildOccurrences("AppliedTypeTree", "args"),
+        Set(GrammarRoleId.PositionalTypeArgument)
+      )
+      .copy(children =
+        Vector(
+          ChildDeclaration(
+            "constructor",
+            "tpt",
+            ChildCardinality.ExactlyOne,
+            expressionNestedTypeIdent.id
+          ),
+          ChildDeclaration(
+            "arguments",
+            "args",
+            ChildCardinality.Repeated(1, None),
+            expressionNestedTypeIdent.id,
+            Set("expression-type-argument-applied")
+          )
+        )
+      )
+
   private val expressionNamedArgumentType = expressionTypeArgumentIdent(
     "expression-named-type-argument-type",
     expressionTypeApplicationChildOccurrences("NamedArg", "arg"),
@@ -459,17 +567,18 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
   private def expressionTypeApplyProduction(
       id: String,
       named: Boolean,
-      root: Boolean
+      root: Boolean,
+      appliedCandidate: Boolean = false
   ): Scala3PsiProduction =
-    val argumentPattern =
+    val argumentPattern  =
       if named then CatalogValuePattern.NodePrefix("NamedArg")
       else CatalogValuePattern.NodeExceptPrefix("NamedArg")
-    val argumentId      = if named then "expression-named-type-argument" else "expression-type-argument-ident"
-    val argumentRole    = if named then PsiOutputRoleId.NamedTypeArguments else PsiOutputRoleId.TypeArguments
-    val argumentSurface = if named then NamedTypeArgumentsSurface else TypeArgumentsSurface
-    val argumentAccess  = if named then NamedTypeArgumentsAccessors else TypeArgumentsAccessors
-    val argumentTarget  = if named then TargetRequirement.Compatible else TargetRequirement.Native
-    val payload         = Option.when(root)(
+    val argumentId       = if named then "expression-named-type-argument" else "expression-type-argument-ident"
+    val argumentRole     = if named then PsiOutputRoleId.NamedTypeArguments else PsiOutputRoleId.TypeArguments
+    val argumentSurface  = if named then NamedTypeArgumentsSurface else TypeArgumentsSurface
+    val argumentAccess   = if named then NamedTypeArgumentsAccessors else TypeArgumentsAccessors
+    val argumentTarget   = if named then TargetRequirement.Compatible else TargetRequirement.Native
+    val payload          = Option.when(root)(
       outputComposite(
         "payload",
         None,
@@ -480,7 +589,45 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
         TargetRequirement.Compatible
       )
     )
-    val argumentParent  = Option.when(root)("payload")
+    val argumentParent   = Option.when(root)("payload")
+    val nativeTemplate   = LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "generic-call",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.GenericCall,
+          GenericCallSurface,
+          GenericCallAccessors
+        ),
+        outputComposite(
+          "arguments",
+          Some("generic-call"),
+          OutputRangeDeclaration.BoundaryDerived(
+            OutputBoundary.ChildEnd("fun", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+            OutputBoundary.ProductionEnd()
+          ),
+          PsiOutputRoleId.TypeArguments,
+          TypeArgumentsSurface,
+          TypeArgumentsAccessors
+        )
+      ),
+      Map("fun" -> Some("generic-call"), "arguments" -> Some("arguments"))
+    )
+    val fallbackTemplate = LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "payload",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.ExpressionPayload,
+          ExpressionPayloadSurface,
+          ExpressionPayloadAccessors,
+          TargetRequirement.Compatible
+        )
+      ),
+      Map("fun" -> None, "arguments" -> None)
+    )
     Scala3PsiProduction(
       id = id,
       grammarRoleId = GrammarRoleId.ExpressionTypeApply,
@@ -491,7 +638,14 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
           CompilerFieldPattern("fun", CatalogValuePattern.Node),
           CompilerFieldPattern("args", CatalogValuePattern.Repeated(argumentPattern))
         ),
-        if root then expressionTypeApplicationRootOccurrences
+        if appliedCandidate then PositionalCandidateTypeApplyOccurrences
+        else if root && !named then
+          DirectPayloadOwners.map: (owner, outer) =>
+            CompilerProductionContextPattern(
+              ContextPattern.ParentWithAncestor(owner.ownerKind, owner.ownerPrefix, owner.path, outer),
+              SourceClassification.SourceReachable
+            )
+        else if root then expressionTypeApplicationRootOccurrences
         else expressionTypeApplicationChildOccurrences("Apply", "fun")
       ),
       dispositions = Vector(
@@ -504,9 +658,20 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
           "fun",
           ChildCardinality.ExactlyOne,
           "type-application-output-free-ident",
-          Set("payload-descendant-select", "payload-output-free-select")
+          Set(
+            "payload-descendant-select",
+            "payload-output-free-select",
+            "atomic-term-ident",
+            "selection-expression"
+          )
         ),
-        ChildDeclaration("arguments", "args", ChildCardinality.Repeated(1, None), argumentId)
+        ChildDeclaration(
+          "arguments",
+          "args",
+          ChildCardinality.Repeated(1, None),
+          argumentId,
+          Option.when(!named)(expressionAppliedTypeArgument.id).toSet
+        )
       ),
       terminals = Vector(
         TerminalDeclaration(
@@ -519,30 +684,272 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       ),
       layouts = Vector(LayoutAlternative.None),
       recovery = RecoveryPolicy.Reject,
-      targetSurfaceId = ExpressionPayloadSurface,
-      targetRequirement = TargetRequirement.Compatible,
-      accessors = ExpressionPayloadAccessors,
+      targetSurfaceId = if named || (!root && !appliedCandidate) then ExpressionPayloadSurface else GenericCallSurface,
+      targetRequirement =
+        if named || (!root && !appliedCandidate) then TargetRequirement.Compatible else TargetRequirement.Native,
+      accessors = if named || (!root && !appliedCandidate) then ExpressionPayloadAccessors else GenericCallAccessors,
       persistence = PersistenceObligations.NotApplicable,
       navigation = Some(NavigationObligation.Self),
-      outputTemplate = Some(
-        LocalOutputCompositeTemplate(
-          payload.toVector :+ outputComposite(
-            "arguments",
-            argumentParent,
-            OutputRangeDeclaration.BoundaryDerived(
-              OutputBoundary.ChildEnd("fun", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
-              OutputBoundary.ProductionEnd()
+      outputTemplate = Option
+        .when(named || (!root && !appliedCandidate))(
+          LocalOutputCompositeTemplate(
+            payload.toVector :+ outputComposite(
+              "arguments",
+              argumentParent,
+              OutputRangeDeclaration.BoundaryDerived(
+                OutputBoundary
+                  .ChildEnd("fun", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+                OutputBoundary.ProductionEnd()
+              ),
+              argumentRole,
+              argumentSurface,
+              argumentAccess,
+              argumentTarget
             ),
-            argumentRole,
-            argumentSurface,
-            argumentAccess,
-            argumentTarget
+            Map("fun" -> argumentParent, "arguments" -> Some("arguments"))
+          )
+        )
+        .orElse(Option.when(appliedCandidate)(nativeTemplate)),
+      outputRealizations = Option
+        .when(root && !named && !appliedCandidate)(
+          Vector(
+            OutputRealization(
+              "positional-type-application-native",
+              Vector.empty,
+              nativeTemplate,
+              requiredChildRoots = Vector(
+                RequiredChildRootOutcome(
+                  "fun",
+                  ChildRootOutcome.One(
+                    ChildOutcomeExpectation.OutputRoles(
+                      Set(PsiOutputRoleId.TermReference, PsiOutputRoleId.SelectionExpression)
+                    )
+                  )
+                ),
+                RequiredChildRootOutcome(
+                  "arguments",
+                  ChildRootOutcome.All(
+                    ChildOutcomeExpectation.OutputRoles(
+                      Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType)
+                    )
+                  )
+                )
+              )
+            ),
+            OutputRealization(
+              "positional-type-application-payload",
+              Vector.empty,
+              fallbackTemplate,
+              childClosureAbsorptions = Vector(
+                ChildClosureAbsorption("fun", ChildRootOutcome.AnyReviewed),
+                ChildClosureAbsorption("arguments", ChildRootOutcome.AnyReviewed)
+              )
+            )
+          )
+        )
+        .getOrElse(Vector.empty),
+      outputRoleId = None,
+      additionalGrammarRoleIds = Set(GrammarRoleId.TypeArgumentList),
+      realizationChoice = Option.when(root && !named && !appliedCandidate)(
+        RealizationChoice(
+          Vector("positional-type-application-native"),
+          "positional-type-application-payload",
+          RealizationChoicePolicy.AtomicWholePlan
+        )
+      )
+    )
+
+  private def positionalAppliedCallProduction: Scala3PsiProduction =
+    Scala3PsiProduction(
+      id = "positional-applied-call-candidate",
+      grammarRoleId = GrammarRoleId.ExpressionTypeApply,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Apply",
+        Vector(
+          CompilerFieldPattern("fun", CatalogValuePattern.NodePrefix("TypeApply")),
+          CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+        ),
+        DirectPayloadOwners.map: (owner, outer) =>
+          CompilerProductionContextPattern(
+            ContextPattern.ParentWithAncestor(owner.ownerKind, owner.ownerPrefix, owner.path, outer),
+            SourceClassification.SourceReachable
+          )
+      ),
+      dispositions = Vector(
+        FieldDisposition("fun", FieldDispositionKind.Child),
+        FieldDisposition("args", FieldDispositionKind.Child)
+      ),
+      children = Vector(
+        ChildDeclaration(
+          "fun",
+          "fun",
+          ChildCardinality.ExactlyOne,
+          "payload-descendant-type-apply-positional",
+          Set("payload-descendant-type-apply-named", "positional-applied-type-apply-candidate")
+        ),
+        ChildDeclaration(
+          "args",
+          "args",
+          ChildCardinality.Repeated(1, None),
+          "type-application-output-free-number",
+          Set(
+            "type-application-output-free-literal",
+            "type-application-output-free-ident-argument",
+            "atomic-term-ident"
+          )
+        )
+      ),
+      terminals = Vector(
+        TerminalDeclaration(
+          "applied-call-text",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "left-parenthesis",
+          TerminalIntervalSelector.BalancedScannerTokenAfterChild(
+            ParserScannerTokenKind.LeftParenthesis,
+            ParserScannerTokenKind.LeftParenthesis,
+            ParserScannerTokenKind.RightParenthesis,
+            "fun",
+            ScannerTokenOccurrence.First
           ),
-          Map("fun" -> argumentParent, "arguments" -> Some("arguments"))
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeLeftParenthesisTokenSurface),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "right-parenthesis",
+          TerminalIntervalSelector.BalancedScannerTokenAfterChild(
+            ParserScannerTokenKind.RightParenthesis,
+            ParserScannerTokenKind.LeftParenthesis,
+            ParserScannerTokenKind.RightParenthesis,
+            "fun",
+            ScannerTokenOccurrence.Last
+          ),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeRightParenthesisTokenSurface),
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        ),
+        TerminalDeclaration(
+          "commas",
+          TerminalIntervalSelector.ChildSeparators("args"),
+          TerminalLeafTarget.Token(NativePsiElementBindings.TypeCommaTokenSurface, Some(",")),
+          OccurrenceCardinality.Repeated(0, None),
+          PsiOutputRoleId.SourceTerminal,
+          ownsStructuralEvidence = Some(false)
+        ),
+        TerminalDeclaration(
+          "separator-evidence",
+          TerminalIntervalSelector.ChildSeparators("args"),
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.Repeated(0, None),
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = MethodCallSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = MethodCallAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputRealizations = Vector(
+        OutputRealization(
+          "positional-applied-call-native",
+          Vector.empty,
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "method-call",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.MethodCall,
+                MethodCallSurface,
+                MethodCallAccessors
+              ),
+              outputComposite(
+                "arguments",
+                Some("method-call"),
+                OutputRangeDeclaration.BoundaryDerived(
+                  OutputBoundary.NextScannerTokenStartAfterChild(
+                    "fun",
+                    ChildOccurrenceSelector.First,
+                    ParserScannerTokenKind.LeftParenthesis,
+                    PositionProvenancePolicy.SourceDerivedOnly
+                  ),
+                  OutputBoundary.ProductionEnd()
+                ),
+                PsiOutputRoleId.ArgumentExpressions,
+                ArgumentExpressionsSurface,
+                ArgumentExpressionsAccessors
+              )
+            ),
+            Map("fun" -> Some("method-call"), "args" -> Some("arguments"))
+          ),
+          evidenceConditions = Vector(
+            EvidenceCondition.RootAttachment(
+              AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
+              present = false
+            )
+          ),
+          requiredChildRoots = Vector(
+            RequiredChildRootOutcome(
+              "fun",
+              ChildRootOutcome.One(ChildOutcomeExpectation.OutputRole(PsiOutputRoleId.GenericCall))
+            ),
+            RequiredChildRootOutcome(
+              "args",
+              ChildRootOutcome.All(ChildOutcomeExpectation.OutputRole(PsiOutputRoleId.TermReference))
+            )
+          ),
+          terminalIds = Some(Set("left-parenthesis", "right-parenthesis", "commas", "separator-evidence"))
+        ),
+        OutputRealization(
+          "positional-applied-call-payload",
+          Vector.empty,
+          LocalOutputCompositeTemplate(
+            Vector(
+              outputComposite(
+                "payload",
+                None,
+                OutputRangeDeclaration.CompilerPosition,
+                PsiOutputRoleId.ExpressionPayload,
+                ExpressionPayloadSurface,
+                ExpressionPayloadAccessors,
+                TargetRequirement.Compatible
+              )
+            ),
+            Map("fun" -> None, "args" -> None)
+          ),
+          childClosureAbsorptions = Vector(
+            ChildClosureAbsorption("fun", ChildRootOutcome.AnyReviewed),
+            ChildClosureAbsorption("args", ChildRootOutcome.AnyReviewed)
+          ),
+          terminalIds = Some(Set("applied-call-text"))
         )
       ),
       outputRoleId = None,
-      additionalGrammarRoleIds = Set(GrammarRoleId.TypeArgumentList)
+      realizationChoice = Some(
+        RealizationChoice(
+          Vector("positional-applied-call-native"),
+          "positional-applied-call-payload",
+          RealizationChoicePolicy.AtomicWholePlan,
+          Vector(
+            RequiredChildRootOutcome(
+              "fun",
+              ChildRootOutcome.One(ChildOutcomeExpectation.OutputRole(PsiOutputRoleId.TypeArguments))
+            ),
+            RequiredChildRootOutcome(
+              "args",
+              ChildRootOutcome.All(ChildOutcomeExpectation.Production("type-application-output-free-ident-argument"))
+            )
+          )
+        )
+      )
     )
 
   private def expressionAppliedCallProduction: Scala3PsiProduction =
@@ -749,6 +1156,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     ),
     expressionTypeApplyProduction("definition-payload-type-apply-positional", named = false, root = true),
     expressionTypeApplyProduction("definition-payload-type-apply-named", named = true, root = true),
+    positionalAppliedCallProduction,
     expressionAppliedCallProduction
   )
 
@@ -1270,7 +1678,15 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       appliedCallOutputFreeIdent,
       appliedCallOutputFreeNumber,
       appliedCallOutputFreeLiteral,
+      expressionTypeApplyProduction(
+        "positional-applied-type-apply-candidate",
+        named = false,
+        root = false,
+        appliedCandidate = true
+      ),
       expressionPositionalTypeArgument,
+      expressionNestedTypeIdent,
+      expressionAppliedTypeArgument,
       expressionNamedArgumentType,
       expressionNamedTypeArgument
     )

@@ -18,6 +18,7 @@ import com.intellij.psi.stubs.{
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{
   ScExpression,
+  ScGenericCall,
   ScReferenceExpression,
   ScSuperReference,
   ScThisReference
@@ -177,9 +178,18 @@ final class Scala3SelectionExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala))
     assertEquals(Vector("source.mid.member", "C.super[Mixin].member"), directRhs(file).map(_.getText))
 
-  def testUnsupportedSelectionRootsRemainSingleCompletePayloadsWithoutNativeDescendants(): Unit =
+  def testPositionalTypeApplicationsAreNativeWhileUnsupportedSelectionRootsRemainCompletePayloads(): Unit =
+    val positionalSource = "val typed = source.member[Int]\n"
+    val positionalFile   = physical("SelectionClosed1.scala", positionalSource)
+    val genericCall      = PsiTreeUtil.findChildOfType(positionalFile, classOf[ScGenericCall])
+    assertEquals("source.member[Int]", genericCall.getText)
+    assertEquals("source.member", genericCall.referencedExpr.getText)
+    assertEquals("[Int]", genericCall.typeArgs.getText)
+    assertSame(genericCall, genericCall.referencedExpr.getParent)
+    assertSame(genericCall, genericCall.typeArgs.getParent)
+    assertTrue(PsiTreeUtil.findChildrenOfType(positionalFile, classOf[MetallurgyExpressionPayload]).isEmpty)
+
     val sources = Vector(
-      "val typed = source.member[Int]\n"                        -> Some("source.member[Int]"),
       "val deepTyped = source.a.b.member[Int]\n"                -> Some("source.a.b.member[Int]"),
       "val closed = source().member\n"                          -> Some("source().member"),
       "val blocked = { source.member }\n"                       -> Some("{ source.member }"),
@@ -192,7 +202,7 @@ final class Scala3SelectionExpressionPsiTest extends Scala3CompatTestCase:
     )
     sources.zipWithIndex.foreach: (entry, index) =>
       val (source, expected) = entry
-      val file               = physical(s"SelectionClosed${index + 1}.scala", source)
+      val file               = physical(s"SelectionClosed${index + 2}.scala", source)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScThisReference]).isEmpty)
       assertTrue(source, PsiTreeUtil.findChildrenOfType(file, classOf[ScSuperReference]).isEmpty)

@@ -21,6 +21,7 @@ private[metallurgy] enum RealizationSelectionReason:
   case Ordinary
   case PreferredCandidate
   case CompleteFallback(reviewedReasons: Vector[CandidateInapplicability])
+  case AtomicWholePlanFallback
 
 private[metallurgy] final case class SelectedRealization(
     realization: OutputRealization,

@@ -390,6 +390,13 @@ private[metallurgy] object Scala3PsiProductionCatalog:
           "realization-choice",
           (prefix ++ choice.candidateIds ++ Vector(choice.fallbackId))*
         )
+        if choice.policy != RealizationChoicePolicy.LocalAssessment then
+          rows += StructuralRows.row("realization-choice-policy", (prefix :+ choice.policy)*)
+        choice.trialEligibility.zipWithIndex.foreach: (requirement, requirementIndex) =>
+          rows += StructuralRows.row(
+            "realization-choice-trial-eligibility",
+            (prefix ++ Vector(requirementIndex, requirement.roleId, requirement.rootOutcome))*
+          )
       )
     catalog.productionAlternatives.zipWithIndex.foreach((alternatives, index) =>
       rows += StructuralRows.row("production-alternatives", index, alternatives.candidateId, alternatives.fallbackId)
@@ -431,6 +438,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         Scala3PsiApplicationExpressionProductions.CandidateProductionId,
         "payload-descendant-apply"
       ),
+      ProductionAlternatives("positional-applied-call-candidate", "definition-payload-applied-call"),
       ProductionAlternatives("atomic-term-ident", "payload-descendant-ident"),
       ProductionAlternatives("atomic-term-ident", "payload-output-free-ident"),
       ProductionAlternatives("atomic-literal-integer", "payload-descendant-number"),

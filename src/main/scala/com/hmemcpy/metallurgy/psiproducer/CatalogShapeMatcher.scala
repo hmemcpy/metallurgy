@@ -177,7 +177,8 @@ private[metallurgy] object CatalogShapeMatcher:
   def contextMatches(
       pattern: ContextPattern,
       context: Option[InventoryContext],
-      ownedRootMatches: OwnedRootRoute => Boolean = _ => false
+      ownedRootMatches: OwnedRootRoute => Boolean = _ => false,
+      enabledCandidateRootMatches: OwnedRootRoute => Boolean = _ => false
   ): Boolean = pattern match
     case ContextPattern.Any                                                                                  => true
     case ContextPattern.Root                                                                                 => context.isEmpty
@@ -227,6 +228,10 @@ private[metallurgy] object CatalogShapeMatcher:
       context.exists: value =>
         val lineage = InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) +: value.ancestors
         routes.exists(route => routeLineageMayMatch(route, lineage) && ownedRootMatches(route))
+    case ContextPattern.DescendantOfEnabledCandidateRoot(routes)                                             =>
+      context.exists: value =>
+        val lineage = InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) +: value.ancestors
+        routes.exists(route => routeLineageMayMatch(route, lineage) && enabledCandidateRootMatches(route))
     case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -331,6 +336,8 @@ private[metallurgy] object CatalogShapeMatcher:
       )
     case ContextPattern.DescendantOfOwnedRoot(routes)                                                        =>
       false
+    case ContextPattern.DescendantOfEnabledCandidateRoot(routes)                                             =>
+      false
     case ContextPattern.ParentUnderAnchorThroughWithParent(kind, owner, p, ancestors, anchor, parent)        =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -407,14 +414,15 @@ private[metallurgy] object CatalogShapeMatcher:
       scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
       directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
       rootAttachments: Vector[AttachmentEvidence] = Vector.empty,
-      ownedRootMatches: OwnedRootRoute => Boolean = _ => false
+      ownedRootMatches: OwnedRootRoute => Boolean = _ => false,
+      enabledCandidateRootMatches: OwnedRootRoute => Boolean = _ => false
   ): Vector[Scala3PsiProduction] =
     val matched              = catalog.productions.filter(p =>
       p.pattern.kind == kind && p.pattern.prefix == prefix && matchesFields(p.pattern.fields, fields) &&
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
         rootAttachmentEvidenceMatches(p.pattern.requiredAttachments, rootAttachments) &&
         p.pattern.occurrences.exists(occurrence =>
-          contextMatches(occurrence.context, context, ownedRootMatches) &&
+          contextMatches(occurrence.context, context, ownedRootMatches, enabledCandidateRootMatches) &&
             occurrence.sourceClassification == sourceClassification
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
@@ -428,6 +436,12 @@ private[metallurgy] object CatalogShapeMatcher:
             ) =>
           scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && routes.exists(ownedRootMatches)
         case CompilerProductionContextPattern(
+              ContextPattern.DescendantOfEnabledCandidateRoot(routes),
+              `sourceClassification`,
+              scannerEvidence
+            ) =>
+          scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && routes.exists(enabledCandidateRootMatches)
+        case CompilerProductionContextPattern(
               pattern: (ContextPattern.ParentUnderAnchorThroughWithParent |
                 ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent),
               `sourceClassification`,
@@ -436,7 +450,8 @@ private[metallurgy] object CatalogShapeMatcher:
           scannerEvidenceMatches(scannerEvidence, scannerTokenKinds) && contextMatches(
             pattern,
             context,
-            ownedRootMatches
+            ownedRootMatches,
+            enabledCandidateRootMatches
           )
         case _ => false
       val specificity          = production.pattern.fields
@@ -513,7 +528,8 @@ private[metallurgy] object CatalogShapeMatcher:
     val scored  = matched.map: production =>
       val ownedRootSpecificity = production.pattern.occurrences.count:
         case CompilerProductionContextPattern(
-              ContextPattern.DescendantOfOwnedRoot(_) | _: ContextPattern.ParentUnderAnchorThroughWithParent |
+              ContextPattern.DescendantOfOwnedRoot(_) | ContextPattern.DescendantOfEnabledCandidateRoot(_) |
+              _: ContextPattern.ParentUnderAnchorThroughWithParent |
               _: ContextPattern.ParentWithoutNodeFieldPrefixUnderAnchorThroughWithParent,
               _,
               _

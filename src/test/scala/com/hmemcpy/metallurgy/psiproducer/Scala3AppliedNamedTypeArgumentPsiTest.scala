@@ -131,7 +131,7 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
     val copy    = file.copy()
 
     assertEquals("[A = Int]", PsiTreeUtil.findChildOfType(copy, classOf[MetallurgyTypeArguments]).getText)
-    val document = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    val document          = PsiDocumentManager.getInstance(getProject).getDocument(file)
     WriteCommandAction.runWriteCommandAction(
       getProject,
       new Runnable:
@@ -139,9 +139,25 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
           document.replaceString(source.indexOf("A = Int"), source.indexOf("A = Int") + 7, "Int")
     )
     PsiDocumentManager.getInstance(getProject).commitDocument(document)
-    assertEquals("make[Int]", pointer.getElement.getText)
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyTypeArguments]).isEmpty)
-    assertEquals("[Int]", PsiTreeUtil.findChildOfType(file, classOf[ScTypeArgs]).getText)
+    assertTrue(pointer.getElement == null)
+    val positionalFile    = PsiManager.getInstance(getProject).findFile(file.getVirtualFile)
+    val positionalGeneric = PsiTreeUtil.findChildrenOfType(positionalFile, classOf[ScGenericCall]).asScala.toVector
+    assertEquals(Vector("make[Int]"), positionalGeneric.map(_.getText))
+    assertEquals("make[Int]", positionalGeneric.head.getTextRange.substring(positionalFile.getText))
+    assertEquals("make", positionalGeneric.head.referencedExpr.getText)
+    assertEquals("[Int]", positionalGeneric.head.typeArgs.getText)
+    assertSame(positionalGeneric.head, positionalGeneric.head.referencedExpr.getParent)
+    assertSame(positionalGeneric.head, positionalGeneric.head.typeArgs.getParent)
+    assertEquals(
+      Vector(positionalGeneric.head.referencedExpr, positionalGeneric.head.typeArgs),
+      positionalGeneric.head.getChildren.toVector.collect {
+        case child: org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement => child
+      }
+    )
+    assertTrue(PsiTreeUtil.findChildrenOfType(positionalFile, classOf[MetallurgyTypeArguments]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(positionalFile, classOf[MetallurgyExpressionPayload]).isEmpty)
+    val positionalPointer =
+      SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(positionalGeneric.head)
 
     val positional = file.getText
     WriteCommandAction.runWriteCommandAction(
@@ -152,12 +168,18 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
           document.replaceString(start, start + 3, "A = String")
     )
     PsiDocumentManager.getInstance(getProject).commitDocument(document)
-    assertEquals("make[A = String]", pointer.getElement.getText)
+    assertTrue(positionalPointer.getElement == null)
+    val namedFile  = PsiManager.getInstance(getProject).findFile(file.getVirtualFile)
+    assertEquals(
+      Vector("make[A = String]"),
+      PsiTreeUtil.findChildrenOfType(namedFile, classOf[MetallurgyExpressionPayload]).asScala.map(_.getText).toVector
+    )
     assertEquals(
       "A = String",
-      PsiTreeUtil.findChildOfType(file, classOf[MetallurgyTypeArguments]).namedTypeArguments.head.getText
+      PsiTreeUtil.findChildOfType(namedFile, classOf[MetallurgyTypeArguments]).namedTypeArguments.head.getText
     )
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(namedFile, classOf[ScGenericCall]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(namedFile, classOf[PsiErrorElement]).isEmpty)
 
   def testNamedChildReplacementAndDeletionKeepThePhysicalListConsistent(): Unit =
     val source      =

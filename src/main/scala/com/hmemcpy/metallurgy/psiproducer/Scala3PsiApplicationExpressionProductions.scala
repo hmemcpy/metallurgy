@@ -234,7 +234,7 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
       InventoryKind.Node,
       "Apply",
       Vector(
-        CompilerFieldPattern("fun", CatalogValuePattern.Node),
+        CompilerFieldPattern("fun", CatalogValuePattern.NodeExceptPrefix("TypeApply")),
         CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
       ),
       DirectOccurrences ++ ChildOccurrences

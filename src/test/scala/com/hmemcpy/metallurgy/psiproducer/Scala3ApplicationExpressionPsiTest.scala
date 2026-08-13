@@ -224,7 +224,7 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
 
-  def testExcludedTypeApplicationsKeepOnePayloadAndTheirExistingTypeArgumentPsi(): Unit =
+  def testPositionalTypeApplicationsAreNativeWhileNamedApplicationsKeepOnePayload(): Unit =
     val source        =
       """import scala.language.experimental.namedTypeArguments
         |val positional = f[Int](x)
@@ -232,17 +232,24 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
         |val named = f[A = Int](x)
         |""".stripMargin
     val file          = physical("ApplicationTypeFallback.scala", source)
-    val expected      = Vector("f[Int](x)", "source.f[String](x)", "f[A = Int](x)")
     val payloads      = PsiTreeUtil
       .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
       .asScala
       .toVector
-      .filter(value => expected.contains(value.getText))
-      .sortBy(_.getTextRange.getStartOffset)
-    val typeArguments =
+      .filter(_.getText == "f[A = Int](x)")
+    val methodCalls   = PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).asScala.toVector
+    val genericCalls  = PsiTreeUtil.findChildrenOfType(file, classOf[ScGenericCall]).asScala.toVector
+    val typeArguments = genericCalls.map(_.typeArgs) ++
       payloads.flatMap(payload => PsiTreeUtil.findChildrenOfType(payload, classOf[ScTypeArgs]).asScala)
 
-    assertEquals(expected, payloads.map(_.getText))
+    assertEquals(Vector("f[A = Int](x)"), payloads.map(_.getText))
+    assertEquals(Vector("f[Int](x)", "source.f[String](x)"), methodCalls.map(_.getText))
+    assertEquals(Vector("f[Int]", "source.f[String]"), genericCalls.map(_.getText))
+    methodCalls
+      .zip(genericCalls)
+      .foreach: (methodCall, genericCall) =>
+        assertSame(genericCall, methodCall.getInvokedExpr)
+        assertSame(methodCall, methodCall.args.getParent)
     assertEquals(Vector("[Int]", "[String]", "[A = Int]"), typeArguments.map(_.getText))
     assertEquals(
       Vector("A = Int"),
@@ -251,10 +258,7 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
         .flatMap(_.namedTypeArguments)
         .map(_.getText)
     )
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScGenericCall]).isEmpty)
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScReferenceExpression]).isEmpty)
+    assertEquals(Vector("(x)", "(x)"), methodCalls.map(_.args.getText))
 
   def testConstructorSyntheticApplicationRemainsASeparateHardNegative(): Unit =
     val source  = "val value = new C(x)"

@@ -316,6 +316,7 @@ private[metallurgy] enum ContextPattern:
       anchor: InventoryAncestor
   )
   case DescendantOfOwnedRoot(routes: Vector[OwnedRootRoute])
+  case DescendantOfEnabledCandidateRoot(routes: Vector[OwnedRootRoute])
   case ParentUnderAnchorThroughWithParent(
       ownerKind: InventoryKind,
       ownerPrefix: String,
