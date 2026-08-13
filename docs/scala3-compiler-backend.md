@@ -5,7 +5,30 @@ must not define another data flow or ownership model.
 
 ## 1. Product contract
 
-For every opted-in Scala 3 module in an admitted compiler/host cell, Metallurgy:
+Metallurgy makes IntelliJ use the exact Scala 3 compiler that builds a project without giving up an editable IntelliJ
+source model. The Scala 3 compiler is called **dotc**. Its answers define whether Scala 3 code is valid and what that
+code means.
+
+Several terms recur in this document:
+
+- A **parser** reads source text and records its grammatical structure. Its result is a **syntax tree**: nested nodes
+  such as a definition, call, argument list, and name, each tied to an exact source range.
+- **PSI**, short for program structure interface, is IntelliJ's editable syntax tree. Editor features query and change
+  PSI rather than reading raw text directly.
+- **Semantic meaning** covers facts that syntax alone cannot answer, such as the type of an expression or the
+  declaration named by a reference.
+- **Physical ownership** means which component creates the one real PSI node that occupies a source range. Two
+  overlapping trees cannot both own the same text.
+- A **snapshot** is an immutable result for one exact source version and compiler session. Later edits make it stale.
+- A **capability probe** asks the running compiler or installed plugin what operations and PSI shapes it actually
+  provides. Artifact versions identify the environment but never choose behavior.
+- A **fallback** is a lower-priority provider used only when the preferred provider cannot answer one exact role.
+- An **opaque expression** is one PSI expression whose text is exact but whose internal expressions and punctuation
+  are not exposed as rich child PSI yet.
+- A **stub** is a compact saved summary of declarations. An **index** maps names and other keys from stubs to files so
+  IntelliJ can search without opening every file. A **reparse** rebuilds PSI after an edit.
+
+For every opted-in Scala 3 module in a supported compiler and IntelliJ host combination, Metallurgy:
 
 1. loads the module's exact Scala 3 compiler artifacts in isolation;
 2. parses each source file with that compiler's parser;
@@ -13,15 +36,16 @@ For every opted-in Scala 3 module in an admitted compiler/host cell, Metallurgy:
 4. derives deterministic stubs and indices from that tree;
 5. publishes one current-generation compiler semantic snapshot;
 6. supplies Scala 3 types, symbols, resolution, completion, navigation, and language diagnostics from that snapshot;
-7. preserves downstream editor semantics for valid declarations in broken upstream modules when the exact compiler
-   exposes best-effort TASTy production and consumption.
+7. preserves downstream editor meaning for valid declarations in broken upstream modules when the exact compiler
+   exposes best-effort TASTy, compiler data that retains usable declarations after a module fails to compile fully.
 
-The existing IntelliJ Scala 3 tests define the required PSI behavior for every compiler-valid fixture. Their Scala
+The existing IntelliJ Scala 3 tests define the required PSI behavior for every compiler-valid example. Their Scala
 source, executable assertions, and expected results remain unchanged. Dotc defines language validity and semantic
 meaning for the exact Scala version under test.
 
-Opt-in outside an admitted cell retains explicit capability states and fail-closed behavior. It does not extend the
-support promise to uncovered grammar, output roles, semantic contracts, or host bindings.
+Opt-in outside a supported combination retains explicit capability states. Unknown syntax stays neutral or opaque,
+and unknown semantic meaning stays unknown. Opt-in does not promise support for unseen grammar, PSI roles, semantic
+contracts, or host bindings.
 
 The central user-visible invariant is:
 
@@ -29,6 +53,78 @@ The central user-visible invariant is:
 
 No highlight filter, diagnostic suppression, bundled semantic fallback, feature allowlist, or test-specific behavior
 may be used to satisfy that invariant.
+
+### 1.1 From source text to editor answers
+
+The current pipeline has one physical source tree and a separate semantic snapshot:
+
+```text
+exact source text
+  -> exact dotc parser snapshot
+     (tree ranges, scanner tokens, comments, and parser diagnostics)
+  -> complete source evidence
+  -> reviewed production catalog and whole-file plan
+  -> one Metallurgy AST and PSI tree
+  -> stubs, indices, and editor features
+
+exact source text + classpath + compiler options
+  -> immutable dotc semantic snapshot
+  -> types, symbols, reference targets, completion, navigation, and diagnostics
+  -> mapped onto that same physical PSI tree
+```
+
+An **AST**, or abstract syntax tree, is IntelliJ's lower-level tree beneath PSI. The production catalog is a reviewed
+table that says how dotc parser shapes become IntelliJ PSI roles and who owns every source byte. The two paths meet by
+exact file identity, source ranges, document version, and compiler generation. Semantic work never changes syntax.
+
+The design admits providers in this strict order:
+
+1. use a current dotc answer and proven Metallurgy PSI;
+2. use a narrow Metallurgy family adapter where dotc does not expose enough concrete ownership evidence;
+3. only then consider a capability-probed installed Scala plugin fallback for that exact role.
+
+Today active modules use only the first two levels. Installed-plugin semantic fallback is not enabled. A current dotc
+reference result with no target means “no target.” Pending, missing, failed, unavailable, or stale dotc reference state
+means “unknown.” Neither case runs installed-plugin reference resolution. Inactive modules use the installed Scala
+plugin unchanged.
+
+### 1.2 Current expression coverage
+
+Metallurgy already creates structured PSI for these direct definition right-hand sides. Most listed roles use installed
+native PSI. Named type arguments use a small Metallurgy compatibility role because the installed plugin has no matching
+public role:
+
+- atomic references, literals, and `this` expressions;
+- selection chains such as `source.member.next`;
+- ordinary calls such as `f(x)` and nested or curried forms;
+- explicit `using` calls such as `f(using context)`;
+- positional and named type-argument lists inside an otherwise opaque expression.
+
+The last item is deliberately narrow. For example, `pair[A = Int](1, "text")` is one opaque expression with a rich
+`[A = Int]` child island. The pinned IntelliJ 261 Scala plugin has no public `ScTypeArgument` role for one named type
+argument, so Metallurgy supplies a small compatible child. It does not create an active `ScGenericCall` shell. A
+simple positional type-application shell has exact parser evidence and tests, but is not active yet.
+
+The following expression families are still opaque or blocked until their own bounded family work proves complete
+ownership: braced blocks; control flow, including end-marker forms; term named arguments; repeated or spliced
+arguments; the wider positional type-application and generic-call shell; tuples; lambdas and context functions; infix
+expressions; constructors and `new`; local definitions; default arguments; template parent applications; and
+definition bodies inside refinements. Parser probes or negative tests exist for these boundaries, but they are not
+active rich PSI support.
+
+For example:
+
+```scala
+val configured = open(path = root) // term named argument
+val computed = { val n = read(); n + 1 } // braced block
+```
+
+If Metallurgy cannot prove who owns every name, parenthesis, equals sign, comment, space, and recovery event, the whole
+right-hand side remains one exact-source expression payload. Dotc can still provide the type and other semantic facts
+for that range. Rich child PSI waits for the family adapter; the editor does not guess a tree.
+
+Missing tests are added with the bounded family that needs them. Broad speculative tests do not stand in for an
+implemented family contract.
 
 ## 2. Scope and activation
 
@@ -60,9 +156,9 @@ Compiler and host versions are artifact and diagnostic identities. They never se
 operations as executable capabilities.
 
 The baseline host is IntelliJ `261.26222.65` with Scala plugin `2026.1.20`; it is a development reference, not a
-semantic limit. Any published Scala 3 compiler is eligible for admission. A compiler/host cell is admitted only when
-its discovered parser and semantic inventories, output-role contracts, and host bindings are covered; acquiring
-artifacts and discovering callable capabilities alone do not admit unseen grammar or semantics.
+semantic limit. Any published Scala 3 compiler is eligible for support. A compiler and IntelliJ host combination is
+supported only when its discovered parser and semantic inventories, output-role contracts, and host bindings are
+covered; acquiring artifacts and discovering callable capabilities alone does not admit unseen grammar or semantics.
 
 ### 2.3 Capability states
 
@@ -77,6 +173,12 @@ Capabilities are independently observed. At minimum the system distinguishes:
 
 An optional capability cannot enable or disable another. In particular, best-effort TASTy availability never selects
 the source grammar or PSI shape.
+
+Runtime probes check callable methods, parser definitions, PSI element types, public accessors, and required tree
+shape. Their result includes a capability signature. The shadow witness returns `Unavailable` when a caller's expected
+signature differs. Before a capability-probed fallback becomes active, host change and restart must rebuild and check
+its prepared binding before it can emit PSI. A missing or conflicting probe result is `Unavailable`; it never selects
+behavior from a compiler or plugin version number.
 
 ## 3. Whole-file syntax architecture
 
@@ -250,9 +352,8 @@ isolated construct patches are not grammar mechanisms.
 ### 3.6 Native and compatible PSI
 
 The installed Scala plugin remains the public PSI vocabulary and an optional implementation provider. Physical syntax
-has this precedence: dotc-derived evidence and proven Metallurgy PSI, narrow Metallurgy adapters and verified
-partitioners, then a capability-probed Scala-plugin witness. Missing or conflicting evidence produces one opaque
-payload. It never selects a richer shape by guesswork.
+follows the precedence in section 1. Missing or conflicting evidence keeps the region as one opaque expression. It
+never selects a richer shape by guesswork.
 
 A file has one authoritative physical tree. Metallurgy may lower neutral witness facts into its own whole-file plan,
 but it never transplants, reparents, copies, or delegates to hidden Scala-plugin PSI or AST nodes. Stub and index roots
@@ -274,15 +375,20 @@ Each output role binds independently. When no native production satisfies its co
 coexist in one file. Consumers receive ordinary public IntelliJ and Scala PSI interfaces and cannot observe how a
 target was supplied.
 
-A transient physical-PSI witness may parse the complete exact source through ordinary installed `Scala3Language`.
-It selects one caller-supplied direct range, exports only immutable neutral roles, ranges, parent/child order, leaves,
-parser errors, reconstruction evidence, and a capability signature, then discards the synthetic file and tree. Its
-result is `Equal`, `Conflict`, or `Unavailable`. It does not choose a catalog production, planner result, emitted PSI,
-semantic answer, stub, index, or persistence identity. TASTy, SemanticDB, and dotc ranges may bound or confirm this
-evidence but do not own current-file concrete syntax.
+A transient **shadow witness** may parse the complete exact source through the installed plugin's ordinary Scala 3
+language. “Shadow” means the parse is read-only evidence, not another physical tree. A caller supplies one exact direct
+range. The bridge returns immutable neutral facts and then discards the synthetic file and its PSI:
 
-This package-internal proof of concept is on demand and remains unwired from the active parser, catalog, planner,
-services, and file lifecycle.
+- `Equal` means the witness roles, ranges, child order, and leaves satisfy their neutral contract, reconstruct the
+  dotc-bounded source exactly, and match the supplied dotc owner, right-hand-side, and named-argument ranges.
+- `Conflict` means witness evidence is missing, extra, or different, or a range, ownership, order, or resource bound is
+  invalid.
+- `Unavailable` means the required host parser shape, source freshness, or capability signature is absent.
+
+The witness never moves plugin AST or PSI nodes into the Metallurgy tree and never performs a semantic query. It is
+unwired from the active catalog, planner, emitter, file lifecycle, stubs, indices, and persistence. No active fallback
+or ownership cutover uses it today. A changed capability signature makes a request with an older expected signature
+unavailable. TASTy, SemanticDB, and dotc ranges may bound or confirm evidence but do not own current-file syntax.
 
 Raw Scala-plugin implementation access is confined to this bridge. Production consumers do not inspect plugin versions
 or implementation class names. Concrete implementation identities remain capability evidence behind the role binding;
@@ -316,12 +422,18 @@ For identical file content, catalog, compiler parser capability, and stub schema
 
 The same contract applies to cold parse, warm parse, closed files, copies, edits, reparse, restart, and index rebuild.
 
+Today one Metallurgy file root, one schema, and one ownership plan drive stubs and indices. The transient shadow
+witness does not participate in any of them. A future active fallback must prove the editor and lifecycle contracts
+that apply to its role. If a whole-file installed-plugin fallback is ever added, it is one atomic file state with its
+own persistence root. It is never mixed into a Metallurgy file or stub tree.
+
 ### 3.8 Invalid edits and unknown productions
 
 Invalid intermediate edits retain the exact source, parser diagnostics, and a structurally safe recovery tree described
 by the catalog. Recovery cannot claim that invalid code is compiler-valid.
 
-An unknown required production, output role, or binding in compiler-valid source fails closed:
+An unknown required production, output role, or binding in compiler-valid source stops before partial Scala PSI is
+published:
 
 - the file uses deterministic neutral file-scoped PSI;
 - no partial Scala tree, stub, or index is published;
@@ -389,6 +501,10 @@ For a query, the facade observes one state:
 Only Current supplies active Scala 3 semantics. Pending, Unavailable, Failed, Missing, and Stale return explicit unknown
 or not-ready values. They never invoke bundled Scala type inference, resolution, completion, or semantic diagnostics.
 Inactive executes the installed plugin unchanged.
+
+Reference resolution already enforces this order. A current target wins over an installed-plugin target. A current
+answer with no target stays empty. Every non-current active state returns unknown. Other semantic roles still require
+their own complete cutovers before any narrow installed-plugin fallback can be admitted.
 
 No synchronous PSI or editor query starts compiler work and waits.
 
@@ -577,11 +693,10 @@ structural implementations are private. They export neutral DTOs, capability res
 
 Consumers depend on public role interfaces, not adapter identities.
 
-Dotc is the ultimate semantic authority. A current dotc answer wins; pending, unavailable, stale, failed, or conflicting
-evidence remains explicit and cannot silently execute bundled semantics. The current bundled-result-first resolve path
-in `ScalaPluginSemanticBridge` and null fallthrough in `BundledCompilerBackendDispatcher` do not satisfy this rule and
-must be corrected before any Scala-plugin semantic fallback is admitted. The transient physical witness does not call
-either path.
+Dotc is the ultimate semantic authority. Reference resolution now enforces dotc-first precedence. A current dotc answer
+wins; current-no-target remains empty; and pending, unavailable, stale, failed, missing, or conflicting evidence stays
+unknown. A future role-specific installed-plugin fallback must be capability-probed and must not replace those states.
+The transient physical witness does not call semantic code.
 
 ### 8.3 Failure behavior
 
@@ -664,14 +779,53 @@ Ordinary checks use the baseline host and a representative exact-compiler select
 - representative pull-request Scala versions;
 - stable, EAP, and nightly IntelliJ/Scala-plugin hosts;
 - transitions where a production moves from compatibility PSI to native PSI;
-- every capable best-effort TASTy cell.
+- every combination that supports best-effort TASTy.
 
-Each cell records exact artifacts and options, parser and semantic capabilities, inventory coverage, output-role
-bindings, and retained lane evidence. Drift names the missing bridge normalization, grammar role, output role, semantic
-role, or compatibility binding. It never becomes a production version switch. An old Metallurgy binary does not claim
-support for arbitrary unseen future grammar.
+Each tested combination records exact artifacts and options, parser and semantic capabilities, inventory coverage,
+output-role bindings, and retained lane evidence. Drift names the missing bridge normalization, grammar role, output
+role, semantic role, or compatibility binding. It never becomes a production version switch. An old Metallurgy binary
+does not claim support for arbitrary unseen future grammar.
 
-### 9.5 Real projects
+### 9.5 Current boundary coverage
+
+The current tests distinguish evidence from active editor support:
+
+| Boundary | Evidence that exists now | Work still required for active rich PSI |
+| --- | --- | --- |
+| Atomic expressions and selections | Dotc parser probes, source reconstruction, physical PSI, accessor, edit, reparse, and persistence tests | Broader owner contexts are added with their family |
+| Ordinary and explicit `using` calls | Parser probes, native physical PSI, accessor, copy, pointer, edit, reparse, and opaque-boundary tests | Repeated/spliced and control-flow arguments remain separate families |
+| Positional type application | Exact `TypeApply` probe, source planning, type-argument island, and negative generic-shell tests | Active `ScGenericCall` shell plus full edit and persistence proof |
+| Named type arguments | Exact `NamedArg` probe, compatible child island, copied inference examples, edit and reparse tests | No native named-argument role exists in the pinned host; the generic-call shell stays inactive |
+| Term named arguments | Separate dotc parser-shape probe; shadow comparison of transient plugin PSI against caller-supplied ranges and neutral named-argument facts; malformed and stale controls | Independent dotc ownership mapping plus catalog, planner, emitter, accessor, edit, reparse, persistence, and navigation wiring |
+| Blocks, tuples, lambdas, infix, constructors, locals, defaults, parent applications, and applications inside refinements | Parser boundary probes, opaque payload tests, or explicit negative tests as appropriate | One bounded family at a time must add complete physical and lifecycle coverage |
+| Shadow bridge itself | Source freshness, host capability, bounds, internal ownership, exact reconstruction, conflict, and unavailable tests | It remains read-only and unwired; active use requires a separate ownership cutover |
+
+Copied upstream tests retain their original source and assertions. Focused suites check parser facts, source ownership,
+physical ranges and accessors, edits, reparse, stub bytes, indices, and navigation. Known red copied suites run with a
+parent baseline and a current control so an existing upstream or host failure is not mistaken for a new regression.
+Named deterministic lanes list every expected test invocation. Project lifecycle tests cover open, indexing, reopen,
+and parser preparation. Focused bridge tests cover capability-signature mismatch. An active fallback still needs
+host-upgrade and restart invalidation tests before cutover.
+
+### 9.6 Troubleshooting visible states
+
+Users and maintainers should expect these outcomes:
+
+| State | What the editor shows | What to inspect |
+| --- | --- | --- |
+| Parser preparing | Verbatim neutral text; Scala PSI features are not active yet | Artifact acquisition and parser capability preparation |
+| Parser unavailable | Verbatim neutral text and a capability report | Missing parser method, definition, element type, or host shape |
+| Shadow conflict | No runtime change, because the witness is read-only | The readable role, range, child, leaf, reconstruction, or ownership differences |
+| Opaque expression | Exact source in one expression node; dotc semantic facts may still be available | The blocked expression family and its missing partition or PSI role |
+| Semantic pending or stale | The affected active role returns unknown | Document version, source digest, session, classpath, options, and module generations |
+| Current semantic result with no reference target | Navigation returns no target | The current dotc occurrence and symbol mapping, not installed-plugin resolution |
+| Inactive module | Normal installed Scala plugin behavior | The Metallurgy module opt-in gate |
+
+Reports separate four causes: a dotc parser-evidence gap, host capability drift, semantic snapshot state, and a source
+ownership conflict. They name the affected role and readable ranges or shapes. Known baseline test failures remain in
+their parent-versus-current controls instead of being relabeled as capability failures.
+
+### 9.7 Real projects
 
 Pinned offline slices run in ordinary CI. Scheduled source-wide and live sbt/BSP lanes cover six release-aligned
 projects, including Cats Effect, FS2, and Shapeless-style type-level machinery.

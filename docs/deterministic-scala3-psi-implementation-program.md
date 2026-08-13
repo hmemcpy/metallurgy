@@ -3,11 +3,12 @@
 ## Destination
 
 Metallurgy synchronously produces one complete, source-compatible Scala PSI tree from the exact Scala 3 compiler
-parser for every active Scala 3 file in an admitted compiler/host cell. The compiler exclusively supplies Scala 3
-types, symbols, resolve, completion, navigation, and language diagnostics. Every compiler-valid copied IntelliJ Scala
-3 test retains its source, assertions, and expected output unchanged. Broken upstream modules preserve correct
-downstream highlighting through capability-discovered best-effort TASTy. Active files outside an admitted cell fail
-closed; opt-in does not extend the support promise to arbitrary unseen future grammar.
+parser for every active Scala 3 file in a supported compiler and IntelliJ host combination. The compiler exclusively
+supplies Scala 3 types, symbols, resolve, completion, navigation, and language diagnostics. Every compiler-valid copied
+IntelliJ Scala 3 test retains its source, assertions, and expected output unchanged. Broken upstream modules preserve
+correct downstream highlighting through capability-discovered best-effort TASTy. Active files outside a supported
+combination keep unknown syntax neutral or opaque and return unknown semantic answers; opt-in does not extend the
+support promise to arbitrary unseen future grammar.
 
 The implementation does not retain a compatibility rollout. New components may be exercised directly before they are
 registered, but each active ownership boundary changes atomically and deletes the implementation it replaces.
@@ -25,8 +26,8 @@ registered, but each active ownership boundary changes atomically and deletes th
    emission.
 4. A typed production catalog accounts for every compiler production, source range, public Scala PSI accessor, stub,
    and index obligation.
-5. Unknown required compiler-valid syntax fails closed to neutral file-scoped PSI and a project capability report. It
-   never falls through to the bundled Scala parser.
+5. Unknown required compiler-valid syntax stays as neutral file-scoped PSI with a project capability report. It never
+   falls through to the installed Scala parser.
 6. Active, ready Scala 3 modules use compiler semantics exclusively. Pending, unavailable, failed, missing, and stale
    generations are explicit unknown states, never invitations to bundled type inference.
 7. Dotc language errors and warnings remain visible. IDE-only inspections remain only when their ownership is
@@ -43,7 +44,8 @@ registered, but each active ownership boundary changes atomically and deletes th
     implementation. Native and compatible roles may coexist in one file without observable contract differences.
 13. A newly published compiler with covered inventories and semantic contracts admits without production-code
     changes. Novel drift identifies bridge, role, or compatibility work and never selects behavior by version. The
-    declared support promise covers admitted compiler/host cells, not arbitrary unseen future grammar.
+    declared support promise covers supported compiler and IntelliJ host combinations, not arbitrary unseen future
+    grammar.
 
 ## Dependency graph
 
@@ -75,17 +77,23 @@ never invokes the bundled Scala parser or lexer. Editor coloring uses the instal
 does not construct PSI. `Scala3SyntaxCapabilityService` retains exact file-scoped failure stage, detail, source digest,
 parser preparation epoch, and compiler identity when a required production is unavailable.
 
-The reviewed catalog currently owns file/package roots and the supported top-level import and export families:
-arbitrary finite stable `Select`/`Ident` paths, direct and braced selectors, aliases, wildcard, unbounded `given`, and
-bounded `given` with simple/applied, qualified, wildcard-bound, and infix/union/intersection types, plus
-ordinary/operator/Unicode/quoted names. Package clauses cover unbraced, chained, nested, sibling, braced, and
-colon-indented forms with matching package end markers and supported import/export children. Imports and exports have
-independent statement grammar and output roles while sharing import-expression, selector, and stable-reference
-descendants. Their local output-composite forests own exact physical evidence and fulfill native accessors, navigation,
-stubs, serializers, the aliased-selector index, and the top-level export package index. Template, extension,
-local-block, definitions/expressions/patterns, and unrelated type grammar remain unavailable and fail closed.
-Native bindings execute their public PSI and persistence contracts before activation. All other grammar families
-remain unavailable and therefore produce deterministic neutral file-scoped PSI.
+The reviewed catalog now owns file and package roots; imports and exports; templates and common definitions; broad
+type syntax; direct atomic expressions and selections; ordinary calls; explicit `using` calls; and positional or named
+type-argument islands inside opaque expressions. Native bindings execute their public PSI and persistence contracts
+before activation. Named type arguments use a compatible child because the pinned IntelliJ 261 host has no
+`ScTypeArgument`; they do not create an active native generic-call shell. The simple positional `TypeApply` shell has
+exact evidence but remains inactive.
+
+Expression blocks, control-flow end-marker forms, term named arguments, repeated or spliced arguments, the wider
+generic-call shell, tuples, lambdas and context functions, infix expressions, constructors, locals, defaults, template
+parent applications, and refinement definition bodies remain opaque or unavailable according to their reviewed
+boundary. Their parser probes, negative tests, or shadow comparison are evidence, not active PSI support.
+
+The installed Scala plugin's ordinary Scala 3 parser can run only as an on-demand, nonphysical shadow witness for one
+caller-supplied direct range. It returns neutral `Equal`, `Conflict`, or `Unavailable` facts and is not wired to the
+catalog, planner, emitter, semantics, services, file lifecycle, stubs, indices, or persistence. Reference resolution
+now gives current dotc results strict precedence: current-no-target stays empty and every non-current active state
+returns unknown. Role-specific plugin semantic fallback is not enabled.
 
 The active semantic foundation consists of exact artifact/session management, immutable versioned snapshots,
 compiler-type conversion, symbol occurrence mapping, completion integration, diagnostics, and best-effort TASTy
@@ -96,6 +104,10 @@ Deterministic lane execution, copied-test provenance/invocation accounting, pars
 lifecycle tests, two-module best-effort controls, and IntelliJ lifecycle automation are active infrastructure. Full
 grammar coverage, complete copied-suite execution, source-wide representative-project IDE lanes, moving compiler/host
 matrices, and resource budgets remain graduation requirements.
+
+Issue #128 describes a future adapter: a small compatibility layer compiled against the exact dotc parser. That work
+remains deferred until issue #85 closes. The current shadow witness compares installed-plugin physical evidence only.
+It does not start, run beside, or change that parser-adapter migration.
 
 ## Change sequence
 
@@ -271,7 +283,7 @@ Generate a closed whole-file production plan before touching `PsiBuilder`. The v
 fields, unreachable PSI requirements, overlapping ownership, or incomplete stub/index accounting.
 
 **Gate:** the compiler and Scala PSI inventories are reproducible, stable output roles are distinct from native
-implementation identities, and the catalog validator fails closed for every unaccounted production or unbound role.
+implementation identities, and the catalog validator rejects every unaccounted production or unbound role.
 
 ### 11. Add PSI and stub factories
 
@@ -450,8 +462,8 @@ Completion requires all of the following:
 - every compiler artifact in the declared rolling support matrix passes the baseline parser and semantic capability
   contract;
 - newly published artifacts with covered inventories and contracts admit without production-code changes;
-- deliberate parser, semantic, and host drift fails closed and identifies the missing bridge, grammar role, output
-  role, semantic role, or compatibility binding;
+- deliberate parser, semantic, and host drift makes the affected capability unavailable and identifies the missing
+  bridge, grammar role, output role, semantic role, or compatibility binding;
 - representative pull-request Scala versions and stable/EAP/nightly hosts pass their applicable roles;
 - all pinned real-project offline slices pass;
 - exhaustive source-wide and live sbt/BSP real-project lanes pass;

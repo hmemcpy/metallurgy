@@ -1,10 +1,12 @@
 # Metallurgy
 
 Metallurgy is an experimental IntelliJ plugin for Scala 3. Its goal is for IntelliJ to understand a project through
-the same dotc compiler version that builds it.
+the same Scala 3 compiler that builds it. That compiler is called **dotc**.
 
-Metallurgy generates IntelliJ PSI based on dotc trees. PSI is IntelliJ's internal model of source code. IntelliJ uses
-that model to power features such as navigation, completion, refactoring, and error reporting.
+Metallurgy turns dotc's view of the source into one editable IntelliJ program structure interface (**PSI**) tree. PSI
+is IntelliJ's internal model of a source file. The editor uses it for navigation, completion, refactoring, and error
+reporting. Dotc also supplies exact types, symbols, and errors. The installed Scala plugin remains available only for
+editor features that Metallurgy has not yet replaced, but it never overrides an available dotc result.
 
 ## Why
 
@@ -36,6 +38,6 @@ limits of what has been verified.
 ## Learn more
 
 - [Contributing](CONTRIBUTING.md)
-- [Architecture and reference](docs/scala3-compiler-backend.md)
+- [Architecture, current coverage, and troubleshooting](docs/scala3-compiler-backend.md)
 - [Implementation program](docs/deterministic-scala3-psi-implementation-program.md)
 - [Apache License 2.0](LICENSE)
