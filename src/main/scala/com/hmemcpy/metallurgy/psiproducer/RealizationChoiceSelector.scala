@@ -2,6 +2,7 @@ package com.hmemcpy.metallurgy.psiproducer
 
 private[metallurgy] enum RealizationChoiceFailure:
   case InvalidDeclaration(productionId: String, reason: String)
+  case CandidateEvidence(productionId: String, reason: String)
   case CandidateDefect(productionId: String, realizationId: String, defect: CandidateRealizationDefect)
 
 private[metallurgy] enum CandidateRealizationDefect:
@@ -59,7 +60,7 @@ private[metallurgy] object RealizationChoiceSelector:
   ): Either[RealizationChoiceFailure, SelectedRealization] =
     production.realizationChoice match
       case None         => selectOrdinary(production, ordinaryMatches)
-      case Some(choice) => selectDeclared(production, choice, candidateAssessment)
+      case Some(choice) => selectDeclared(production, choice, ordinaryMatches, candidateAssessment)
 
   private def selectOrdinary(
       production: Scala3PsiProduction,
@@ -80,20 +81,37 @@ private[metallurgy] object RealizationChoiceSelector:
   private def selectDeclared(
       production: Scala3PsiProduction,
       choice: RealizationChoice,
+      ordinaryMatches: Vector[OutputRealization],
       candidateAssessment: OutputRealization => Either[CandidateRealizationDefect, Vector[CandidateInapplicability]]
   ): Either[RealizationChoiceFailure, SelectedRealization] =
-    val byId = production.effectiveOutputRealizations.groupBy(_.id)
-    (byId.get(choice.candidateId), byId.get(choice.fallbackId)) match
-      case (Some(Vector(candidate)), Some(Vector(fallback))) if byId.size == 2 =>
-        candidateAssessment(candidate).left
-          .map(reason => RealizationChoiceFailure.CandidateDefect(production.id, candidate.id, reason))
-          .map:
-            case Vector() => SelectedRealization(candidate, RealizationSelectionReason.PreferredCandidate)
-            case reasons  => SelectedRealization(fallback, RealizationSelectionReason.CompleteFallback(reasons))
-      case _                                                                   =>
-        Left(
-          RealizationChoiceFailure.InvalidDeclaration(
-            production.id,
-            "declared choice must name exactly one candidate and one fallback and no other realizations"
-          )
+    val byId               = production.effectiveOutputRealizations.groupBy(_.id)
+    val declaredIds        = choice.candidateIds.toSet + choice.fallbackId
+    val matchingCandidates = choice.candidateIds.flatMap(id => ordinaryMatches.find(_.id == id))
+    if choice.candidateIds.isEmpty || choice.candidateIds.distinct.size != choice.candidateIds.size ||
+      choice.candidateIds.contains(choice.fallbackId) || byId.keySet != declaredIds ||
+      declaredIds.exists(id => !byId.get(id).exists(_.size == 1))
+    then
+      Left(
+        RealizationChoiceFailure.InvalidDeclaration(
+          production.id,
+          "declared choice must name ordered unique candidates and exactly one distinct fallback"
         )
+      )
+    else
+      matchingCandidates match
+        case Vector(candidate) =>
+          val fallback = byId(choice.fallbackId).head
+          candidateAssessment(candidate).left
+            .map(reason => RealizationChoiceFailure.CandidateDefect(production.id, candidate.id, reason))
+            .map:
+              case Vector() => SelectedRealization(candidate, RealizationSelectionReason.PreferredCandidate)
+              case reasons  => SelectedRealization(fallback, RealizationSelectionReason.CompleteFallback(reasons))
+        case Vector()          =>
+          Left(RealizationChoiceFailure.CandidateEvidence(production.id, "no declared native candidate matches"))
+        case values            =>
+          Left(
+            RealizationChoiceFailure.CandidateEvidence(
+              production.id,
+              s"declared native candidates overlap: ${values.map(_.id).mkString(", ")}"
+            )
+          )

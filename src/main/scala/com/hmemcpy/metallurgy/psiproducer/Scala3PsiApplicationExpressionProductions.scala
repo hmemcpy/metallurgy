@@ -8,8 +8,9 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
   val CandidateProductionId = "ordinary-application-candidate"
   val FallbackProductionId  = "definition-payload-apply"
 
-  private val CandidateRealization = "ordinary-application-native"
-  private val FallbackRealization  = "ordinary-application-payload"
+  private val OrdinaryCandidateRealization = "ordinary-application-native"
+  private val UsingCandidateRealization    = "explicit-using-application-native"
+  private val FallbackRealization          = "ordinary-application-payload"
 
   private val DirectOccurrences = Vector("DefDef", "ValDef").flatMap: owner =>
     Vector("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
@@ -165,6 +166,46 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
   )
 
   private val NativeTerminalIds = Set("left-parenthesis", "right-parenthesis", "commas", "separator-evidence")
+  private val UsingTerminalIds  =
+    NativeTerminalIds ++ Set("using-keyword", "using-prefix-evidence", "using-suffix-evidence")
+
+  private def nativeApplicationTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "method-call",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.MethodCall,
+        MethodCallSurface,
+        MethodCallAccessors
+      ),
+      outputComposite(
+        "arguments",
+        Some("method-call"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary.NextScannerTokenStartAfterChild(
+            "callee",
+            ChildOccurrenceSelector.First,
+            ParserScannerTokenKind.LeftParenthesis,
+            PositionProvenancePolicy.SourceDerivedOnly
+          ),
+          OutputBoundary.ProductionEnd()
+        ),
+        PsiOutputRoleId.ArgumentExpressions,
+        ArgumentExpressionsSurface,
+        ArgumentExpressionsAccessors
+      )
+    ),
+    Map("callee" -> Some("method-call"), "arguments" -> Some("arguments"))
+  )
+
+  private def nativeChildRoots = Vector(
+    RequiredChildRootOutcome("callee", ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(CalleeRoles))),
+    RequiredChildRootOutcome(
+      "arguments",
+      ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(ArgumentRoles))
+    )
+  )
 
   private def balancedToken(
       id: String,
@@ -249,6 +290,42 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
         PsiOutputRoleId.SourceTerminal
       ),
       TerminalDeclaration(
+        "using-keyword",
+        TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(
+          ClosedSourceLexicalKind.LeftParenthesis,
+          ClosedSourceLexicalKind.RightParenthesis,
+          "callee",
+          "arguments"
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.UsingKeywordTokenSurface),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "using-prefix-evidence",
+        TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(
+          ClosedSourceLexicalKind.LeftParenthesis,
+          "callee",
+          "arguments"
+        ),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "using-suffix-evidence",
+        TerminalIntervalSelector.BalancedSuffixAfterLastChild(
+          ClosedSourceLexicalKind.LeftParenthesis,
+          ClosedSourceLexicalKind.RightParenthesis,
+          "callee",
+          "arguments"
+        ),
+        TerminalLeafTarget.Trivia,
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
         "payload",
         TerminalIntervalSelector.WholeProduction,
         TerminalLeafTarget.Parent,
@@ -265,51 +342,30 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
     navigation = Some(NavigationObligation.Self),
     outputRealizations = Vector(
       OutputRealization(
-        CandidateRealization,
+        OrdinaryCandidateRealization,
         Vector.empty,
-        LocalOutputCompositeTemplate(
-          Vector(
-            outputComposite(
-              "method-call",
-              None,
-              OutputRangeDeclaration.CompilerPosition,
-              PsiOutputRoleId.MethodCall,
-              MethodCallSurface,
-              MethodCallAccessors
-            ),
-            outputComposite(
-              "arguments",
-              Some("method-call"),
-              OutputRangeDeclaration.BoundaryDerived(
-                OutputBoundary.NextScannerTokenStartAfterChild(
-                  "callee",
-                  ChildOccurrenceSelector.First,
-                  ParserScannerTokenKind.LeftParenthesis,
-                  PositionProvenancePolicy.SourceDerivedOnly
-                ),
-                OutputBoundary.ProductionEnd()
-              ),
-              PsiOutputRoleId.ArgumentExpressions,
-              ArgumentExpressionsSurface,
-              ArgumentExpressionsAccessors
-            )
-          ),
-          Map("callee" -> Some("method-call"), "arguments" -> Some("arguments"))
-        ),
+        nativeApplicationTemplate,
         evidenceConditions = Vector(
           EvidenceCondition.RootAttachment(
             AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
             present = false
           )
         ),
-        requiredChildRoots = Vector(
-          RequiredChildRootOutcome("callee", ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(CalleeRoles))),
-          RequiredChildRootOutcome(
-            "arguments",
-            ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(ArgumentRoles))
+        requiredChildRoots = nativeChildRoots,
+        terminalIds = Some(NativeTerminalIds)
+      ),
+      OutputRealization(
+        UsingCandidateRealization,
+        Vector.empty,
+        nativeApplicationTemplate,
+        evidenceConditions = Vector(
+          EvidenceCondition.RootAttachment(
+            AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
+            present = true
           )
         ),
-        terminalIds = Some(NativeTerminalIds)
+        requiredChildRoots = nativeChildRoots,
+        terminalIds = Some(UsingTerminalIds)
       ),
       OutputRealization(
         FallbackRealization,
@@ -328,12 +384,6 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
           ),
           Map("callee" -> Some("payload"), "arguments" -> None)
         ),
-        evidenceConditions = Vector(
-          EvidenceCondition.RootAttachment(
-            AttachmentEvidence("KindOfApply", ParserAttachmentValue.Product("Using")),
-            present = true
-          )
-        ),
         childClosureAbsorptions = Vector(
           ChildClosureAbsorption(
             "callee",
@@ -346,7 +396,9 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
       )
     ),
     outputRoleId = None,
-    realizationChoice = Some(RealizationChoice(CandidateRealization, FallbackRealization))
+    realizationChoice = Some(
+      RealizationChoice(Vector(OrdinaryCandidateRealization, UsingCandidateRealization), FallbackRealization)
+    )
   )
 
   val ApplicationExpressionSegment: Vector[Scala3PsiProduction] = Vector(Application)

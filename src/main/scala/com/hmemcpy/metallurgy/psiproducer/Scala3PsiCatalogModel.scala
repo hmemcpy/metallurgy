@@ -141,6 +141,23 @@ private[metallurgy] enum TerminalIntervalSelector:
       roleId: String,
       occurrence: ScannerTokenOccurrence
   )
+  case BalancedKeywordBeforeFirstChild(
+      opening: ClosedSourceLexicalKind,
+      closing: ClosedSourceLexicalKind,
+      precedingRoleId: String,
+      childRoleId: String
+  )
+  case BalancedPrefixBeforeFirstChild(
+      opening: ClosedSourceLexicalKind,
+      precedingRoleId: String,
+      childRoleId: String
+  )
+  case BalancedSuffixAfterLastChild(
+      opening: ClosedSourceLexicalKind,
+      closing: ClosedSourceLexicalKind,
+      precedingRoleId: String,
+      childRoleId: String
+  )
   case LocalOutput(outputId: String)
   case RootOutsideLocalOutput(outputId: String)
   case WholeProduction, WholeSource
@@ -778,7 +795,7 @@ private[metallurgy] final case class RequiredChildRootOutcome(
     roleId: String,
     rootOutcome: ChildRootOutcome
 )
-private[metallurgy] final case class RealizationChoice(candidateId: String, fallbackId: String)
+private[metallurgy] final case class RealizationChoice(candidateIds: Vector[String], fallbackId: String)
 private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)

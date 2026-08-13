@@ -3,7 +3,7 @@ package com.hmemcpy.metallurgy.psiproducer
 import com.intellij.lexer.LexerBase
 import com.intellij.psi.TokenType
 import com.intellij.psi.tree.IElementType
-import org.jetbrains.plugins.scala.lang.lexer.{ScalaKeywordTokenType, ScalaTokenTypes}
+import org.jetbrains.plugins.scala.lang.lexer.{ScalaKeywordTokenType, ScalaTokenType, ScalaTokenTypes}
 
 private[psiproducer] final class PlannedScala3Lexer private (
     compiled: Option[PlannedScala3Lexer.Compiled]
@@ -42,14 +42,26 @@ private[psiproducer] enum LexerPlanFailure:
   case OverlappingTargetRanges(firstStart: Int, firstEnd: Int, secondStart: Int, secondEnd: Int)
   case UnsupportedTargetSurface(surfaceId: String)
 
-private object PlannedScala3Lexer:
+private[psiproducer] object PlannedScala3Lexer:
   private final case class Token(start: Int, end: Int, elementType: IElementType)
   private final case class Compiled(source: String, tokens: Vector[Token])
 
-  private val KeywordTypesByText = ScalaTokenTypes.KEYWORDS.getTypes.iterator
-    .collect:
-      case token: ScalaKeywordTokenType => token.keywordText -> token
-    .toMap
+  private val KeywordTypesByText =
+    (ScalaTokenTypes.KEYWORDS.getTypes ++ ScalaTokenTypes.SOFT_KEYWORDS.getTypes).iterator
+      .collect:
+        case token: ScalaKeywordTokenType => token.keywordText -> token
+      .toMap
+
+  private val KeywordTypesBySurface = Map(
+    NativePsiElementBindings.UsingKeywordTokenSurface -> ScalaTokenType.UsingKeyword
+  )
+
+  def keywordTokenType(source: String, atom: ClosedSourceLexicalAtom): Option[IElementType] =
+    Option
+      .when(atom.kind == ClosedSourceLexicalKind.Identifier)(source.substring(atom.start, atom.end))
+      .flatMap(KeywordTypesByText.get)
+
+  def keywordTokenType(surfaceId: String): Option[IElementType] = KeywordTypesBySurface.get(surfaceId)
 
   def closed: PlannedScala3Lexer = new PlannedScala3Lexer(None)
 

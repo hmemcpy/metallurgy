@@ -2077,7 +2077,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           production: Scala3PsiProduction,
           terminal: TerminalDeclaration
       ): Vector[PcSourceRange] = terminal.selector match
-        case TerminalIntervalSelector.WholeSource if instance != root                                =>
+        case TerminalIntervalSelector.WholeSource if instance != root                                       =>
           break(
             Left(
               WholeFilePlanningFailure.UnsupportedTerminalSelector(
@@ -2087,13 +2087,13 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-        case TerminalIntervalSelector.WholeSource                                                    =>
+        case TerminalIntervalSelector.WholeSource                                                           =>
           Vector(PcSourceRange(0, snapshot.sourceLength))
-        case TerminalIntervalSelector.LocalOutput(outputId)                                          =>
+        case TerminalIntervalSelector.LocalOutput(outputId)                                                 =>
           outputRows
             .getOrElse(instance, Vector.empty)
             .collect { case (declaration, _, range) if declaration.id == outputId => range }
-        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)                               =>
+        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)                                      =>
           if instance != root then Vector.empty
           else
             outputRows
@@ -2104,17 +2104,17 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Vector(PcSourceRange(0, range.startOffset), PcSourceRange(range.endOffset, snapshot.sourceLength))
                   .filter(value => value.startOffset < value.endOffset)
               )
-        case TerminalIntervalSelector.WholeProduction                                                =>
+        case TerminalIntervalSelector.WholeProduction                                                       =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                 if range.startOffset < range.endOffset =>
               Vector(range)
             case _ => Vector.empty
-        case TerminalIntervalSelector.ChildGap(startRole, endRole)                                   =>
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)                                          =>
           childGapIntervals(instance, startRole, endRole)
-        case TerminalIntervalSelector.ChildSeparators(roleId)                                        =>
+        case TerminalIntervalSelector.ChildSeparators(roleId)                                               =>
           childSeparatorIntervals(instance, roleId)
-        case TerminalIntervalSelector.BeforeChild(roleId)                                            =>
+        case TerminalIntervalSelector.BeforeChild(roleId)                                                   =>
           (
             position(instance),
             compilerChildren.getOrElse(instance, Vector.empty).collectFirst { case (`roleId`, _, child) =>
@@ -2127,7 +2127,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if parent.startOffset <= child.startOffset =>
               Vector(PcSourceRange(parent.startOffset, child.startOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.AfterChild(roleId)                                             =>
+        case TerminalIntervalSelector.AfterChild(roleId)                                                    =>
           (
             position(instance),
             compilerChildren
@@ -2141,19 +2141,19 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if child.endOffset <= parent.endOffset =>
               Vector(PcSourceRange(child.endOffset, parent.endOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.BeforeChildOutputs(roleId)                                     =>
+        case TerminalIntervalSelector.BeforeChildOutputs(roleId)                                            =>
           val outputs = childOutputRanges(instance, roleId)
           position(instance) match
             case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
               Vector(PcSourceRange(parent.startOffset, outputs.head.startOffset))
             case _                                                                                             => Vector.empty
-        case TerminalIntervalSelector.ChildOutputGap(startRole, endRole)                             =>
+        case TerminalIntervalSelector.ChildOutputGap(startRole, endRole)                                    =>
           val starts = childOutputRanges(instance, startRole)
           val ends   = childOutputRanges(instance, endRole)
           if starts.last.endOffset <= ends.head.startOffset then
             Vector(PcSourceRange(starts.last.endOffset, ends.head.startOffset))
           else Vector.empty
-        case TerminalIntervalSelector.ChildOutputSeparators(roleId)                                  =>
+        case TerminalIntervalSelector.ChildOutputSeparators(roleId)                                         =>
           if compilerChildren.getOrElse(instance, Vector.empty).exists(_._1 == roleId) then
             childOutputRanges(instance, roleId, requireOutput = false)
               .sliding(2)
@@ -2161,9 +2161,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case Vector(left, right) => PcSourceRange(left.endOffset, right.startOffset)
               .toVector
           else Vector.empty
-        case TerminalIntervalSelector.CompilerEndMarkerKeyword                                       =>
+        case TerminalIntervalSelector.CompilerEndMarkerKeyword                                              =>
           compilerEndMarker(instance).map(_._2).toVector
-        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence)                         =>
+        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence)                                =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, _) =>
               val matches = snapshot.scannerTokens
@@ -2176,7 +2176,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case ScannerTokenOccurrence.First => matches.headOption.toVector
                 case ScannerTokenOccurrence.Last  => matches.lastOption.toVector
             case _                                          => Vector.empty
-        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)           =>
+        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)                  =>
           val outputs = childOutputRanges(instance, roleId)
           position(instance) match
             case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
@@ -2187,14 +2187,14 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
                 .map(_.range)
             case _                                                                                             => Vector.empty
-        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, startRole, endRole)       =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, startRole, endRole)              =>
           childGapIntervals(instance, startRole, endRole).flatMap: gap =>
             snapshot.scannerTokens
               .filter(token =>
                 token.kind == kind && gap.startOffset <= token.range.startOffset && token.range.endOffset <= gap.endOffset
               )
               .map(_.range)
-        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(kind, startRole, endRole) =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(kind, startRole, endRole)        =>
           val starts = childOutputRanges(instance, startRole)
           val ends   = childOutputRanges(instance, endRole)
           if starts.last.endOffset <= ends.head.startOffset then
@@ -2243,7 +2243,117 @@ private[metallurgy] object WholeFileProductionPlanner:
                   case ScannerTokenOccurrence.First => values.headOption.toVector
                   case ScannerTokenOccurrence.Last  => values.lastOption.toVector
             case _                                                          => Vector.empty
-        case other                                                                                   =>
+        case TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(
+              opening,
+              closing,
+              precedingRoleId,
+              childRoleId
+            ) =>
+          val precedingEnd    = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`precedingRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.endOffset }
+          val firstChildStart = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`childRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.startOffset }
+          val targetSurface   = terminal.target match
+            case TerminalLeafTarget.Token(surfaceId, None) => Some(surfaceId)
+            case _                                         => None
+          (position(instance), precedingEnd, firstChildStart, targetSurface) match
+            case (
+                  ParserNodePosition.Positioned(parent, _, ParserPositionProvenance.SourceDerived),
+                  Some(after),
+                  Some(before),
+                  Some(surfaceId)
+                ) =>
+              val atoms        = lexicalAtomsWithin(parent).filter(atom => after <= atom.start && atom.end <= before)
+              val openingIndex = atoms.indexWhere(_.kind == opening)
+              val targetType   = PlannedScala3Lexer.keywordTokenType(surfaceId)
+              if openingIndex < 0 || targetType.isEmpty then Vector.empty
+              else
+                var depth   = 0
+                var closed  = false
+                val matches = Vector.newBuilder[PcSourceRange]
+                atoms
+                  .drop(openingIndex)
+                  .iterator
+                  .takeWhile(_ => !closed)
+                  .foreach: atom =>
+                    if atom.kind == opening then depth += 1
+                    if depth == 1 && PlannedScala3Lexer.keywordTokenType(snapshot.sourceText, atom) == targetType then
+                      matches += PcSourceRange(atom.start, atom.end)
+                    if atom.kind == closing then
+                      depth -= 1
+                      closed = depth == 0
+                val values  = matches.result()
+                if closed || values.size != 1 then Vector.empty else values
+            case _ => Vector.empty
+        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(opening, precedingRoleId, childRoleId) =>
+          val precedingEnd    = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`precedingRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.endOffset }
+          val firstChildStart = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`childRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.startOffset }
+          (position(instance), precedingEnd, firstChildStart) match
+            case (
+                  ParserNodePosition.Positioned(parent, _, ParserPositionProvenance.SourceDerived),
+                  Some(after),
+                  Some(before)
+                ) =>
+              lexicalAtomsWithin(parent)
+                .find(atom => atom.start >= after && atom.kind == opening)
+                .filter(_.end <= before)
+                .map(open => PcSourceRange(open.end, before))
+                .filter(range => range.startOffset < range.endOffset)
+                .toVector
+            case _ => Vector.empty
+        case TerminalIntervalSelector.BalancedSuffixAfterLastChild(
+              opening,
+              closing,
+              precedingRoleId,
+              childRoleId
+            ) =>
+          val precedingEnd = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`precedingRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.endOffset }
+          val lastChildEnd = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .reverseIterator
+            .collectFirst { case (`childRoleId`, _, child) => position(child) }
+            .collect { case ParserNodePosition.Positioned(range, _, _) => range.endOffset }
+          (position(instance), precedingEnd, lastChildEnd) match
+            case (
+                  ParserNodePosition.Positioned(parent, _, ParserPositionProvenance.SourceDerived),
+                  Some(before),
+                  Some(after)
+                ) =>
+              val atoms         = lexicalAtomsWithin(parent)
+              val openingIndex  = atoms.indexWhere(atom => atom.start >= before && atom.kind == opening)
+              val matchingClose =
+                if openingIndex < 0 then None
+                else
+                  var depth = 0
+                  atoms
+                    .drop(openingIndex)
+                    .iterator
+                    .map: atom =>
+                      if atom.kind == opening then depth += 1
+                      if atom.kind == closing then depth -= 1
+                      atom -> depth
+                    .find((atom, depth) => atom.kind == closing && depth == 0)
+                    .map(_._1)
+              matchingClose
+                .filter(_.end == parent.endOffset)
+                .map(close => PcSourceRange(after, close.start))
+                .filter(range => range.startOffset < range.endOffset)
+                .toVector
+            case _ => Vector.empty
+        case other                                                                                          =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
       def terminalTokenRanges(
@@ -2264,6 +2374,8 @@ private[metallurgy] object WholeFileProductionPlanner:
           intervals
         case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.BalancedScannerTokenAfterChild)         =>
           intervals
+        case (TerminalLeafTarget.Token(_, None), _: TerminalIntervalSelector.BalancedKeywordBeforeFirstChild)        =>
+          intervals
         case _                                                                                                       => Vector.empty
 
       def terminalLexicalKinds(intervals: Vector[PcSourceRange]): Vector[ClosedSourceLexicalKind] =
@@ -2276,14 +2388,14 @@ private[metallurgy] object WholeFileProductionPlanner:
       ): Boolean = terminal.target match
         case TerminalLeafTarget.Trivia    =>
           val kinds = terminalLexicalKinds(intervals)
-          kinds.nonEmpty && kinds.forall:
+          intervals.isEmpty || kinds.nonEmpty && kinds.forall:
             case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
                 ClosedSourceLexicalKind.BlockComment =>
               true
             case _ => false
         case TerminalLeafTarget.Separator =>
           val kinds = terminalLexicalKinds(intervals)
-          kinds.nonEmpty && kinds.forall:
+          intervals.isEmpty || kinds.nonEmpty && kinds.forall:
             case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
                 ClosedSourceLexicalKind.BlockComment | ClosedSourceLexicalKind.Semicolon =>
               true

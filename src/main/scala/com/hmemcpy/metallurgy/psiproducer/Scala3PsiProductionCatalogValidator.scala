@@ -368,7 +368,7 @@ private[metallurgy] object RuntimeRealizationSelector:
           matches match
             case many
                 if production.realizationChoice
-                  .exists(choice => many.map(_.id).toSet == Set(choice.candidateId, choice.fallbackId)) =>
+                  .exists(choice => many.map(_.id).toSet == choice.candidateIds.toSet + choice.fallbackId) =>
               resolved += key -> many
             case Vector() =>
               errors += CatalogValidationError.UnknownScenarioRealization(
@@ -1009,6 +1009,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, _, _) |
                 TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, _, _) |
                 TerminalIntervalSelector.BalancedScannerTokenAfterChild(_, _, _, _, _) |
+                TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(_, _, _, _) |
+                TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(_, _, _) |
+                TerminalIntervalSelector.BalancedSuffixAfterLastChild(_, _, _, _) |
                 TerminalIntervalSelector.LocalOutput(_) | TerminalIntervalSelector.RootOutsideLocalOutput(_) =>
               false
           )
@@ -1043,6 +1046,18 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
         case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, a, b)   =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(_, _, a, b)     =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(_, a, b)         =>
+          Vector(a, b)
+            .filterNot(childRoles)
+            .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
+        case TerminalIntervalSelector.BalancedSuffixAfterLastChild(_, _, a, b)        =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))

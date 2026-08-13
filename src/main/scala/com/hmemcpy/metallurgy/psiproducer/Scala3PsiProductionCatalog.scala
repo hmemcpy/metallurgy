@@ -386,7 +386,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             rows += StructuralRows.row("child-selection", (realizationPrefix ++ Vector(role, selected.value))*)
           )
       production.realizationChoice.foreach(choice =>
-        rows += StructuralRows.row("realization-choice", (prefix ++ Vector(choice.candidateId, choice.fallbackId))*)
+        rows += StructuralRows.row(
+          "realization-choice",
+          (prefix ++ choice.candidateIds ++ Vector(choice.fallbackId))*
+        )
       )
     catalog.productionAlternatives.zipWithIndex.foreach((alternatives, index) =>
       rows += StructuralRows.row("production-alternatives", index, alternatives.candidateId, alternatives.fallbackId)

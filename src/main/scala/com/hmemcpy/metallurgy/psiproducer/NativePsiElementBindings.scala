@@ -225,6 +225,7 @@ private[metallurgy] object NativePsiElementBindings:
   val TypeLeftParenthesisTokenSurface      = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tLPARENTHESIS"
   val TypeRightParenthesisTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tRPARENTHESIS"
   val TypeCommaTokenSurface                = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOMMA"
+  val UsingKeywordTokenSurface             = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#UsingKeyword"
   val TypeColonTokenSurface                = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tCOLON"
   val FunctionArrowTokenSurface            = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenTypes#tFUNTYPE"
   val ContextFunctionArrowTokenSurface     = "org/jetbrains/plugins/scala/lang/lexer/ScalaTokenType#ImplicitFunctionArrow"
@@ -315,6 +316,8 @@ private[metallurgy] object NativePsiElementBindings:
           |val atomicString = "a\tb"
           |val atomicNull = null
           |val nativeCall = atomicReference.toString(atomicInteger, atomicReference)
+          |def nativeUsing(using first: Int, second: Int) = first + second
+          |val nativeUsingCall = nativeUsing(using atomicInteger, atomicReference)
           |class AtomicThisProbe:
           |  def unqualifiedThis = this
           |  def qualifiedThis = AtomicThisProbe.this
@@ -627,6 +630,12 @@ private[metallurgy] object NativePsiElementBindings:
     val nativeCall                                             = patternExpression("nativeCall").collect:
       case value: ScMethodCall => value
     val nativeArguments                                        = nativeCall.map(_.args)
+    val nativeUsingCall                                        = patternExpression("nativeUsingCall").collect:
+      case value: ScMethodCall => value
+    val nativeUsingArguments                                   = nativeUsingCall.map(_.args)
+    val nativeUsingKeyword                                     = nativeUsingArguments.toVector
+      .flatMap(_.getNode.getChildren(null))
+      .filter(_.getElementType == ScalaTokenType.UsingKeyword)
     val atomicLiterals                                         = Vector(
       atomicInteger,
       atomicLong,
@@ -738,7 +747,7 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -917,6 +926,24 @@ private[metallurgy] object NativePsiElementBindings:
           arguments.getArgsCount != 2 || !arguments.isArgsInParens || arguments.isUsing
       )
     then Left("native application expression PSI accessors are inconsistent")
+    else if nativeUsingCall.isEmpty || nativeUsingArguments.isEmpty || nativeUsingKeyword.size != 1 ||
+      nativeUsingCall.exists(call =>
+        call.getText != "nativeUsing(using atomicInteger, atomicReference)" ||
+          call.getInvokedExpr.getText != "nativeUsing" || call.getInvokedExpr.getParent != call ||
+          call.args.getParent != call ||
+          call.argumentExpressions.map(_.getText).toVector != Vector("atomicInteger", "atomicReference")
+      ) || nativeUsingArguments.exists(arguments =>
+        arguments.getText != "(using atomicInteger, atomicReference)" ||
+          arguments.exprs.map(_.getText).toVector != Vector("atomicInteger", "atomicReference") ||
+          arguments.getArgsCount != 2 || !arguments.isArgsInParens || !arguments.isUsing ||
+          arguments.getTextRange.getStartOffset + 1 != nativeUsingKeyword.head.getStartOffset ||
+          arguments.getNode.getChildren(null).toVector.map(_.getText) !=
+          Vector("(", "using", " ", "atomicInteger", ",", " ", "atomicReference", ")")
+      ) || nativeUsingKeyword.exists(keyword =>
+        keyword.getText != "using" || keyword.getTreeParent != nativeUsingArguments.get.getNode ||
+          keyword.getPsi.getParent != nativeUsingArguments.get
+      )
+    then Left("native explicit-using application PSI accessors are inconsistent")
     else if selectionReferences.size != 8 || selectionSuperReferences.size != 4 ||
       selectionReferences.exists(reference =>
         reference.qualifier.isEmpty || reference.nameId.getParent != reference || reference.refName != "member" &&
@@ -1211,7 +1238,7 @@ private[metallurgy] object NativePsiElementBindings:
           atomicReference,
           atomicUnqualifiedThis,
           atomicQualifiedThis
-        ).flatten ++ atomicLiterals ++ nativeCall ++ nativeArguments ++
+        ).flatten ++ atomicLiterals ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++
           selectionReferences ++ selectionSuperReferences).exists(
           _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
@@ -1289,6 +1316,7 @@ private[metallurgy] object NativePsiElementBindings:
               Map(TypeLeftParenthesisTokenSurface -> ScalaTokenTypes.tLPARENTHESIS) ++
               Map(TypeRightParenthesisTokenSurface -> ScalaTokenTypes.tRPARENTHESIS) ++
               Map(TypeCommaTokenSurface -> ScalaTokenTypes.tCOMMA) ++
+              Map(UsingKeywordTokenSurface -> ScalaTokenType.UsingKeyword) ++
               Map(TypeColonTokenSurface -> ScalaTokenTypes.tCOLON) ++
               Map(FunctionArrowTokenSurface -> ordinaryFunctionArrow.getNode.getElementType) ++
               Map(ContextFunctionArrowTokenSurface -> contextFunctionArrow.getNode.getElementType) ++
@@ -1763,6 +1791,14 @@ private[metallurgy] object NativePsiElementBindings:
                 FactStatus.Available,
                 SurfaceClassification.SyntaxContract,
                 Vector("capability-probed native type right parenthesis token")
+              ),
+              ScalaPsiSurfaceRow(
+                UsingKeywordTokenSurface,
+                SurfaceFactKind.Token,
+                None,
+                FactStatus.Available,
+                SurfaceClassification.SyntaxContract,
+                Vector("capability-probed native using keyword token")
               ),
               ScalaPsiSurfaceRow(
                 FunctionArrowTokenSurface,

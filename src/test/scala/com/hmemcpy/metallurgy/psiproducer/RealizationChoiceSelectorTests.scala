@@ -34,7 +34,7 @@ final class RealizationChoiceSelectorTest:
   @Test def selectsPreferredCandidateOnlyWhenItsAssessmentIsComplete(): Unit =
     val production = choiceProduction
     val selected   = RealizationChoiceSelector
-      .select(production, Vector.empty, _ => Right(Vector.empty))
+      .select(production, Vector(realization("candidate")), _ => Right(Vector.empty))
       .fold(error => throw new AssertionError(error.toString), identity)
 
     assertEquals("candidate", selected.realization.id)
@@ -47,7 +47,7 @@ final class RealizationChoiceSelectorTest:
       PsiOutputRoleId.ExpressionPayload
     )
     val selected = RealizationChoiceSelector
-      .select(choiceProduction, Vector.empty, _ => Right(Vector(reason)))
+      .select(choiceProduction, Vector(realization("candidate")), _ => Right(Vector(reason)))
       .fold(error => throw new AssertionError(error.toString), identity)
 
     assertEquals("fallback", selected.realization.id)
@@ -60,7 +60,7 @@ final class RealizationChoiceSelectorTest:
     val selected = RealizationChoiceSelector
       .select(
         choiceProduction,
-        Vector.empty,
+        Vector(realization("candidate")),
         _ => Right(Vector(CandidateInapplicability.ExcludedTypeApplication))
       )
       .fold(error => throw new AssertionError(error.toString), identity)
@@ -76,7 +76,7 @@ final class RealizationChoiceSelectorTest:
       AttachmentEvidence("KindOfApply", com.hmemcpy.metallurgy.pc.ParserAttachmentValue.Product("Using"))
     )
     val selected = RealizationChoiceSelector
-      .select(choiceProduction, Vector.empty, _ => Right(Vector(reason)))
+      .select(choiceProduction, Vector(realization("candidate")), _ => Right(Vector(reason)))
       .fold(error => throw new AssertionError(error.toString), identity)
 
     assertEquals("fallback", selected.realization.id)
@@ -86,7 +86,7 @@ final class RealizationChoiceSelectorTest:
     val defect = CandidateRealizationDefect.Binding("argument[1] has two roots")
     val result = RealizationChoiceSelector.select(
       choiceProduction,
-      Vector.empty,
+      Vector(realization("candidate")),
       _ => Left(defect)
     )
 
@@ -102,16 +102,64 @@ final class RealizationChoiceSelectorTest:
     ).foreach: defect =>
       assertEquals(
         Left(RealizationChoiceFailure.CandidateDefect("parent", "candidate", defect)),
-        RealizationChoiceSelector.select(choiceProduction, Vector.empty, _ => Left(defect))
+        RealizationChoiceSelector.select(choiceProduction, Vector(realization("candidate")), _ => Left(defect))
       )
+
+  @Test def selectsExactlyOneEvidenceMatchedCandidateWithoutFirstMatchSemantics(): Unit =
+    val first      = realization("first")
+    val second     = realization("second")
+    val fallback   = realization("fallback")
+    val production = choiceProduction.copy(
+      outputRealizations = Vector(first, second, fallback),
+      realizationChoice = Some(RealizationChoice(Vector("first", "second"), "fallback"))
+    )
+    var assessed   = Vector.empty[String]
+    val selected   = RealizationChoiceSelector
+      .select(
+        production,
+        Vector(second, fallback),
+        candidate =>
+          assessed :+= candidate.id
+          Right(Vector.empty)
+      )
+      .fold(error => throw new AssertionError(error.toString), identity)
+
+    assertEquals("second", selected.realization.id)
+    assertEquals(Vector("second"), assessed)
+
+  @Test def overlappingAndMissingCandidateEvidenceFailBeforeAssessment(): Unit =
+    val first       = realization("first")
+    val second      = realization("second")
+    val fallback    = realization("fallback")
+    val production  = choiceProduction.copy(
+      outputRealizations = Vector(first, second, fallback),
+      realizationChoice = Some(RealizationChoice(Vector("first", "second"), "fallback"))
+    )
+    var assessments = 0
+
+    Vector(Vector(first, second, fallback), Vector(fallback)).foreach: matches =>
+      val result = RealizationChoiceSelector.select(
+        production,
+        matches,
+        _ =>
+          assessments += 1
+          Right(Vector.empty)
+      )
+      assertTrue(result.left.exists(_.isInstanceOf[RealizationChoiceFailure.CandidateEvidence]))
+    assertEquals(0, assessments)
 
   @Test def ambiguousMissingAndExtraAlternativesFailClosed(): Unit =
     val candidate = realization("candidate")
     val fallback  = realization("fallback")
     val invalid   = Vector(
-      production(Vector(candidate), Some(RealizationChoice("candidate", "fallback"))),
-      production(Vector(candidate, fallback, realization("extra")), Some(RealizationChoice("candidate", "fallback"))),
-      production(Vector(candidate, candidate, fallback), Some(RealizationChoice("candidate", "fallback")))
+      production(Vector(candidate), Some(RealizationChoice(Vector("candidate"), "fallback"))),
+      production(
+        Vector(candidate, fallback, realization("extra")),
+        Some(RealizationChoice(Vector("candidate"), "fallback"))
+      ),
+      production(Vector(candidate, candidate, fallback), Some(RealizationChoice(Vector("candidate"), "fallback"))),
+      production(Vector(candidate, fallback), Some(RealizationChoice(Vector.empty, "fallback"))),
+      production(Vector(candidate, fallback), Some(RealizationChoice(Vector("candidate", "candidate"), "fallback")))
     )
 
     invalid.foreach: value =>
@@ -132,7 +180,7 @@ final class RealizationChoiceSelectorTest:
   private def choiceProduction: Scala3PsiProduction =
     production(
       Vector(realization("candidate"), realization("fallback")),
-      Some(RealizationChoice("candidate", "fallback"))
+      Some(RealizationChoice(Vector("candidate"), "fallback"))
     )
 
   private def production(
