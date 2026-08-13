@@ -21,6 +21,19 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
       parentCount
     )
 
+  private def diagnostic(
+      severity: ParserDiagnosticSeverity,
+      start: Int,
+      end: Int,
+      point: Int,
+      provenance: ParserDiagnosticPositionProvenance = ParserDiagnosticPositionProvenance.SourceDerived
+  ): ParserDiagnostic =
+    ParserDiagnostic(
+      severity,
+      "parser diagnostic",
+      Some(ParserDiagnosticPosition(PcSourceRange(start, end), point, provenance))
+    )
+
   @Test def acceptsDisjointSourceRootsInDeterministicSourceOrder(): Unit =
     val expected = Vector(instance(1), instance(2))
     val roots    = Vector(root(2, 10, 15), root(1, 1, 5))
@@ -70,6 +83,108 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
 
     assertEquals(Vector.fill(20)(expected), Vector.fill(20)(AtomicWholePlanCandidateScope.validate(roots, 30)))
 
+  @Test def sourceDerivedErrorRangesUseHalfOpenIntersection(): Unit =
+    val value                                      = Vector(root(1, 5, 10))
+    def validate(start: Int, end: Int, point: Int) =
+      AtomicWholePlanCandidateScope.validate(
+        value,
+        20,
+        diagnostics = Vector(diagnostic(ParserDiagnosticSeverity.Error, start, end, point))
+      )
+
+    assertEquals(Some(Vector(instance(1))), validate(0, 5, 0))
+    assertEquals(Some(Vector.empty), validate(4, 6, 4))
+    assertEquals(Some(Vector.empty), validate(5, 6, 5))
+    assertEquals(Some(Vector.empty), validate(7, 8, 7))
+    assertEquals(Some(Vector.empty), validate(9, 10, 10))
+    assertEquals(Some(Vector(instance(1))), validate(10, 12, 10))
+
+  @Test def sourceDerivedErrorPointsIncludeRootStartAndExcludeRootEnd(): Unit =
+    val value                = Vector(root(1, 5, 10))
+    def validate(point: Int) =
+      AtomicWholePlanCandidateScope.validate(
+        value,
+        20,
+        diagnostics = Vector(diagnostic(ParserDiagnosticSeverity.Error, point, point, point))
+      )
+
+    assertEquals(Some(Vector(instance(1))), validate(4))
+    assertEquals(Some(Vector.empty), validate(5))
+    assertEquals(Some(Vector.empty), validate(7))
+    assertEquals(Some(Vector(instance(1))), validate(10))
+
+  @Test def unsafeErrorEvidenceAndMissingCapabilityRequireAllFallback(): Unit =
+    val value  = Vector(root(1, 5, 10))
+    val unsafe = Vector(
+      ParserDiagnostic(ParserDiagnosticSeverity.Error, "unpositioned", None),
+      diagnostic(ParserDiagnosticSeverity.Error, 5, 5, 5, ParserDiagnosticPositionProvenance.Synthetic),
+      diagnostic(ParserDiagnosticSeverity.Error, 1, 21, 1),
+      diagnostic(ParserDiagnosticSeverity.Error, 1, 3, 4)
+    )
+
+    unsafe.foreach: error =>
+      assertEquals(
+        error.toString,
+        None,
+        AtomicWholePlanCandidateScope.validate(value, 20, diagnostics = Vector(error))
+      )
+    assertEquals(
+      None,
+      AtomicWholePlanCandidateScope.validate(
+        value,
+        20,
+        ParserCapabilityStatus.Unavailable("provenance unavailable"),
+        Vector(diagnostic(ParserDiagnosticSeverity.Error, 5, 6, 5))
+      )
+    )
+
+  @Test def warningsAndInformationDoNotBlockAtomicCandidates(): Unit =
+    val value       = Vector(root(1, 5, 10))
+    val diagnostics = Vector(
+      diagnostic(
+        ParserDiagnosticSeverity.Warning,
+        5,
+        5,
+        5,
+        ParserDiagnosticPositionProvenance.Synthetic
+      ),
+      ParserDiagnostic(ParserDiagnosticSeverity.Information, "unpositioned information", None)
+    )
+
+    assertEquals(
+      Some(Vector(instance(1))),
+      AtomicWholePlanCandidateScope.validate(value, 20, diagnostics = diagnostics)
+    )
+    assertEquals(
+      Some(Vector(instance(1))),
+      AtomicWholePlanCandidateScope.validate(
+        value,
+        20,
+        ParserCapabilityStatus.Unavailable("provenance unavailable"),
+        diagnostics
+      )
+    )
+
+  @Test def disjointCandidatesAreFilteredIndependentlyBeforeTrials(): Unit =
+    val roots    = Vector(root(2, 10, 15), root(1, 0, 5))
+    val errors   = Vector(diagnostic(ParserDiagnosticSeverity.Error, 2, 3, 2))
+    val expected = Some(Vector(instance(2)))
+
+    assertEquals(expected, AtomicWholePlanCandidateScope.validate(roots, 20, diagnostics = errors))
+    assertEquals(expected, AtomicWholePlanCandidateScope.validate(roots.reverse, 20, diagnostics = errors))
+    assertEquals(
+      Vector.fill(20)(expected),
+      Vector.fill(20)(AtomicWholePlanCandidateScope.validate(roots, 20, diagnostics = errors))
+    )
+
+    val eligible = expected.get
+    val seen     = Vector.newBuilder[Set[ProductionInstanceId]]
+    val selected = AtomicWholePlanTrials.select(eligible): enabled =>
+      seen += enabled
+      true
+    assertEquals(Set(instance(2)), selected)
+    assertEquals(Vector(Set(instance(2)), Set(instance(2))), seen.result())
+
   @Test def admitsTwoNativeRootsOnlyAfterTheirCombinedProof(): Unit =
     val roots = Vector(instance(1), instance(2))
     val seen  = Vector.newBuilder[Set[ProductionInstanceId]]
@@ -98,7 +213,7 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
     assertEquals(Set.empty, selected)
 
   @Test def plannerAdmitsTwoDisjointRootsOnlyAsOneClosedPlan(): Unit =
-    val value                 = atomicPlanningSnapshot
+    val value                 = atomicPlanningSnapshot()
     val runtime               = inventory(value)
     val catalog               = atomicPlanningCatalog(runtime)
     val aggregate             = this.aggregate(Vector(runtime))
@@ -129,7 +244,7 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
     )
 
   @Test def plannerRetainsACompleteFallbackForAnUnprovenDisjointRoot(): Unit =
-    val value      = atomicPlanningSnapshot
+    val value      = atomicPlanningSnapshot()
     val runtime    = inventory(value)
     val catalog    = atomicPlanningCatalog(runtime, secondCandidateMatches = false)
     val evidence   = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
@@ -160,7 +275,61 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
       plan.physicalLeafOwnership.map(leaf => value.sourceText.substring(leaf.start, leaf.end)).mkString
     )
 
-  private def atomicPlanningSnapshot: ParserSyntaxSnapshot =
+  @Test def plannerFiltersOnlyTheCandidateIntersectingASourceDerivedError(): Unit =
+    val value = atomicPlanningSnapshot(
+      Vector(diagnostic(ParserDiagnosticSeverity.Error, 0, 1, 0))
+    )
+
+    assertEquals(
+      Vector(
+        2L -> RealizationSelectionReason.AtomicWholePlanFallback,
+        3L -> RealizationSelectionReason.PreferredCandidate
+      ),
+      atomicSelectionReasons(value)
+    )
+
+  @Test def plannerUsesTheCompleteFallbackPlanForUnsafeErrorEvidence(): Unit =
+    val value = atomicPlanningSnapshot(
+      Vector(
+        diagnostic(
+          ParserDiagnosticSeverity.Error,
+          0,
+          1,
+          0,
+          ParserDiagnosticPositionProvenance.Synthetic
+        )
+      )
+    )
+
+    assertEquals(
+      Vector(
+        2L -> RealizationSelectionReason.AtomicWholePlanFallback,
+        3L -> RealizationSelectionReason.AtomicWholePlanFallback
+      ),
+      atomicSelectionReasons(value)
+    )
+
+  private def atomicSelectionReasons(
+      value: ParserSyntaxSnapshot
+  ): Vector[(Long, RealizationSelectionReason)] =
+    val runtime  = inventory(value)
+    val catalog  = atomicPlanningCatalog(runtime)
+    val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val plan     = planned(value, evidence, catalog, aggregate(Vector(runtime)), surfaces(catalog))
+      .fold(failure => throw new AssertionError(failure.toString), identity)
+    assertEquals(
+      value.sourceText,
+      plan.physicalLeafOwnership.map(leaf => value.sourceText.substring(leaf.start, leaf.end)).mkString
+    )
+    plan.realizationSelections
+      .collect:
+        case selection if selection.owner.valueId == 2L || selection.owner.valueId == 3L =>
+          selection.owner.valueId -> selection.reason
+      .sortBy(_._1)
+
+  private def atomicPlanningSnapshot(
+      diagnostics: Vector[ParserDiagnostic] = Vector.empty
+  ): ParserSyntaxSnapshot =
     val base                                                                 = snapshot("/atomic-whole-plan", 1, Vector.empty)
     val source                                                               = "xy"
     def position(start: Int, end: Int)                                       =
@@ -181,6 +350,7 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
       sourceText = source,
       sourceDigest = ParserSyntaxSnapshot.digest(source),
       sourceLength = source.length,
+      diagnostics = diagnostics,
       nodes = Vector(
         ParserSyntaxNode(
           1L,

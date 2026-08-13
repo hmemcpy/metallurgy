@@ -88,14 +88,15 @@ private[pc] object StructuralScala3ParserBridge:
       val declaredProducts   =
         readDeclaredProducts(artifacts).fold(message => throw new IllegalStateException(message), identity)
 
-      val sourceFactory    = discoverSourceFactory(sourceModule, sourceFileClass)
-      val parserFactory    = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
-      val scannerReader    = discoverScannerReader(loader, scannerClass, sourceFileClass, contextClass)
-      val reporterFactory  = discoverReporterFactory(storeReporter, reporterClass)
-      val diagnosticReader = discoverDiagnosticReader(storeReporter, contextClass)
-      val _                = parserClass.getMethod("parse")
-      val parserInput      = parserClass.getMethods.find(method => method.getName == "in" && method.getParameterCount == 0)
-      val commentReader    = parserInput.flatMap: input =>
+      val sourceFactory                = discoverSourceFactory(sourceModule, sourceFileClass)
+      val parserFactory                = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
+      val scannerReader                = discoverScannerReader(loader, scannerClass, sourceFileClass, contextClass)
+      val reporterFactory              = discoverReporterFactory(storeReporter, reporterClass)
+      val diagnosticReader             = discoverDiagnosticReader(storeReporter, contextClass)
+      val diagnosticPositionProvenance = discoverDiagnosticPositionProvenance(loader)
+      val _                            = parserClass.getMethod("parse")
+      val parserInput                  = parserClass.getMethods.find(method => method.getName == "in" && method.getParameterCount == 0)
+      val commentReader                = parserInput.flatMap: input =>
         scannerClass.getMethods
           .find(method => method.getName == "comments" && method.getParameterCount == 0)
           .map(CommentReader.Modern(input, _))
@@ -105,14 +106,14 @@ private[pc] object StructuralScala3ParserBridge:
               .map(CommentReader.Legacy(input, _))
           )
       if commentReader.isEmpty then throw new NoSuchMethodException("parser input comments() or commentSpans()")
-      val positionedSpan   = positionedClass.getMethod("span")
-      val endMarkerReader  =
+      val positionedSpan               = positionedClass.getMethod("span")
+      val endMarkerReader              =
         try
           val owner = loader.loadClass("dotty.tools.dotc.ast.Trees$WithEndMarker")
           Right(EndMarkerReader(owner, owner.getMethod("hasEndMarker"), owner.getMethod("endSpan", contextClass)))
         catch case NonFatal(error) => Left(errorMessage(error))
-      val defTreeRawMods   = defTreeClass.getMethod("rawMods")
-      val attachments      =
+      val defTreeRawMods               = defTreeClass.getMethod("rawMods")
+      val attachments                  =
         try
           val keyClass = loader.loadClass("dotty.tools.dotc.util.Property$Key")
           val keyNames = new IdentityHashMap[AnyRef, String]()
@@ -129,7 +130,7 @@ private[pc] object StructuralScala3ParserBridge:
               .foreach(method => keyNames.put(method.invoke(module), method.getName))
           Some(AttachmentReader(treeClass.getMethod("allAttachments"), keyNames))
         catch case NonFatal(_) => None
-      val runtime          = ParserRuntime(
+      val runtime                      = ParserRuntime(
         loader,
         artifacts.map(_.getAbsolutePath).mkString(File.pathSeparator),
         contextBaseClass.getConstructor(),
@@ -146,6 +147,7 @@ private[pc] object StructuralScala3ParserBridge:
         parserFactory,
         scannerReader,
         diagnosticReader,
+        diagnosticPositionProvenance,
         treeClass,
         defTreeClass,
         lazyFieldsReader,
@@ -366,6 +368,71 @@ private[pc] object StructuralScala3ParserBridge:
         .map(DiagnosticReader.Buffered.apply)
         .getOrElse(throw new NoSuchMethodException("StoreReporter diagnostic access"))
 
+  private def discoverDiagnosticPositionProvenance(
+      loader: Scala3ParserClassLoader
+  ): Either[String, DiagnosticPositionProvenanceReader] =
+    val sourcePositionClass = loader.loadClass("dotty.tools.dotc.util.SourcePosition")
+    val sourceFileClass     = loader.loadClass("dotty.tools.dotc.util.SourceFile")
+    val spansModule         = module(loader, "dotty.tools.dotc.util.Spans$")
+    val spanCompanion       = module(loader, "dotty.tools.dotc.util.Spans$Span$")
+    diagnosticPositionProvenanceReader(sourcePositionClass, spansModule, spanCompanion).flatMap: reader =>
+      try
+        val sourceSpan        = spansModule.getClass
+          .getMethod("Span", java.lang.Integer.TYPE, java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+          .invoke(spansModule, Int.box(1), Int.box(2), Int.box(1))
+        val syntheticSpan     = spanCompanion.getClass
+          .getMethod("toSynthetic$extension", java.lang.Long.TYPE)
+          .invoke(spanCompanion, sourceSpan)
+        val noPosition        = module(loader, "dotty.tools.dotc.util.NoSourcePosition$")
+        val noSource          = module(loader, "dotty.tools.dotc.util.NoSource$")
+        val constructor       = sourcePositionClass.getConstructor(
+          sourceFileClass,
+          java.lang.Long.TYPE,
+          sourcePositionClass
+        )
+        val sourcePosition    = constructor.newInstance(noSource, sourceSpan, noPosition)
+        val syntheticPosition = constructor.newInstance(noSource, syntheticSpan, noPosition)
+        if reader.read(sourcePosition) != Some(ParserDiagnosticPositionProvenance.SourceDerived) ||
+          reader.read(syntheticPosition) != Some(ParserDiagnosticPositionProvenance.Synthetic) ||
+          reader.read(noPosition).nonEmpty
+        then Left("exact diagnostic positions do not preserve positioned and unpositioned provenance")
+        else Right(reader)
+      catch case NonFatal(error) => Left(errorMessage(error))
+
+  private[pc] def diagnosticPositionProvenanceCapability(
+      sourcePositionClass: Class[?],
+      spansModule: AnyRef,
+      spanCompanion: AnyRef
+  ): ParserCapabilityStatus =
+    diagnosticPositionProvenanceReader(sourcePositionClass, spansModule, spanCompanion)
+      .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available)
+
+  private def diagnosticPositionProvenanceReader(
+      sourcePositionClass: Class[?],
+      spansModule: AnyRef,
+      spanCompanion: AnyRef
+  ): Either[String, DiagnosticPositionProvenanceReader] =
+    try
+      val reader        = DiagnosticPositionProvenanceReader(
+        sourcePositionClass,
+        sourcePositionClass.getMethod("exists"),
+        sourcePositionClass.getMethod("span"),
+        spanCompanion,
+        spanCompanion.getClass.getMethod("isSourceDerived$extension", java.lang.Long.TYPE),
+        spanCompanion.getClass.getMethod("isSynthetic$extension", java.lang.Long.TYPE)
+      )
+      val sourceSpan    = spansModule.getClass
+        .getMethod("Span", java.lang.Integer.TYPE, java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+        .invoke(spansModule, Int.box(1), Int.box(2), Int.box(1))
+      val syntheticSpan = spanCompanion.getClass
+        .getMethod("toSynthetic$extension", java.lang.Long.TYPE)
+        .invoke(spanCompanion, sourceSpan)
+      if reader.readSpan(sourceSpan) != ParserDiagnosticPositionProvenance.SourceDerived ||
+        reader.readSpan(syntheticSpan) != ParserDiagnosticPositionProvenance.Synthetic
+      then Left("exact diagnostic positions do not distinguish source-derived and synthetic provenance")
+      else Right(reader)
+    catch case NonFatal(error) => Left(errorMessage(error))
+
   private def discoverReporterFactory(
       storeReporterClass: Class[?],
       reporterClass: Class[?]
@@ -380,7 +447,10 @@ private[pc] object StructuralScala3ParserBridge:
       )
       .getOrElse(throw new NoSuchMethodException("StoreReporter supported constructor"))
 
-  private def availableCapabilities(endMarkers: ParserCapabilityStatus): Scala3ParserCapabilities =
+  private def availableCapabilities(
+      endMarkers: ParserCapabilityStatus,
+      diagnosticPositionProvenance: ParserCapabilityStatus
+  ): Scala3ParserCapabilities =
     Scala3ParserCapabilities(
       publishedParser = ParserCapabilityStatus.Unavailable(
         "published Scalameta and scala3-interfaces APIs do not expose a parser"
@@ -391,6 +461,7 @@ private[pc] object StructuralScala3ParserBridge:
       productTraversal = ParserCapabilityStatus.Available,
       sourcePositions = ParserCapabilityStatus.Available,
       diagnostics = ParserCapabilityStatus.Available,
+      diagnosticPositionProvenance = diagnosticPositionProvenance,
       positionedSyntax = ParserCapabilityStatus.Available,
       comments = ParserCapabilityStatus.Available,
       endMarkers = endMarkers,
@@ -409,6 +480,7 @@ private[pc] object StructuralScala3ParserBridge:
       productTraversal = unavailable,
       sourcePositions = unavailable,
       diagnostics = unavailable,
+      diagnosticPositionProvenance = unavailable,
       positionedSyntax = unavailable,
       comments = unavailable,
       endMarkers = unavailable,
@@ -434,6 +506,7 @@ private[pc] object StructuralScala3ParserBridge:
       parserFactory: ParserFactory,
       scannerReader: ScannerReader,
       diagnosticReader: DiagnosticReader,
+      diagnosticPositionProvenance: Either[String, DiagnosticPositionProvenanceReader],
       treeClass: Class[?],
       defTreeClass: Class[?],
       lazyFieldsReader: Option[LazyFieldsReader],
@@ -498,6 +571,29 @@ private[pc] object StructuralScala3ParserBridge:
   private enum DiagnosticReader:
     case Partitioned
     case Buffered(method: Method)
+
+  private final case class DiagnosticPositionProvenanceReader(
+      sourcePositionClass: Class[?],
+      exists: Method,
+      span: Method,
+      spanCompanion: AnyRef,
+      isSourceDerived: Method,
+      isSynthetic: Method
+  ):
+    def read(position: AnyRef): Option[ParserDiagnosticPositionProvenance] =
+      if !sourcePositionClass.isInstance(position) then
+        throw new IllegalStateException("diagnostic position does not satisfy the exact source-position capability")
+      else if !exists.invoke(position).asInstanceOf[java.lang.Boolean].booleanValue() then None
+      else Some(readSpan(span.invoke(position)))
+
+    def readSpan(value: AnyRef): ParserDiagnosticPositionProvenance =
+      val sourceDerived = isSourceDerived.invoke(spanCompanion, value).asInstanceOf[java.lang.Boolean].booleanValue()
+      val synthetic     = isSynthetic.invoke(spanCompanion, value).asInstanceOf[java.lang.Boolean].booleanValue()
+      (sourceDerived, synthetic) match
+        case (true, false) => ParserDiagnosticPositionProvenance.SourceDerived
+        case (false, true) => ParserDiagnosticPositionProvenance.Synthetic
+        case _             =>
+          throw new IllegalStateException("diagnostic position provenance is neither source-derived nor synthetic")
 
   private final case class ScannerReader(
       constructor: Constructor[?],
@@ -631,7 +727,12 @@ private final class StructuralScala3ParserBridge private (
   private val runtime = new AtomicReference[Option[ParserRuntimeLease]](Some(new ParserRuntimeLease(initialRuntime)))
 
   override val capabilities: Scala3ParserCapabilities = availableCapabilities(
-    initialRuntime.endMarkerReader.fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available)
+    initialRuntime.endMarkerReader
+      .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available),
+    initialRuntime.diagnosticPositionProvenance.fold(
+      ParserCapabilityStatus.Unavailable.apply,
+      _ => ParserCapabilityStatus.Available
+    )
   )
 
   override def loaderState: Scala3ParserLoaderState =
@@ -1604,7 +1705,7 @@ private final class StructuralScala3ParserBridge private (
       ParserDiagnostic(
         diagnosticSeverity(diagnostic.level()),
         diagnostic.message(),
-        diagnosticPosition(diagnostic.position())
+        diagnosticPosition(active, diagnostic.position())
       )
 
   private def diagnosticSeverity(level: Int): ParserDiagnosticSeverity =
@@ -1614,17 +1715,21 @@ private final class StructuralScala3ParserBridge private (
       case _ => ParserDiagnosticSeverity.Information
 
   private def diagnosticPosition(
+      active: ParserRuntime,
       position: java.util.Optional[?]
   ): Option[ParserDiagnosticPosition] =
     if position.isEmpty then None
     else
       val value = position.get().asInstanceOf[DiagnosticPositionValue]
-      Some(
-        ParserDiagnosticPosition(
-          PcSourceRange(value.start(), value.end()),
-          value.point()
+      active.diagnosticPositionProvenance
+        .fold(reason => throw new IllegalStateException(reason), _.read(value.asInstanceOf[AnyRef]))
+        .map(provenance =>
+          ParserDiagnosticPosition(
+            PcSourceRange(value.start(), value.end()),
+            value.point(),
+            provenance
+          )
         )
-      )
 
   private def withCompilerClassloader[A](active: ParserRuntime)(body: => A): A =
     val thread   = Thread.currentThread

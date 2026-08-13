@@ -317,6 +317,7 @@ private[psiproducer] trait Scala3PsiProductionCatalogTestSupport:
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
+        ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available
       ),
       Scala3ParserCompilerIdentity(

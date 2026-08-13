@@ -285,7 +285,8 @@ private[metallurgy] object CanonicalByteEncoder:
       e.tag(diagnostic.severity.ordinal); e.string(diagnostic.message)
       diagnostic.position match
         case None           => e.tag(0)
-        case Some(position) => e.tag(1); writeRange(position.range, e); e.int(position.point)
+        case Some(position) =>
+          e.tag(1); writeRange(position.range, e); e.int(position.point); e.tag(position.provenance.ordinal)
     if snapshot.endMarkers.nonEmpty then
       e.tag(10)
       e.sequence(snapshot.endMarkers): marker =>
@@ -302,6 +303,10 @@ private[metallurgy] object CanonicalByteEncoder:
       capabilities.positionedSyntax,
       capabilities.comments
     ).foreach(writeCapability(_, e))
+    capabilities.diagnosticPositionProvenance match
+      case ParserCapabilityStatus.Available                => ()
+      case unavailable: ParserCapabilityStatus.Unavailable =>
+        e.tag(13); writeCapability(unavailable, e)
     if snapshot.runtimeSupplements.nonEmpty then
       e.tag(11)
       e.sequence(snapshot.runtimeSupplements): supplement =>
@@ -444,7 +449,14 @@ private[metallurgy] final case class ParserDiagnostic(
     position: Option[ParserDiagnosticPosition]
 )
 
-private[metallurgy] final case class ParserDiagnosticPosition(range: PcSourceRange, point: Int)
+private[metallurgy] final case class ParserDiagnosticPosition(
+    range: PcSourceRange,
+    point: Int,
+    provenance: ParserDiagnosticPositionProvenance
+)
+
+private[metallurgy] enum ParserDiagnosticPositionProvenance:
+  case SourceDerived, Synthetic
 
 private[metallurgy] enum ParserDiagnosticSeverity:
   case Error, Warning, Information
@@ -457,6 +469,7 @@ private[metallurgy] final case class Scala3ParserCapabilities(
     productTraversal: ParserCapabilityStatus,
     sourcePositions: ParserCapabilityStatus,
     diagnostics: ParserCapabilityStatus,
+    diagnosticPositionProvenance: ParserCapabilityStatus,
     positionedSyntax: ParserCapabilityStatus,
     comments: ParserCapabilityStatus,
     endMarkers: ParserCapabilityStatus,
@@ -464,16 +477,17 @@ private[metallurgy] final case class Scala3ParserCapabilities(
 ):
   def requiredUnavailable: Vector[ParserCapabilityFailure] =
     Vector(
-      "context setup"       -> contextSetup,
-      "source construction" -> sourceConstruction,
-      "parser construction" -> parserConstruction,
-      "product traversal"   -> productTraversal,
-      "source positions"    -> sourcePositions,
-      "diagnostics"         -> diagnostics,
-      "positioned syntax"   -> positionedSyntax,
-      "comments"            -> comments,
-      "end markers"         -> endMarkers,
-      "scanner tokens"      -> scannerTokens
+      "context setup"                  -> contextSetup,
+      "source construction"            -> sourceConstruction,
+      "parser construction"            -> parserConstruction,
+      "product traversal"              -> productTraversal,
+      "source positions"               -> sourcePositions,
+      "diagnostics"                    -> diagnostics,
+      "diagnostic position provenance" -> diagnosticPositionProvenance,
+      "positioned syntax"              -> positionedSyntax,
+      "comments"                       -> comments,
+      "end markers"                    -> endMarkers,
+      "scanner tokens"                 -> scannerTokens
     ).collect { case (name, ParserCapabilityStatus.Unavailable(reason)) =>
       ParserCapabilityFailure(name, reason)
     }

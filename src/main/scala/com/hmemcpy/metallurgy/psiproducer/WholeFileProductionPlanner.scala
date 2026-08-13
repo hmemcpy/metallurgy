@@ -103,18 +103,27 @@ private[metallurgy] object WholeFileProductionPlanner:
         roots.forall(root => selections.get(root).contains(RealizationSelectionReason.PreferredCandidate))
       val candidateOwners                                                                            = baseline.realizationSelections.collect:
         case PlannedRealizationSelection(owner, _, RealizationSelectionReason.AtomicWholePlanFallback) => owner
-      val candidateRoots                                                                             = candidateOwners.flatMap(owner => atomicCandidateRoot(snapshot, compiler, owner))
-      AtomicWholePlanCandidateScope
-        .validate(candidateRoots, snapshot.sourceLength)
-        .filter(_ => candidateRoots.size == candidateOwners.size) match
-        case Some(candidates) if candidates.nonEmpty =>
-          val accepted = AtomicWholePlanTrials.select(candidates): roots =>
-            compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, roots).exists(plan =>
-              provesCandidates(plan, roots)
+      snapshot.diagnostics.indexWhere(_.severity == ParserDiagnosticSeverity.Error) match
+        case index if index >= 0 && candidateOwners.isEmpty =>
+          Left(WholeFilePlanningFailure.UnassignedDiagnostic(index))
+        case _                                              =>
+          val candidateRoots = candidateOwners.flatMap(owner => atomicCandidateRoot(snapshot, compiler, owner))
+          AtomicWholePlanCandidateScope
+            .validate(
+              candidateRoots,
+              snapshot.sourceLength,
+              snapshot.capabilities.diagnosticPositionProvenance,
+              snapshot.diagnostics
             )
-          compileAttempt(snapshot, evidence, catalog, compiler, workObserver, accepted)
-        case _                                       =>
-          compileAttempt(snapshot, evidence, catalog, compiler, workObserver, Set.empty)
+            .filter(_ => candidateRoots.size == candidateOwners.size) match
+            case Some(candidates) if candidates.nonEmpty =>
+              val accepted = AtomicWholePlanTrials.select(candidates): roots =>
+                compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, roots).exists(plan =>
+                  provesCandidates(plan, roots)
+                )
+              compileAttempt(snapshot, evidence, catalog, compiler, workObserver, accepted)
+            case _                                       =>
+              compileAttempt(snapshot, evidence, catalog, compiler, workObserver, Set.empty)
 
   private def atomicCandidateRoot(
       snapshot: ParserSyntaxSnapshot,
@@ -123,10 +132,12 @@ private[metallurgy] object WholeFileProductionPlanner:
   ): Option[AtomicWholePlanCandidateRoot] =
     def occurrenceCount[A](values: Vector[A], occurrence: A => ProductionOccurrenceId): Int =
       owner.occurrence.fold(0)(expected => values.count(value => occurrence(value) == expected))
+    def exactlyOne[A](values: Vector[A]): Option[A]                                         = values match
+      case Vector(value) => Some(value)
+      case _             => None
     owner.kind match
       case InventoryKind.Node       =>
-        snapshot.nodes
-          .find(_.id == owner.valueId)
+        exactlyOne(snapshot.nodes.filter(_.id == owner.valueId))
           .map: node =>
             val count = occurrenceCount(
               node.occurrences,
@@ -134,8 +145,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
             AtomicWholePlanCandidateRoot(owner, node.position, count)
       case InventoryKind.Positioned =>
-        snapshot.positioned
-          .find(_.id == owner.valueId)
+        exactlyOne(snapshot.positioned.filter(_.id == owner.valueId))
           .map: positioned =>
             val count = occurrenceCount(
               positioned.occurrences,
@@ -143,8 +153,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
             AtomicWholePlanCandidateRoot(owner, positioned.position, count)
       case InventoryKind.Product    =>
-        compiler.products
-          .find(_.id == owner.valueId)
+        exactlyOne(compiler.products.filter(_.id == owner.valueId))
           .map: product =>
             val count = occurrenceCount(
               product.occurrences,
@@ -495,9 +504,6 @@ private[metallurgy] object WholeFileProductionPlanner:
                 groupedChildren += (instance -> declaration.roleId) -> groups.result()
               case _                              => ()
           compilerChildren.update(instance, plannedChildren.result())
-      snapshot.diagnostics.indexWhere(_.severity == ParserDiagnosticSeverity.Error) match
-        case index if index >= 0 => break(Left(WholeFilePlanningFailure.UnassignedDiagnostic(index)))
-        case _                   => ()
 
       def lexicalSlice(range: PcSourceRange): Vector[ClosedSourceLexicalAtom] =
         val atoms                                        = evidence.lexicalContract.atoms

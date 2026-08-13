@@ -49,7 +49,13 @@ final class SourceEvidencePlannerTest:
         ParserDiagnostic(
           ParserDiagnosticSeverity.Warning,
           "range",
-          Some(ParserDiagnosticPosition(PcSourceRange(0, 1), 1))
+          Some(
+            ParserDiagnosticPosition(
+              PcSourceRange(0, 1),
+              1,
+              ParserDiagnosticPositionProvenance.SourceDerived
+            )
+          )
         ),
         ParserDiagnostic(ParserDiagnosticSeverity.Information, "absent", None)
       )
@@ -365,7 +371,17 @@ final class SourceEvidencePlannerTest:
         ParserComment(PcSourceRange(4, 5), "/", ParserCommentKind.Block)
       ),
       diagnostics = Vector(
-        ParserDiagnostic(ParserDiagnosticSeverity.Error, "bad", Some(ParserDiagnosticPosition(PcSourceRange(0, 1), 2)))
+        ParserDiagnostic(
+          ParserDiagnosticSeverity.Error,
+          "bad",
+          Some(
+            ParserDiagnosticPosition(
+              PcSourceRange(0, 1),
+              2,
+              ParserDiagnosticPositionProvenance.SourceDerived
+            )
+          )
+        )
       )
     ).copy(sourceLength = 1, sourceDigest = "bad")
     val failures  = ProvisionalSourceEvidencePlanner.plan(malformed).swap.getOrElse(Vector.empty)
@@ -443,6 +459,7 @@ final class SourceEvidencePlannerTest:
       diagnostics,
       Scala3ParserCapabilities(
         ParserCapabilityStatus.Unavailable("not published"),
+        ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,
         ParserCapabilityStatus.Available,

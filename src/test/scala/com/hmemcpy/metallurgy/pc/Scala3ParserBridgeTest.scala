@@ -45,6 +45,10 @@ final class Scala3ParserBridgeTest:
       assertTrue(snapshot.nodes.exists(node => node.production == "ModuleDef"))
       assertTrue(snapshot.nodes.exists(node => node.production == "DefDef"))
       assertTrue(snapshot.diagnostics.isEmpty)
+      assertEquals(
+        "22ebcc23e4767d07afbac5a70aa2a95bdfd8c7ac5ac55e325dfd06b4b87cc1e4",
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
+      )
       assertNeutral(snapshot)
     finally bridge.close()
 
@@ -141,6 +145,178 @@ final class Scala3ParserBridgeTest:
 
       assertTrue(snapshot.diagnostics.exists(_.severity == ParserDiagnosticSeverity.Error))
       assertTrue(snapshot.endMarkers.isEmpty)
+    finally bridge.close()
+
+  @Test
+  def exactDiagnosticsRetainSyntheticRangesPointsAndOrdering(): Unit =
+    val bridge          = openBridge()
+    val rangedSource    =
+      "import scala.language.experimental.namedTypeArguments\ndef pair[A, B](a: A, b: B) = a\nval bad = pair[A = Int, String](1, \"text\")\n"
+    val pointSource     = ")\nval result = 1\n"
+    val syntheticSource = "package a:\n  import x.y\nend b\n"
+    try
+      val ranged    = parse(bridge, rangedSource, "file:///RangedDiagnostic.scala")
+      val point     = parse(bridge, pointSource, "file:///PointDiagnostic.scala")
+      val synthetic = parse(bridge, syntheticSource, "file:///SyntheticDiagnostic.scala")
+
+      assertEquals(
+        Vector(
+          ParserDiagnostic(
+            ParserDiagnosticSeverity.Error,
+            "'=' expected, but ']' found",
+            Some(
+              ParserDiagnosticPosition(
+                PcSourceRange(115, 115),
+                115,
+                ParserDiagnosticPositionProvenance.Synthetic
+              )
+            )
+          )
+        ),
+        ranged.diagnostics
+      )
+      assertEquals(
+        Vector(
+          ParserDiagnostic(
+            ParserDiagnosticSeverity.Error,
+            "eof expected, but ')' found",
+            Some(
+              ParserDiagnosticPosition(
+                PcSourceRange(0, 0),
+                0,
+                ParserDiagnosticPositionProvenance.Synthetic
+              )
+            )
+          )
+        ),
+        point.diagnostics
+      )
+      assertEquals(
+        Vector(
+          ParserDiagnostic(
+            ParserDiagnosticSeverity.Error,
+            "misaligned end marker",
+            Some(
+              ParserDiagnosticPosition(
+                PcSourceRange(24, 29),
+                24,
+                ParserDiagnosticPositionProvenance.Synthetic
+              )
+            )
+          )
+        ),
+        synthetic.diagnostics
+      )
+      assertEquals(ranged.diagnostics, parse(bridge, rangedSource, "file:///RangedDiagnostic.scala").diagnostics)
+      assertEquals(point.diagnostics, parse(bridge, pointSource, "file:///PointDiagnostic.scala").diagnostics)
+      assertNeutral(ranged.diagnostics)
+      assertNeutral(point.diagnostics)
+      assertNeutral(synthetic.diagnostics)
+    finally bridge.close()
+
+  @Test
+  def neutralDiagnosticDtoDistinguishesSourceDerivedRangesFromZeroWidthPoints(): Unit =
+    val ranged = ParserDiagnostic(
+      ParserDiagnosticSeverity.Error,
+      "ranged",
+      Some(
+        ParserDiagnosticPosition(
+          PcSourceRange(1, 3),
+          2,
+          ParserDiagnosticPositionProvenance.SourceDerived
+        )
+      )
+    )
+    val point  = ParserDiagnostic(
+      ParserDiagnosticSeverity.Error,
+      "point",
+      Some(
+        ParserDiagnosticPosition(
+          PcSourceRange(2, 2),
+          2,
+          ParserDiagnosticPositionProvenance.SourceDerived
+        )
+      )
+    )
+
+    assertEquals(ParserDiagnosticPositionProvenance.SourceDerived, ranged.position.get.provenance)
+    assertTrue(ranged.position.exists(value => value.range.startOffset < value.range.endOffset))
+    assertEquals(ParserDiagnosticPositionProvenance.SourceDerived, point.position.get.provenance)
+    assertTrue(point.position.exists(value => value.range.startOffset == value.range.endOffset))
+    assertNeutral(Vector(ranged, point))
+
+  @Test
+  def exactDiagnosticProvenanceCapabilityDistinguishesSourceAndSyntheticSpans(): Unit =
+    val bridge = openBridge()
+    try
+      assertEquals(ParserCapabilityStatus.Available, bridge.capabilities.diagnosticPositionProvenance)
+      assertTrue(bridge.capabilities.requiredUnavailable.isEmpty)
+    finally bridge.close()
+
+  @Test
+  def changedOrMissingDiagnosticProvenanceApiIsUnavailable(): Unit =
+    val sourcePosition = classOf[TestDiagnosticSourcePosition]
+    val spans          = new TestSpans
+
+    assertEquals(
+      ParserCapabilityStatus.Available,
+      StructuralScala3ParserBridge.diagnosticPositionProvenanceCapability(
+        sourcePosition,
+        spans,
+        new TestSpanCompanion
+      )
+    )
+    assertTrue(
+      StructuralScala3ParserBridge
+        .diagnosticPositionProvenanceCapability(sourcePosition, spans, new MissingSyntheticSpanCompanion)
+        .isInstanceOf[ParserCapabilityStatus.Unavailable]
+    )
+    assertTrue(
+      StructuralScala3ParserBridge
+        .diagnosticPositionProvenanceCapability(sourcePosition, spans, new IncoherentSpanCompanion)
+        .isInstanceOf[ParserCapabilityStatus.Unavailable]
+    )
+
+  @Test
+  def diagnosticProvenanceAndAbsenceParticipateInDeterministicSnapshotEvidence(): Unit =
+    val bridge = openBridge()
+    try
+      val source            = ")\n"
+      val snapshot          = parse(bridge, source, "file:///DiagnosticFingerprint.scala")
+      val position          = snapshot.diagnostics.flatMap(_.position).head
+      val changedProvenance = position.provenance match
+        case ParserDiagnosticPositionProvenance.SourceDerived => ParserDiagnosticPositionProvenance.Synthetic
+        case ParserDiagnosticPositionProvenance.Synthetic     => ParserDiagnosticPositionProvenance.SourceDerived
+      val changed           = snapshot.copy(diagnostics =
+        snapshot.diagnostics.map(diagnostic =>
+          diagnostic.copy(position = diagnostic.position.map(value => value.copy(provenance = changedProvenance)))
+        )
+      )
+      val absent            = snapshot.copy(diagnostics = Vector(ParserDiagnostic(ParserDiagnosticSeverity.Error, "absent", None)))
+      val unavailable       = snapshot.copy(capabilities =
+        snapshot.capabilities.copy(
+          diagnosticPositionProvenance = ParserCapabilityStatus.Unavailable("provenance unavailable")
+        )
+      )
+
+      assertEquals(
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        ParserSyntaxSnapshot.evidenceFingerprint(parse(bridge, source, "file:///DiagnosticFingerprint.scala"))
+      )
+      assertNotEquals(position.provenance, changed.diagnostics.flatMap(_.position).head.provenance)
+      assertNotEquals(
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        ParserSyntaxSnapshot.evidenceFingerprint(changed)
+      )
+      assertNotEquals(
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        ParserSyntaxSnapshot.evidenceFingerprint(absent)
+      )
+      assertNotEquals(
+        ParserSyntaxSnapshot.evidenceFingerprint(snapshot),
+        ParserSyntaxSnapshot.evidenceFingerprint(unavailable)
+      )
+      assertNeutral(absent.diagnostics)
     finally bridge.close()
 
   @Test
@@ -255,6 +431,10 @@ final class Scala3ParserBridgeTest:
         case Left(Scala3ParserOpenError.MissingCapabilities(identity, capabilities, failures)) =>
           assertEquals(ScalaVersion, identity.coordinate.version)
           assertTrue(failures.exists(_.capability == "context setup"))
+          assertTrue(failures.exists(_.capability == "diagnostic position provenance"))
+          assertTrue(
+            capabilities.diagnosticPositionProvenance.isInstanceOf[ParserCapabilityStatus.Unavailable]
+          )
           assertTrue(capabilities.requiredUnavailable.nonEmpty)
         case other                                                                             =>
           throw new AssertionError(s"expected named capability failures, found $other")
@@ -361,3 +541,24 @@ final class Scala3ParserBridgeTest:
       if checks.incrementAndGet() > limit then throw new TestControlFlowException
 
   private final class TestControlFlowException extends RuntimeException("cancelled"), ControlFlowException
+
+  final class TestDiagnosticSourcePosition:
+    def exists(): Boolean = true
+    def span(): Long      = 1L
+
+  final class TestSpans:
+    def Span(start: Int, end: Int, point: Int): Long = start.toLong + end.toLong + point.toLong
+
+  class TestSpanCompanion:
+    def `isSourceDerived$extension`(span: Long): Boolean = span != -1L
+    def `isSynthetic$extension`(span: Long): Boolean     = span == -1L
+    def `toSynthetic$extension`(span: Long): Long        = -1L
+
+  final class MissingSyntheticSpanCompanion:
+    def `isSourceDerived$extension`(span: Long): Boolean = span >= 0L
+    def `toSynthetic$extension`(span: Long): Long        = -1L
+
+  final class IncoherentSpanCompanion:
+    def `isSourceDerived$extension`(span: Long): Boolean = true
+    def `isSynthetic$extension`(span: Long): Boolean     = true
+    def `toSynthetic$extension`(span: Long): Long        = span

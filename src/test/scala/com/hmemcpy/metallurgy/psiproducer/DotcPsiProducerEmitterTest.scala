@@ -141,7 +141,7 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "eof expected, but ')' found",
-        Some(ParserDiagnosticPosition(PcSourceRange(0, 0), 0))
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 0), 0, ParserDiagnosticPositionProvenance.Synthetic))
       )
     )
     val lexer       = PlannedScala3Lexer
@@ -172,32 +172,32 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "outer-first",
-        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0))
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "outer-second",
-        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0))
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 6), 0, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "inner",
-        Some(ParserDiagnosticPosition(PcSourceRange(1, 3), 1))
+        Some(ParserDiagnosticPosition(PcSourceRange(1, 3), 1, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "point-first",
-        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2))
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "point-second",
-        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2))
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 2), 2, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Warning,
         "warning",
-        Some(ParserDiagnosticPosition(PcSourceRange(4, 5), 4))
+        Some(ParserDiagnosticPosition(PcSourceRange(4, 5), 4, ParserDiagnosticPositionProvenance.SourceDerived))
       )
     )
     val boundaries  =
@@ -233,12 +233,12 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "first",
-        Some(ParserDiagnosticPosition(PcSourceRange(0, 3), 0))
+        Some(ParserDiagnosticPosition(PcSourceRange(0, 3), 0, ParserDiagnosticPositionProvenance.SourceDerived))
       ),
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "crossing",
-        Some(ParserDiagnosticPosition(PcSourceRange(2, 5), 2))
+        Some(ParserDiagnosticPosition(PcSourceRange(2, 5), 2, ParserDiagnosticPositionProvenance.SourceDerived))
       )
     )
     val lexer       = PlannedScala3Lexer
@@ -267,7 +267,13 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
       ParserDiagnostic(
         ParserDiagnosticSeverity.Error,
         "outside",
-        Some(ParserDiagnosticPosition(PcSourceRange(0, source.length + 1), 0))
+        Some(
+          ParserDiagnosticPosition(
+            PcSourceRange(0, source.length + 1),
+            0,
+            ParserDiagnosticPositionProvenance.SourceDerived
+          )
+        )
       )
     )
     assertTrue(DotcPsiProducer.emitClosedFile(Scala3DotcParserDefinition.FileNodeType, invalidBuilder, invalid).isLeft)
@@ -332,7 +338,13 @@ final class DotcPsiProducerEmitterTest extends ScalaLightCodeInsightFixtureTestC
         ParserDiagnostic(
           ParserDiagnosticSeverity.Error,
           s"nested-$index",
-          Some(ParserDiagnosticPosition(PcSourceRange(index, source.length - index), index))
+          Some(
+            ParserDiagnosticPosition(
+              PcSourceRange(index, source.length - index),
+              index,
+              ParserDiagnosticPositionProvenance.SourceDerived
+            )
+          )
         )
       )
       .toVector

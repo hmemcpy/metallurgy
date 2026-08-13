@@ -118,16 +118,21 @@ private[metallurgy] final case class AtomicWholePlanCandidateRoot(
     parentCount: Int
 )
 private[metallurgy] object AtomicWholePlanCandidateScope:
-  def validate(roots: Vector[AtomicWholePlanCandidateRoot], sourceLength: Int): Option[Vector[ProductionInstanceId]] =
-    val distinctOwners = roots.map(_.owner).distinct.size == roots.size
-    val positioned     = roots.flatMap: root =>
+  def validate(
+      roots: Vector[AtomicWholePlanCandidateRoot],
+      sourceLength: Int,
+      diagnosticProvenanceCapability: ParserCapabilityStatus = ParserCapabilityStatus.Available,
+      diagnostics: Vector[ParserDiagnostic] = Vector.empty
+  ): Option[Vector[ProductionInstanceId]] =
+    val distinctOwners                         = roots.map(_.owner).distinct.size == roots.size
+    val positioned                             = roots.flatMap: root =>
       root.position match
         case ParserNodePosition.Positioned(range, point, ParserPositionProvenance.SourceDerived)
             if root.parentCount == 1 && range.startOffset >= 0 && range.startOffset < range.endOffset &&
               range.endOffset <= sourceLength && point >= range.startOffset && point <= range.endOffset =>
           Some((root.owner, range))
         case _ => None
-    val ordered        = positioned.sortBy: (owner, range) =>
+    val ordered                                = positioned.sortBy: (owner, range) =>
       (
         range.startOffset,
         range.endOffset,
@@ -136,11 +141,44 @@ private[metallurgy] object AtomicWholePlanCandidateScope:
         owner.occurrence.fold(-1L)(_.ownerNodeId),
         owner.occurrence.fold("")(_.fieldPath.mkString("/"))
       )
-    val disjoint       = ordered
+    val disjoint                               = ordered
       .zip(ordered.drop(1))
       .forall: (left, right) =>
         left._2.endOffset <= right._2.startOffset
-    Option.when(distinctOwners && positioned.size == roots.size && disjoint)(ordered.map(_._1))
+    val errorPositions                         = diagnostics.collect:
+      case ParserDiagnostic(ParserDiagnosticSeverity.Error, _, position) => position
+    val safeErrors                             = errorPositions.isEmpty ||
+      diagnosticProvenanceCapability == ParserCapabilityStatus.Available && errorPositions.forall:
+        case Some(
+              ParserDiagnosticPosition(
+                range,
+                point,
+                ParserDiagnosticPositionProvenance.SourceDerived
+              )
+            ) =>
+          range.startOffset >= 0 && range.startOffset <= range.endOffset && range.endOffset <= sourceLength &&
+          point >= range.startOffset && point <= range.endOffset
+        case _ => false
+    def isClean(range: PcSourceRange): Boolean =
+      errorPositions.forall:
+        case Some(
+              ParserDiagnosticPosition(
+                diagnosticRange,
+                point,
+                ParserDiagnosticPositionProvenance.SourceDerived
+              )
+            ) =>
+          val rangedOverlap =
+            diagnosticRange.startOffset < diagnosticRange.endOffset &&
+              diagnosticRange.startOffset < range.endOffset && range.startOffset < diagnosticRange.endOffset
+          val pointInside   =
+            diagnosticRange.startOffset == diagnosticRange.endOffset &&
+              range.startOffset <= point && point < range.endOffset
+          !rangedOverlap && !pointInside
+        case _ => false
+    Option.when(distinctOwners && positioned.size == roots.size && disjoint && safeErrors)(
+      ordered.collect { case (owner, range) if isClean(range) => owner }
+    )
 
 private[metallurgy] object AtomicWholePlanTrials:
   def select(
