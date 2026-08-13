@@ -35,7 +35,6 @@ import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.ScGivenDefinition
 import org.jetbrains.plugins.scala.lang.refactoring.changeSignature.ScalaChangeSignatureHandler
 import org.jetbrains.plugins.scala.lang.refactoring.inline.method.ScalaInlineMethodHandler
-import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 import org.jetbrains.plugins.scala.project.ScalaLanguageLevel
 import org.junit.Assert.{assertEquals, assertFalse, assertNotEquals, assertNotNull, assertNull, assertSame, assertTrue}
 import org.jetbrains.org.objectweb.asm.{ClassWriter, Opcodes}
@@ -457,13 +456,15 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       documentationTarget.get.computeDocumentationHint()
     )
 
-  def testCompilerSymbolDoesNotReplaceNonEmptyBundledResolution(): Unit =
+  def testCurrentCompilerSymbolReplacesConflictingBundledResolution(): Unit =
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
     val file       = myFixture.configureByText(
       "BundledResolvePrecedence.scala",
       "object Existing\nval result = Existing"
     )
     val reference  = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
     val bundled    = reference.multiResolveScala(false)
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = true)
     val document   = myFixture.getEditor.getDocument
     val range      = reference.getTextRange
     val generation = CompilerBackendGeneration(1L, 1L, 1L)
@@ -472,7 +473,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(reference),
       PcSourceRange(range.getStartOffset, range.getEndOffset),
       CompilerBackendRole.Reference,
-      "CompilerOnly.type",
+      "String",
       Some(symbol.id),
       Some(symbol)
     )
@@ -487,19 +488,25 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       )
     )
 
+    BundledCompilerBackendDispatcher.referenceResolution(reference) match
+      case ReferenceResolutionSelection.Current(Some(target)) => assertEquals("CompilerOnly", target.getName)
+      case selection                                          => throw new AssertionError(s"expected current compiler target, got $selection")
     val resolved = reference.multiResolveScala(false)
-    assertEquals(bundled.length, resolved.length)
-    assertSame(bundled.head.element, resolved.head.element)
-    assertFalse(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
+    assertEquals(1, bundled.length)
+    assertEquals(1, resolved.length)
+    assertNotEquals(bundled.head.element, resolved.head.element)
+    assertEquals("CompilerOnly", resolved.head.element.getName)
+    assertTrue(resolved.head.element.isInstanceOf[CompilerBackendLightSymbol])
 
   def testInactiveReferenceBridgeReturnsTheExactBundledResult(): Unit =
+    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
     val file      = myFixture.configureByText("InactiveReference.scala", "val result = unresolved")
     val reference = PsiTreeUtil.findChildOfType(file, classOf[ScReferenceExpression])
-    val bundled   = Array.empty[ScalaResolveResult]
 
-    MetallurgySettings(getProject).setEnabled(getModule, enabled = false)
-
-    assertSame(bundled, ScalaPluginSemanticBridge.referenceResolution(reference, bundled))
+    assertEquals(
+      ReferenceResolutionSelection.FallThrough,
+      BundledCompilerBackendDispatcher.referenceResolution(reference)
+    )
     assertTrue(reference.multiResolveScala(false).isEmpty)
 
   def testPendingBackendFallsThroughToBundledType(): Unit =
@@ -747,8 +754,16 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.unavailableRoots.mkString(", "), discovery.unavailableRoots.isEmpty)
     assertTrue(discovery.unavailableAdapters.mkString(", "), discovery.unavailableAdapters.isEmpty)
     assertTrue(discovery.compilerTypeTarget.nonEmpty)
-    assertTrue(discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
-    assertTrue(discovery.resolveTargets.exists(_.methodName == "doResolve"))
+    assertTrue(
+      discovery.resolveTargets.exists(target =>
+        target.className.endsWith(".ScReferenceExpressionImpl") && target.methodName == "multiResolveScala"
+      )
+    )
+    assertTrue(
+      discovery.resolveTargets.exists(target =>
+        target.className.endsWith(".ScStableCodeReferenceImpl") && target.methodName == "multiResolveScala"
+      )
+    )
     assertTrue(discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
     assertTrue(discovery.patternImplementations.size >= 17)
     discovery.patternImplementations.foreach: pattern =>
@@ -791,16 +806,39 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
     assertTrue(discovery.unavailableRoots.nonEmpty)
     assertFalse(discovery.canInstall)
 
-  def testMissingResolverAdapterDoesNotDisableCompatibleTypeRoots(): Unit =
+  def testMissingRequiredResolverRootsRejectHostAdmission(): Unit =
     val discovery = CompilerBackendShimDiscovery.discoverClassBytes(
-      compatiblePluginShape("future", includeResolve = false)
+      compatiblePluginShape("future", includeExpressionResolve = false, includeStableResolve = false)
+    )
+
+    assertFalse(discovery.canInstall)
+    assertEquals(
+      Set("expression reference resolution", "stable reference resolution"),
+      discovery.unavailableRoots.toSet
+    )
+
+  def testResolverDiscoveryReportsEachMissingRoot(): Unit =
+    val expressionOnly = CompilerBackendShimDiscovery.discoverClassBytes(
+      compatiblePluginShape("expression-only", includeStableResolve = false)
+    )
+    val stableOnly     = CompilerBackendShimDiscovery.discoverClassBytes(
+      compatiblePluginShape("stable-only", includeExpressionResolve = false)
+    )
+
+    assertFalse(expressionOnly.canInstall)
+    assertFalse(stableOnly.canInstall)
+    assertEquals(Set("stable reference resolution"), expressionOnly.unavailableRoots.toSet)
+    assertEquals(Set("expression reference resolution"), stableOnly.unavailableRoots.toSet)
+    assertTrue(expressionOnly.resolveTargets.forall(!_.className.contains("StableCodeReference")))
+    assertTrue(stableOnly.resolveTargets.forall(!_.className.contains("ReferenceExpression")))
+
+  def testMissingOptionalRawTypeAdapterKeepsHostAdmitted(): Unit =
+    val discovery = CompilerBackendShimDiscovery.discoverClassBytes(
+      compatiblePluginShape("no-raw-type", includeRawType = false)
     )
 
     assertTrue(discovery.unavailableRoots.mkString(", "), discovery.canInstall)
-    assertEquals(
-      Set("expression reference resolution", "stable reference resolution"),
-      discovery.unavailableAdapters.toSet
-    )
+    assertEquals(Vector("introduce variable exact type"), discovery.unavailableAdapters)
 
   def testStableEapAndNightlyPluginShapesUseTheSameStructuralDiscovery(): Unit =
     val discoveries = Seq("stable", "eap", "nightly").map: variant =>
@@ -810,8 +848,7 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
       assertTrue(s"$variant: ${discovery.unavailableRoots.mkString(", ")}", discovery.canInstall)
       assertTrue(variant, discovery.unavailableAdapters.isEmpty)
       assertTrue(variant, discovery.compilerTypeTarget.nonEmpty)
-      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "multiResolveScala"))
-      assertTrue(variant, discovery.resolveTargets.exists(_.methodName == "doResolve"))
+      assertEquals(variant, 2, discovery.resolveTargets.count(_.methodName == "multiResolveScala"))
       assertTrue(variant, discovery.rawTypeTargets.exists(_.methodName == "typeWithoutExpected"))
       assertTrue(variant, discovery.patternImplementations.exists(_.className.endsWith(s".$variant.PatternImpl")))
       val roles = discovery.semanticTargets.flatMap(_.methods.map(_.role)).toSet
@@ -864,7 +901,12 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
 
     assertEquals("_root_.scala.Predef.String", rendered(typeElement))
 
-  private def compatiblePluginShape(variant: String, includeResolve: Boolean = true): Vector[Array[Byte]] =
+  private def compatiblePluginShape(
+      variant: String,
+      includeExpressionResolve: Boolean = true,
+      includeStableResolve: Boolean = true,
+      includeRawType: Boolean = true
+  ): Vector[Array[Byte]] =
     val eitherDescriptor = "()Lscala/util/Either;"
     val roots            = Seq(
       "org/jetbrains/plugins/scala/lang/psi/api/statements/ScValueOrVariable"  -> ("type", eitherDescriptor),
@@ -913,8 +955,8 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         )
       )
     )
-    if includeResolve then
-      val resolveArray      = "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
+    val resolveArray     = "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
+    if includeExpressionResolve then
       val expressionRoot    = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScReferenceExpression"
       val expressionResolve = s"(Z)$resolveArray"
       classes += syntheticClass(
@@ -930,31 +972,32 @@ final class BundledCompilerBackendShimTest extends ScalaLightCodeInsightFixtureT
         interfaces = Array(expressionRoot),
         methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "multiResolveScala", expressionResolve))
       )
-      val stableRoot        = "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference"
-      val stableResolve     =
-        s"(Lorg/jetbrains/plugins/scala/lang/resolve/processor/BaseProcessor;Z)$resolveArray"
+    if includeStableResolve then
+      val stableRoot    = "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference"
+      val stableResolve = s"(Z)$resolveArray"
       classes += syntheticClass(
         stableRoot,
         Opcodes.ACC_PUBLIC | Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT,
-        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "doResolve", stableResolve))
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT, "multiResolveScala", stableResolve))
       )
       classes += syntheticClass(
         s"org/jetbrains/plugins/scala/generated/$variant/StableCodeReferenceImpl",
         Opcodes.ACC_PUBLIC,
         interfaces = Array(stableRoot),
-        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "doResolve", stableResolve))
+        methods = Seq(SyntheticMethod(Opcodes.ACC_PUBLIC, "multiResolveScala", stableResolve))
       )
-    classes += syntheticClass(
-      s"org/jetbrains/plugins/scala/lang/refactoring/$variant/FutureRefactoringTypes",
-      Opcodes.ACC_PUBLIC,
-      methods = Seq(
-        SyntheticMethod(
-          Opcodes.ACC_PRIVATE,
-          "typeWithoutExpected",
-          "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
+    if includeRawType then
+      classes += syntheticClass(
+        s"org/jetbrains/plugins/scala/lang/refactoring/$variant/FutureRefactoringTypes",
+        Opcodes.ACC_PUBLIC,
+        methods = Seq(
+          SyntheticMethod(
+            Opcodes.ACC_PRIVATE,
+            "typeWithoutExpected",
+            "(Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;)Lorg/jetbrains/plugins/scala/lang/psi/types/ScType;"
+          )
         )
       )
-    )
     classes.result()
 
   private def syntheticClass(

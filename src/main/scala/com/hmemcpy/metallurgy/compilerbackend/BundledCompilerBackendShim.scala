@@ -4,6 +4,7 @@ import net.bytebuddy.agent.ByteBuddyAgent
 import org.jetbrains.org.objectweb.asm.commons.AdviceAdapter
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, ClassWriter, Label, MethodVisitor, Opcodes}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
 
 import java.lang.instrument.{ClassFileTransformer, Instrumentation}
 import java.lang.invoke.MethodHandles
@@ -126,13 +127,13 @@ private[compilerbackend] object BundledCompilerBackendShim:
           semanticLoadFailures.map(name => s"unloadable $name") ++
           semanticTransformFailures ++
           missingMethods.map(key => s"untransformed $key") ++
+          resolveLoadFailures.map(name => s"unloadable $name") ++
+          resolveTransformFailures ++
+          missingResolve.map(key => s"untransformed $key") ++
           Option.when(discovery.compilerTypeTarget.nonEmpty && !compilerTypeHooked.get())("CompilerType.apply")
       ).distinct
       val unavailableAdapters       = (
         discovery.unavailableAdapters ++
-          resolveLoadFailures.map(name => s"unloadable $name") ++
-          resolveTransformFailures ++
-          missingResolve.map(key => s"untransformed $key") ++
           rawTypeLoadFailures.map(name => s"unloadable $name") ++
           rawTypeTransformFailures ++
           missingRawType.map(key => s"untransformed $key")
@@ -140,8 +141,8 @@ private[compilerbackend] object BundledCompilerBackendShim:
       if semanticMethods.isEmpty || unavailableRoots.nonEmpty then
         uninstallBackend(bridge)
         val reason =
-          if unavailableRoots.nonEmpty then s"incompatible Scala PSI type roots: ${unavailableRoots.mkString(", ")}"
-          else "no compatible Scala PSI type roots were found"
+          if unavailableRoots.nonEmpty then s"incompatible required Scala PSI roots: ${unavailableRoots.mkString(", ")}"
+          else "no compatible required Scala PSI roots were found"
         CompilerBackendShimStatus.Disabled(reason)
       else
         bridge.getMethod("enable").invoke(null)
@@ -326,23 +327,25 @@ private[compilerbackend] object BundledCompilerBackendShim:
           else
             found = true
             new AdviceAdapter(Opcodes.ASM9, originalMethod, access, name, descriptor):
-              override def onMethodExit(opcode: Int): Unit =
-                if opcode == Opcodes.ARETURN then
-                  val result = newLocal(org.jetbrains.org.objectweb.asm.Type.getType(classOf[Object]))
-                  visitVarInsn(Opcodes.ASTORE, result)
-                  visitVarInsn(Opcodes.ALOAD, target.elementLocal)
-                  visitVarInsn(Opcodes.ALOAD, result)
-                  visitMethodInsn(
-                    Opcodes.INVOKESTATIC,
-                    BridgeInternalName,
-                    "referenceResolution",
-                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
-                    false
-                  )
-                  visitTypeInsn(
-                    Opcodes.CHECKCAST,
-                    "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
-                  )
+              override def onMethodEnter(): Unit =
+                val fallback = new Label()
+                visitVarInsn(Opcodes.ALOAD, target.elementLocal)
+                visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  BridgeInternalName,
+                  "referenceResolution",
+                  "(Ljava/lang/Object;)Ljava/lang/Object;",
+                  false
+                )
+                visitInsn(Opcodes.DUP)
+                visitJumpInsn(Opcodes.IFNULL, fallback)
+                visitTypeInsn(
+                  Opcodes.CHECKCAST,
+                  "[Lorg/jetbrains/plugins/scala/lang/resolve/ScalaResolveResult;"
+                )
+                visitInsn(Opcodes.ARETURN)
+                visitLabel(fallback)
+                visitInsn(Opcodes.POP)
       ,
       ClassReader.EXPAND_FRAMES
     )
@@ -418,8 +421,13 @@ private[compilerbackend] object BundledCompilerBackendShim:
         case CompilerTypeSelection.FallThrough    => null
     val semanticTypeBackend: BiFunction[Object, Integer, Object] = (element, role) =>
       BundledCompilerBackendDispatcher.semanticType(element, role.intValue())
-    val resolveBackend: BiFunction[Object, Object, Object]       = (reference, bundled) =>
-      ScalaPluginSemanticBridge.referenceResolution(reference, bundled)
+    val referenceMissing                                         = bridge.getMethod("missingReferenceResolution").invoke(null)
+    val resolveBackend: Function[Object, Object]                 = reference =>
+      BundledCompilerBackendDispatcher.referenceResolution(reference) match
+        case ReferenceResolutionSelection.Current(Some(target)) => Array(new ScalaResolveResult(target))
+        case ReferenceResolutionSelection.Current(None)         => referenceMissing
+        case ReferenceResolutionSelection.Unknown               => referenceMissing
+        case ReferenceResolutionSelection.FallThrough           => null
     val rawExpressionTypeBackend: Function[Object, Object]       = expression =>
       BundledCompilerBackendDispatcher.rawExpressionType(expression)
     val _                                                        = bridge.getMethod("install", classOf[Function[?, ?]]).invoke(null, declaredTypeBackend)
@@ -430,7 +438,7 @@ private[compilerbackend] object BundledCompilerBackendShim:
       .getMethod("installSemanticTypeBackend", classOf[BiFunction[?, ?, ?]])
       .invoke(null, semanticTypeBackend)
     val _                                                        = bridge
-      .getMethod("installReferenceBackend", classOf[BiFunction[?, ?, ?]])
+      .getMethod("installReferenceBackend", classOf[Function[?, ?]])
       .invoke(null, resolveBackend)
     val _                                                        = bridge
       .getMethod("installRawExpressionTypeBackend", classOf[Function[?, ?]])

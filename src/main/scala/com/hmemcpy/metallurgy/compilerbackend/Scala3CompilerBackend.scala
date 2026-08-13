@@ -345,6 +345,29 @@ final class Scala3CompilerBackend(project: Project):
         target   <- sourceTarget(module, symbol).orElse(lightTarget(file, state, key, symbol))
       yield target
 
+  private[metallurgy] def referenceTargetFor(
+      element: PsiElement,
+      module: Module
+  ): ReferenceTargetState =
+    if element.getProject != project || !ModuleDetectionService.get(project).isActive(module) then
+      ReferenceTargetState.Unknown
+    else
+      val current =
+        for
+          file     <- fileKey(element, module)
+          range    <- elementRange(element)
+          document <- currentDocument(element)
+          state    <- Option(files.get(file))
+          if state.committed && state.identity.isInstanceOf[CompilerBackendIdentity.Snapshot] &&
+            state.documentVersion == document.getModificationStamp
+          key      <- state.entryOrder.find(key => key.range == range && key.role == CompilerBackendRole.Reference)
+        yield ReferenceTargetState.Current(
+          state.symbols
+            .get(key)
+            .flatMap(symbol => sourceTarget(module, symbol).orElse(lightTarget(file, state, key, symbol)))
+        )
+      current.getOrElse(ReferenceTargetState.Unknown)
+
   private[metallurgy] def symbolTargetForCompletion(
       file: PsiFile,
       module: Module,
@@ -488,25 +511,27 @@ final class Scala3CompilerBackend(project: Project):
       role: CompilerBackendRole,
       renderedType: String
   ): Option[CompilerBackendState] =
-    try
-      val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
-      Option(typeElement).flatMap: syntax =>
-        if PsiTreeUtil.hasErrorElements(syntax) && acceptsPresentationOnlyType(role) then
-          Some(CompilerBackendState.Rendered(renderedType))
-        else
-          ScalaPsiElementFactory
-            .createTypeFromText(renderedType, element, null)
-            .filter: parsed =>
-              val canonical = parsed.canonicalText
-              !isFallbackType(renderedType, canonical) &&
-              !introducesAny(renderedType, canonical) &&
-              (!PsiTreeUtil.hasErrorElements(syntax) || hasBalancedDelimiters(renderedType))
-            .map: parsed =>
-              val result: TypeResult = Right(parsed)
-              CompilerBackendState.Current(renderedType, result)
-    catch
-      case control: ControlFlowException => throw control
-      case NonFatal(_) => None
+    if role == CompilerBackendRole.Reference then Some(CompilerBackendState.Rendered(renderedType))
+    else
+      try
+        val typeElement = ScalaPsiElementFactory.createTypeElementFromText(renderedType, element, null)
+        Option(typeElement).flatMap: syntax =>
+          if PsiTreeUtil.hasErrorElements(syntax) && acceptsPresentationOnlyType(role) then
+            Some(CompilerBackendState.Rendered(renderedType))
+          else
+            ScalaPsiElementFactory
+              .createTypeFromText(renderedType, element, null)
+              .filter: parsed =>
+                val canonical = parsed.canonicalText
+                !isFallbackType(renderedType, canonical) &&
+                !introducesAny(renderedType, canonical) &&
+                (!PsiTreeUtil.hasErrorElements(syntax) || hasBalancedDelimiters(renderedType))
+              .map: parsed =>
+                val result: TypeResult = Right(parsed)
+                CompilerBackendState.Current(renderedType, result)
+      catch
+        case control: ControlFlowException => throw control
+        case NonFatal(_)                   => None
 
   private def acceptsPresentationOnlyType(role: CompilerBackendRole): Boolean =
     role == CompilerBackendRole.Function

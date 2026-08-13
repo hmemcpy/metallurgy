@@ -3,8 +3,9 @@ package com.hmemcpy.metallurgy.compilerbackend
 import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.module.ModuleUtilCore
-import com.intellij.psi.PsiElement
+import com.intellij.psi.{PsiElement, PsiNamedElement}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiElementFactory
 
 import scala.util.control.NonFatal
 
@@ -33,6 +34,11 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
           case result: Either[?, ?] => result.fold(_ => null, _.asInstanceOf[Object])
           case _                    => null
       case _               => null
+
+  def referenceResolution(element: Object): ReferenceResolutionSelection =
+    element match
+      case psi: PsiElement => referenceResolutionFor(psi)
+      case _               => ReferenceResolutionSelection.FallThrough
 
   private def lookup(element: ScTypeElement): Object =
     try
@@ -90,7 +96,37 @@ private[metallurgy] object BundledCompilerBackendDispatcher:
           case control: ControlFlowException => throw control
           case NonFatal(_)                   => CompilerTypeSelection.Missing
 
+  private def referenceResolutionFor(element: PsiElement): ReferenceResolutionSelection =
+    try
+      val file = element.getContainingFile
+      if file != null && ScalaPsiElementFactory.SyntheticFileKey.isIn(file) then
+        ReferenceResolutionSelection.FallThrough
+      else
+        val module = ModuleUtilCore.findModuleForPsiElement(element)
+        if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then
+          ReferenceResolutionSelection.FallThrough
+        else
+          val backend = Scala3CompilerBackend.get(element.getProject)
+          backend.referenceTargetFor(element, module) match
+            case ReferenceTargetState.Current(target) =>
+              ReferenceResolutionSelection.Current(target.collect:
+                case named: PsiNamedElement => named
+              )
+            case ReferenceTargetState.Unknown         => ReferenceResolutionSelection.Unknown
+    catch
+      case control: ControlFlowException => throw control
+      case NonFatal(_)                   => ReferenceResolutionSelection.Unknown
+
 private[compilerbackend] enum CompilerTypeSelection:
   case Current(value: String)
   case Missing
   case FallThrough
+
+private[compilerbackend] enum ReferenceResolutionSelection:
+  case Current(target: Option[PsiNamedElement])
+  case Unknown
+  case FallThrough
+
+private[compilerbackend] enum ReferenceTargetState:
+  case Current(target: Option[PsiElement])
+  case Unknown

@@ -157,8 +157,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
     ResolveRootSpec(
       "stable reference resolution",
       "org/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference",
-      "doResolve",
-      s"(Lorg/jetbrains/plugins/scala/lang/resolve/processor/BaseProcessor;Z)$ResolveArray"
+      "multiResolveScala",
+      s"(Z)$ResolveArray"
     )
   )
 
@@ -235,7 +235,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
             )
           )
     val targets             = combineTargets(ordinaryTargets ++ expectedTargets)
-    val resolveTargets      = resolveRootSpecs.flatMap(spec => resolveTargetsFor(spec, shapes))
+    val resolvedRoots       = resolveRootSpecs.map(spec => spec -> resolveTargetsFor(spec, shapes))
+    val resolveTargets      = resolvedRoots.flatMap(_._2)
     val rawTypeTargets      = shapes.valuesIterator
       .filter(_.internalName.startsWith(RefactoringPrefix))
       .flatMap: shape =>
@@ -250,8 +251,8 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
               if method.isStatic then 0 else 1
             )
       .toVector
-    val unavailableAdapters = resolveRootSpecs.collect:
-      case spec if !resolveTargets.exists(target => target.methodName == spec.methodName) => spec.label
+    val missingResolveRoots = resolvedRoots.collect:
+      case (spec, targets) if targets.isEmpty => spec.label
     val rawTypeUnavailable  = Option.when(rawTypeTargets.isEmpty)("introduce variable exact type")
     val patterns            = shapes.valuesIterator
       .filter(shape => shape.isConcrete && derivesFrom(shape.internalName, PatternRoot, shapes))
@@ -275,10 +276,10 @@ private[compilerbackend] object CompilerBackendShimDiscovery:
       resolveTargets = resolveTargets,
       rawTypeTargets = rawTypeTargets,
       patternImplementations = patterns,
-      unavailableRoots = unavailable ++ expectedMissing.toVector ++ uncovered.map(pattern =>
+      unavailableRoots = unavailable ++ missingResolveRoots ++ expectedMissing.toVector ++ uncovered.map(pattern =>
         s"pattern implementation ${pattern.className}"
       ),
-      unavailableAdapters = unavailableAdapters ++ rawTypeUnavailable
+      unavailableAdapters = rawTypeUnavailable.toVector
     )
 
   private def resolveTargetsFor(

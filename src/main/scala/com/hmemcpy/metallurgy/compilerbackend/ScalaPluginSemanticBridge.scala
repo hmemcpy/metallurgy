@@ -1,13 +1,9 @@
 package com.hmemcpy.metallurgy.compilerbackend
 
-import com.hmemcpy.metallurgy.module.ModuleDetectionService
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.diagnostic.ControlFlowException
-import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
-import com.intellij.psi.{PsiElement, PsiNamedElement}
-import org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult
+import com.intellij.psi.PsiElement
 import org.jetbrains.plugins.scala.settings.ScalaProjectSettings
 import org.jetbrains.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Opcodes}
 
@@ -17,7 +13,6 @@ import java.security.MessageDigest
 import java.util.jar.JarFile
 import scala.jdk.CollectionConverters.*
 import scala.util.{Try, Using}
-import scala.util.control.NonFatal
 
 private[metallurgy] final case class InstalledScalaPluginArtifact(fileName: String, byteSize: Long, sha256: String)
 private[metallurgy] final case class InstalledScalaPluginMethod(
@@ -56,52 +51,8 @@ object ScalaPluginSemanticBridge:
   def installedPsiSurface(): Either[String, InstalledScalaPluginSurface] =
     InstalledScalaPluginSurfaceScanner.scan(classOf[org.jetbrains.plugins.scala.lang.psi.api.ScalaPsiElement])
 
-  private val resolveGuard: ThreadLocal[java.util.Set[PsiElement]] =
-    ThreadLocal.withInitial(() =>
-      java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[PsiElement, java.lang.Boolean]())
-    )
-
   def install(): CompilerBackendShimStatus =
     BundledCompilerBackendShim.install()
-
-  /** Preserves every non-empty bundled result and supplies a compiler symbol only when bundled resolution found
-    * nothing. A ThreadLocal recursion guard prevents the same reference from being re-resolved within a single
-    * type-resolution cascade (the CompilerType slot triggers createTypeFromText which resolves more references) without
-    * caching stale results across highlighting passes.
-    */
-  def referenceResolution(reference: Object, bundledResult: Object): Object =
-    bundledResult match
-      case results: Array[?] if results.nonEmpty => bundledResult
-      case _: Array[?]                           =>
-        try
-          reference match
-            case element: PsiElement =>
-              val guard = resolveGuard.get()
-              if guard.contains(element) then bundledResult
-              else
-                guard.add(element)
-                try
-                  val module = ModuleUtilCore.findModuleForPsiElement(element)
-                  val result =
-                    if module == null || !ModuleDetectionService.get(element.getProject).isActive(module) then null
-                    else
-                      Scala3CompilerBackend
-                        .get(element.getProject)
-                        .symbolTargetFor(element, module, CompilerBackendRole.Reference)
-                        .collect:
-                          case named: PsiNamedElement => Array(new ScalaResolveResult(named)).asInstanceOf[Object]
-                        .orNull
-                  if result != null then result else bundledResult
-                finally { guard.remove(element); () }
-            case _                   => bundledResult
-        catch
-          case control: ControlFlowException => throw control
-          case NonFatal(error)               =>
-            com.intellij.openapi.diagnostic.Logger
-              .getInstance(classOf[ScalaPluginSemanticBridge.type])
-              .warn(s"referenceResolution fallback failed for $reference", error)
-            bundledResult
-      case _                                     => bundledResult
 
   private lazy val bundledClassLoader: ClassLoader =
     Class.forName("org.jetbrains.plugins.scala.lang.psi.impl.CompilerType").getClassLoader

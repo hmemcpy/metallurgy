@@ -12,10 +12,11 @@ public final class MetallurgyCompilerBackendBridge {
   private static volatile Function<Object, Object> backend;
   private static volatile Function<Object, Object> compilerTypeBackend;
   private static volatile BiFunction<Object, Integer, Object> semanticTypeBackend;
-  private static volatile BiFunction<Object, Object, Object> referenceBackend;
+  private static volatile Function<Object, Object> referenceBackend;
   private static volatile Function<Object, Object> rawExpressionTypeBackend;
   private static volatile boolean enabled;
   private static final Object MISSING_COMPILER_TYPE = new Object();
+  private static final Object MISSING_REFERENCE_RESOLUTION = new Object();
 
   private MetallurgyCompilerBackendBridge() {}
 
@@ -31,7 +32,7 @@ public final class MetallurgyCompilerBackendBridge {
     semanticTypeBackend = candidate;
   }
 
-  public static void installReferenceBackend(BiFunction<Object, Object, Object> candidate) {
+  public static void installReferenceBackend(Function<Object, Object> candidate) {
     referenceBackend = candidate;
   }
 
@@ -41,6 +42,10 @@ public final class MetallurgyCompilerBackendBridge {
 
   public static Object missingCompilerType() {
     return MISSING_COMPILER_TYPE;
+  }
+
+  public static Object missingReferenceResolution() {
+    return MISSING_REFERENCE_RESOLUTION;
   }
 
   public static void enable() {
@@ -79,9 +84,14 @@ public final class MetallurgyCompilerBackendBridge {
     return enabled && current != null ? current.apply(element, role) : null;
   }
 
-  public static Object referenceResolution(Object reference, Object bundledResult) {
-    BiFunction<Object, Object, Object> current = referenceBackend;
-    return enabled && current != null ? current.apply(reference, bundledResult) : bundledResult;
+  public static Object referenceResolution(Object reference) {
+    Function<Object, Object> current = referenceBackend;
+    if (!enabled || current == null) return null;
+    Object value = current.apply(reference);
+    if (value == MISSING_REFERENCE_RESOLUTION) {
+      return new org.jetbrains.plugins.scala.lang.resolve.ScalaResolveResult[0];
+    }
+    return value;
   }
 
   public static Object rawExpressionType(Object expression) {
