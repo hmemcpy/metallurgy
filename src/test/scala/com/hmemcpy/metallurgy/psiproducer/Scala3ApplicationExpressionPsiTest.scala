@@ -224,7 +224,7 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
 
-  def testPositionalTypeApplicationsAreNativeWhileNamedApplicationsKeepOnePayload(): Unit =
+  def testPositionalAndAllNamedTypeApplicationsExposeNativeInvokedCalls(): Unit =
     val source        =
       """import scala.language.experimental.namedTypeArguments
         |val positional = f[Int](x)
@@ -242,9 +242,9 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
     val typeArguments = genericCalls.map(_.typeArgs) ++
       payloads.flatMap(payload => PsiTreeUtil.findChildrenOfType(payload, classOf[ScTypeArgs]).asScala)
 
-    assertEquals(Vector("f[A = Int](x)"), payloads.map(_.getText))
-    assertEquals(Vector("f[Int](x)", "source.f[String](x)"), methodCalls.map(_.getText))
-    assertEquals(Vector("f[Int]", "source.f[String]"), genericCalls.map(_.getText))
+    assertTrue(payloads.isEmpty)
+    assertEquals(Vector("f[Int](x)", "source.f[String](x)", "f[A = Int](x)"), methodCalls.map(_.getText))
+    assertEquals(Vector("f[Int]", "source.f[String]", "f[A = Int]"), genericCalls.map(_.getText))
     methodCalls
       .zip(genericCalls)
       .foreach: (methodCall, genericCall) =>
@@ -258,7 +258,7 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
         .flatMap(_.namedTypeArguments)
         .map(_.getText)
     )
-    assertEquals(Vector("(x)", "(x)"), methodCalls.map(_.args.getText))
+    assertEquals(Vector("(x)", "(x)", "(x)"), methodCalls.map(_.args.getText))
 
   def testConstructorSyntheticApplicationRemainsASeparateHardNegative(): Unit =
     val source  = "val value = new C(x)"

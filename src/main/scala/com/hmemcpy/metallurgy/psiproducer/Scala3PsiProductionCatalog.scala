@@ -439,6 +439,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "payload-descendant-apply"
       ),
       ProductionAlternatives("positional-applied-call-candidate", "definition-payload-applied-call"),
+      ProductionAlternatives("named-invoked-call-candidate", "definition-payload-applied-call"),
+      ProductionAlternatives("named-type-application-candidate", "definition-payload-type-apply-named"),
       ProductionAlternatives("atomic-term-ident", "payload-descendant-ident"),
       ProductionAlternatives("atomic-term-ident", "payload-output-free-ident"),
       ProductionAlternatives("atomic-literal-integer", "payload-descendant-number"),

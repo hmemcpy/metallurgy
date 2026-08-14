@@ -878,6 +878,7 @@ private final class StructuralScala3ParserBridge private (
     case "'}'"                               => ParserScannerTokenKind.RightBrace
     case "','"                               => ParserScannerTokenKind.Comma
     case ":"                                 => ParserScannerTokenKind.Colon
+    case "=" | "'='"                         => ParserScannerTokenKind.Equals
     case "=>"                                => ParserScannerTokenKind.FunctionArrow
     case "?=>"                               => ParserScannerTokenKind.ContextFunctionArrow
     case "identifier" if sourceText == "=>"  => ParserScannerTokenKind.FunctionArrow

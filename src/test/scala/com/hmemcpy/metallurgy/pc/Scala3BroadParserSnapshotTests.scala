@@ -197,7 +197,7 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("9ede9f8e45ed1e336ecce84f1d47a6b5589e3963f113e3a2086928055e9bc904", aggregate.fingerprint)
+      assertEquals("4af93c00e0801e0d2ecb6d1b8c711780bb2b8b0d66162e81b3ff32b8a8e84c92", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,
@@ -302,7 +302,7 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
       assertTrue(
         report,
         report.contains(
-          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:atomic-literal-integer,type-atom-literal-value-integer**"
+          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:atomic-literal-integer,named-invoked-literal-integer,type-atom-literal-value-integer**"
         )
       )
       assertNoUnsupportedValues(first)

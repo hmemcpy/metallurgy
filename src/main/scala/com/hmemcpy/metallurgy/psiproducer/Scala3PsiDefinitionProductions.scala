@@ -473,8 +473,10 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     "definition-payload-infix",
     "definition-payload-type-apply-positional",
     "definition-payload-type-apply-named",
+    "named-type-application-candidate",
     "definition-payload-applied-call",
     "positional-applied-call-candidate",
+    "named-invoked-call-candidate",
     "payload-descendant-number",
     "payload-descendant-ident",
     "payload-descendant-apply",
@@ -490,7 +492,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     payloadExpressionProductionIds.filter(id =>
       id.startsWith("definition-payload-") || id.startsWith("atomic-") || id == "selection-expression" ||
         id == Scala3PsiApplicationExpressionProductions.CandidateProductionId ||
-        id == "positional-applied-call-candidate"
+        Set("positional-applied-call-candidate", "named-invoked-call-candidate", "named-type-application-candidate")(id)
     )
 
   private def zeroOutput(

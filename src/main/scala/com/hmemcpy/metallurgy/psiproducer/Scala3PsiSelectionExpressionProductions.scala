@@ -134,7 +134,9 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
     "selection-qualifier-ident",
     GrammarRoleId.SelectionQualifier,
     selectionQualifierOccurrences("Select", Vector(CatalogPathSegment.NamedField("qualifier"))) ++
-      Scala3PsiDefinitionPayloadProductions.PositionalCandidateSelectionQualifierOccurrences,
+      Scala3PsiDefinitionPayloadProductions.PositionalCandidateSelectionQualifierOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.NamedCandidateSelectionQualifierOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.NamedInvokedSelectionQualifierOccurrences,
     NeutralNameClass.Ordinary,
     output = true
   )
@@ -386,7 +388,9 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
       ),
       directSelectionOccurrences ++ recursiveSelectionOccurrences ++
         Scala3PsiApplicationExpressionProductions.ChildOccurrences ++
-        Scala3PsiDefinitionPayloadProductions.PositionalCandidateFunOccurrences
+        Scala3PsiDefinitionPayloadProductions.PositionalCandidateFunOccurrences ++
+        Scala3PsiDefinitionPayloadProductions.NamedCandidateFunOccurrences ++
+        Scala3PsiDefinitionPayloadProductions.NamedInvokedCandidateFunOccurrences
     ),
     dispositions = Vector(
       FieldDisposition("qualifier", FieldDispositionKind.Child),

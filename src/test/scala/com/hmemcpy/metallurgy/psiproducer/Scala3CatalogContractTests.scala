@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.pc.ParserScannerTokenKind
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -49,13 +50,16 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "selection-super-this-qualified",
         "selection-super-mixin"
       ),
-      GrammarRoleId.ExpressionIntegerLiteral  -> Set("atomic-literal-integer"),
+      GrammarRoleId.ExpressionIntegerLiteral  -> Set(
+        "atomic-literal-integer",
+        "named-invoked-literal-integer"
+      ),
       GrammarRoleId.ExpressionLongLiteral     -> Set("atomic-literal-long"),
       GrammarRoleId.ExpressionFloatLiteral    -> Set("atomic-literal-float"),
       GrammarRoleId.ExpressionDoubleLiteral   -> Set("atomic-literal-double"),
       GrammarRoleId.ExpressionBooleanLiteral  -> Set("atomic-literal-boolean"),
       GrammarRoleId.ExpressionCharLiteral     -> Set("atomic-literal-char"),
-      GrammarRoleId.ExpressionStringLiteral   -> Set("atomic-literal-string"),
+      GrammarRoleId.ExpressionStringLiteral   -> Set("atomic-literal-string", "named-invoked-literal-string"),
       GrammarRoleId.ExpressionNullLiteral     -> Set("atomic-literal-null"),
       GrammarRoleId.ImportSelector            -> Set("import-selector-direct", "import-selector-braced"),
       GrammarRoleId.ImportSelectorName        -> Set(
@@ -141,7 +145,9 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "definition-payload-type-apply-named",
         "payload-descendant-type-apply-positional",
         "payload-descendant-type-apply-named",
-        "positional-applied-type-apply-candidate"
+        "positional-applied-type-apply-candidate",
+        "named-type-application-candidate",
+        "named-invoked-type-application"
       ),
       GrammarRoleId.PositionalTypeArgument    -> Set(
         "type-argument-ident",
@@ -339,7 +345,10 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "type-application-output-free-ident",
         "type-application-output-free-ident-argument",
         "type-application-output-free-number",
-        "type-application-output-free-literal"
+        "type-application-output-free-literal",
+        "named-invoked-output-free-integer",
+        "named-invoked-output-free-string",
+        "named-invoked-output-free-ident"
       ),
       GrammarRoleId.ExpressionTypeApply       -> Set(
         "definition-payload-type-apply-positional",
@@ -348,7 +357,10 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "payload-descendant-type-apply-positional",
         "payload-descendant-type-apply-named",
         "positional-applied-call-candidate",
-        "positional-applied-type-apply-candidate"
+        "named-invoked-call-candidate",
+        "positional-applied-type-apply-candidate",
+        "named-type-application-candidate",
+        "named-invoked-type-application"
       ),
       GrammarRoleId.ExpressionPayload         -> Set(
         "annotation-argument-literal-payload",
@@ -361,6 +373,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "definition-payload-infix",
         "payload-descendant-ident",
         "payload-descendant-number",
+        "payload-descendant-invoked-literal",
+        "payload-invoked-named-arg",
         "payload-descendant-apply",
         "payload-descendant-select",
         "payload-descendant-tuple",
@@ -587,6 +601,94 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 14),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
+
+  @Test def invokedNamedCallDeclarationsKeepBaselineAndEnabledRoutesExact(): Unit =
+    val catalog                              = Scala3PsiProductionCatalog.Reviewed
+    def production(id: String)               = catalog.productions.find(_.id == id).get
+    def contexts(id: String)                 = production(id).pattern.occurrences.map(_.context)
+    def routes(id: String, enabled: Boolean) = contexts(id).collect:
+      case ContextPattern.DescendantOfEnabledCandidateRoot(values) if enabled => values
+      case ContextPattern.DescendantOfOwnedRoot(values) if !enabled           => values
+
+    val positional = production("positional-applied-call-candidate")
+    val outer      = production("named-invoked-call-candidate")
+    val choices    = Vector(positional, outer).map(_.realizationChoice.get)
+    assertEquals(
+      Vector(Vector("positional-applied-call-native"), Vector("named-invoked-call-native")),
+      choices.map(_.candidateIds)
+    )
+    assertEquals(Vector("positional-applied-call-payload", "named-invoked-call-payload"), choices.map(_.fallbackId))
+    assertTrue(choices.forall(_.policy == RealizationChoicePolicy.AtomicWholePlan))
+    assertTrue(
+      positional.pattern.occurrences.forall(_.scannerEvidence.forbidden == Set(ParserScannerTokenKind.Equals))
+    )
+    assertTrue(outer.pattern.occurrences.forall(_.scannerEvidence.required == Set(ParserScannerTokenKind.Equals)))
+    assertEquals(
+      Set("payload-descendant-type-apply-positional", "positional-applied-type-apply-candidate"),
+      positional.children.find(_.roleId == "fun").get.productionIds
+    )
+    assertEquals(
+      Set("payload-descendant-type-apply-named", "named-invoked-type-application"),
+      outer.children.find(_.roleId == "fun").get.productionIds
+    )
+    assertTrue(production("named-invoked-type-application").realizationChoice.isEmpty)
+
+    val argumentPath  = Vector(
+      InventoryAncestor(
+        InventoryKind.Node,
+        "Apply",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+      )
+    )
+    val qualifierPath = Vector(
+      InventoryAncestor(InventoryKind.Node, "Select", Vector(CatalogPathSegment.NamedField("qualifier"))),
+      InventoryAncestor(InventoryKind.Node, "TypeApply", Vector(CatalogPathSegment.NamedField("fun"))),
+      InventoryAncestor(InventoryKind.Node, "Apply", Vector(CatalogPathSegment.NamedField("fun")))
+    )
+    def assertExact(
+        values: Vector[Vector[OwnedRootRoute]],
+        path: Vector[InventoryAncestor],
+        dedicated: Boolean = false
+    ): Unit =
+      val all       = values.flatten
+      val flattened = all.filter(route => route.rootProductionId == outer.id && route.descendantPath == path)
+      assertEquals(4, flattened.size)
+      if dedicated then assertEquals(flattened, all)
+      assertEquals(
+        Set("DefDef" -> "PackageDef", "DefDef" -> "Template", "ValDef" -> "PackageDef", "ValDef" -> "Template"),
+        flattened.map(route => route.rootOwner.ownerPrefix -> route.outerOwner.ownerPrefix).toSet
+      )
+
+    assertExact(routes("payload-output-free-ident", enabled = false), qualifierPath)
+    assertExact(routes("selection-qualifier-ident", enabled = true), qualifierPath)
+    Vector(
+      "named-invoked-output-free-ident",
+      "named-invoked-output-free-integer",
+      "named-invoked-output-free-string"
+    ).foreach(id => assertExact(routes(id, enabled = false), argumentPath, dedicated = true))
+    assertExact(routes("atomic-term-ident", enabled = true), argumentPath)
+    Vector("named-invoked-literal-integer", "named-invoked-literal-string")
+      .foreach(id => assertExact(routes(id, enabled = true), argumentPath, dedicated = true))
+
+    Vector("payload-descendant-apply", "payload-descendant-invoked-literal", "payload-invoked-named-arg")
+      .foreach: id =>
+        val fallback = production(id)
+        assertTrue(
+          fallback.effectiveOutputTemplate.composites.exists(_.outputRoleId == PsiOutputRoleId.ExpressionPayload)
+        )
+        assertTrue(
+          contexts(id).exists:
+            case ContextPattern.ParentWithNodeFieldUnderAnchor(
+                  InventoryKind.Node,
+                  "Apply",
+                  Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+                  "fun",
+                  "TypeApply",
+                  _
+                ) =>
+              true
+            case _ => false
+        )
 
   @Test def conditionOutcomeMatchersChangePersistedIdentity(): Unit =
     val catalog = Scala3PsiProductionCatalog.Reviewed

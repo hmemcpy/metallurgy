@@ -154,7 +154,7 @@ private[metallurgy] final case class ParserScannerToken(
 private[metallurgy] enum ParserScannerTokenKind:
   case Dot, Hash, LeftParenthesis, RightParenthesis, LeftBracket, RightBracket, LeftBrace, RightBrace, Comma, Colon
   case FunctionArrow, ContextFunctionArrow, PureFunctionArrow, ContextPureFunctionArrow
-  case CaptureOperator, Identifier, TypeKeyword, Literal, Other
+  case CaptureOperator, Identifier, TypeKeyword, Literal, Other, Equals
 
 private[metallurgy] final case class ParserRuntimeSupplement(
     ownerNodeId: Long,

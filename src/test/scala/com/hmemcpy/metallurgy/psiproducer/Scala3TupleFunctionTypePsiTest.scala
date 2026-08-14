@@ -17,6 +17,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScTupleTypeElement
 }
 import org.jetbrains.plugins.scala.lang.psi.api.statements.params.ScParameter
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScMethodCall}
 import org.jetbrains.plugins.scala.lang.psi.stubs.ScParameterStub
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
 import org.junit.Assert.{assertEquals, assertNotNull, assertSame, assertTrue}
@@ -336,10 +337,13 @@ final class Scala3TupleFunctionTypePsiTest extends Scala3CompatTestCase:
         |""".stripMargin
     val file   = physical("TupleFunctionApplicability1.scala", source)
     val call   = PsiTreeUtil
-      .findChildrenOfType(file, classOf[MetallurgyExpressionPayload])
+      .findChildrenOfType(file, classOf[ScMethodCall])
       .asScala
       .find(_.getText == "construct[Coll = List](1, 2, 3)")
     assertTrue(call.toString, call.nonEmpty)
+    assertEquals("construct[Coll = List]", call.get.getInvokedExpr.getText)
+    assertTrue(call.get.getInvokedExpr.isInstanceOf[ScGenericCall])
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).isEmpty)
 
   private def physical(name: String, source: String) =
     val pending = myFixture.addFileToProject(s"src/$name", source)

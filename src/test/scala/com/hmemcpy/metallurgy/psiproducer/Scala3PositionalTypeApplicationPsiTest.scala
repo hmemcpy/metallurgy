@@ -116,17 +116,16 @@ final class Scala3PositionalTypeApplicationPsiTest extends Scala3CompatTestCase:
         override def run(): Unit = document.insertString(document.getText.indexOf("String"), "A = ")
     )
     PsiDocumentManager.getInstance(getProject).commitDocument(document)
-    assertNull(pointer.getElement)
+    assertEquals("source.f[A = String]", pointer.getElement.getText)
     FileContentUtilCore.reparseFiles(java.util.List.of(file.getVirtualFile))
     val reparsed = PsiManager.getInstance(getProject).findFile(file.getVirtualFile)
-    val payload  = PsiTreeUtil.findChildOfType(reparsed, classOf[MetallurgyExpressionPayload])
-    assertEquals("source.f[A = String](x)", payload.getText)
-    assertTrue(PsiTreeUtil.findChildrenOfType(payload, classOf[ScGenericCall]).isEmpty)
+    assertEquals(Vector("source.f[A = String]"), genericCalls(reparsed).map(_.getText))
+    assertNull(PsiTreeUtil.findChildOfType(reparsed, classOf[MetallurgyExpressionPayload]))
 
   def testExcludedFormsNeverExposeGenericCalls(): Unit =
     val sources = Vector(
-      "import scala.language.experimental.namedTypeArguments\nval result = f[A = Int]",
-      "import scala.language.experimental.namedTypeArguments\nval result = f[A = Int](x)",
+      "val result = f[Int](1)",
+      "val result = f[Int](\"text\")",
       "val result = f[Int]()",
       "val result = f[Int](using x)",
       "val result = f[Int](name = x)",

@@ -109,7 +109,10 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     ReferenceExpressionSurface,
     TermReferenceAccessors,
     additionalOccurrences = Scala3PsiDefinitionPayloadProductions.PositionalCandidateFunOccurrences ++
-      Scala3PsiDefinitionPayloadProductions.PositionalCandidateTermArgumentOccurrences
+      Scala3PsiDefinitionPayloadProductions.PositionalCandidateTermArgumentOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.NamedCandidateFunOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.NamedInvokedCandidateFunOccurrences ++
+      Scala3PsiDefinitionPayloadProductions.NamedInvokedLiteralArgumentOccurrences
   )
 
   private val integerLiteral = atomicExpression(
