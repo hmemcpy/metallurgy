@@ -149,7 +149,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                   unavailableRealizations,
                   PlanningWorkObserver.NoOp,
                   roots
-                ).exists(plan => provesCandidates(plan, roots))
+                ) match
+                  case Left(_)     => false
+                  case Right(plan) => provesCandidates(plan, roots)
               compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
             case _                                       =>
               compileAttempt(
@@ -944,7 +946,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                               assessNestedRequirements(
                                 child,
                                 selected(child).nestedChildRequirements,
-                                visited = Set.empty
+                                visited = Vector.empty
                               )
                               Right(())
                             else
@@ -959,22 +961,26 @@ private[metallurgy] object WholeFileProductionPlanner:
                     def assessNestedRequirements(
                         child: ProductionInstanceId,
                         requirements: Vector[RequiredChildRootOutcome],
-                        visited: Set[ProductionInstanceId]
+                        visited: Vector[ProductionInstanceId]
                     ): Unit =
-                      if visited(child) then
-                        break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(
-                          ProductionParticipationFailure.SharedClosureNode(child, child, Vector.empty)
-                        )))
+                      if visited.contains(child) then
+                        break(
+                          Left(
+                            WholeFilePlanningFailure.InvalidProductionParticipation(
+                              ProductionParticipationFailure.CyclicClosure(visited :+ child)
+                            )
+                          )
+                        )
                       requirements.foreach: requirement =>
-                        val nestedRoleChildren = compilerChildren
+                        val nestedRoleChildren                                                                = compilerChildren
                           .getOrElse(child, Vector.empty)
                           .collect { case (rid, _, grand) if rid == requirement.roleId => grand }
                         def assessGrand(grand: ProductionInstanceId, expected: ChildOutcomeExpectation): Unit =
                           assessChild(grand, expected) match
-                            case Left(_) => break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(
-                                ProductionParticipationFailure.SharedClosureNode(grand, grand, Vector.empty))))
-                            case Right(_)      =>
-                              assessNestedRequirements(grand, requirement.nestedRequirements, visited + grand)
+                            case Left(reason) =>
+                              break(Left(reason))
+                            case Right(_)     =>
+                              assessNestedRequirements(grand, requirement.nestedRequirements, visited :+ child)
                         requirement.rootOutcome match
                           case ChildRootOutcome.One(expected) =>
                             nestedRoleChildren match

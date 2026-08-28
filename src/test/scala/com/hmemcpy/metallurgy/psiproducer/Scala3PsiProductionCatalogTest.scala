@@ -8,4 +8,5 @@ final class Scala3PsiProductionCatalogTest
       Scala3CatalogValidationTests,
       Scala3CatalogPreparationTests,
       ProductionParticipationPlannerTests,
+      Scala3NestedChildRequirementPlanningTests,
       Scala3WholeFileProductionPlanningTests

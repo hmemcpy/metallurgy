@@ -701,14 +701,11 @@ private[metallurgy] object NativePsiElementBindings:
               typed.typeElement.isEmpty && typed.isSequenceArg &&
               !typed.hasAnnotation && typed.annotations.isEmpty && typed.getParent == nativeRepeatedArguments.get &&
               nativeRepeatedSequence.exists: sequence =>
+                val starChildren = sequence.getNode.getChildren(null).toVector.map(_.getPsi)
                 sequence.getClass.getName == "org.jetbrains.plugins.scala.lang.psi.impl.base.types.ScSequenceArgImpl" &&
-                  sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence) &&
-                  sequence.getNode
-                    .getChildren(null)
-                    .toVector
-                    .map(_.getPsi)
-                    .forall: star =>
-                      star.getText == "*" && star.getNode.getElementType == ScalaTokenTypes.tIDENTIFIER
+                sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence) &&
+                starChildren.size == 1 && starChildren.head.getText == "*" &&
+                starChildren.head.getNode.getElementType == ScalaTokenTypes.tIDENTIFIER
       catch case NonFatal(_) => false
     val nativeUsingKeyword                                     = nativeUsingArguments.toVector
       .flatMap(_.getNode.getChildren(null))

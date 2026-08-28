@@ -139,7 +139,7 @@ final class RealizationChoiceSelectorTest:
     assertEquals("second", selected.realization.id)
     assertEquals(Vector("second"), assessed)
 
-  @Test def overlappingAndMissingCandidateEvidenceFailBeforeAssessment(): Unit =
+  @Test def overlappingCandidateEvidenceFailsBeforeAssessment(): Unit =
     val first       = realization("first")
     val second      = realization("second")
     val fallback    = realization("fallback")
@@ -149,15 +149,46 @@ final class RealizationChoiceSelectorTest:
     )
     var assessments = 0
 
-    Vector(Vector(first, second, fallback), Vector(fallback)).foreach: matches =>
-      val result = RealizationChoiceSelector.select(
+    val result = RealizationChoiceSelector.select(
+      production,
+      Vector(first, second, fallback),
+      _ =>
+        assessments += 1
+        Right(Vector.empty)
+    )
+    assertTrue(result.left.exists(_.isInstanceOf[RealizationChoiceFailure.CandidateEvidence]))
+    assertEquals(0, assessments)
+
+  @Test def missingCandidateEvidenceSelectsTheFallbackWithRecordedReasons(): Unit =
+    val first       = realization("first")
+    val second      = realization("second")
+    val fallback    = realization("fallback")
+    val production  = choiceProduction.copy(
+      outputRealizations = Vector(first, second, fallback),
+      realizationChoice = Some(RealizationChoice(Vector("first", "second"), "fallback"))
+    )
+    var assessments = 0
+
+    val selected = RealizationChoiceSelector
+      .select(
         production,
-        matches,
+        Vector(fallback),
         _ =>
           assessments += 1
           Right(Vector.empty)
       )
-      assertTrue(result.left.exists(_.isInstanceOf[RealizationChoiceFailure.CandidateEvidence]))
+      .fold(error => throw new AssertionError(error.toString), identity)
+
+    assertEquals(
+      RealizationSelectionReason.CompleteFallback(
+        Vector(
+          CandidateInapplicability.ExcludedCandidateEvidence("parent", "first"),
+          CandidateInapplicability.ExcludedCandidateEvidence("parent", "second")
+        )
+      ),
+      selected.reason
+    )
+    assertEquals("fallback", selected.realization.id)
     assertEquals(0, assessments)
 
   @Test def ambiguousMissingAndExtraAlternativesFailClosed(): Unit =

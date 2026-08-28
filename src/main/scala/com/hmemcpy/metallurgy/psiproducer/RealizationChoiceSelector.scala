@@ -14,6 +14,7 @@ private[metallurgy] enum CandidateRealizationDefect:
 private[metallurgy] enum CandidateInapplicability:
   case ExcludedTypeApplication
   case ExcludedRootAttachment(attachment: AttachmentEvidence)
+  case ExcludedCandidateEvidence(productionId: String, candidateId: String)
   case UnavailableHostBinding(productionId: String, realizationId: String)
   case MissingChildRoot(roleId: String, child: ProductionInstanceId, productionId: String, realizationId: String)
   case UnsupportedChildRoot(roleId: String, child: ProductionInstanceId, outputRoleId: PsiOutputRoleId)
@@ -109,7 +110,16 @@ private[metallurgy] object RealizationChoiceSelector:
               case Vector() => SelectedRealization(candidate, RealizationSelectionReason.PreferredCandidate)
               case reasons  => SelectedRealization(fallback, RealizationSelectionReason.CompleteFallback(reasons))
         case Vector()          =>
-          Left(RealizationChoiceFailure.CandidateEvidence(production.id, "no declared native candidate matches"))
+          Right(
+            SelectedRealization(
+              byId(choice.fallbackId).head,
+              RealizationSelectionReason.CompleteFallback(
+                choice.candidateIds.map(candidateId =>
+                  CandidateInapplicability.ExcludedCandidateEvidence(production.id, candidateId)
+                )
+              )
+            )
+          )
         case values            =>
           Left(
             RealizationChoiceFailure.CandidateEvidence(
