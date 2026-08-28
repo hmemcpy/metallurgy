@@ -34,6 +34,8 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
         |val values = Seq(2)
         |object source:
         |  def repeated(xs: Int*): Int = xs.sum
+        |val literalInt = repeated(1*)
+        |val literalText = texts("a"*)
         |""".stripMargin
     val file   = physical("RepeatedArguments1.scala", source)
     val calls  = descendants[ScMethodCall](file)
@@ -46,7 +48,9 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
         "repeated(xs*)",
         "Seq(1)",
         "Seq(\"a\")",
-        "Seq(2)"
+        "Seq(2)",
+        "repeated(1*)",
+        "texts(\"a\"*)"
       ),
       calls.map(_.getText)
     )
@@ -61,7 +65,7 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       assertEquals(1, call.args.getArgsCount)
 
     val typed = descendants[ScTypedExpression](file).sortBy(_.getTextRange.getStartOffset)
-    assertEquals(Vector("xs*", "words*", "values*", "xs*"), typed.map(_.getText))
+    assertEquals(Vector("xs*", "words*", "values*", "xs*", "1*", "\"a\"*"), typed.map(_.getText))
     typed.foreach: expression =>
       assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScTypedExpressionImpl", expression.getClass.getName)
       assertTrue(expression.isSequenceArg)
@@ -69,11 +73,14 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       assertFalse(expression.hasAnnotation)
       assertTrue(expression.annotations.isEmpty)
       assertTrue(expression.getParent.isInstanceOf[ScArgumentExprList])
-      assertTrue(expression.expr.isInstanceOf[ScReferenceExpressionImpl])
+      assertTrue(
+        expression.expr.isInstanceOf[ScReferenceExpressionImpl] ||
+          expression.expr.isInstanceOf[org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScIntegerLiteral] ||
+          expression.expr.isInstanceOf[org.jetbrains.plugins.scala.lang.psi.api.base.literals.ScStringLiteral]
+      )
       assertSame(expression, expression.expr.getParent)
       assertTrue(
-        expression.expr.getText == "xs" || expression.expr.getText == "words" || expression.expr.getText ==
-          "values"
+        Vector("xs", "words", "values", "1", "\"a\"").contains(expression.expr.getText)
       )
       var visited = false
       expression.accept(
@@ -185,13 +192,16 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
         "repeated(xs*)",
         "repeated",
         "xs",
-        "repeated(source.values*)",
+        "source.values",
         "single(1: Int)"
       ),
       payloads.map(_.getText)
     )
     assertTrue(descendants[ScMethodCall](file).forall(!_.getText.contains("repeated")))
-    assertTrue(descendants[ScTypedExpression](file).isEmpty)
+    val strayTyped = descendants[ScTypedExpression](file)
+    assertTrue(s"stray typed: ${strayTyped.map(_.getText)}", strayTyped.isEmpty)
+    val straySeq = descendants[ScSequenceArg](file)
+    assertTrue(s"stray seq: ${straySeq.map(_.getText)} parent=${straySeq.map(_.getParent.getText)}", straySeq.isEmpty)
     assertTrue(descendants[ScSequenceArg](file).isEmpty)
     payloads.foreach: payload =>
       assertEquals(payload.getText, payload.getTextRange.substring(source))

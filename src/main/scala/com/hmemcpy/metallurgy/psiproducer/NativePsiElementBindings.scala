@@ -696,10 +696,15 @@ private[metallurgy] object NativePsiElementBindings:
           arguments.getText == "(atomicInteger, nativeInts*)" && arguments.exprs.size == 2 && !arguments.isUsing
         ) && nativeRepeatedTyped.size == 1 &&
           nativeRepeatedTyped.forall: typed =>
-            typed.expr.getText == "nativeInts" && typed.typeElement.isEmpty && typed.isSequenceArg &&
+            typed.getClass.getName == "org.jetbrains.plugins.scala.lang.psi.impl.expr.ScTypedExpressionImpl" &&
+              typed.expr.getText == "nativeInts" && typed.expr.isInstanceOf[ScReferenceExpression] &&
+              typed.typeElement.isEmpty && typed.isSequenceArg &&
               !typed.hasAnnotation && typed.annotations.isEmpty && typed.getParent == nativeRepeatedArguments.get &&
               nativeRepeatedSequence.exists: sequence =>
-                sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence)
+                sequence.getClass.getName == "org.jetbrains.plugins.scala.lang.psi.impl.base.types.ScSequenceArgImpl" &&
+                  sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence) &&
+                  sequence.getNode.getChildren(null).toVector.map(_.getPsi).forall: star =>
+                    star.getText == "*" && star.getNode.getElementType == ScalaTokenTypes.tIDENTIFIER
       catch case NonFatal(_) => false
     val nativeUsingKeyword                                     = nativeUsingArguments.toVector
       .flatMap(_.getNode.getChildren(null))

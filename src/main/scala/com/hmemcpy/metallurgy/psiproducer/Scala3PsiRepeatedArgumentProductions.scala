@@ -196,7 +196,19 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         "expr",
         ChildCardinality.ExactlyOne,
         "atomic-term-ident",
-        Set("atomic-literal-integer", "atomic-literal-string")
+        Set(
+          "atomic-literal-integer",
+          "atomic-literal-string",
+          "payload-descendant-ident",
+          "payload-descendant-number",
+          "payload-descendant-invoked-literal",
+          "payload-descendant-select",
+          "payload-descendant-apply",
+          "payload-descendant-tuple",
+          "payload-descendant-block",
+          "payload-descendant-infix",
+          "repeated-term-output-free-string"
+        )
       ),
       ChildDeclaration(
         "type-evidence",
@@ -278,7 +290,8 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         "payload-descendant-tuple",
         "payload-descendant-block",
         "payload-descendant-infix",
-        "payload-output-free-ident"
+        "payload-output-free-ident",
+        "repeated-term-output-free-string"
       )
     ),
     ChildDeclaration(
