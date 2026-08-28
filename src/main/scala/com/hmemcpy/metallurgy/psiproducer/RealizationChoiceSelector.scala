@@ -14,6 +14,7 @@ private[metallurgy] enum CandidateRealizationDefect:
 private[metallurgy] enum CandidateInapplicability:
   case ExcludedTypeApplication
   case ExcludedRootAttachment(attachment: AttachmentEvidence)
+  case UnavailableHostBinding(productionId: String, realizationId: String)
   case MissingChildRoot(roleId: String, child: ProductionInstanceId, productionId: String, realizationId: String)
   case UnsupportedChildRoot(roleId: String, child: ProductionInstanceId, outputRoleId: PsiOutputRoleId)
 

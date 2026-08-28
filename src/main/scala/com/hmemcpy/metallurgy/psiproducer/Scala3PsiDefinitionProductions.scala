@@ -464,6 +464,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     "atomic-this-qualified",
     "selection-expression",
     Scala3PsiApplicationExpressionProductions.CandidateProductionId,
+    Scala3PsiNamedArgumentProductions.CandidateProductionId,
     "definition-payload-number",
     "definition-payload-ident",
     "definition-payload-apply",
@@ -492,6 +493,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     payloadExpressionProductionIds.filter(id =>
       id.startsWith("definition-payload-") || id.startsWith("atomic-") || id == "selection-expression" ||
         id == Scala3PsiApplicationExpressionProductions.CandidateProductionId ||
+        id == Scala3PsiNamedArgumentProductions.CandidateProductionId ||
         Set("positional-applied-call-candidate", "named-invoked-call-candidate", "named-type-application-candidate")(id)
     )
 

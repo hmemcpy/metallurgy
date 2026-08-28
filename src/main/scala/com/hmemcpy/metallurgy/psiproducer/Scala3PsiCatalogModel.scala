@@ -60,6 +60,7 @@ private[metallurgy] object GrammarRoleId:
   val QualifiedThisReference    = GrammarRoleId("scala.expression.reference.this-qualified")
   val SelectionExpression       = GrammarRoleId("scala.expression.selection")
   val OrdinaryApplication       = GrammarRoleId("scala.expression.application.ordinary")
+  val NamedArgument             = GrammarRoleId("scala.expression.application.argument.named")
   val SuperReference            = GrammarRoleId("scala.expression.reference.super")
   val SelectionQualifier        = GrammarRoleId("scala.expression.selection.qualifier")
   val ExpressionIntegerLiteral  = GrammarRoleId("scala.expression.literal.integer")
@@ -212,6 +213,8 @@ private[metallurgy] enum OutputBoundary:
   case ProductionEnd(policy: PositionProvenancePolicy = PositionProvenancePolicy.SourceDerivedOnly)
   case ProductionPoint
   case ProductionNameEnd
+  case ProductionFirstIdentifierStart
+  case ProductionFirstIdentifierEnd
   case ParentProductionEnd
   case TemplateLayoutStart
   case PreviousSignificantChildTokenStart(
@@ -319,6 +322,7 @@ private[metallurgy] object PsiOutputRoleId:
   val GenericCall           = PsiOutputRoleId("scala.expression.type-application.generic-call")
   val MethodCall            = PsiOutputRoleId("scala.expression.application.method-call")
   val ArgumentExpressions   = PsiOutputRoleId("scala.expression.application.arguments")
+  val NamedArgument         = PsiOutputRoleId("scala.expression.application.argument.named-compatible")
   val SuperReference        = PsiOutputRoleId("scala.expression.reference.super")
   val IntegerExpression     = PsiOutputRoleId("scala.expression.literal.integer")
   val LongExpression        = PsiOutputRoleId("scala.expression.literal.long")
@@ -429,6 +433,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.QualifiedThisReference,
       GrammarRoleId.SelectionExpression,
       GrammarRoleId.OrdinaryApplication,
+      GrammarRoleId.NamedArgument,
       GrammarRoleId.SuperReference,
       GrammarRoleId.SelectionQualifier,
       GrammarRoleId.ExpressionIntegerLiteral,
@@ -524,6 +529,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.GenericCall,
       PsiOutputRoleId.MethodCall,
       PsiOutputRoleId.ArgumentExpressions,
+      PsiOutputRoleId.NamedArgument,
       PsiOutputRoleId.SuperReference,
       PsiOutputRoleId.IntegerExpression,
       PsiOutputRoleId.LongExpression,
@@ -779,6 +785,11 @@ private[metallurgy] enum ChildOutcomeExpectation:
   case Realization(realizationId: String)
   case OutputRole(role: PsiOutputRoleId)
   case OutputRoles(roles: Set[PsiOutputRoleId])
+  case AnyOf(expectations: Vector[ChildOutcomeExpectation])
+
+  def alternatives: Vector[ChildOutcomeExpectation] = this match
+    case AnyOf(expectations) => expectations.flatMap(_.alternatives)
+    case expectation         => Vector(expectation)
 private[metallurgy] final case class ChildOutcomeCondition(
     roleId: String,
     occurrence: ChildOccurrenceSelector,
@@ -810,6 +821,8 @@ private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)
   case RepeatedFieldSize(fieldName: String, minimum: Int, maximum: Option[Int])
+  case RepeatedNodeFieldDistinct(repeatedFieldName: String, nodePrefix: String, nodeFieldName: String)
+  case RepeatedNodesTrailingPrefix(repeatedFieldName: String, nodePrefix: String)
   case ProductionStartsWith(kind: ClosedSourceLexicalKind, present: Boolean)
   case RuntimeSupplementPositive(fieldName: String, present: Boolean)
   case LeadingBeforeRuntimeTailPresent(repeatedFieldName: String, countFieldName: String, present: Boolean)

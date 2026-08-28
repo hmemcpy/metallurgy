@@ -25,7 +25,8 @@ private[psiproducer] object Scala3PsiApplicationExpressionProductions:
             Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
           )
         ),
-        SourceClassification.SourceReachable
+        SourceClassification.SourceReachable,
+        ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Equals))
       )
 
   private val TraversedApplications = Vector(

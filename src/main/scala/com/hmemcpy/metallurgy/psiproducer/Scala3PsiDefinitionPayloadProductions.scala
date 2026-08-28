@@ -94,7 +94,9 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "definition-payload-applied-call",
     "positional-applied-call-candidate",
     "named-invoked-call-candidate",
+    "named-term-application-candidate",
     "payload-descendant-number",
+    "payload-descendant-invoked-literal",
     "payload-descendant-ident",
     "payload-descendant-apply",
     "payload-descendant-select",
@@ -109,13 +111,16 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "payload-qualifier-ident",
     "payload-qualifier-this",
     "payload-qualifier-super",
-    "payload-descendant-named-arg"
+    "payload-descendant-named-arg",
+    "named-term-output-free-integer",
+    "named-term-output-free-string"
   )
 
   private val payloadRootIds            = payloadExpressionProductionIds.filter(id =>
     id.startsWith("definition-payload-") ||
       id == "positional-applied-call-candidate" ||
-      id == "named-invoked-call-candidate"
+      id == "named-invoked-call-candidate" ||
+      id == "named-term-application-candidate"
   )
   private val payloadLocalDefinitionIds = Set("payload-descendant-val", "payload-descendant-var")
 
@@ -551,6 +556,34 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "Ident",
     Vector(CompilerFieldPattern("name", CatalogValuePattern.Name)),
     NamedInvokedArgumentFallbackOccurrences
+  )
+
+  private val namedTermOutputFreeInteger = outputFreeExpressionProduction(
+    "named-term-output-free-integer",
+    "Number",
+    Vector(
+      CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+      CompilerFieldPattern(
+        "kind",
+        CatalogValuePattern.Product(
+          "Whole",
+          Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer")))
+        )
+      )
+    ),
+    Scala3PsiNamedArgumentProductions.CandidateNamedValueFallbackOccurrences
+  )
+
+  private val namedTermOutputFreeString = outputFreeExpressionProduction(
+    "named-term-output-free-string",
+    "Literal",
+    Vector(
+      CompilerFieldPattern(
+        "const",
+        CatalogValuePattern.Product("", Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar("Text"))))
+      )
+    ),
+    Scala3PsiNamedArgumentProductions.CandidateNamedValueFallbackOccurrences
   )
 
   private def namedInvokedLiteralProduction(
@@ -1087,7 +1120,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
               "named-invoked-literal-string",
               "payload-descendant-apply",
               "payload-descendant-invoked-literal",
-              "payload-invoked-named-arg"
+              "payload-descendant-named-arg"
             )
           else
             Set(
@@ -1452,7 +1485,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     val candidateFallbackOccurrences =
       Option
         .when(
-          Set("payload-descendant-apply", "payload-descendant-invoked-literal", "payload-invoked-named-arg")(id)
+          Set("payload-descendant-apply", "payload-descendant-invoked-literal")(id)
         )(
           ExpressionTypeApplicationAnchors.map: anchor =>
             CompilerProductionContextPattern(
@@ -1609,31 +1642,6 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       ),
       Vector(FieldDisposition("const", FieldDispositionKind.SemanticOnly)),
       Vector.empty
-    ),
-    payloadDescendant(
-      "payload-invoked-named-arg",
-      "NamedArg",
-      Vector(
-        CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary)),
-        CompilerFieldPattern("arg", CatalogValuePattern.Node)
-      ),
-      Vector(
-        FieldDisposition("name", FieldDispositionKind.SemanticOnly),
-        FieldDisposition("arg", FieldDispositionKind.Child)
-      ),
-      Vector(
-        ChildDeclaration(
-          "argument",
-          "arg",
-          ChildCardinality.ExactlyOne,
-          payloadExpressionProductionIds.head,
-          payloadExpressionProductionIds.tail ++ Set(
-            "atomic-term-ident",
-            "atomic-literal-integer",
-            "atomic-literal-string"
-          )
-        )
-      )
     ),
     payloadDescendant(
       "payload-descendant-apply",
@@ -1949,20 +1957,39 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
         "arg",
         ChildCardinality.ExactlyOne,
         payloadExpressionProductionIds.head,
-        payloadExpressionProductionIds.tail
+        payloadExpressionProductionIds.tail + "expression-named-type-argument-type"
       )
     ),
     Vector(
       CompilerProductionContextPattern(
         ContextPattern.DescendantOfOwnedRoot(
           ownedRootRoutes(
-            Vector("definition-payload-apply"),
+            Vector("definition-payload-apply", "payload-descendant-apply"),
             Vector(Vector(nodeEdge("Apply", "args", repeated = true)))
+          ) ++ Vector(
+            OwnedRootRoute(
+              "definition-payload-apply",
+              Vector(nodeEdge("Apply", "args", repeated = true)),
+              nodeEdge("ValDef", "preRhs"),
+              nodeEdge("Block", "stats", repeated = true)
+            )
           )
         ),
         SourceClassification.SourceReachable
       )
-    )
+    ) ++ Scala3PsiNamedArgumentProductions.CandidateArgumentFallbackOccurrences ++
+      ExpressionTypeApplicationAnchors.map: anchor =>
+        CompilerProductionContextPattern(
+          ContextPattern.ParentWithNodeFieldUnderAnchor(
+            InventoryKind.Node,
+            "Apply",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+            "fun",
+            "TypeApply",
+            anchor
+          ),
+          SourceClassification.SourceReachable
+        )
   )
 
   private def payloadLocalDefinition(id: String, flags: Long, mutable: Boolean): Scala3PsiProduction =
@@ -2012,6 +2039,8 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       namedInvokedOutputFreeInteger,
       namedInvokedOutputFreeString,
       namedInvokedOutputFreeIdent,
+      namedTermOutputFreeInteger,
+      namedTermOutputFreeString,
       namedInvokedIntegerLiteral,
       namedInvokedStringLiteral,
       appliedCallOutputFreeIdent,

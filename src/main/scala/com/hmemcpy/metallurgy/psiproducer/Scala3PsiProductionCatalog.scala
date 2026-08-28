@@ -105,7 +105,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
             production.children
               .filter(_.roleId == roleId)
               .flatMap: child =>
-                expected match
+                expected.alternatives.flatMap:
                   case ChildOutcomeExpectation.Production(productionId)   =>
                     child.productionIds.filter(_ == productionId)
                   case ChildOutcomeExpectation.Realization(realizationId) =>
@@ -132,6 +132,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                           )
                         )
                     )
+                  case ChildOutcomeExpectation.AnyOf(_)                   => Set.empty
               .toSet
           production.effectiveOutputRealizations.flatMap: realization =>
             realization.conditions.flatMap(condition => dependencies(condition.roleId, condition.expected)) ++
@@ -412,6 +413,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiModifierAnnotationProductions.ModifierAnnotationSegment ++
       Scala3PsiTemplateProductions.TemplateSegment ++
       Scala3PsiDefinitionProductions.DefinitionSegment ++
+      Scala3PsiNamedArgumentProductions.NamedArgumentSegment ++
       Scala3PsiApplicationExpressionProductions.ApplicationExpressionSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
@@ -426,6 +428,11 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiTypeAtomProductions.TypeAtomSegment,
     StableRoleInventory.Reviewed,
     Vector(
+      ProductionAlternatives(
+        Scala3PsiNamedArgumentProductions.CandidateProductionId,
+        Scala3PsiApplicationExpressionProductions.FallbackProductionId
+      ),
+      ProductionAlternatives("term-named-argument", "payload-descendant-named-arg"),
       ProductionAlternatives(
         Scala3PsiApplicationExpressionProductions.CandidateProductionId,
         Scala3PsiApplicationExpressionProductions.FallbackProductionId
@@ -444,6 +451,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives("atomic-term-ident", "payload-descendant-ident"),
       ProductionAlternatives("atomic-term-ident", "payload-output-free-ident"),
       ProductionAlternatives("atomic-literal-integer", "payload-descendant-number"),
+      ProductionAlternatives("atomic-literal-integer", "named-term-output-free-integer"),
+      ProductionAlternatives("atomic-literal-string", "named-term-output-free-string"),
       ProductionAlternatives("selection-expression", "payload-descendant-select"),
       ProductionAlternatives("selection-expression", "payload-output-free-select")
     )

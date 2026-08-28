@@ -42,7 +42,11 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.ThisReference             -> Set("atomic-this-unqualified", "selection-this-unqualified"),
       GrammarRoleId.QualifiedThisReference    -> Set("atomic-this-qualified", "selection-this-qualified"),
       GrammarRoleId.SelectionExpression       -> Set("selection-expression"),
-      GrammarRoleId.OrdinaryApplication       -> Set("ordinary-application-candidate"),
+      GrammarRoleId.OrdinaryApplication       -> Set(
+        "ordinary-application-candidate",
+        "named-term-application-candidate"
+      ),
+      GrammarRoleId.NamedArgument             -> Set("term-named-argument"),
       GrammarRoleId.SuperReference            -> Set("selection-super-reference"),
       GrammarRoleId.SelectionQualifier        -> Set(
         "selection-qualifier-ident",
@@ -348,7 +352,9 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "type-application-output-free-literal",
         "named-invoked-output-free-integer",
         "named-invoked-output-free-string",
-        "named-invoked-output-free-ident"
+        "named-invoked-output-free-ident",
+        "named-term-output-free-integer",
+        "named-term-output-free-string"
       ),
       GrammarRoleId.ExpressionTypeApply       -> Set(
         "definition-payload-type-apply-positional",
@@ -374,7 +380,6 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "payload-descendant-ident",
         "payload-descendant-number",
         "payload-descendant-invoked-literal",
-        "payload-invoked-named-arg",
         "payload-descendant-apply",
         "payload-descendant-select",
         "payload-descendant-tuple",
@@ -670,7 +675,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     Vector("named-invoked-literal-integer", "named-invoked-literal-string")
       .foreach(id => assertExact(routes(id, enabled = true), argumentPath, dedicated = true))
 
-    Vector("payload-descendant-apply", "payload-descendant-invoked-literal", "payload-invoked-named-arg")
+    Vector("payload-descendant-apply", "payload-descendant-invoked-literal")
       .foreach: id =>
         val fallback = production(id)
         assertTrue(

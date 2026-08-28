@@ -88,16 +88,33 @@ private[metallurgy] object WholeFileProductionPlanner:
       val validation =
         Scala3PsiProductionCatalogValidator.validateExecutable(prepared.catalog, compiler, prepared.surfaces)
       if validation.nonEmpty then Left(WholeFilePlanningFailure.InvalidCatalog(validation))
-      else compileClosedSubset(snapshot, evidence, prepared.catalog, compiler, workObserver)
+      else
+        compileClosedSubset(
+          snapshot,
+          evidence,
+          prepared.catalog,
+          compiler,
+          prepared.unavailableRealizations,
+          workObserver
+        )
 
   private def compileClosedSubset(
       snapshot: ParserSyntaxSnapshot,
       evidence: ProvisionalSourceEvidencePlan,
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory,
+      unavailableRealizations: Set[(String, String)],
       workObserver: PlanningWorkObserver
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
-    compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, Set.empty).flatMap: baseline =>
+    compileAttempt(
+      snapshot,
+      evidence,
+      catalog,
+      compiler,
+      unavailableRealizations,
+      PlanningWorkObserver.NoOp,
+      Set.empty
+    ).flatMap: baseline =>
       def provesCandidates(plan: WholeFileProductionPlan, roots: Set[ProductionInstanceId]): Boolean =
         val selections = plan.realizationSelections.map(value => value.owner -> value.reason).toMap
         roots.forall(root => selections.get(root).contains(RealizationSelectionReason.PreferredCandidate))
@@ -118,12 +135,26 @@ private[metallurgy] object WholeFileProductionPlanner:
             .filter(_ => candidateRoots.size == candidateOwners.size) match
             case Some(candidates) if candidates.nonEmpty =>
               val accepted = AtomicWholePlanTrials.select(candidates): roots =>
-                compileAttempt(snapshot, evidence, catalog, compiler, PlanningWorkObserver.NoOp, roots).exists(plan =>
-                  provesCandidates(plan, roots)
-                )
-              compileAttempt(snapshot, evidence, catalog, compiler, workObserver, accepted)
+                compileAttempt(
+                  snapshot,
+                  evidence,
+                  catalog,
+                  compiler,
+                  unavailableRealizations,
+                  PlanningWorkObserver.NoOp,
+                  roots
+                ).exists(plan => provesCandidates(plan, roots))
+              compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
             case _                                       =>
-              compileAttempt(snapshot, evidence, catalog, compiler, workObserver, Set.empty)
+              compileAttempt(
+                snapshot,
+                evidence,
+                catalog,
+                compiler,
+                unavailableRealizations,
+                workObserver,
+                Set.empty
+              )
 
   private def atomicCandidateRoot(
       snapshot: ParserSyntaxSnapshot,
@@ -166,6 +197,7 @@ private[metallurgy] object WholeFileProductionPlanner:
       evidence: ProvisionalSourceEvidencePlan,
       catalog: Scala3PsiProductionCatalog,
       compiler: CompilerRuntimeInventory,
+      unavailableRealizations: Set[(String, String)],
       workObserver: PlanningWorkObserver,
       enabledAtomicRoots: Set[ProductionInstanceId]
   ): Either[WholeFilePlanningFailure, WholeFileProductionPlan] =
@@ -635,11 +667,12 @@ private[metallurgy] object WholeFileProductionPlanner:
           .getOrElse(Vector.empty)
         val trialEligible                                                              = trialEligibility.forall: requirement =>
           val roleChildren                                                                     = children.collect { case (roleId, _, child) if roleId == requirement.roleId => child }
-          def matches(child: ProductionInstanceId, expected: ChildOutcomeExpectation): Boolean = expected match
-            case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
-            case ChildOutcomeExpectation.OutputRole(role) =>
-              resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
-            case _                                        => false
+          def matches(child: ProductionInstanceId, expected: ChildOutcomeExpectation): Boolean =
+            expected.alternatives.exists:
+              case ChildOutcomeExpectation.Production(id)   => selected(child).id == id
+              case ChildOutcomeExpectation.OutputRole(role) =>
+                resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
+              case _                                        => false
           requirement.rootOutcome match
             case ChildRootOutcome.One(expected) =>
               roleChildren match
@@ -658,17 +691,20 @@ private[metallurgy] object WholeFileProductionPlanner:
             case ChildOccurrenceSelector.First        => values.headOption
             case ChildOccurrenceSelector.Last         => values.lastOption
             case ChildOccurrenceSelector.Exact(index) => values.lift(index)
+        def outcomeMatches(
+            child: ProductionInstanceId,
+            expected: ChildOutcomeExpectation
+        ): Boolean = expected.alternatives.exists:
+          case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
+          case ChildOutcomeExpectation.Realization(id)    => resolvedRealizations(child).id == id
+          case ChildOutcomeExpectation.OutputRole(role)   =>
+            resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
+          case ChildOutcomeExpectation.OutputRoles(roles) =>
+            resolvedRealizations(child).template.composites.exists(output => roles(output.outputRoleId))
+          case ChildOutcomeExpectation.AnyOf(_)           => false
         val matching                                                                   = selected(instance).effectiveOutputRealizations.filter(realization =>
           val childConditions    = realization.conditions.forall(condition =>
-            occurrence(condition).exists(child =>
-              condition.expected match
-                case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
-                case ChildOutcomeExpectation.Realization(id)    => resolvedRealizations(child).id == id
-                case ChildOutcomeExpectation.OutputRole(role)   =>
-                  resolvedRealizations(child).template.composites.exists(_.outputRoleId == role)
-                case ChildOutcomeExpectation.OutputRoles(roles) =>
-                  resolvedRealizations(child).template.composites.exists(output => roles(output.outputRoleId))
-            )
+            occurrence(condition).exists(outcomeMatches(_, condition.expected))
           )
           val evidenceConditions = childConditions && realization.evidenceConditions.forall:
             case EvidenceCondition.TemplateBodyLayout(present)                               =>
@@ -702,6 +738,32 @@ private[metallurgy] object WholeFileProductionPlanner:
                   case InventoryFieldObservation(_, InventoryValueObservation.Repeated(values), _) => values.size
                 .getOrElse(-1)
               size >= minimum && maximum.forall(size <= _)
+            case EvidenceCondition.RepeatedNodeFieldDistinct(repeated, prefix, fieldName)    =>
+              val matchingNodes = rows(instance.kind -> instance.valueId).observation
+                .find(_.name == repeated)
+                .toVector
+                .flatMap:
+                  case InventoryFieldObservation(_, InventoryValueObservation.Repeated(values), _) =>
+                    values.collect:
+                      case InventoryValueObservation.Node(id, production) if production.startsWith(prefix) => id
+                  case _                                                                           => Vector.empty
+              val fieldValues   = matchingNodes.flatMap: id =>
+                rows(InventoryKind.Node -> id).observation
+                  .find(_.name == fieldName)
+                  .flatMap:
+                    case InventoryFieldObservation(_, InventoryValueObservation.Name(value), _)           => Some(value)
+                    case InventoryFieldObservation(_, InventoryValueObservation.BacktickedName(value), _) => Some(value)
+                    case _                                                                                => None
+              fieldValues.size == matchingNodes.size && fieldValues.distinct.size == fieldValues.size
+            case EvidenceCondition.RepeatedNodesTrailingPrefix(repeated, prefix)             =>
+              val productions = rows(instance.kind -> instance.valueId).observation
+                .find(_.name == repeated)
+                .toVector
+                .flatMap:
+                  case InventoryFieldObservation(_, InventoryValueObservation.Repeated(values), _) =>
+                    values.collect { case InventoryValueObservation.Node(_, production) => production }
+                  case _                                                                           => Vector.empty
+              productions.dropWhile(!_.startsWith(prefix)).forall(_.startsWith(prefix))
             case EvidenceCondition.ProductionStartsWith(kind, present)                       =>
               val startsWith = position(instance) match
                 case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
@@ -734,15 +796,17 @@ private[metallurgy] object WholeFileProductionPlanner:
             values.filter(value => value.conditions.size + value.evidenceConditions.size == mostSpecific)
         matches match
           case values if selected(instance).realizationChoice.nonEmpty =>
+            val production = selected(instance)
             def rootMatches(
                 child: ProductionInstanceId,
                 expected: ChildOutcomeExpectation,
                 root: OutputCompositeDeclaration
-            ): Boolean = expected match
+            ): Boolean = expected.alternatives.exists:
               case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
               case ChildOutcomeExpectation.Realization(id)    => resolvedRealizations(child).id == id
               case ChildOutcomeExpectation.OutputRole(role)   => root.outputRoleId == role
               case ChildOutcomeExpectation.OutputRoles(roles) => roles(root.outputRoleId)
+              case ChildOutcomeExpectation.AnyOf(_)           => false
             def assess(
                 candidate: OutputRealization
             ): Either[CandidateRealizationDefect, Vector[CandidateInapplicability]] =
@@ -770,6 +834,8 @@ private[metallurgy] object WholeFileProductionPlanner:
                   CandidateRealizationDefect.CandidateEvidence("candidate has no retained complete payload fallback")
                 )
               else if excludedAttachments.nonEmpty then Right(excludedAttachments)
+              else if unavailableRealizations(production.id -> candidate.id) then
+                Right(Vector(CandidateInapplicability.UnavailableHostBinding(production.id, candidate.id)))
               else if !values.exists(_.id == candidate.id) then
                 Left(
                   CandidateRealizationDefect.CandidateEvidence("candidate conditions or source evidence do not match")
@@ -848,7 +914,6 @@ private[metallurgy] object WholeFileProductionPlanner:
                           )
                         )
                   Right(reviewed.result())
-            val production = selected(instance)
             val forced     = production.realizationChoice
               .filter(_.policy == RealizationChoicePolicy.AtomicWholePlan)
               .filterNot(_ => enabledAtomicRoots(instance))
@@ -1058,11 +1123,11 @@ private[metallurgy] object WholeFileProductionPlanner:
         def resolve(boundary: OutputBoundary, outputId: String)(using
             scala.util.boundary.Label[Either[WholeFilePlanningFailure, WholeFileProductionPlan]]
         ): Int = boundary match
-          case value @ OutputBoundary.ProductionStart(policy)                                       =>
+          case value @ OutputBoundary.ProductionStart(policy)                                              =>
             positionedRange(instance, policy, value, outputId).startOffset
-          case value @ OutputBoundary.ProductionEnd(policy)                                         =>
+          case value @ OutputBoundary.ProductionEnd(policy)                                                =>
             positionedRange(instance, policy, value, outputId).endOffset
-          case OutputBoundary.ProductionPoint                                                       =>
+          case OutputBoundary.ProductionPoint                                                              =>
             position(instance) match
               case ParserNodePosition.Positioned(_, point, ParserPositionProvenance.SourceDerived) => point
               case _                                                                               =>
@@ -1076,7 +1141,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     )
                   )
                 )
-          case OutputBoundary.ProductionNameEnd                                                     =>
+          case OutputBoundary.ProductionNameEnd                                                            =>
             val point = resolve(OutputBoundary.ProductionPoint, outputId)
             evidence.lexicalContract.atoms
               .find(atom =>
@@ -1097,7 +1162,33 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case OutputBoundary.ParentProductionEnd                                                   =>
+          case OutputBoundary.ProductionFirstIdentifierStart | OutputBoundary.ProductionFirstIdentifierEnd =>
+            val range = positionedRange(
+              instance,
+              PositionProvenancePolicy.SourceDerivedOnly,
+              boundary,
+              outputId
+            )
+            evidence.lexicalContract.atoms
+              .find(atom =>
+                range.startOffset <= atom.start && atom.end <= range.endOffset &&
+                  (atom.kind == ClosedSourceLexicalKind.Identifier ||
+                    atom.kind == ClosedSourceLexicalKind.QuotedIdentifier)
+              )
+              .map(atom => if boundary == OutputBoundary.ProductionFirstIdentifierStart then atom.start else atom.end)
+              .getOrElse(
+                break(
+                  Left(
+                    WholeFilePlanningFailure.OutputBoundaryResolutionFailed(
+                      instance,
+                      outputId,
+                      boundary,
+                      "production has no closed lexical identifier"
+                    )
+                  )
+                )
+              )
+          case OutputBoundary.ParentProductionEnd                                                          =>
             parentOwner(instance)
               .map(owner =>
                 positionedRange(
@@ -1121,7 +1212,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   ),
                 identity
               )
-          case OutputBoundary.TemplateLayoutStart                                                   =>
+          case OutputBoundary.TemplateLayoutStart                                                          =>
             templateLayoutStart(instance)
               .flatMap(_.toRight("template body layout is absent"))
               .fold(
@@ -1189,7 +1280,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case value @ OutputBoundary.ChildStart(role, selector, policy)                            =>
+          case value @ OutputBoundary.ChildStart(role, selector, policy)                                   =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
               case ChildOccurrenceSelector.First          => candidates.headOption
@@ -1209,7 +1300,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             )
             val range         = positionedRange(child, policy, value, outputId)
             range.startOffset
-          case value @ OutputBoundary.ChildEnd(role, selector, policy)                              =>
+          case value @ OutputBoundary.ChildEnd(role, selector, policy)                                     =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
               case ChildOccurrenceSelector.First          => candidates.headOption
@@ -1228,7 +1319,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
             positionedRange(child, policy, value, outputId).endOffset
-          case value @ OutputBoundary.NextScannerTokenStartAfterChild(role, selector, kind, policy) =>
+          case value @ OutputBoundary.NextScannerTokenStartAfterChild(role, selector, kind, policy)        =>
             val candidates    = compilerChildren(instance).collect { case (`role`, _, child) => child }
             val selectedChild = selector match
               case ChildOccurrenceSelector.First          => candidates.headOption
@@ -1349,7 +1440,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                   )
                 )
               )
-          case value @ OutputBoundary.Advance(base, count)                                          =>
+          case value @ OutputBoundary.Advance(base, count)                                                 =>
             val offset    = resolve(base, outputId)
             val index     = evidenceBoundaries.indexOf(offset)
             val remaining = if index < 0 then -1L else evidenceBoundaries.size.toLong - index.toLong - 1L

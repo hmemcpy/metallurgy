@@ -121,7 +121,13 @@ final class Scala3DotcFileElementType
                           .left
                           .map(snapshotFailure(Scala3SyntaxCapabilityStage.AggregateInventory, _))
       catalog        <- PreparedProductionCatalog
-                          .prepareRuntimeSubset(prepared.catalog, runtime, aggregate, prepared.surfaces)
+                          .prepareRuntimeSubset(
+                            prepared.catalog,
+                            runtime,
+                            aggregate,
+                            prepared.surfaces,
+                            prepared.bindings.unavailableRealizations
+                          )
                           .left
                           .map(snapshotFailure(Scala3SyntaxCapabilityStage.Catalog, _))
       plan           <- WholeFileProductionPlanner

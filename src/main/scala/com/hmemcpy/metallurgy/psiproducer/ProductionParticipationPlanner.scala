@@ -73,11 +73,12 @@ private[metallurgy] object ProductionParticipationPlanner:
         child: ProductionInstanceId,
         expected: ChildOutcomeExpectation,
         root: OutputCompositeDeclaration
-    ): Boolean = expected match
+    ): Boolean = expected.alternatives.exists:
       case ChildOutcomeExpectation.Production(id)     => selected(child).id == id
       case ChildOutcomeExpectation.Realization(id)    => realizations(child).id == id
       case ChildOutcomeExpectation.OutputRole(role)   => root.outputRoleId == role
       case ChildOutcomeExpectation.OutputRoles(roles) => roles(root.outputRoleId)
+      case ChildOutcomeExpectation.AnyOf(_)           => false
 
     def roots(
         parent: ProductionInstanceId,

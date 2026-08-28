@@ -12,6 +12,7 @@ com.hmemcpy.metallurgy.psiproducer.Scala3CaptureCapabilityTypePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3DotcFileViewProviderTest
 com.hmemcpy.metallurgy.psiproducer.Scala3InfixTypePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3MatchTypePsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3NamedArgumentPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3OwnerTypeMountPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
 com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest

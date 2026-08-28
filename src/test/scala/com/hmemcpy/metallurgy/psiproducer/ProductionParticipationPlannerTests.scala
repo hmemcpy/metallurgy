@@ -86,7 +86,7 @@ private[psiproducer] trait ProductionParticipationPlannerTests extends Scala3Psi
     )
 
   @Test def oneRootOutcomeAcceptsExactlyOneScalarChildAndRejectsRepeatedUse(): Unit =
-    val one      = graphWithChildren(
+    val one         = graphWithChildren(
       1,
       ChildCardinality.ExactlyOne,
       ChildRootOutcome.One(ChildOutcomeExpectation.Realization("child"))
@@ -96,7 +96,7 @@ private[psiproducer] trait ProductionParticipationPlannerTests extends Scala3Psi
         .plan(one.active, one.selected, one.children, one.realizations, one.position)
         .isRight
     )
-    val repeated = graphWithChildren(
+    val repeated    = graphWithChildren(
       1,
       ChildCardinality.Repeated(1, None),
       ChildRootOutcome.One(ChildOutcomeExpectation.Realization("child"))
@@ -107,6 +107,29 @@ private[psiproducer] trait ProductionParticipationPlannerTests extends Scala3Psi
         .left
         .toOption
         .exists(_.isInstanceOf[ProductionParticipationFailure.ScalarRootOutcomeMisuse])
+    )
+    val alternative = graphWithChildren(
+      1,
+      ChildCardinality.ExactlyOne,
+      ChildRootOutcome.One(
+        ChildOutcomeExpectation.AnyOf(
+          Vector(
+            ChildOutcomeExpectation.Production("unavailable"),
+            ChildOutcomeExpectation.AnyOf(Vector(ChildOutcomeExpectation.Realization("child")))
+          )
+        )
+      )
+    )
+    assertTrue(
+      ProductionParticipationPlanner
+        .plan(
+          alternative.active,
+          alternative.selected,
+          alternative.children,
+          alternative.realizations,
+          alternative.position
+        )
+        .isRight
     )
 
   @Test def absorptionClosesNestedChildrenAndRejectsSharedCyclesOverlapsAndWrongRanges(): Unit =

@@ -237,6 +237,59 @@ final class ApplicationExpressionProbeTest:
       )
     finally bridge.close()
 
+  @Test
+  def exactNamedTermArgumentsRetainOrderNamesValuesRangesCommentsAndRecovery(): Unit =
+    val source   =
+      """val value = 1
+        |def call(first: Int, second: Int, third: String) = first
+        |val direct = call(first = value)
+        |val mixed = call(value, second = 1, third = "x")
+        |val comments = call(first /* left */ = /* right */ value, second=1)
+        |val duplicate = call(first = 1, first = 2)
+        |val invalidOrder = call(first = 1, value, third = "x")
+        |""".stripMargin
+    val snapshot = parse(source, "NamedTermArguments.scala")
+    val nodes    = snapshot.nodes.map(node => node.id -> node).toMap
+
+    Vector(
+      "direct"       -> Vector("first" -> "value"),
+      "mixed"        -> Vector("second" -> "1", "third" -> "\"x\""),
+      "comments"     -> Vector("first" -> "value", "second" -> "1"),
+      "duplicate"    -> Vector("first" -> "1", "first" -> "2"),
+      "invalidOrder" -> Vector("first" -> "1", "third" -> "\"x\"")
+    ).foreach: (definitionName, expected) =>
+      val application = directRhs(nodes, definitionName)
+      val arguments   = repeatedChildren(nodes, application, "args")
+      val named       = arguments.filter(_.production == "NamedArg")
+      assertEquals(definitionName, expected.size, named.size)
+      assertEquals(
+        definitionName,
+        expected,
+        named.map(argument => name(argument) -> text(snapshot, child(nodes, argument, "arg")))
+      )
+      named.foreach: argument =>
+        assertEquals(Vector("name", "arg"), argument.fields.map(_.name))
+        assertEquals(ParserPositionProvenance.SourceDerived, positioned(argument).provenance)
+        assertEquals(1, scannerTokens(snapshot, argument).count(_.kind == ParserScannerTokenKind.Equals))
+
+    val comments = repeatedChildren(nodes, directRhs(nodes, "comments"), "args").head
+    assertEquals("first /* left */ = /* right */ value", text(snapshot, comments))
+    assertEquals(
+      Vector("/* left */", "/* right */"),
+      snapshot.comments
+        .filter(comment =>
+          positioned(comments).range.startOffset <= comment.range.startOffset &&
+            comment.range.endOffset <= positioned(comments).range.endOffset
+        )
+        .map(_.raw)
+    )
+
+    val malformed = parse(
+      "def call(first: Int) = first\nval result = call(first =)\n",
+      "MalformedNamedTerm.scala"
+    )
+    assertTrue(malformed.diagnostics.nonEmpty)
+
   private def withSnapshot(body: ParserSyntaxSnapshot => Unit): Unit =
     val bridge = Scala3ParserBridge
       .open(
@@ -256,6 +309,25 @@ final class ApplicationExpressionProbeTest:
         .fold(error => throw new AssertionError(error.toString), identity)
       assertTrue(snapshot.diagnostics.toString, snapshot.diagnostics.isEmpty)
       body(snapshot)
+    finally bridge.close()
+
+  private def parse(source: String, fileName: String): ParserSyntaxSnapshot =
+    val bridge = Scala3ParserBridge
+      .open(
+        Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", "3.7.4"),
+        compilerDistribution.map(_.toFile)
+      )
+      .fold(error => throw new AssertionError(error.toString), identity)
+    try
+      bridge
+        .parse(
+          Scala3ParserRequest(
+            ParserSourceUri.from(s"file:///$fileName").fold(sys.error, identity),
+            source,
+            Vector.empty
+          )
+        )
+        .fold(error => throw new AssertionError(error.toString), identity)
     finally bridge.close()
 
   private def directRhs(

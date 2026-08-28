@@ -316,6 +316,8 @@ private[metallurgy] object RuntimeRealizationSelector:
             case EvidenceCondition.RepeatedFieldSize(`fieldName`, rightMinimum, rightMaximum) =>
               leftMaximum.exists(_ < rightMinimum) || rightMaximum.exists(_ < leftMinimum)
             case _                                                                            => false
+        case EvidenceCondition.RepeatedNodeFieldDistinct(_, _, _)                            => false
+        case EvidenceCondition.RepeatedNodesTrailingPrefix(_, _)                             => false
         case EvidenceCondition.ProductionStartsWith(kind, leftPresent)                       =>
           right.evidenceConditions.contains(EvidenceCondition.ProductionStartsWith(kind, !leftPresent))
         case EvidenceCondition.RuntimeSupplementPositive(fieldName, leftPresent)             =>
@@ -344,13 +346,13 @@ private[metallurgy] object RuntimeRealizationSelector:
             declaration.roleId -> refs
           val matching      = production.effectiveOutputRealizations.filter: realization =>
             realization.conditions.forall: condition =>
-              val values = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
-              val child  = condition.occurrence match
+              val values                                                                               = childOutcomes.find(_._1 == condition.roleId).toVector.flatMap(_._2)
+              val child                                                                                = condition.occurrence match
                 case ChildOccurrenceSelector.First        => values.headOption
                 case ChildOccurrenceSelector.Last         => values.lastOption
                 case ChildOccurrenceSelector.Exact(index) => values.lift(index)
-              child.exists(candidate =>
-                condition.expected match
+              def matches(candidate: ProductionInstanceId, expected: ChildOutcomeExpectation): Boolean =
+                expected.alternatives.exists:
                   case ChildOutcomeExpectation.Production(id)     => selected.get(candidate).exists(_.id == id)
                   case ChildOutcomeExpectation.Realization(id)    => resolved.get(candidate).exists(_.exists(_.id == id))
                   case ChildOutcomeExpectation.OutputRole(role)   =>
@@ -361,7 +363,8 @@ private[metallurgy] object RuntimeRealizationSelector:
                     resolved
                       .get(candidate)
                       .exists(_.exists(_.template.composites.exists(output => roles(output.outputRoleId))))
-              )
+                  case ChildOutcomeExpectation.AnyOf(_)           => false
+              child.exists(matches(_, condition.expected))
           val matches       = matching match
             case Vector() => Vector.empty
             case values   =>
@@ -663,23 +666,15 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case _                                                         => ()
           p.children
             .find(_.roleId == condition.roleId)
-            .foreach: child =>
-              condition.expected match
-                case ChildOutcomeExpectation.Production(id) if !child.productionIds(id) =>
-                  errors += CatalogValidationError.UnknownConditionProductionId(p.id, realization.id, id)
-                case ChildOutcomeExpectation.Realization(id)
-                    if !catalog.productions
-                      .filter(production => child.productionIds(production.id))
-                      .exists(_.effectiveOutputRealizations.exists(_.id == id)) =>
-                  errors += CatalogValidationError.UnknownConditionRealizationId(p.id, realization.id, id)
-                case ChildOutcomeExpectation.OutputRole(role)
-                    if !catalog.productions
-                      .filter(production => child.productionIds(production.id))
-                      .exists(
-                        _.effectiveOutputRealizations.exists(_.template.composites.exists(_.outputRoleId == role))
-                      ) =>
-                  errors += CatalogValidationError.UnknownConditionOutputRole(p.id, realization.id, role)
-                case _                                                                  => ()
+            .foreach(child =>
+              errors ++= ChildOutcomeExpectationValidator.conditionErrors(
+                catalog,
+                p,
+                realization,
+                child,
+                condition.expected
+              )
+            )
         duplicates(realization.childClosureAbsorptions.map(_.roleId)).foreach(roleId =>
           errors += CatalogValidationError.DuplicateChildClosureAbsorption(p.id, realization.id, roleId)
         )
@@ -708,60 +703,17 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 case ChildRootOutcome.One(value)  => Some(value)
                 case ChildRootOutcome.All(value)  => Some(value)
                 case ChildRootOutcome.AnyReviewed => None
-              expected.foreach:
-                case ChildOutcomeExpectation.Production(id) if !child.productionIds(id) =>
-                  errors += CatalogValidationError.InvalidChildRootOutcome(
-                    p.id,
-                    realization.id,
-                    absorption.roleId,
-                    absorption.rootOutcome,
-                    "unknown child production"
-                  )
-                case ChildOutcomeExpectation.Realization(id)
-                    if !catalog.productions
-                      .filter(production => child.productionIds(production.id))
-                      .exists(_.effectiveOutputRealizations.exists(_.id == id)) =>
-                  errors += CatalogValidationError.InvalidChildRootOutcome(
-                    p.id,
-                    realization.id,
-                    absorption.roleId,
-                    absorption.rootOutcome,
-                    "unknown child realization"
-                  )
-                case ChildOutcomeExpectation.OutputRole(role)
-                    if !catalog.productions
-                      .filter(production => child.productionIds(production.id))
-                      .exists(
-                        _.effectiveOutputRealizations.exists(
-                          _.template.composites.exists(output => output.parentId.isEmpty && output.outputRoleId == role)
-                        )
-                      ) =>
-                  errors += CatalogValidationError.InvalidChildRootOutcome(
-                    p.id,
-                    realization.id,
-                    absorption.roleId,
-                    absorption.rootOutcome,
-                    "unknown child root output role"
-                  )
-                case ChildOutcomeExpectation.OutputRoles(roles)
-                    if roles.isEmpty || !roles.forall(role =>
-                      catalog.productions
-                        .filter(production => child.productionIds(production.id))
-                        .exists(
-                          _.effectiveOutputRealizations.exists(
-                            _.template.composites
-                              .exists(output => output.parentId.isEmpty && output.outputRoleId == role)
-                          )
-                        )
-                    ) =>
-                  errors += CatalogValidationError.InvalidChildRootOutcome(
-                    p.id,
-                    realization.id,
-                    absorption.roleId,
-                    absorption.rootOutcome,
-                    "unknown child root output role set"
-                  )
-                case _                                                                  => ()
+              expected.foreach(value =>
+                errors ++= ChildOutcomeExpectationValidator.rootErrors(
+                  catalog,
+                  p,
+                  realization.id,
+                  absorption.roleId,
+                  absorption.rootOutcome,
+                  child,
+                  value
+                )
+              )
           if realization.template.childMounts.get(absorption.roleId).flatten.nonEmpty &&
             absorption.retainedRootRoles.isEmpty
           then
@@ -814,6 +766,12 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               absorption.roleId,
               "terminal selector requires absorbed child output"
             )
+        errors ++= ChildOutcomeExpectationValidator.requiredRootsErrors(
+          catalog,
+          p,
+          realization.id,
+          realization.requiredChildRoots
+        )
         if realization.childClosureAbsorptions.nonEmpty then
           val roots        = realization.template.composites.filter(_.parentId.isEmpty)
           if roots.size != 1 || roots.head.realization != OutputCompositeRealization.Once then
@@ -822,10 +780,9 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               realization.id,
               "absorbing realization must have one local root"
             )
-          val parentClaims = p.terminals.filter(terminal =>
+          val parentClaims = p.terminals.filter: terminal =>
             terminal.selector == TerminalIntervalSelector.WholeProduction &&
               terminal.target == TerminalLeafTarget.Parent && terminal.claimsStructuralEvidence
-          )
           if parentClaims.size != 1 then
             errors += CatalogValidationError.InvalidAbsorbingRealization(
               p.id,
@@ -833,6 +790,14 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               "absorbing production must have one whole-production parent claim"
             )
       )
+      p.realizationChoice.foreach: choice =>
+        val realizationId = choice.candidateIds.headOption.getOrElse(choice.fallbackId)
+        errors ++= ChildOutcomeExpectationValidator.requiredRootsErrors(
+          catalog,
+          p,
+          realizationId,
+          choice.trialEligibility
+        )
       realizations.foreach { realization =>
         val template                                             = realization.template; val outputIds = template.composites.map(_.id)
         duplicates(outputIds).foreach(id => errors += CatalogValidationError.DuplicateOutputId(p.id, id))

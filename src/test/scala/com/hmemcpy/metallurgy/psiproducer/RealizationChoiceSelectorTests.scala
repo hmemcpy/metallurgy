@@ -82,6 +82,18 @@ final class RealizationChoiceSelectorTest:
     assertEquals("fallback", selected.realization.id)
     assertEquals(RealizationSelectionReason.CompleteFallback(Vector(reason)), selected.reason)
 
+  @Test def unavailableHostBindingSelectsOnlyTheCompleteFallback(): Unit =
+    val reason   = CandidateInapplicability.UnavailableHostBinding(
+      Scala3PsiNamedArgumentProductions.CandidateProductionId,
+      Scala3PsiNamedArgumentProductions.NativeRealizationId
+    )
+    val selected = RealizationChoiceSelector
+      .select(choiceProduction, Vector(realization("candidate")), _ => Right(Vector(reason)))
+      .fold(error => throw new AssertionError(error.toString), identity)
+
+    assertEquals("fallback", selected.realization.id)
+    assertEquals(RealizationSelectionReason.CompleteFallback(Vector(reason)), selected.reason)
+
   @Test def candidateDefectsNeverSelectTheFallback(): Unit =
     val defect = CandidateRealizationDefect.Binding("argument[1] has two roots")
     val result = RealizationChoiceSelector.select(

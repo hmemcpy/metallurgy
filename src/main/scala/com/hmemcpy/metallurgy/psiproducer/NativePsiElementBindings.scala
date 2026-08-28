@@ -55,6 +55,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.templates.{
 }
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef.{ScClass, ScEnum, ScObject, ScTrait}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{
+  ScAssignment,
   ScExpression,
   ScGenericCall,
   ScMethodCall,
@@ -114,6 +115,7 @@ import org.jetbrains.plugins.scala.lang.psi.stubs.{
 import org.jetbrains.plugins.scala.lang.psi.stubs.index.ScalaIndexKeys
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.{
   MetallurgyExpressionPayload,
+  MetallurgyNamedArgument,
   MetallurgyNamedTypeArgument,
   MetallurgyParameterType,
   MetallurgyTypeArguments
@@ -135,7 +137,8 @@ private[metallurgy] final case class NativePsiElementBindings(
     outputRoles: Map[PsiOutputRoleId, IElementType],
     outputSurfaces: Map[PsiOutputRoleId, String],
     surfaceRows: Vector[ScalaPsiSurfaceRow] = Vector.empty,
-    outputContracts: Map[PsiOutputRoleId, NativeOutputContract] = Map.empty
+    outputContracts: Map[PsiOutputRoleId, NativeOutputContract] = Map.empty,
+    unavailableRealizations: Set[(String, String)] = Set.empty
 ):
   def validate(catalog: Scala3PsiProductionCatalog): Either[String, Unit] =
     bind(catalog).map(_ => ())
@@ -320,6 +323,8 @@ private[metallurgy] object NativePsiElementBindings:
           |def nativeGeneric[A, B]: A = ???
           |val nativeGenericCall = nativeGeneric[Int, List[String]]
           |val nativeCall = atomicReference.toString(atomicInteger, atomicReference)
+          |def nativeNamed(first: Int, second: String) = second
+          |val nativeNamedCall = nativeNamed(first = atomicInteger, second = atomicString)
           |def nativeUsing(using first: Int, second: Int) = first + second
           |val nativeUsingCall = nativeUsing(using atomicInteger, atomicReference)
           |class AtomicThisProbe:
@@ -634,6 +639,38 @@ private[metallurgy] object NativePsiElementBindings:
     val nativeCall                                             = patternExpression("nativeCall").collect:
       case value: ScMethodCall => value
     val nativeArguments                                        = nativeCall.map(_.args)
+    val nativeNamedCall                                        = patternExpression("nativeNamedCall").collect:
+      case value: ScMethodCall => value
+    val nativeNamedArguments                                   = nativeNamedCall.map(_.args)
+    val nativeAssignments                                      = nativeNamedArguments.toVector.flatMap(_.exprs.collect:
+      case value: ScAssignment => value
+    )
+    val nativeNamedAssignmentContract                          =
+      try
+        nativeNamedCall.nonEmpty && nativeNamedArguments.exists(arguments =>
+          arguments.getText == "(first = atomicInteger, second = atomicString)" &&
+            arguments.exprs.toVector == nativeAssignments && arguments.getArgsCount == 2 &&
+            arguments.isArgsInParens && !arguments.isUsing
+        ) && nativeAssignments.size == 2 &&
+          nativeAssignments
+            .zip(Vector("first" -> "atomicInteger", "second" -> "atomicString"))
+            .forall:
+              case (assignment, (name, value)) =>
+                var visited = false
+                assignment.accept(
+                  new ScalaElementVisitor:
+                    override def visitAssignment(current: ScAssignment): Unit = visited = current eq assignment
+                )
+                val token   = assignment.assignmentToken
+                assignment.getParent == nativeNamedArguments.get && assignment.leftExpression.getParent == assignment &&
+                assignment.rightExpression
+                  .exists(_.getParent == assignment) && assignment.referenceName.contains(name) &&
+                assignment.leftExpression.getText == name && assignment.rightExpression.exists(_.getText == value) &&
+                assignment.isNamedParameter && token.exists(element =>
+                  element.isPhysical && element.getParent == assignment && element.getText == "=" &&
+                    element.getNode.getElementType == ScalaTokenTypes.tASSIGN
+                ) && visited
+      catch case NonFatal(_) => false
     val nativeGenericCall                                      = patternExpression("nativeGenericCall").collect:
       case value: ScGenericCall => value
     val nativeUsingCall                                        = patternExpression("nativeUsingCall").collect:
@@ -1303,6 +1340,8 @@ private[metallurgy] object NativePsiElementBindings:
                 ScalaElementType.CAPTURE_FILTER) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload" ->
                 MetallurgyExpressionPayload.ElementType) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedArgument"     ->
+                MetallurgyNamedArgument.ElementType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyTypeArguments"     ->
                 namedListType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedTypeArgument" ->
@@ -1420,6 +1459,7 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.GenericCall           -> nativeGenericCall.get.getNode.getElementType,
               PsiOutputRoleId.MethodCall            -> nativeCall.get.getNode.getElementType,
               PsiOutputRoleId.ArgumentExpressions   -> nativeArguments.get.getNode.getElementType,
+              PsiOutputRoleId.NamedArgument         -> MetallurgyNamedArgument.ElementType,
               PsiOutputRoleId.SuperReference        -> selectionSuperReferences.head.getNode.getElementType,
               PsiOutputRoleId.IntegerExpression     -> atomicInteger.get.getNode.getElementType,
               PsiOutputRoleId.LongExpression        -> atomicLong.get.getNode.getElementType,
@@ -1531,6 +1571,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.GenericCall           -> surfaceId(nativeGenericCall.get.getClass),
               PsiOutputRoleId.MethodCall            -> surfaceId(nativeCall.get.getClass),
               PsiOutputRoleId.ArgumentExpressions   -> surfaceId(nativeArguments.get.getClass),
+              PsiOutputRoleId.NamedArgument         ->
+                "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedArgument",
               PsiOutputRoleId.SuperReference        -> surfaceId(selectionSuperReferences.head.getClass),
               PsiOutputRoleId.IntegerExpression     -> surfaceId(atomicInteger.get.getClass),
               PsiOutputRoleId.LongExpression        -> surfaceId(atomicLong.get.getClass),
@@ -1985,7 +2027,16 @@ private[metallurgy] object NativePsiElementBindings:
                   SurfaceClassification.SyntaxContract,
                   Vector("capability-probed native template index")
                 )
+              ),
+            Map.empty,
+            Option
+              .unless(nativeNamedAssignmentContract)(
+                Set(
+                  Scala3PsiNamedArgumentProductions.CandidateProductionId ->
+                    Scala3PsiNamedArgumentProductions.NativeRealizationId
+                )
               )
+              .getOrElse(Set.empty)
           )
         )
 

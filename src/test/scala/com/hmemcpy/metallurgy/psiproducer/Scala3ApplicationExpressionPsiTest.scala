@@ -17,13 +17,18 @@ import scala.jdk.CollectionConverters.*
 
 final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
   def testNativeExplicitUsingCallBindingIsCapabilityProbed(): Unit =
-    val bindings = NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+    val bindings           = NativePsiElementBindings.probe(getProject).fold(error => throw new AssertionError(error), identity)
+    val namedTermCandidate =
+      Scala3PsiNamedArgumentProductions.CandidateProductionId ->
+        Scala3PsiNamedArgumentProductions.NativeRealizationId
 
     assertEquals(ScalaTokenType.UsingKeyword, bindings.elementTypes(NativePsiElementBindings.UsingKeywordTokenSurface))
     assertEquals(
       Some(SurfaceFactKind.Token),
       bindings.surfaceRows.find(_.id == NativePsiElementBindings.UsingKeywordTokenSurface).map(_.kind)
     )
+    assertTrue(bindings.elementTypes.contains(Scala3PsiProductionSupport.NamedArgumentSurface))
+    assertTrue(bindings.unavailableRealizations.subsetOf(Set(namedTermCandidate)))
 
   def testOrdinaryDirectRhsApplicationsExposeNativeCallsAndArgumentLists(): Unit =
     val source =
@@ -174,7 +179,6 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
 
   def testUnsupportedApplicationsRemainOneOpaquePayloadWithoutNativeDescendants(): Unit =
     val sources = Vector(
-      "val value = f(name = x)"                 -> Some("f(name = x)"),
       "val value = f(using name = x)"           -> Some("f(using name = x)"),
       "val value = f(using (x, y))"             -> Some("f(using (x, y))"),
       "val value = f(using { x })"              -> Some("f(using { x })"),

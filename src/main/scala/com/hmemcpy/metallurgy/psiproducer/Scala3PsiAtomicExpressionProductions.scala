@@ -79,7 +79,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       outputRole: PsiOutputRoleId,
       surface: String,
       tokenSurface: Option[String],
-      forbidLeadingSign: Boolean = false
+      forbidLeadingSign: Boolean = false,
+      additionalOccurrences: Vector[CompilerProductionContextPattern] = Vector.empty
   ): Scala3PsiProduction =
     atomicExpression(
       id,
@@ -97,7 +98,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       tokenSurface,
       ScannerEvidencePattern(
         forbidden = Option.when(forbidLeadingSign)(ParserScannerTokenKind.Identifier).toSet
-      )
+      ),
+      additionalOccurrences
     )
 
   private val termReference = atomicExpression(
@@ -112,7 +114,10 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       Scala3PsiDefinitionPayloadProductions.PositionalCandidateTermArgumentOccurrences ++
       Scala3PsiDefinitionPayloadProductions.NamedCandidateFunOccurrences ++
       Scala3PsiDefinitionPayloadProductions.NamedInvokedCandidateFunOccurrences ++
-      Scala3PsiDefinitionPayloadProductions.NamedInvokedLiteralArgumentOccurrences
+      Scala3PsiDefinitionPayloadProductions.NamedInvokedLiteralArgumentOccurrences ++
+      Scala3PsiNamedArgumentProductions.CandidateFunOccurrences ++
+      Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
+      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
   )
 
   private val integerLiteral = atomicExpression(
@@ -133,7 +138,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     IntegerLiteralSurface,
     AtomicLiteralAccessors,
     Some(NativePsiElementBindings.IntegerLiteralTokenSurface),
-    ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Identifier))
+    ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Identifier)),
+    Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
+      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
   )
 
   private val nullLiteral = atomicExpression(
@@ -393,7 +400,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       "Text",
       PsiOutputRoleId.StringExpression,
       StringLiteralSurface,
-      Some(NativePsiElementBindings.StringLiteralTokenSurface)
+      Some(NativePsiElementBindings.StringLiteralTokenSurface),
+      additionalOccurrences = Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
+        Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
     ),
     nullLiteral,
     thisExpression(

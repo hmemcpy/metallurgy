@@ -166,7 +166,7 @@ private[psiproducer] trait Scala3ApplicationExpressionContractTests extends Scal
           row.contains("RootAttachment(AttachmentEvidence(KindOfApply,Product(Using))")
       )
     )
-    assertEquals("fbbb0da749c75700d91998bb34762abfc8050e89863e8a0ed44d1f9988ecf45e", catalog.fingerprint)
+    assertEquals("b80ae8f0648480f7d63ec16bb57388fb286c0164830696f67e6ddb5f071518ac", catalog.fingerprint)
     assertEquals("6c513793137193022cbf2ffd5a1b90d364534b5c8ccc8e04dcdf162d1aae7a4a", persistence.fingerprint)
     assertTrue(
       Scala3PsiProductionCatalog.Reviewed.stableRoles.grammarRoles.contains(GrammarRoleId.OrdinaryApplication)

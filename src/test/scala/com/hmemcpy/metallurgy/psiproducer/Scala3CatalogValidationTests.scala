@@ -452,6 +452,94 @@ private[psiproducer] trait Scala3CatalogValidationTests extends Scala3PsiProduct
     ).foreach(error => assertTrue(error.toString, errors.contains(error)))
     assertFalse(errors.contains(CatalogValidationError.UnknownChildProductionId(root.id, child.id)))
 
+  @Test def validatorRecursivelyRejectsUnknownAnyOfProductionsAndRealizations(): Unit =
+    val compiler                                                             = inventory(snapshot("/recursive-child-outcomes", 1, Vector.empty))
+    val base                                                                 = completeCatalog(compiler)
+    val root                                                                 = base.productions.find(_.pattern.prefix == "Root").get
+    val child                                                                = base.productions.find(_.pattern.prefix == "Child").get
+    val realization                                                          = root.effectiveOutputRealizations.head
+    val expected                                                             = ChildOutcomeExpectation.AnyOf(
+      Vector(
+        ChildOutcomeExpectation.Production(child.id),
+        ChildOutcomeExpectation.AnyOf(
+          Vector(
+            ChildOutcomeExpectation.Production("missing-production"),
+            ChildOutcomeExpectation.Realization("missing-realization")
+          )
+        )
+      )
+    )
+    def errors(updated: Scala3PsiProduction): Vector[CatalogValidationError] =
+      val catalog =
+        base.copy(productions = base.productions.map(value => if value.id == root.id then updated else value))
+      Scala3PsiProductionCatalogValidator.validate(catalog, compiler, surfaces(catalog))
+
+    val conditioned     =
+      realization.copy(conditions = Vector(ChildOutcomeCondition("child", ChildOccurrenceSelector.First, expected)))
+    val conditionErrors = errors(root.copy(outputRealizations = Vector(conditioned)))
+    assertTrue(
+      conditionErrors.contains(
+        CatalogValidationError.UnknownConditionProductionId(root.id, realization.id, "missing-production")
+      )
+    )
+    assertTrue(
+      conditionErrors.contains(
+        CatalogValidationError.UnknownConditionRealizationId(root.id, realization.id, "missing-realization")
+      )
+    )
+
+    val outcome     = ChildRootOutcome.All(expected)
+    val requirement = RequiredChildRootOutcome("child", outcome)
+    val rootErrors  = errors(
+      root.copy(outputRealizations = Vector(realization.copy(requiredChildRoots = Vector(requirement))))
+    )
+    assertTrue(
+      rootErrors.contains(
+        CatalogValidationError.InvalidChildRootOutcome(
+          root.id,
+          realization.id,
+          "child",
+          outcome,
+          "unknown child production"
+        )
+      )
+    )
+    assertTrue(
+      rootErrors.contains(
+        CatalogValidationError.InvalidChildRootOutcome(
+          root.id,
+          realization.id,
+          "child",
+          outcome,
+          "unknown child realization"
+        )
+      )
+    )
+
+    val trialErrors = errors(
+      root.copy(realizationChoice =
+        Some(
+          RealizationChoice(
+            Vector(realization.id),
+            realization.id,
+            RealizationChoicePolicy.LocalAssessment,
+            Vector(requirement)
+          )
+        )
+      )
+    )
+    assertTrue(
+      trialErrors.contains(
+        CatalogValidationError.InvalidChildRootOutcome(
+          root.id,
+          realization.id,
+          "child",
+          outcome,
+          "unknown child realization"
+        )
+      )
+    )
+
   @Test def validatorRejectsDuplicateDeclaredRootAttachmentRequirements(): Unit =
     val compiler                                                             = inventory(snapshot("/attachment-requirements", 1, Vector.empty))
     val base                                                                 = completeCatalog(compiler)
