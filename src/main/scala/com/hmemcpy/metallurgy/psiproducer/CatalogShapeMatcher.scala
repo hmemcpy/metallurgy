@@ -162,9 +162,9 @@ private[metallurgy] object CatalogShapeMatcher:
             CatalogValuePattern.NonEmptyRepeatedEndingWith(observedLeading, observedTrailing)
           ) =>
         covers(leading, observedLeading) && covers(trailing, observedTrailing)
-      case (CatalogValuePattern.AnyOf(expected), CatalogValuePattern.AnyOf(observed))                          =>
+      case (CatalogValuePattern.AnyOf(expected), CatalogValuePattern.AnyOf(observed))                           =>
         expected.forall(e => observed.exists(covers(e, _)))
-      case (CatalogValuePattern.AnyOf(expected), observed)                                                     =>
+      case (CatalogValuePattern.AnyOf(expected), observed)                                                      =>
         expected.exists(covers(_, observed))
       case (expected, CatalogValuePattern.AnyOf(observed))                                                      =>
         observed.forall(covers(expected, _))
@@ -560,18 +560,18 @@ private[metallurgy] object CatalogShapeMatcher:
         case _ => false
       production -> (production.pattern.fields.count(field =>
         field.value match
-          case CatalogValuePattern.LowercaseName |
-              CatalogValuePattern.NonLowercaseName | CatalogValuePattern.BacktickedName =>
+          case CatalogValuePattern.LowercaseName | CatalogValuePattern.NonLowercaseName |
+              CatalogValuePattern.BacktickedName =>
             true
           case CatalogValuePattern.NonEmptyRepeatedEndingWith(_, _) =>
             true
-          case CatalogValuePattern.AnyOf(values) =>
+          case CatalogValuePattern.AnyOf(values)                    =>
             values.exists(candidate =>
               candidate == CatalogValuePattern.LowercaseName ||
                 candidate == CatalogValuePattern.NonLowercaseName ||
                 candidate == CatalogValuePattern.BacktickedName
             )
-          case _                                 => false
+          case _                                                    => false
       ) + production.pattern.directNodeEvidence.size + production.pattern.requiredAttachments.size + ownedRootSpecificity)
     val highest = scored.map(_._2).maxOption.getOrElse(0)
     scored.collect { case (production, score) if score == highest => production }

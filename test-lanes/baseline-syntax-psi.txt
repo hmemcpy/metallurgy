@@ -18,6 +18,7 @@ com.hmemcpy.metallurgy.psiproducer.Scala3PackagePsiProducerTest
 com.hmemcpy.metallurgy.psiproducer.Scala3ParentlessTemplatePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3PositionalTypeApplicationPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3RefinementAnnotatedTypePsiTest
+com.hmemcpy.metallurgy.psiproducer.Scala3RepeatedArgumentPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3RepresentativeScalePsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3SelectionExpressionPsiTest
 com.hmemcpy.metallurgy.psiproducer.Scala3TupleFunctionTypePsiTest

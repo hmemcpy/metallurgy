@@ -452,7 +452,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
         )
     ) + (
-      InventoryAncestor(InventoryKind.Node, "Typed", Vector(CatalogPathSegment.NamedField("expr"))) ->
+      InventoryAncestor(InventoryKind.Node, "Typed", Vector(CatalogPathSegment.NamedField("expr")))    ->
         InventoryAncestor(
           InventoryKind.Node,
           "Apply",

@@ -87,15 +87,17 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         )
       ),
       children,
-      Option.unless(syntheticStructural)(
-        TerminalDeclaration(
-          "output-free-text",
-          TerminalIntervalSelector.WholeProduction,
-          TerminalLeafTarget.Parent,
-          OccurrenceCardinality.ExactlyOne,
-          PsiOutputRoleId.SourceTerminal
+      Option
+        .unless(syntheticStructural)(
+          TerminalDeclaration(
+            "output-free-text",
+            TerminalIntervalSelector.WholeProduction,
+            TerminalLeafTarget.Parent,
+            OccurrenceCardinality.ExactlyOne,
+            PsiOutputRoleId.SourceTerminal
+          )
         )
-      ).toVector ++ extraTerminals,
+        .toVector ++ extraTerminals,
       Vector(LayoutAlternative.None),
       RecoveryPolicy.Reject,
       ExpressionPayloadSurface,
@@ -120,10 +122,16 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     enabledOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)))
 
   val CandidateTypedValueFallbackOccurrences =
-    ownedOccurrences(Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)), Vector(CandidateProductionId))
+    ownedOccurrences(
+      Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)),
+      Vector(CandidateProductionId)
+    )
 
   val CandidateTypedStarFallbackOccurrences =
-    ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(CandidateProductionId))
+    ownedOccurrences(
+      Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)),
+      Vector(CandidateProductionId)
+    )
 
   val CandidateSelectedOperandQualifierFallbackOccurrences = Vector(
     CompilerProductionContextPattern(
@@ -288,8 +296,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
       CompilerFieldPattern("expr", CatalogValuePattern.Node),
       CompilerFieldPattern("tpt", CatalogValuePattern.Node)
     ),
-    occurrences =
-      ownedOccurrences(DirectOccurrencePath, Vector(CandidateProductionId, PayloadApplyRootProduction)),
+    occurrences = ownedOccurrences(DirectOccurrencePath, Vector(CandidateProductionId, PayloadApplyRootProduction)),
     children = outputFreeTypedChildren
   )
 
@@ -340,10 +347,15 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     id = "repeated-term-star-evidence",
     prefix = "Ident",
     fields = Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
-    occurrences =
-      enabledOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true))) ++
-        ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(CandidateProductionId)) ++
-        ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(PayloadApplyRootProduction)),
+    occurrences = enabledOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true))) ++
+      ownedOccurrences(
+        Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)),
+        Vector(CandidateProductionId)
+      ) ++
+      ownedOccurrences(
+        Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)),
+        Vector(PayloadApplyRootProduction)
+      ),
     extraTerminals = Vector(
       TerminalDeclaration(
         "repeated-star-token",
@@ -365,9 +377,14 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         CatalogValuePattern.Product("", Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar("Text"))))
       )
     ),
-    occurrences =
-      ownedOccurrences(Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)), Vector(CandidateProductionId)) ++
-        ownedOccurrences(Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)), Vector(PayloadApplyRootProduction))
+    occurrences = ownedOccurrences(
+      Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)),
+      Vector(CandidateProductionId)
+    ) ++
+      ownedOccurrences(
+        Vector(edge("Typed", "expr"), edge("Apply", "args", repeated = true)),
+        Vector(PayloadApplyRootProduction)
+      )
   )
 
   private val Application = Scala3PsiProduction(
@@ -380,7 +397,8 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         CompilerFieldPattern("fun", CatalogValuePattern.NodeExceptPrefix("TypeApply")),
         CompilerFieldPattern(
           "args",
-          CatalogValuePattern.NonEmptyRepeatedEndingWith(LeadingArgumentPattern, CatalogValuePattern.NodePrefix("Typed"))
+          CatalogValuePattern
+            .NonEmptyRepeatedEndingWith(LeadingArgumentPattern, CatalogValuePattern.NodePrefix("Typed"))
         )
       ),
       DirectOwners.map: (rootOwner, outerOwner) =>

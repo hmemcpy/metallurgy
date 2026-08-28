@@ -998,8 +998,8 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  private val TypedExpressionApi       = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScTypedExpression"
-  val TypedExpressionAccessors         = Vector(
+  private val TypedExpressionApi        = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScTypedExpression"
+  val TypedExpressionAccessors          = Vector(
     AccessorObligation(
       s"$TypedExpressionApi#expr()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;",
       required = true
@@ -1012,7 +1012,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
-  val SequenceArgumentAccessors        = Vector.empty
+  val SequenceArgumentAccessors         = Vector.empty
   val ExpressionPayloadAccessors        = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)

@@ -358,7 +358,11 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "named-invoked-output-free-string",
         "named-invoked-output-free-ident",
         "named-term-output-free-integer",
-        "named-term-output-free-string"
+        "named-term-output-free-string",
+        "repeated-term-output-free-typed",
+        "repeated-term-output-free-typed-synthetic",
+        "repeated-term-star-evidence",
+        "repeated-term-output-free-string"
       ),
       GrammarRoleId.ExpressionTypeApply       -> Set(
         "definition-payload-type-apply-positional",

@@ -6,13 +6,7 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.psi.impl.source.PsiFileImpl
 import com.intellij.psi.stubs.{PsiFileStub, SerializationManagerEx, StubTree}
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.psi.{
-  PsiComment,
-  PsiDocumentManager,
-  PsiElement,
-  PsiErrorElement,
-  PsiManager
-}
+import com.intellij.psi.{PsiComment, PsiDocumentManager, PsiElement, PsiErrorElement, PsiManager}
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.psi.api.ScalaElementVisitor
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScSequenceArg
@@ -77,8 +71,10 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       assertTrue(expression.getParent.isInstanceOf[ScArgumentExprList])
       assertTrue(expression.expr.isInstanceOf[ScReferenceExpressionImpl])
       assertSame(expression, expression.expr.getParent)
-      assertTrue(expression.expr.getText == "xs" || expression.expr.getText == "words" || expression.expr.getText ==
-        "values")
+      assertTrue(
+        expression.expr.getText == "xs" || expression.expr.getText == "words" || expression.expr.getText ==
+          "values"
+      )
       var visited = false
       expression.accept(
         new ScalaElementVisitor:
@@ -95,16 +91,16 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       val typedParent = sequence.getParent
       assertTrue(typedParent.isInstanceOf[ScTypedExpressionImpl])
       assertSame(sequence, typedParent.getLastChild)
-      val star = sequence.getNode.getChildren(null).toVector.map(_.getPsi)
+      val star        = sequence.getNode.getChildren(null).toVector.map(_.getPsi)
       assertEquals(1, star.size)
       assertEquals("*", star.head.getText)
       assertSame(ScalaTokenTypes.tIDENTIFIER, star.head.getNode.getElementType)
       assertSame(sequence, star.head.getParent)
 
   def testTriviaBetweenOperandAndStarStaysOutsideTheSequenceArgument(): Unit =
-    val source = "val result = repeated(xs /* gap */ *)\ndef repeated(xs: Int*): Int = xs.sum\nval xs = Seq(1)\n"
-    val file   = physical("RepeatedArguments2.scala", source)
-    val typed  = descendants[ScTypedExpression](file).head
+    val source   = "val result = repeated(xs /* gap */ *)\ndef repeated(xs: Int*): Int = xs.sum\nval xs = Seq(1)\n"
+    val file     = physical("RepeatedArguments2.scala", source)
+    val typed    = descendants[ScTypedExpression](file).head
     assertEquals("xs /* gap */ *", typed.getText)
     val sequence = descendants[ScSequenceArg](file).head
     assertEquals("*", sequence.getText)
@@ -118,8 +114,8 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       assertTrue(typed.getTextRange.contains(comment.getTextRange))
 
   def testTypedArgumentsStayNativeAcrossEditsReparseAndSerialization(): Unit =
-    val initial = "val result = repeated(xs*)\ndef repeated(xs: Int*): Int = xs.sum\nval xs = Seq(1)\n"
-    val file    = physical("RepeatedArguments3.scala", initial)
+    val initial  = "val result = repeated(xs*)\ndef repeated(xs: Int*): Int = xs.sum\nval xs = Seq(1)\n"
+    val file     = physical("RepeatedArguments3.scala", initial)
     val document = PsiDocumentManager
       .getInstance(getProject)
       .getDocument(file)
@@ -144,11 +140,11 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     assertTrue(typedAfter.isSequenceArg)
     assertEquals("*", descendants[ScSequenceArg](file).head.getText)
 
-    val stubTree = file.asInstanceOf[PsiFileImpl].calcStubTree
-    val output   = new ByteArrayOutputStream
+    val stubTree      = file.asInstanceOf[PsiFileImpl].calcStubTree
+    val output        = new ByteArrayOutputStream
     SerializationManagerEx.getInstanceEx.serialize(stubTree.getRoot, output)
-    val bytes    = output.toByteArray
-    val restored = new StubTree(
+    val bytes         = output.toByteArray
+    val restored      = new StubTree(
       SerializationManagerEx.getInstanceEx
         .deserialize(new ByteArrayInputStream(bytes))
         .asInstanceOf[PsiFileStub[?]]
@@ -185,30 +181,39 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     val payloads = descendants[MetallurgyExpressionPayload](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(
       Vector(
-        "val localValue = repeated(xs*)",
+        "val localValue = repeated(xs*)\n  localValue",
+        "repeated(xs*)",
+        "repeated",
+        "xs",
         "repeated(source.values*)",
         "single(1: Int)"
       ),
       payloads.map(_.getText)
     )
-    assertTrue(descendants[ScMethodCall](file).isEmpty)
+    assertTrue(descendants[ScMethodCall](file).forall(!_.getText.contains("repeated")))
     assertTrue(descendants[ScTypedExpression](file).isEmpty)
     assertTrue(descendants[ScSequenceArg](file).isEmpty)
     payloads.foreach: payload =>
       assertEquals(payload.getText, payload.getTextRange.substring(source))
 
   def testNamedAndRepeatedMixesFailClosedUntilWired(): Unit =
-    val source =
+    val source  =
       """def named(first: Int, xs: Int*): Int = first + xs.sum
         |val namedLeading = named(first = 1, xs*)
         |val ascribed = named(1: Int, xs*)
         |val xs = Seq(1)
         |""".stripMargin
     val pending = myFixture.addFileToProject("src/RepeatedArguments5.scala", source)
+    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    file.getChildren
     val failure = Scala3SyntaxCapabilityService
       .get(getProject)
       .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
     assertTrue(failure.toString, failure.isDefined)
+    assertTrue(descendants[ScMethodCall](file).isEmpty)
+    assertTrue(descendants[ScTypedExpression](file).isEmpty)
+    assertTrue(descendants[ScSequenceArg](file).isEmpty)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
 
   private def descendants[T <: PsiElement: ClassTag](file: com.intellij.psi.PsiFile): Vector[T] =
     PsiTreeUtil

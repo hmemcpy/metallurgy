@@ -7,6 +7,7 @@ import com.intellij.psi.{PsiDocumentManager, PsiErrorElement, PsiManager, SmartP
 import com.intellij.psi.impl.source.PsiFileImpl
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScSequenceArg
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScArgumentExprList, ScMethodCall}
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeArgs
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScGenericCall, ScReferenceExpression}
@@ -209,10 +210,17 @@ final class Scala3ApplicationExpressionPsiTest extends Scala3CompatTestCase:
       .get(getProject)
       .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
 
-    assertTrue(failure.toString, failure.exists(_.detail.contains("UncoveredCompilerShape")))
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).isEmpty)
+    assertTrue(failure.toString, failure.isEmpty)
+    val payloads = PsiTreeUtil.findChildrenOfType(file, classOf[MetallurgyExpressionPayload]).asScala.toVector
+    assertEquals(Vector("f(using xs*)"), payloads.map(_.getText))
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScMethodCall]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScArgumentExprList]).isEmpty)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[ScSequenceArg]).isEmpty)
+    assertTrue(
+      PsiTreeUtil
+        .findChildrenOfType(file, classOf[org.jetbrains.plugins.scala.lang.psi.api.expr.ScTypedExpression])
+        .isEmpty
+    )
 
   def testControlFlowArgumentsRemainASeparateHardNegative(): Unit =
     val source  = "val value = f(if condition then x else y)"
