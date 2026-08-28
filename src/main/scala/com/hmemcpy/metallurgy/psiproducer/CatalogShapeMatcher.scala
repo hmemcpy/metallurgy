@@ -163,7 +163,7 @@ private[metallurgy] object CatalogShapeMatcher:
           ) =>
         covers(leading, observedLeading) && covers(trailing, observedTrailing)
       case (CatalogValuePattern.AnyOf(expected), CatalogValuePattern.AnyOf(observed))                           =>
-        expected.forall(e => observed.exists(covers(e, _)))
+        observed.forall(o => expected.exists(e => covers(e, o)))
       case (CatalogValuePattern.AnyOf(expected), observed)                                                      =>
         expected.exists(covers(_, observed))
       case (expected, CatalogValuePattern.AnyOf(observed))                                                      =>

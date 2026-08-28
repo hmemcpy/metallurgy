@@ -941,7 +941,11 @@ private[metallurgy] object WholeFileProductionPlanner:
                             Right(())
                           case Vector(root) =>
                             if rootMatches(child, expected, root) then
-                              assessNestedRequirements(child, selected(child).nestedChildRequirements)
+                              assessNestedRequirements(
+                                child,
+                                selected(child).nestedChildRequirements,
+                                visited = Set.empty
+                              )
                               Right(())
                             else
                               reviewed += CandidateInapplicability.UnsupportedChildRoot(
@@ -954,15 +958,23 @@ private[metallurgy] object WholeFileProductionPlanner:
                             Left(CandidateRealizationDefect.ChildRootAmbiguity(requirement.roleId, child, many.size))
                     def assessNestedRequirements(
                         child: ProductionInstanceId,
-                        requirements: Vector[RequiredChildRootOutcome]
+                        requirements: Vector[RequiredChildRootOutcome],
+                        visited: Set[ProductionInstanceId]
                     ): Unit =
+                      if visited(child) then
+                        break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(
+                          ProductionParticipationFailure.SharedClosureNode(child, child, Vector.empty)
+                        )))
                       requirements.foreach: requirement =>
-                        val nestedRoleChildren                                                                = compilerChildren
+                        val nestedRoleChildren = compilerChildren
                           .getOrElse(child, Vector.empty)
                           .collect { case (rid, _, grand) if rid == requirement.roleId => grand }
                         def assessGrand(grand: ProductionInstanceId, expected: ChildOutcomeExpectation): Unit =
-                          val _ = assessChild(grand, expected)
-                          assessNestedRequirements(grand, requirement.nestedRequirements)
+                          assessChild(grand, expected) match
+                            case Left(_) => break(Left(WholeFilePlanningFailure.InvalidProductionParticipation(
+                                ProductionParticipationFailure.SharedClosureNode(grand, grand, Vector.empty))))
+                            case Right(_)      =>
+                              assessNestedRequirements(grand, requirement.nestedRequirements, visited + grand)
                         requirement.rootOutcome match
                           case ChildRootOutcome.One(expected) =>
                             nestedRoleChildren match
