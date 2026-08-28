@@ -703,8 +703,12 @@ private[metallurgy] object NativePsiElementBindings:
               nativeRepeatedSequence.exists: sequence =>
                 sequence.getClass.getName == "org.jetbrains.plugins.scala.lang.psi.impl.base.types.ScSequenceArgImpl" &&
                   sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence) &&
-                  sequence.getNode.getChildren(null).toVector.map(_.getPsi).forall: star =>
-                    star.getText == "*" && star.getNode.getElementType == ScalaTokenTypes.tIDENTIFIER
+                  sequence.getNode
+                    .getChildren(null)
+                    .toVector
+                    .map(_.getPsi)
+                    .forall: star =>
+                      star.getText == "*" && star.getNode.getElementType == ScalaTokenTypes.tIDENTIFIER
       catch case NonFatal(_) => false
     val nativeUsingKeyword                                     = nativeUsingArguments.toVector
       .flatMap(_.getNode.getChildren(null))

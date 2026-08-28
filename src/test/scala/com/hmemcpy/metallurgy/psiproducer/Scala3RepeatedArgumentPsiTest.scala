@@ -185,14 +185,14 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     val file   = physical("RepeatedArguments4.scala", source)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
 
-    val payloads = descendants[MetallurgyExpressionPayload](file).sortBy(_.getTextRange.getStartOffset)
+    val payloads   = descendants[MetallurgyExpressionPayload](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(
       Vector(
         "val localValue = repeated(xs*)\n  localValue",
         "repeated(xs*)",
         "repeated",
         "xs",
-        "source.values",
+        "repeated(source.values*)",
         "single(1: Int)"
       ),
       payloads.map(_.getText)
@@ -200,7 +200,7 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     assertTrue(descendants[ScMethodCall](file).forall(!_.getText.contains("repeated")))
     val strayTyped = descendants[ScTypedExpression](file)
     assertTrue(s"stray typed: ${strayTyped.map(_.getText)}", strayTyped.isEmpty)
-    val straySeq = descendants[ScSequenceArg](file)
+    val straySeq   = descendants[ScSequenceArg](file)
     assertTrue(s"stray seq: ${straySeq.map(_.getText)} parent=${straySeq.map(_.getParent.getText)}", straySeq.isEmpty)
     assertTrue(descendants[ScSequenceArg](file).isEmpty)
     payloads.foreach: payload =>

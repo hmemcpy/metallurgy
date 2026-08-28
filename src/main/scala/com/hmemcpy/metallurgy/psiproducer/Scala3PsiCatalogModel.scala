@@ -819,7 +819,8 @@ private[metallurgy] final case class ChildClosureAbsorption(
 )
 private[metallurgy] final case class RequiredChildRootOutcome(
     roleId: String,
-    rootOutcome: ChildRootOutcome
+    rootOutcome: ChildRootOutcome,
+    nestedRequirements: Vector[RequiredChildRootOutcome] = Vector.empty
 )
 private[metallurgy] enum RealizationChoicePolicy:
   case LocalAssessment
@@ -878,7 +879,8 @@ private[metallurgy] final case class Scala3PsiProduction(
     outputRealizations: Vector[OutputRealization] = Vector.empty,
     outputRoleId: Option[PsiOutputRoleId],
     additionalGrammarRoleIds: Set[GrammarRoleId] = Set.empty,
-    realizationChoice: Option[RealizationChoice] = None
+    realizationChoice: Option[RealizationChoice] = None,
+    nestedChildRequirements: Vector[RequiredChildRootOutcome] = Vector.empty
 ):
   val grammarRoleIds: Set[GrammarRoleId]                                  = additionalGrammarRoleIds + grammarRoleId
   private def defaultOutputTemplate: Option[LocalOutputCompositeTemplate] = outputTemplate.orElse(

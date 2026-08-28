@@ -940,7 +940,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                             )
                             Right(())
                           case Vector(root) =>
-                            if rootMatches(child, expected, root) then Right(())
+                            if rootMatches(child, expected, root) then
+                              assessNestedRequirements(child, selected(child).nestedChildRequirements)
+                              Right(())
                             else
                               reviewed += CandidateInapplicability.UnsupportedChildRoot(
                                 requirement.roleId,
@@ -950,6 +952,32 @@ private[metallurgy] object WholeFileProductionPlanner:
                               Right(())
                           case many         =>
                             Left(CandidateRealizationDefect.ChildRootAmbiguity(requirement.roleId, child, many.size))
+                    def assessNestedRequirements(
+                        child: ProductionInstanceId,
+                        requirements: Vector[RequiredChildRootOutcome]
+                    ): Unit =
+                      requirements.foreach: requirement =>
+                        val nestedRoleChildren                                                                = compilerChildren
+                          .getOrElse(child, Vector.empty)
+                          .collect { case (rid, _, grand) if rid == requirement.roleId => grand }
+                        def assessGrand(grand: ProductionInstanceId, expected: ChildOutcomeExpectation): Unit =
+                          val _ = assessChild(grand, expected)
+                          assessNestedRequirements(grand, requirement.nestedRequirements)
+                        requirement.rootOutcome match
+                          case ChildRootOutcome.One(expected) =>
+                            nestedRoleChildren match
+                              case Vector(grand) => assessGrand(grand, expected)
+                              case _             =>
+                                reviewed += CandidateInapplicability.MissingChildRoot(
+                                  requirement.roleId,
+                                  child,
+                                  selected(child).id,
+                                  resolvedRealizations(child).id
+                                )
+                          case ChildRootOutcome.All(expected) =>
+                            nestedRoleChildren.foreach: grand =>
+                              assessGrand(grand, expected)
+                          case ChildRootOutcome.AnyReviewed   => ()
                     requirement.rootOutcome match
                       case ChildRootOutcome.One(expected) =>
                         roleChildren match

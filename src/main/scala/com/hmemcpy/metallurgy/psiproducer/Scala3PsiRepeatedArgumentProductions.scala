@@ -270,7 +270,17 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         Map("value" -> Some("typed-expression"), "type-evidence" -> None)
       )
     ),
-    outputRoleId = None
+    outputRoleId = None,
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "value",
+        ChildRootOutcome.One(
+          ChildOutcomeExpectation.OutputRoles(
+            Set(PsiOutputRoleId.TermReference, PsiOutputRoleId.IntegerExpression, PsiOutputRoleId.StringExpression)
+          )
+        )
+      )
+    )
   )
 
   private val outputFreeTypedChildren = Vector(
