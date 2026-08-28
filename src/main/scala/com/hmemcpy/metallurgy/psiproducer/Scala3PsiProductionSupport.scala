@@ -71,6 +71,8 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val ArgumentExpressionsSurface   = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
   val NamedArgumentSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedArgument"
+  val TypedExpressionSurface       = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScTypedExpressionImpl"
+  val SequenceArgumentSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSequenceArgImpl"
   val ThisReferenceSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScThisReferenceImpl"
   val SuperReferenceSurface        =
@@ -996,6 +998,21 @@ private[psiproducer] object Scala3PsiProductionSupport:
       SurfaceFactKind.Method
     )
   )
+  private val TypedExpressionApi       = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScTypedExpression"
+  val TypedExpressionAccessors         = Vector(
+    AccessorObligation(
+      s"$TypedExpressionApi#expr()Lorg/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression;",
+      required = true
+    ),
+    AccessorObligation(s"$TypedExpressionApi#typeElement()Lscala/Option;", required = true),
+    AccessorObligation(s"$TypedExpressionApi#isSequenceArg()Z", required = true, SurfaceFactKind.Method),
+    AccessorObligation(
+      s"$TypedExpressionApi#acceptScala(Lorg/jetbrains/plugins/scala/lang/psi/api/ScalaElementVisitor;)V",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val SequenceArgumentAccessors        = Vector.empty
   val ExpressionPayloadAccessors        = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)

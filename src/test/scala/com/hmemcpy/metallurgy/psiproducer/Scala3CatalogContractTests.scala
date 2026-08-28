@@ -47,6 +47,10 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "named-term-application-candidate"
       ),
       GrammarRoleId.NamedArgument             -> Set("term-named-argument"),
+      GrammarRoleId.RepeatedTermArgument      -> Set(
+        "repeated-term-application-candidate",
+        "term-repeated-argument"
+      ),
       GrammarRoleId.SuperReference            -> Set("selection-super-reference"),
       GrammarRoleId.SelectionQualifier        -> Set(
         "selection-qualifier-ident",

@@ -414,6 +414,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiTemplateProductions.TemplateSegment ++
       Scala3PsiDefinitionProductions.DefinitionSegment ++
       Scala3PsiNamedArgumentProductions.NamedArgumentSegment ++
+      Scala3PsiRepeatedArgumentProductions.RepeatedArgumentSegment ++
       Scala3PsiApplicationExpressionProductions.ApplicationExpressionSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
@@ -432,7 +433,12 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         Scala3PsiNamedArgumentProductions.CandidateProductionId,
         Scala3PsiApplicationExpressionProductions.FallbackProductionId
       ),
+      ProductionAlternatives(
+        Scala3PsiRepeatedArgumentProductions.CandidateProductionId,
+        Scala3PsiApplicationExpressionProductions.FallbackProductionId
+      ),
       ProductionAlternatives("term-named-argument", "payload-descendant-named-arg"),
+      ProductionAlternatives("term-repeated-argument", "repeated-term-output-free-typed"),
       ProductionAlternatives(
         Scala3PsiApplicationExpressionProductions.CandidateProductionId,
         Scala3PsiApplicationExpressionProductions.FallbackProductionId

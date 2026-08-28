@@ -195,6 +195,7 @@ private[metallurgy] enum CatalogValuePattern:
   case NonEmptyRepeated(element: CatalogValuePattern)
   case EmptyRepeated(element: CatalogValuePattern)
   case LeadingThenRepeated(leading: CatalogValuePattern, trailing: CatalogValuePattern)
+  case NonEmptyRepeatedEndingWith(leading: CatalogValuePattern, trailing: CatalogValuePattern)
   case AnyOf(values: Vector[CatalogValuePattern])
   case Product(prefix: String, fields: Vector[CompilerFieldPattern])
   case Name, GeneratedName
@@ -838,6 +839,8 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     case CatalogValuePattern.EmptyRepeated(inner)                   => e.tag(10); writePattern(inner, e)
     case CatalogValuePattern.LeadingThenRepeated(leading, trailing) =>
       e.tag(14); writePattern(leading, e); writePattern(trailing, e)
+    case CatalogValuePattern.NonEmptyRepeatedEndingWith(leading, trailing) =>
+      e.tag(22); writePattern(leading, e); writePattern(trailing, e)
     case CatalogValuePattern.AnyOf(values)                          => e.tag(18); e.sequence(values)(writePattern(_, e))
     case CatalogValuePattern.Product(prefix, fields)                => e.tag(5); e.string(prefix); e.sequence(fields)(writeField(_, e))
     case CatalogValuePattern.Name                                   => e.tag(6)

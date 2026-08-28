@@ -72,6 +72,11 @@ private[metallurgy] object CatalogShapeMatcher:
             InventoryValueObservation.Repeated(values)
           ) =>
         values.headOption.exists(matches(leading, _)) && values.tail.forall(matches(trailing, _))
+      case (
+            CatalogValuePattern.NonEmptyRepeatedEndingWith(leading, trailing),
+            InventoryValueObservation.Repeated(values)
+          ) =>
+        values.nonEmpty && values.init.forall(matches(leading, _)) && matches(trailing, values.last)
       case (CatalogValuePattern.AnyOf(values), observed)                                                      =>
         values.exists(matches(_, observed))
       case (CatalogValuePattern.Product(prefix, expected), InventoryValueObservation.Product(actual, fields)) =>
@@ -147,7 +152,19 @@ private[metallurgy] object CatalogShapeMatcher:
         covers(expectedValue, observedValue)
       case (CatalogValuePattern.LeadingThenRepeated(leading, trailing), CatalogValuePattern.Repeated(observed)) =>
         covers(leading, observed) && covers(trailing, observed)
-      case (CatalogValuePattern.AnyOf(expected), observed)                                                      =>
+      case (
+            CatalogValuePattern.NonEmptyRepeatedEndingWith(leading, trailing),
+            CatalogValuePattern.Repeated(observed)
+          ) =>
+        covers(leading, observed) && covers(trailing, observed)
+      case (
+            CatalogValuePattern.NonEmptyRepeatedEndingWith(leading, trailing),
+            CatalogValuePattern.NonEmptyRepeatedEndingWith(observedLeading, observedTrailing)
+          ) =>
+        covers(leading, observedLeading) && covers(trailing, observedTrailing)
+      case (CatalogValuePattern.AnyOf(expected), CatalogValuePattern.AnyOf(observed))                          =>
+        expected.forall(e => observed.exists(covers(e, _)))
+      case (CatalogValuePattern.AnyOf(expected), observed)                                                     =>
         expected.exists(covers(_, observed))
       case (expected, CatalogValuePattern.AnyOf(observed))                                                      =>
         observed.forall(covers(expected, _))
@@ -483,6 +500,11 @@ private[metallurgy] object CatalogShapeMatcher:
               ) =>
             CatalogValuePattern.isNonLowercaseName(value)
           case (
+                CompilerFieldPattern(_, CatalogValuePattern.NonEmptyRepeatedEndingWith(_, _)),
+                InventoryFieldObservation(_, InventoryValueObservation.Repeated(values), _)
+              ) =>
+            values.nonEmpty
+          case (
                 CompilerFieldPattern(_, CatalogValuePattern.AnyOf(values)),
                 InventoryFieldObservation(_, value, _)
               ) =>
@@ -540,6 +562,8 @@ private[metallurgy] object CatalogShapeMatcher:
         field.value match
           case CatalogValuePattern.LowercaseName |
               CatalogValuePattern.NonLowercaseName | CatalogValuePattern.BacktickedName =>
+            true
+          case CatalogValuePattern.NonEmptyRepeatedEndingWith(_, _) =>
             true
           case CatalogValuePattern.AnyOf(values) =>
             values.exists(candidate =>

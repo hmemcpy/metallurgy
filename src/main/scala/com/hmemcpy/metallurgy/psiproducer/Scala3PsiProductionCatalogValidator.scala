@@ -328,6 +328,7 @@ private[metallurgy] object RuntimeRealizationSelector:
           )
         case EvidenceCondition.RootAttachment(attachment, leftPresent)                       =>
           right.evidenceConditions.contains(EvidenceCondition.RootAttachment(attachment, !leftPresent))
+        case EvidenceCondition.TrailingRepeatedNodeChild(_, _, _, _, _, _, _, _, _)          => false
     discovered.toVector.reverse.foreach: key =>
       selected
         .get(key)
@@ -449,6 +450,13 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           InventoryKind.Node,
           "Block",
           Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement)
+        )
+    ) + (
+      InventoryAncestor(InventoryKind.Node, "Typed", Vector(CatalogPathSegment.NamedField("expr"))) ->
+        InventoryAncestor(
+          InventoryKind.Node,
+          "Apply",
+          Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
         )
     )
     val compilerPrefixes       = catalog.productions.map(_.pattern.prefix).toSet ++ coverage.collect:
@@ -1020,6 +1028,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
             case _: TerminalIntervalSelector.BeforeChild                                         => true
             case _: TerminalIntervalSelector.BeforeChildOutputs                                  => true
             case _: TerminalIntervalSelector.AfterChild                                          => false
+            case gap: TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap               =>
+              gap.field == name
             case _: TerminalIntervalSelector.ChildOutputGap                                      => false
             case _: TerminalIntervalSelector.ChildOutputSeparators                               => false
             case TerminalIntervalSelector.CompilerEndMarkerKeyword |

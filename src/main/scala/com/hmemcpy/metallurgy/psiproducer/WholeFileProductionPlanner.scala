@@ -98,6 +98,12 @@ private[metallurgy] object WholeFileProductionPlanner:
           workObserver
         )
 
+  private def rangeResolvableUnderSynthetic(declaration: OutputRangeDeclaration): Boolean =
+    declaration match
+      case OutputRangeDeclaration.CompilerPositionWithPolicy(policy) =>
+        policy == PositionProvenancePolicy.PositionedIncludingSynthetic
+      case _ => false
+
   private def compileClosedSubset(
       snapshot: ParserSyntaxSnapshot,
       evidence: ProvisionalSourceEvidencePlan,
@@ -143,7 +149,17 @@ private[metallurgy] object WholeFileProductionPlanner:
                   unavailableRealizations,
                   PlanningWorkObserver.NoOp,
                   roots
-                ).exists(plan => provesCandidates(plan, roots))
+                ) match
+                  case Right(plan) =>
+                    val proves = provesCandidates(plan, roots)
+                    if !proves then
+                      println(
+                        s"[c5-trial] not proven roots=${roots.map(_.valueId)} selections=${plan.realizationSelections.map(v => s"${v.owner.valueId}->${v.realizationId}:${v.reason}").mkString(", ")}"
+                      )
+                    proves
+                  case Left(failure) =>
+                    println(s"[c5-trial] failed: $failure")
+                    false
               compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
             case _                                       =>
               compileAttempt(
@@ -787,6 +803,61 @@ private[metallurgy] object WholeFileProductionPlanner:
                 present,
                 rows(instance.kind -> instance.valueId).rootAttachments
               )
+            case EvidenceCondition.TrailingRepeatedNodeChild(
+                  repeatedFieldName,
+                  nodePrefix,
+                  nodeClassification,
+                  childField,
+                  childPrefix,
+                  childClassification,
+                  childNameField,
+                  childNameExpected,
+                  childSourceText
+                ) =>
+              def childTextMatches(childId: Long): Boolean =
+                position(ProductionInstanceId(InventoryKind.Node, childId, None)) match
+                  case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                    snapshot.sourceText
+                      .substring(range.startOffset, range.endOffset) == childSourceText &&
+                    evidence.lexicalContract.atoms.exists(atom =>
+                      atom.start == range.startOffset && atom.end == range.endOffset
+                    )
+                  case _ => false
+              def childNameMatches(childId: Long): Boolean =
+                rows(InventoryKind.Node -> childId).observation
+                  .find(_.name == childNameField)
+                  .flatMap:
+                    case InventoryFieldObservation(_, InventoryValueObservation.Name(value), _) => Some(value)
+                    case InventoryFieldObservation(_, InventoryValueObservation.BacktickedName(value), _) =>
+                      Some(value)
+                    case _ => None
+                  .contains(childNameExpected)
+              def typedChildMatches(nodeId: Long): Boolean =
+                rows(InventoryKind.Node -> nodeId).sourceClassification == nodeClassification &&
+                rows(InventoryKind.Node -> nodeId).observation
+                  .find(_.name == childField)
+                  .flatMap:
+                    case InventoryFieldObservation(_, InventoryValueObservation.Node(childId, prefix), _) =>
+                      Some(childId -> prefix)
+                    case _ => None
+                  .exists: (childId, prefix) =>
+                    prefix.startsWith(childPrefix) &&
+                    rows(InventoryKind.Node -> childId).sourceClassification == childClassification &&
+                    childNameMatches(childId) && childTextMatches(childId)
+              val accepted = rows(instance.kind -> instance.valueId).observation
+                .find(_.name == repeatedFieldName)
+                .flatMap:
+                  case InventoryFieldObservation(_, InventoryValueObservation.Repeated(values), _) =>
+                    Some(values)
+                  case _ => None
+                .exists: values =>
+                  val matching = values.collect:
+                    case InventoryValueObservation.Node(id, prefix) if prefix.startsWith(nodePrefix) => id
+                  values.lastOption.collect:
+                    case InventoryValueObservation.Node(id, prefix) if prefix.startsWith(nodePrefix) => id
+                  .exists: lastId =>
+                    matching == Vector(lastId) && typedChildMatches(lastId)
+              accepted
           childConditions && evidenceConditions
         )
         val matches                                                                    = matching match
@@ -853,10 +924,14 @@ private[metallurgy] object WholeFileProductionPlanner:
                     ): Either[CandidateRealizationDefect, Unit] =
                       val roots       = resolvedRealizations(child).template.composites.filter(_.parentId.isEmpty)
                       val sourceOwned = position(child) match
-                        case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
-                          val parent = candidateRange.toOption.get
-                          parent.startOffset <= range.startOffset && range.endOffset <= parent.endOffset
-                        case _                                                                               => false
+                        case ParserNodePosition.Positioned(range, _, provenance) =>
+                          val parent    = candidateRange.toOption.get
+                          val contained = parent.startOffset <= range.startOffset && range.endOffset <= parent.endOffset
+                          contained && (provenance == ParserPositionProvenance.SourceDerived ||
+                            (provenance == ParserPositionProvenance.Synthetic && roots.nonEmpty && roots.forall(root =>
+                              rangeResolvableUnderSynthetic(root.range)
+                            )))
+                        case _ => false
                       if !sourceOwned then
                         Left(
                           CandidateRealizationDefect.SourceOwnership(
@@ -2381,6 +2456,33 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case ScannerTokenOccurrence.First => matches.headOption.toVector
                 case ScannerTokenOccurrence.Last  => matches.lastOption.toVector
             case _                                          => Vector.empty
+        case TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap(_, roleId, occurrence, kind, scannerOccurrence) =>
+          val containedChild = compilerChildren
+            .getOrElse(instance, Vector.empty)
+            .collectFirst { case (`roleId`, _, child) =>
+              position(child) match
+                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => Some(range)
+                case _                                                                               => None
+            }
+            .flatten
+          position(instance) match
+            case ParserNodePosition.Positioned(production, _, _) =>
+              containedChild.toVector
+                .filter: child =>
+                  production.startOffset <= child.startOffset && child.endOffset <= production.endOffset
+                .flatMap: child =>
+                  val matches = snapshot.scannerTokens
+                    .filter(token =>
+                      token.kind == kind && child.endOffset <= token.range.startOffset && token.range.endOffset <= production.endOffset
+                    )
+                  val target = scannerOccurrence match
+                    case ScannerTokenOccurrence.First => matches.headOption
+                    case ScannerTokenOccurrence.Last  => matches.lastOption
+                    case _                            => None
+                  target
+                    .map(token => PcSourceRange(child.endOffset, token.range.startOffset))
+                    .filter(range => range.startOffset < range.endOffset)
+            case _ => Vector.empty
         case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)                  =>
           val outputs = childOutputRanges(instance, roleId)
           position(instance) match
@@ -2590,22 +2692,28 @@ private[metallurgy] object WholeFileProductionPlanner:
       def terminalLexicalContractSatisfied(
           terminal: TerminalDeclaration,
           intervals: Vector[PcSourceRange]
-      ): Boolean = terminal.target match
-        case TerminalLeafTarget.Trivia    =>
+      ): Boolean =
+        val triviaOnly = (terminal.selector match
+          case _: TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap => true
+          case _                                                               => false
+        ) || terminal.target == TerminalLeafTarget.Trivia
+        if triviaOnly then
           val kinds = terminalLexicalKinds(intervals)
           intervals.isEmpty || kinds.nonEmpty && kinds.forall:
             case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
                 ClosedSourceLexicalKind.BlockComment =>
               true
             case _ => false
-        case TerminalLeafTarget.Separator =>
-          val kinds = terminalLexicalKinds(intervals)
-          intervals.isEmpty || kinds.nonEmpty && kinds.forall:
-            case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
-                ClosedSourceLexicalKind.BlockComment | ClosedSourceLexicalKind.Semicolon =>
-              true
-            case _ => false
-        case _                            => true
+        else
+          terminal.target match
+            case TerminalLeafTarget.Separator =>
+              val kinds = terminalLexicalKinds(intervals)
+              intervals.isEmpty || kinds.nonEmpty && kinds.forall:
+                case ClosedSourceLexicalKind.Whitespace | ClosedSourceLexicalKind.LineComment |
+                    ClosedSourceLexicalKind.BlockComment | ClosedSourceLexicalKind.Semicolon =>
+                  true
+                case _ => false
+            case _ => true
 
       val knownEvidenceRoles  = (
         outputRows.valuesIterator.flatten.map(_._1.outputRoleId) ++
@@ -2800,20 +2908,23 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           val tokenRanges          = terminalTokenRanges(terminal, intervals).toSet
+          val gapClaim             = terminal.selector match
+            case _: TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap => true
+            case _                                                               => false
           val extendedCandidateSet = sourceExtendedAtomSets.getOrElse(instance, Set.empty)
           val terminalCandidates   = terminal.target match
             case TerminalLeafTarget.Parent => distinctParentClaimAtoms.getOrElse(instance, Vector.empty)
             case _                         => Vector.empty
           val atoms                = intervals.flatMap: interval =>
-            val candidates = terminal.target match
-              case TerminalLeafTarget.Parent =>
+            val candidates = (terminal.target, gapClaim) match
+              case (TerminalLeafTarget.Parent, false) =>
                 workObserver.terminalCandidateEntries(terminalCandidates.size)
                 terminalCandidates.filter(atom => interval.startOffset <= atom.start && atom.end <= interval.endOffset)
-              case _                         => planningAtomRangeIndex.within(interval)
+              case _                                  => planningAtomRangeIndex.within(interval)
             candidates
               .filter(atom =>
-                terminal.target == TerminalLeafTarget.Parent || atom.claims.exists(claims(instance, _)) ||
-                  extendedCandidateSet(atom)
+                (terminal.target == TerminalLeafTarget.Parent && !gapClaim) ||
+                  atom.claims.exists(claims(instance, _)) || extendedCandidateSet(atom)
               )
               .filter: atom =>
                 terminal.target match

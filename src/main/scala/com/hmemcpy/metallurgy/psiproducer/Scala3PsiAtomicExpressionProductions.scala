@@ -117,7 +117,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       Scala3PsiDefinitionPayloadProductions.NamedInvokedLiteralArgumentOccurrences ++
       Scala3PsiNamedArgumentProductions.CandidateFunOccurrences ++
       Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
-      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
+      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
+      Scala3PsiRepeatedArgumentProductions.CandidateFunOccurrences ++
+      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
   )
 
   private val integerLiteral = atomicExpression(
@@ -140,7 +142,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     Some(NativePsiElementBindings.IntegerLiteralTokenSurface),
     ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Identifier)),
     Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
-      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
+      Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
+      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
   )
 
   private val nullLiteral = atomicExpression(
@@ -402,7 +405,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       StringLiteralSurface,
       Some(NativePsiElementBindings.StringLiteralTokenSurface),
       additionalOccurrences = Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
-        Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences
+        Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
+        Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
     ),
     nullLiteral,
     thisExpression(

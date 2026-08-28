@@ -137,7 +137,8 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
       Scala3PsiDefinitionPayloadProductions.PositionalCandidateSelectionQualifierOccurrences ++
       Scala3PsiDefinitionPayloadProductions.NamedCandidateSelectionQualifierOccurrences ++
       Scala3PsiDefinitionPayloadProductions.NamedInvokedSelectionQualifierOccurrences ++
-      Scala3PsiNamedArgumentProductions.CandidateSelectionQualifierOccurrences,
+      Scala3PsiNamedArgumentProductions.CandidateSelectionQualifierOccurrences ++
+      Scala3PsiRepeatedArgumentProductions.CandidateSelectionQualifierOccurrences,
     NeutralNameClass.Ordinary,
     output = true
   )
@@ -392,7 +393,8 @@ private[psiproducer] object Scala3PsiSelectionExpressionProductions:
         Scala3PsiDefinitionPayloadProductions.PositionalCandidateFunOccurrences ++
         Scala3PsiDefinitionPayloadProductions.NamedCandidateFunOccurrences ++
         Scala3PsiDefinitionPayloadProductions.NamedInvokedCandidateFunOccurrences ++
-        Scala3PsiNamedArgumentProductions.CandidateFunOccurrences
+        Scala3PsiNamedArgumentProductions.CandidateFunOccurrences ++
+        Scala3PsiRepeatedArgumentProductions.CandidateFunOccurrences
     ),
     dispositions = Vector(
       FieldDisposition("qualifier", FieldDispositionKind.Child),

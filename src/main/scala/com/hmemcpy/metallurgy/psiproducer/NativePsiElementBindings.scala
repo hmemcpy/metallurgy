@@ -61,7 +61,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.{
   ScMethodCall,
   ScReferenceExpression,
   ScSuperReference,
-  ScThisReference
+  ScThisReference,
+  ScTypedExpression
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScBooleanLiteral,
@@ -87,6 +88,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.types.{
   ScParenthesisedTypeElement,
   ScPolyFunctionTypeElement,
   ScSelfTypeElement,
+  ScSequenceArg,
   ScSimpleTypeElement,
   ScTupleTypeElement,
   ScTypeArgs,
@@ -327,6 +329,9 @@ private[metallurgy] object NativePsiElementBindings:
           |val nativeNamedCall = nativeNamed(first = atomicInteger, second = atomicString)
           |def nativeUsing(using first: Int, second: Int) = first + second
           |val nativeUsingCall = nativeUsing(using atomicInteger, atomicReference)
+          |def nativeRepeated(values: Int*): Int = values.sum
+          |val nativeInts = Seq(1)
+          |val nativeRepeatedCall = nativeRepeated(atomicInteger, nativeInts*)
           |class AtomicThisProbe:
           |  def unqualifiedThis = this
           |  def qualifiedThis = AtomicThisProbe.this
@@ -676,6 +681,26 @@ private[metallurgy] object NativePsiElementBindings:
     val nativeUsingCall                                        = patternExpression("nativeUsingCall").collect:
       case value: ScMethodCall => value
     val nativeUsingArguments                                   = nativeUsingCall.map(_.args)
+    val nativeRepeatedCall                                     = patternExpression("nativeRepeatedCall").collect:
+      case value: ScMethodCall => value
+    val nativeRepeatedArguments                                = nativeRepeatedCall.map(_.args)
+    val nativeRepeatedTyped                                    = nativeRepeatedArguments.toVector.flatMap: arguments =>
+      arguments.exprs.collect:
+        case typed: ScTypedExpression if typed.isSequenceArg => typed
+    val nativeRepeatedSequence                                 = nativeRepeatedTyped.headOption.flatMap: typed =>
+      Option(typed.getLastChild).collect:
+        case sequence: ScSequenceArg => sequence
+    val nativeRepeatedContract                                 =
+      try
+        nativeRepeatedCall.nonEmpty && nativeRepeatedArguments.exists(arguments =>
+          arguments.getText == "(atomicInteger, nativeInts*)" && arguments.exprs.size == 2 && !arguments.isUsing
+        ) && nativeRepeatedTyped.size == 1 &&
+          nativeRepeatedTyped.forall: typed =>
+            typed.expr.getText == "nativeInts" && typed.typeElement.isEmpty && typed.isSequenceArg &&
+              !typed.hasAnnotation && typed.annotations.isEmpty && typed.getParent == nativeRepeatedArguments.get &&
+              nativeRepeatedSequence.exists: sequence =>
+                sequence.getText == "*" && sequence.getParent == typed && (typed.getLastChild eq sequence)
+      catch case NonFatal(_) => false
     val nativeUsingKeyword                                     = nativeUsingArguments.toVector
       .flatMap(_.getNode.getChildren(null))
       .filter(_.getElementType == ScalaTokenType.UsingKeyword)
@@ -790,7 +815,8 @@ private[metallurgy] object NativePsiElementBindings:
         annotatedModifiers,
         memberModifiers,
         deprecatedAnnotation
-      ) ++ atomicLiterals ++ nativeGenericCall ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
+      ) ++ atomicLiterals ++ nativeGenericCall ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++
+        nativeRepeatedTyped ++ nativeRepeatedSequence ++ selectionReferences ++ selectionSuperReferences ++ statements ++ expressions ++ selectorSets ++ selectors ++ exportStatements ++ exportExpressions ++
         exportSelectorSets ++ exportSelectors ++ accessModifiers ++ annotationsContainers ++ annotations ++
         annotationExpressions ++ constructorInvocations ++ argumentLists ++ annotationPayloads
         ++ classes ++ traits ++ objects ++ enums ++ enumCases ++ enumSingletonCases ++ enumClassCases ++
@@ -1004,6 +1030,9 @@ private[metallurgy] object NativePsiElementBindings:
           keyword.getPsi.getParent != nativeUsingArguments.get
       )
     then Left("native explicit-using application PSI accessors are inconsistent")
+    else if nativeRepeatedCall.isEmpty || nativeRepeatedArguments.isEmpty || nativeRepeatedTyped.isEmpty ||
+      nativeRepeatedSequence.isEmpty
+    then Left("native repeated argument PSI probe is incomplete")
     else if selectionReferences.size != 8 || selectionSuperReferences.size != 4 ||
       selectionReferences.exists(reference =>
         reference.qualifier.isEmpty || reference.nameId.getParent != reference || reference.refName != "member" &&
@@ -1299,7 +1328,7 @@ private[metallurgy] object NativePsiElementBindings:
           atomicUnqualifiedThis,
           atomicQualifiedThis
         ).flatten ++ atomicLiterals ++ nativeGenericCall ++ nativeCall ++ nativeArguments ++ nativeUsingCall ++ nativeUsingArguments ++
-          selectionReferences ++ selectionSuperReferences).exists(
+          nativeRepeatedTyped ++ nativeRepeatedSequence ++ selectionReferences ++ selectionSuperReferences).exists(
           _.getNode.getElementType.isInstanceOf[IStubElementType[?, ?]]
         )
       then Left("native atomic expression element type unexpectedly produces stubs")
@@ -1348,6 +1377,10 @@ private[metallurgy] object NativePsiElementBindings:
                 namedEntryType) +
               ("org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyParameterType"     ->
                 MetallurgyParameterType.ElementType) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/expr/ScTypedExpressionImpl"             ->
+                nativeRepeatedTyped.head.getNode.getElementType) +
+              ("org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSequenceArgImpl"           ->
+                nativeRepeatedSequence.head.getNode.getElementType) +
               (EndKeywordTokenSurface                                                             -> ScalaTokenType.EndKeyword) +
               (ImportWildcardTokenSurface                                                         -> wildcardElement.getNode.getElementType) +
               (ImportLegacyWildcardTokenSurface                                                   -> legacyWildcardElement.getNode.getElementType) +
@@ -1460,6 +1493,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.MethodCall            -> nativeCall.get.getNode.getElementType,
               PsiOutputRoleId.ArgumentExpressions   -> nativeArguments.get.getNode.getElementType,
               PsiOutputRoleId.NamedArgument         -> MetallurgyNamedArgument.ElementType,
+              PsiOutputRoleId.TypedExpression       -> nativeRepeatedTyped.head.getNode.getElementType,
+              PsiOutputRoleId.RepeatedStar          -> nativeRepeatedSequence.head.getNode.getElementType,
               PsiOutputRoleId.SuperReference        -> selectionSuperReferences.head.getNode.getElementType,
               PsiOutputRoleId.IntegerExpression     -> atomicInteger.get.getNode.getElementType,
               PsiOutputRoleId.LongExpression        -> atomicLong.get.getNode.getElementType,
@@ -1573,6 +1608,8 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.ArgumentExpressions   -> surfaceId(nativeArguments.get.getClass),
               PsiOutputRoleId.NamedArgument         ->
                 "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedArgument",
+              PsiOutputRoleId.TypedExpression       -> surfaceId(nativeRepeatedTyped.head.getClass),
+              PsiOutputRoleId.RepeatedStar          -> surfaceId(nativeRepeatedSequence.head.getClass),
               PsiOutputRoleId.SuperReference        -> surfaceId(selectionSuperReferences.head.getClass),
               PsiOutputRoleId.IntegerExpression     -> surfaceId(atomicInteger.get.getClass),
               PsiOutputRoleId.LongExpression        -> surfaceId(atomicLong.get.getClass),
@@ -2034,6 +2071,13 @@ private[metallurgy] object NativePsiElementBindings:
                 Set(
                   Scala3PsiNamedArgumentProductions.CandidateProductionId ->
                     Scala3PsiNamedArgumentProductions.NativeRealizationId
+                )
+              )
+              .getOrElse(Set.empty) ++ Option
+              .unless(nativeRepeatedContract)(
+                Set(
+                  Scala3PsiRepeatedArgumentProductions.CandidateProductionId ->
+                    Scala3PsiRepeatedArgumentProductions.NativeRealizationId
                 )
               )
               .getOrElse(Set.empty)

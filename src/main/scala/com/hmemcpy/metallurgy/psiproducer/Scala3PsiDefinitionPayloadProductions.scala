@@ -113,7 +113,10 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "payload-qualifier-super",
     "payload-descendant-named-arg",
     "named-term-output-free-integer",
-    "named-term-output-free-string"
+    "named-term-output-free-string",
+    "repeated-term-output-free-typed",
+    "repeated-term-star-evidence",
+    "repeated-term-output-free-string"
   )
 
   private val payloadRootIds            = payloadExpressionProductionIds.filter(id =>
@@ -1469,6 +1472,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       "TypeApply" -> Vector(CatalogPathSegment.NamedField("fun")),
       "NamedArg"  -> Vector(CatalogPathSegment.NamedField("arg")),
       "Select"    -> Vector(CatalogPathSegment.NamedField("qualifier")),
+      "Typed"     -> Vector(CatalogPathSegment.NamedField("expr")),
       "Tuple"     -> Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
       "Block"     -> Vector(CatalogPathSegment.NamedField("stats"), CatalogPathSegment.RepeatedElement),
       "Block"     -> Vector(CatalogPathSegment.NamedField("expr")),
@@ -1881,7 +1885,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       "Select",
       Vector(CatalogPathSegment.NamedField("qualifier")),
       SourceClassification.SourceReachable
-    ) ++ payloadQualifierOccurrences(
+    ) ++ Scala3PsiRepeatedArgumentProductions.CandidateSelectedOperandQualifierFallbackOccurrences ++ payloadQualifierOccurrences(
       "This",
       Vector(CatalogPathSegment.NamedField("qual")),
       SourceClassification.SourceReachable

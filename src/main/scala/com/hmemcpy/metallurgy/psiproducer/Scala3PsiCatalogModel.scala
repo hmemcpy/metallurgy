@@ -61,6 +61,7 @@ private[metallurgy] object GrammarRoleId:
   val SelectionExpression       = GrammarRoleId("scala.expression.selection")
   val OrdinaryApplication       = GrammarRoleId("scala.expression.application.ordinary")
   val NamedArgument             = GrammarRoleId("scala.expression.application.argument.named")
+  val RepeatedTermArgument      = GrammarRoleId("scala.expression.application.argument.repeated")
   val SuperReference            = GrammarRoleId("scala.expression.reference.super")
   val SelectionQualifier        = GrammarRoleId("scala.expression.selection.qualifier")
   val ExpressionIntegerLiteral  = GrammarRoleId("scala.expression.literal.integer")
@@ -131,6 +132,13 @@ private[metallurgy] enum TerminalIntervalSelector:
   case CompilerScannerToken(
       kind: ParserScannerTokenKind,
       occurrence: ScannerTokenOccurrence = ScannerTokenOccurrence.All
+  )
+  case SourceDerivedChildToScannerTokenGap(
+      field: String,
+      roleId: String,
+      occurrence: ChildOccurrenceSelector,
+      kind: ParserScannerTokenKind,
+      scannerOccurrence: ScannerTokenOccurrence
   )
   case CompilerScannerTokenBeforeChildOutputs(kind: ParserScannerTokenKind, roleId: String)
   case CompilerScannerTokenInChildGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
@@ -323,6 +331,8 @@ private[metallurgy] object PsiOutputRoleId:
   val MethodCall            = PsiOutputRoleId("scala.expression.application.method-call")
   val ArgumentExpressions   = PsiOutputRoleId("scala.expression.application.arguments")
   val NamedArgument         = PsiOutputRoleId("scala.expression.application.argument.named-compatible")
+  val TypedExpression       = PsiOutputRoleId("scala.expression.typed")
+  val RepeatedStar          = PsiOutputRoleId("scala.expression.application.argument.repeated-star")
   val SuperReference        = PsiOutputRoleId("scala.expression.reference.super")
   val IntegerExpression     = PsiOutputRoleId("scala.expression.literal.integer")
   val LongExpression        = PsiOutputRoleId("scala.expression.literal.long")
@@ -434,6 +444,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.SelectionExpression,
       GrammarRoleId.OrdinaryApplication,
       GrammarRoleId.NamedArgument,
+      GrammarRoleId.RepeatedTermArgument,
       GrammarRoleId.SuperReference,
       GrammarRoleId.SelectionQualifier,
       GrammarRoleId.ExpressionIntegerLiteral,
@@ -530,6 +541,8 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.MethodCall,
       PsiOutputRoleId.ArgumentExpressions,
       PsiOutputRoleId.NamedArgument,
+      PsiOutputRoleId.TypedExpression,
+      PsiOutputRoleId.RepeatedStar,
       PsiOutputRoleId.SuperReference,
       PsiOutputRoleId.IntegerExpression,
       PsiOutputRoleId.LongExpression,
@@ -827,6 +840,17 @@ private[metallurgy] enum EvidenceCondition:
   case RuntimeSupplementPositive(fieldName: String, present: Boolean)
   case LeadingBeforeRuntimeTailPresent(repeatedFieldName: String, countFieldName: String, present: Boolean)
   case RootAttachment(attachment: AttachmentEvidence, present: Boolean)
+  case TrailingRepeatedNodeChild(
+      repeatedFieldName: String,
+      nodePrefix: String,
+      nodeClassification: SourceClassification,
+      childField: String,
+      childPrefix: String,
+      childClassification: SourceClassification,
+      childNameField: String,
+      childNameExpected: String,
+      childSourceText: String
+  )
 private[metallurgy] final case class OutputRealization(
     id: String,
     conditions: Vector[ChildOutcomeCondition],

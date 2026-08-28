@@ -207,6 +207,8 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.EmptyRepeated(value)                   => s"EmptyRepeated[${render(value)}]"
     case CatalogValuePattern.LeadingThenRepeated(leading, trailing) =>
       s"LeadingThenRepeated[${render(leading)},${render(trailing)}]"
+    case CatalogValuePattern.NonEmptyRepeatedEndingWith(leading, trailing) =>
+      s"NonEmptyRepeatedEndingWith[${render(leading)},${render(trailing)}]"
     case CatalogValuePattern.AnyOf(values)                          => s"AnyOf[${values.map(render).mkString(",")}]"
     case CatalogValuePattern.Product(prefix, fields)                =>
       s"$prefix(${fields.map(field => s"${field.name}:${render(field.value)}").mkString(",")})"
