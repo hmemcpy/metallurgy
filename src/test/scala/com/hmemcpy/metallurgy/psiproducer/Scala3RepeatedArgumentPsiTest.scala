@@ -185,7 +185,7 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     val payloads = descendants[MetallurgyExpressionPayload](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(
       Vector(
-        "repeated(xs*)",
+        "val localValue = repeated(xs*)",
         "repeated(source.values*)",
         "single(1: Int)"
       ),

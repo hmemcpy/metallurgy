@@ -70,15 +70,24 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
       prefix: String,
       fields: Vector[CompilerFieldPattern],
       occurrences: Vector[CompilerProductionContextPattern],
-      extraTerminals: Vector[TerminalDeclaration] = Vector.empty
+      extraTerminals: Vector[TerminalDeclaration] = Vector.empty,
+      children: Vector[ChildDeclaration] = Vector.empty,
+      childMounts: Map[String, Option[String]] = Map.empty,
+      syntheticStructural: Boolean = false
   ): Scala3PsiProduction =
     Scala3PsiProduction(
       id,
       GrammarRoleId.OutputFreeExpression,
       CompilerProductionPattern(InventoryKind.Node, prefix, fields, occurrences),
-      fields.map(field => FieldDisposition(field.name, FieldDispositionKind.TerminalOrLayout)),
-      Vector.empty,
-      Vector(
+      fields.map(field =>
+        FieldDisposition(
+          field.name,
+          if children.exists(_.fieldName == field.name) then FieldDispositionKind.Child
+          else FieldDispositionKind.TerminalOrLayout
+        )
+      ),
+      children,
+      Option.unless(syntheticStructural)(
         TerminalDeclaration(
           "output-free-text",
           TerminalIntervalSelector.WholeProduction,
@@ -86,7 +95,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
           OccurrenceCardinality.ExactlyOne,
           PsiOutputRoleId.SourceTerminal
         )
-      ) ++ extraTerminals,
+      ).toVector ++ extraTerminals,
       Vector(LayoutAlternative.None),
       RecoveryPolicy.Reject,
       ExpressionPayloadSurface,
@@ -94,7 +103,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
       Vector.empty,
       PersistenceObligations.NotApplicable,
       None,
-      Some(transparentTemplate()),
+      Some(LocalOutputCompositeTemplate(Vector.empty, children.map(_.roleId -> None).toMap ++ childMounts)),
       Vector.empty,
       None
     )
@@ -244,6 +253,34 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     outputRoleId = None
   )
 
+  private val outputFreeTypedChildren = Vector(
+    ChildDeclaration(
+      "value",
+      "expr",
+      ChildCardinality.ExactlyOne,
+      "atomic-term-ident",
+      Set(
+        "atomic-literal-integer",
+        "atomic-literal-string",
+        "payload-descendant-ident",
+        "payload-descendant-number",
+        "payload-descendant-invoked-literal",
+        "payload-descendant-select",
+        "payload-descendant-apply",
+        "payload-descendant-tuple",
+        "payload-descendant-block",
+        "payload-descendant-infix",
+        "payload-output-free-ident"
+      )
+    ),
+    ChildDeclaration(
+      "type-evidence",
+      "tpt",
+      ChildCardinality.ExactlyOne,
+      "repeated-term-star-evidence"
+    )
+  )
+
   private val outputFreeTyped = outputFreeProduction(
     id = "repeated-term-output-free-typed",
     prefix = "Typed",
@@ -252,9 +289,51 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
       CompilerFieldPattern("tpt", CatalogValuePattern.Node)
     ),
     occurrences =
-      ownedOccurrences(DirectOccurrencePath, Vector(CandidateProductionId, PayloadApplyRootProduction)) ++
-        ownedOccurrences(DirectOccurrencePath, Vector(CandidateProductionId, PayloadApplyRootProduction)).map:
-          occurrence => occurrence.copy(sourceClassification = SourceClassification.Synthetic)
+      ownedOccurrences(DirectOccurrencePath, Vector(CandidateProductionId, PayloadApplyRootProduction)),
+    children = outputFreeTypedChildren
+  )
+
+  private val outputFreeTypedSynthetic = outputFreeProduction(
+    id = "repeated-term-output-free-typed-synthetic",
+    prefix = "Typed",
+    fields = Vector(
+      CompilerFieldPattern("expr", CatalogValuePattern.Node),
+      CompilerFieldPattern("tpt", CatalogValuePattern.Node)
+    ),
+    occurrences = Vector("DefDef", "ValDef").flatMap: anchor =>
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchor(
+            InventoryKind.Node,
+            "Apply",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+            InventoryAncestor(
+              InventoryKind.Node,
+              anchor,
+              Vector(CatalogPathSegment.NamedField("preRhs"))
+            )
+          ),
+          SourceClassification.Synthetic
+        )
+      ),
+    children = outputFreeTypedChildren,
+    childMounts = Map("value" -> None, "type-evidence" -> None),
+    syntheticStructural = true,
+    extraTerminals = Vector(
+      TerminalDeclaration(
+        "repeated-wrapper-gap",
+        TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap(
+          "tpt",
+          "value",
+          ChildOccurrenceSelector.First,
+          ParserScannerTokenKind.Identifier,
+          ScannerTokenOccurrence.First
+        ),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Optional,
+        PsiOutputRoleId.SourceTerminal
+      )
+    )
   )
 
   private val starEvidence = outputFreeProduction(
@@ -332,7 +411,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         "args",
         ChildCardinality.Repeated(1, None),
         ArgumentProductions.head,
-        ArgumentProductions.tail.toSet + "repeated-term-output-free-typed"
+        ArgumentProductions.tail.toSet + "repeated-term-output-free-typed" + "repeated-term-output-free-typed-synthetic"
       )
     ),
     terminals = Vector(
@@ -505,6 +584,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     Application,
     RepeatedArgument,
     outputFreeTyped,
+    outputFreeTypedSynthetic,
     starEvidence,
     outputFreeString
   )

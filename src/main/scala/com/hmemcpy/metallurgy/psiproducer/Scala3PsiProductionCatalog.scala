@@ -438,7 +438,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         Scala3PsiApplicationExpressionProductions.FallbackProductionId
       ),
       ProductionAlternatives("term-named-argument", "payload-descendant-named-arg"),
-      ProductionAlternatives("term-repeated-argument", "repeated-term-output-free-typed"),
+      ProductionAlternatives("term-repeated-argument", "repeated-term-output-free-typed-synthetic"),
       ProductionAlternatives(
         Scala3PsiApplicationExpressionProductions.CandidateProductionId,
         Scala3PsiApplicationExpressionProductions.FallbackProductionId
