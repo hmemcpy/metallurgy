@@ -69,7 +69,8 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
       id: String,
       prefix: String,
       fields: Vector[CompilerFieldPattern],
-      occurrences: Vector[CompilerProductionContextPattern]
+      occurrences: Vector[CompilerProductionContextPattern],
+      extraTerminals: Vector[TerminalDeclaration] = Vector.empty
   ): Scala3PsiProduction =
     Scala3PsiProduction(
       id,
@@ -85,7 +86,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
           OccurrenceCardinality.ExactlyOne,
           PsiOutputRoleId.SourceTerminal
         )
-      ),
+      ) ++ extraTerminals,
       Vector(LayoutAlternative.None),
       RecoveryPolicy.Reject,
       ExpressionPayloadSurface,
@@ -170,7 +171,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     ),
     dispositions = Vector(
       FieldDisposition("expr", FieldDispositionKind.Child),
-      FieldDisposition("tpt", FieldDispositionKind.TerminalOrLayout)
+      FieldDisposition("tpt", FieldDispositionKind.Child)
     ),
     children = Vector(
       ChildDeclaration(
@@ -179,6 +180,12 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         ChildCardinality.ExactlyOne,
         "atomic-term-ident",
         Set("atomic-literal-integer", "atomic-literal-string")
+      ),
+      ChildDeclaration(
+        "type-evidence",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        "repeated-term-star-evidence"
       )
     ),
     terminals = Vector(
@@ -194,17 +201,6 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
-      ),
-      TerminalDeclaration(
-        "repeated-argument-star",
-        TerminalIntervalSelector.CompilerScannerToken(
-          ParserScannerTokenKind.Identifier,
-          ScannerTokenOccurrence.Last
-        ),
-        TerminalLeafTarget.Token(NativePsiElementBindings.RepeatedParameterStarTokenSurface, Some("*")),
-        OccurrenceCardinality.ExactlyOne,
-        PsiOutputRoleId.SourceTerminal,
-        ownsStructuralEvidence = Some(false)
       )
     ),
     layouts = Vector(LayoutAlternative.None),
@@ -233,7 +229,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
                 "value",
                 ChildOccurrenceSelector.First,
                 ParserScannerTokenKind.Identifier,
-                PositionProvenancePolicy.SourceDerivedOnly
+                PositionProvenancePolicy.PositionedIncludingSynthetic
               ),
               OutputBoundary.ProductionEnd(PositionProvenancePolicy.PositionedIncludingSynthetic)
             ),
@@ -242,7 +238,7 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
             SequenceArgumentAccessors
           )
         ),
-        Map("value" -> Some("typed-expression"))
+        Map("value" -> Some("typed-expression"), "type-evidence" -> None)
       )
     ),
     outputRoleId = None
@@ -268,7 +264,17 @@ private[psiproducer] object Scala3PsiRepeatedArgumentProductions:
     occurrences =
       enabledOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true))) ++
         ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(CandidateProductionId)) ++
-        ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(PayloadApplyRootProduction))
+        ownedOccurrences(Vector(edge("Typed", "tpt"), edge("Apply", "args", repeated = true)), Vector(PayloadApplyRootProduction)),
+    extraTerminals = Vector(
+      TerminalDeclaration(
+        "repeated-star-token",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Token(NativePsiElementBindings.RepeatedParameterStarTokenSurface, Some("*")),
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      )
+    )
   )
 
   private val outputFreeString = outputFreeProduction(

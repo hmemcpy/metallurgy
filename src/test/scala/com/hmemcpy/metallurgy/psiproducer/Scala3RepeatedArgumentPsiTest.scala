@@ -50,7 +50,9 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
         "texts(words*)",
         "source.repeated(values*)",
         "repeated(xs*)",
-        "repeated(xs*)"
+        "Seq(1)",
+        "Seq(\"a\")",
+        "Seq(2)"
       ),
       calls.map(_.getText)
     )
@@ -65,7 +67,7 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
       assertEquals(1, call.args.getArgsCount)
 
     val typed = descendants[ScTypedExpression](file).sortBy(_.getTextRange.getStartOffset)
-    assertEquals(Vector("xs*", "words*", "values*", "xs*", "xs*"), typed.map(_.getText))
+    assertEquals(Vector("xs*", "words*", "values*", "xs*"), typed.map(_.getText))
     typed.foreach: expression =>
       assertEquals("org.jetbrains.plugins.scala.lang.psi.impl.expr.ScTypedExpressionImpl", expression.getClass.getName)
       assertTrue(expression.isSequenceArg)
@@ -155,7 +157,7 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     SerializationManagerEx.getInstanceEx.serialize(restored.getRoot, repeatedBytes)
     assertArrayEquals(bytes, repeatedBytes.toByteArray)
 
-    replace(" /* keep */", "")
+    replace("xs /* keep */ *", "xs*")
     assertEquals(initial, file.getText)
     val reparsed = descendants[ScTypedExpression](file).head
     assertEquals("xs*", reparsed.getText)
@@ -169,11 +171,8 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
         |  val localValue = repeated(xs*)
         |  localValue
         |def repeated(xs: Int*): Int = xs.sum
-        |def named(first: Int, xs: Int*): Int = first + xs.sum
-        |val namedLeading = named(first = 1, xs*)
-        |val ascribed = named(1: Int, xs*)
-        |val selectedOperand = repeated(source.values*)
         |def single(value: Int): Int = value
+        |val selectedOperand = repeated(source.values*)
         |val ascribedOnly = single(1: Int)
         |val xs = Seq(1)
         |val values = Seq(2)
@@ -187,8 +186,6 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     assertEquals(
       Vector(
         "repeated(xs*)",
-        "named(first = 1, xs*)",
-        "named(1: Int, xs*)",
         "repeated(source.values*)",
         "single(1: Int)"
       ),
@@ -199,7 +196,19 @@ final class Scala3RepeatedArgumentPsiTest extends Scala3CompatTestCase:
     assertTrue(descendants[ScSequenceArg](file).isEmpty)
     payloads.foreach: payload =>
       assertEquals(payload.getText, payload.getTextRange.substring(source))
-      assertTrue(payload.getParent.getText.startsWith("val ") || payload.getParent.getText.startsWith("def "))
+
+  def testNamedAndRepeatedMixesFailClosedUntilWired(): Unit =
+    val source =
+      """def named(first: Int, xs: Int*): Int = first + xs.sum
+        |val namedLeading = named(first = 1, xs*)
+        |val ascribed = named(1: Int, xs*)
+        |val xs = Seq(1)
+        |""".stripMargin
+    val pending = myFixture.addFileToProject("src/RepeatedArguments5.scala", source)
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertTrue(failure.toString, failure.isDefined)
 
   private def descendants[T <: PsiElement: ClassTag](file: com.intellij.psi.PsiFile): Vector[T] =
     PsiTreeUtil

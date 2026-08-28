@@ -2923,7 +2923,7 @@ private[metallurgy] object WholeFileProductionPlanner:
               case _                                  => planningAtomRangeIndex.within(interval)
             candidates
               .filter(atom =>
-                (terminal.target == TerminalLeafTarget.Parent && !gapClaim) ||
+                gapClaim || (terminal.target == TerminalLeafTarget.Parent && !gapClaim) ||
                   atom.claims.exists(claims(instance, _)) || extendedCandidateSet(atom)
               )
               .filter: atom =>
