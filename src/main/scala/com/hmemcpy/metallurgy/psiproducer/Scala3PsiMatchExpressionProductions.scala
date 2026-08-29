@@ -279,7 +279,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       TerminalDeclaration(
         "match-keyword",
         TerminalIntervalSelector.BeforeChild("cases"),
-        TerminalLeafTarget.Parent,
+        TerminalLeafTarget.Token(NativePsiElementBindings.MatchKeywordTokenSurface, Some("match")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       ),

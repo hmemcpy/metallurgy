@@ -1485,6 +1485,7 @@ private[metallurgy] object NativePsiElementBindings:
               Map(TypeRightParenthesisTokenSurface -> ScalaTokenTypes.tRPARENTHESIS) ++
               Map(TypeCommaTokenSurface -> ScalaTokenTypes.tCOMMA) ++
               Map(UsingKeywordTokenSurface -> ScalaTokenType.UsingKeyword) ++
+              Map(MatchKeywordTokenSurface -> ScalaTokenTypes.tIDENTIFIER) ++
               Map(TypeColonTokenSurface -> ScalaTokenTypes.tCOLON) ++
               Map(FunctionArrowTokenSurface -> ordinaryFunctionArrow.getNode.getElementType) ++
               Map(ContextFunctionArrowTokenSurface -> contextFunctionArrow.getNode.getElementType) ++
