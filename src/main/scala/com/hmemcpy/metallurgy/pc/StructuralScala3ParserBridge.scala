@@ -877,6 +877,7 @@ private final class StructuralScala3ParserBridge private (
     case "'{'"                               => ParserScannerTokenKind.LeftBrace
     case "'}'"                               => ParserScannerTokenKind.RightBrace
     case "','"                               => ParserScannerTokenKind.Comma
+    case "@" | "'@'"                         => ParserScannerTokenKind.AtSign
     case ":"                                 => ParserScannerTokenKind.Colon
     case "=" | "'='"                         => ParserScannerTokenKind.Equals
     case "=>"                                => ParserScannerTokenKind.FunctionArrow
@@ -886,6 +887,7 @@ private final class StructuralScala3ParserBridge private (
     case "identifier" if sourceText == "->"  => ParserScannerTokenKind.PureFunctionArrow
     case "identifier" if sourceText == "?->" => ParserScannerTokenKind.ContextPureFunctionArrow
     case "identifier" if sourceText == "^"   => ParserScannerTokenKind.CaptureOperator
+    case "identifier" if sourceText == "@"   => ParserScannerTokenKind.AtSign
     case "identifier"                        => ParserScannerTokenKind.Identifier
     case "type"                              => ParserScannerTokenKind.TypeKeyword
     case "character literal" | "integer literal" | "number literal" | "number literal with exponent" | "long literal" |

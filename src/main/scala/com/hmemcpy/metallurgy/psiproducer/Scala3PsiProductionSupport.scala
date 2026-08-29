@@ -453,6 +453,27 @@ private[psiproducer] object Scala3PsiProductionSupport:
           Vector.empty,
           ImportPersistenceSurfaces.SelfNavigation
         )
+      case PsiOutputRoleId.StableReferencePattern                                     =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.BindingStub,
+          DefinitionPersistenceSurfaces.BindingSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.NamingPattern                                              =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.BindingStub,
+          DefinitionPersistenceSurfaces.BindingSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
+      case PsiOutputRoleId.SeqWildcardPattern                                         =>
+        PersistenceObligations.Required(
+          DefinitionPersistenceSurfaces.BindingStub,
+          DefinitionPersistenceSurfaces.BindingSerializer,
+          Vector.empty,
+          ImportPersistenceSurfaces.SelfNavigation
+        )
       case PsiOutputRoleId.IdentifierList                                             =>
         PersistenceObligations.Required(
           DefinitionPersistenceSurfaces.IdentifierListStub,
@@ -1094,7 +1115,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val WildcardPatternAccessors          = Vector.empty
   val StableReferencePatternAccessors   = Vector(
     AccessorObligation(
-      s"$StableReferencePatternSurface#reference()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScReference;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScStableReferencePattern#referenceExpression()Lscala/Option;",
       required = true
     )
   )
@@ -1113,7 +1134,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val NamingPatternAccessors            = Vector.empty
   val TuplePatternAccessors             = Vector(
     AccessorObligation(
-      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScTuplePattern#patterns()Lscala/Option;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScTuplePattern#patternList()Lscala/Option;",
       required = true
     )
   )
@@ -1131,17 +1152,17 @@ private[psiproducer] object Scala3PsiProductionSupport:
   )
   val ConstructorPatternAccessors       = Vector(
     AccessorObligation(
-      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScConstructorPattern#reference()Lscala/Option;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScExtractorPattern#ref()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScStableCodeReference;",
       required = true
     ),
     AccessorObligation(
-      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScConstructorPattern#args()Lscala/Option;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScConstructorPattern#args()Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPatternArgumentList;",
       required = true
     )
   )
   val CompositePatternAccessors         = Vector(
     AccessorObligation(
-      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCompositePattern#patterns()Lscala/collection/immutable/Seq;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern#subpatterns()Lscala/collection/immutable/Seq;",
       required = true
     )
   )

@@ -122,7 +122,8 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences ++
       Scala3PsiMatchExpressionProductions.MatchExpressionContextOccurrences ++
       Scala3PsiMatchExpressionProductions.MatchGuardContextOccurrences ++
-      Scala3PsiMatchExpressionProductions.MatchCaseBodyContextOccurrences
+      Scala3PsiMatchExpressionProductions.MatchCaseBodyContextOccurrences ++
+      Scala3PsiMatchExpressionProductions.ConstructorFunOccurrences
   )
 
   private val integerLiteral = atomicExpression(

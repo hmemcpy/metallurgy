@@ -86,10 +86,11 @@ private[metallurgy] object ClosedSourceLexicalContract:
       else
         val currentCodePoint = Character.codePointAt(source, offset)
         if Character.isUnicodeIdentifierStart(currentCodePoint) || current == '_' then
-          var end = offset + Character.charCount(currentCodePoint)
+          var end            = offset + Character.charCount(currentCodePoint)
           while end < source.length && Character.isUnicodeIdentifierPart(Character.codePointAt(source, end)) do
             end += Character.charCount(Character.codePointAt(source, end))
-          if source.charAt(end - 1) == '_' then
+          val bareUnderscore = current == '_' && end == offset + 1
+          if source.charAt(end - 1) == '_' && !bareUnderscore then
             while end < source.length && isOperatorPart(source, end) do
               end += Character.charCount(Character.codePointAt(source, end))
           add(end, ClosedSourceLexicalKind.Identifier)

@@ -465,6 +465,27 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives("atomic-literal-integer", "named-term-output-free-integer"),
       ProductionAlternatives("atomic-literal-string", "named-term-output-free-string"),
       ProductionAlternatives("selection-expression", "payload-descendant-select"),
-      ProductionAlternatives("selection-expression", "payload-output-free-select")
+      ProductionAlternatives("selection-expression", "payload-output-free-select"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.WildcardProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.ReferenceProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.StableReferenceProductionId,
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.LiteralProductionId, "payload-descendant-number"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypedProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypeIdentProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.NamingProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.NamingSequenceProductionId,
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.SequenceWildcardProductionId,
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.TupleProductionId, "payload-descendant-tuple"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.AlternativeProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.ConstructorProductionId, "payload-descendant-apply")
     )
   )

@@ -367,7 +367,19 @@ private[metallurgy] object DotcPsiProducer:
         }
       )
     then Some("composite children are unordered or overlapping")
-    else if !lexerBoundariesAreSafe(boundaries, builder) then Some("composite boundary is not a lexer boundary")
+    else if !lexerBoundariesAreSafe(boundaries, builder) then
+      val observed = rawTokenStarts(builder)
+      val failing  = boundaries -- observed
+      val owners   = plan.composites
+        .filter(value => failing(value.range.startOffset) || failing(value.range.endOffset))
+        .map(value =>
+          s"${value.instance.origin.valueId}:${value.instance.localOutputId}:${value.range.startOffset}-${value.range.endOffset}"
+        )
+      val near     = (0 until builder.getOriginalText.length).filter(observed.contains(_))
+      println(
+        s"[boundaries] failing=${failing.mkString(",")} composites=${owners.mkString(",")} near=${near.filter(v => v > failing.head - 12 && v < failing.head + 12).mkString(",")}"
+      )
+      Some("composite boundary is not a lexer boundary")
     else if !tokenRangesAreSafe(
         leaves.collect { case leaf if leaf.target.isInstanceOf[TerminalLeafTarget.Token] => leaf },
         builder
@@ -387,13 +399,16 @@ private[metallurgy] object DotcPsiProducer:
       if seen.add(current) then children.getOrElse(current, Vector.empty).reverseIterator.foreach(pending.addFirst)
     seen.toSet
 
-  private def lexerBoundariesAreSafe(boundaries: Set[Int], builder: PsiBuilder): Boolean =
+  private def rawTokenStarts(builder: PsiBuilder): Set[Int] =
     var observed = Set(0, builder.getOriginalText.length)
     var index    = 0
     while builder.rawLookup(index) != null do
       observed += builder.rawTokenTypeStart(index)
       index += 1
-    boundaries.subsetOf(observed)
+    observed
+
+  private def lexerBoundariesAreSafe(boundaries: Set[Int], builder: PsiBuilder): Boolean =
+    boundaries.subsetOf(rawTokenStarts(builder))
 
   private def tokenRangesAreSafe(leaves: Vector[PlannedPhysicalLeaf], builder: PsiBuilder): Boolean =
     val ranges    = Vector.newBuilder[(Int, Int)]

@@ -8,12 +8,21 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   val CandidateProductionId = "match-expression-candidate"
   val FallbackProductionId  = "definition-payload-match"
 
-  private val CaseClauseProductionId = "match-case-clause"
-  private val GuardProductionId      = "match-guard"
-  private val CaseBodyProductionId   = "match-case-body-block"
-  private val WildcardProductionId   = "match-pattern-wildcard"
-  private val ReferenceProductionId  = "match-pattern-reference"
-  private val LiteralProductionId    = "match-pattern-literal"
+  private[psiproducer] val CaseClauseProductionId       = "match-case-clause"
+  private[psiproducer] val GuardProductionId            = "match-guard"
+  private[psiproducer] val CaseBodyProductionId         = "match-case-body-block"
+  private[psiproducer] val WildcardProductionId         = "match-pattern-wildcard"
+  private[psiproducer] val ReferenceProductionId        = "match-pattern-reference"
+  private[psiproducer] val LiteralProductionId          = "match-pattern-literal"
+  private[psiproducer] val StableReferenceProductionId  = "match-pattern-stable-reference"
+  private[psiproducer] val TypedProductionId            = "match-pattern-typed"
+  private[psiproducer] val TypeIdentProductionId        = "match-pattern-type-ident"
+  private[psiproducer] val NamingProductionId           = "match-pattern-naming"
+  private[psiproducer] val NamingSequenceProductionId   = "match-pattern-naming-sequence"
+  private[psiproducer] val SequenceWildcardProductionId = "match-pattern-sequence-wildcard"
+  private[psiproducer] val TupleProductionId            = "match-pattern-tuple"
+  private[psiproducer] val AlternativeProductionId      = "match-pattern-alternative"
+  private[psiproducer] val ConstructorProductionId      = "match-pattern-constructor"
 
   private val NativeRealization  = "match-expression-native"
   private val PayloadRealization = "match-expression-payload"
@@ -141,8 +150,99 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private val PatternPatternRoles = Set(
     PsiOutputRoleId.PatternWildcard,
     PsiOutputRoleId.ReferencePattern,
-    PsiOutputRoleId.LiteralPattern
+    PsiOutputRoleId.StableReferencePattern,
+    PsiOutputRoleId.LiteralPattern,
+    PsiOutputRoleId.TypedPattern,
+    PsiOutputRoleId.NamingPattern,
+    PsiOutputRoleId.SeqWildcardPattern,
+    PsiOutputRoleId.TuplePattern,
+    PsiOutputRoleId.CompositePattern,
+    PsiOutputRoleId.ConstructorPattern
   )
+
+  private val PatternChildProductionIds = Set(
+    WildcardProductionId,
+    ReferenceProductionId,
+    LiteralProductionId,
+    StableReferenceProductionId,
+    TypedProductionId,
+    NamingProductionId,
+    NamingSequenceProductionId,
+    SequenceWildcardProductionId,
+    TupleProductionId,
+    AlternativeProductionId,
+    ConstructorProductionId,
+    "payload-descendant-ident"
+  )
+
+  private val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
+    InventoryAncestor(
+      InventoryKind.Node,
+      "CaseDef",
+      Vector(CatalogPathSegment.NamedField("pat"))
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Apply",
+      Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Tuple",
+      Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Alternative",
+      Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Bind",
+      Vector(CatalogPathSegment.NamedField("body"))
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Typed",
+      Vector(CatalogPathSegment.NamedField("expr"))
+    )
+  )
+
+  private def patternParentOccurrences(
+      owner: String,
+      field: String,
+      repeated: Boolean,
+      classification: SourceClassification = SourceClassification.SourceReachable
+  ): Vector[CompilerProductionContextPattern] =
+    Vector(
+      CompilerProductionContextPattern(
+        ContextPattern.ParentUnderAnchorThrough(
+          InventoryKind.Node,
+          owner,
+          Vector(CatalogPathSegment.NamedField(field)) ++
+            Option.when(repeated)(CatalogPathSegment.RepeatedElement),
+          PatternNestingEdges,
+          MatchCasesAncestor
+        ),
+        classification
+      )
+    )
+
+  private val PatternSpaceOccurrences =
+    patternParentOccurrences("CaseDef", "pat", repeated = false) ++
+      patternParentOccurrences("Apply", "args", repeated = true) ++
+      patternParentOccurrences("Tuple", "trees", repeated = true) ++
+      patternParentOccurrences("Alternative", "trees", repeated = true) ++
+      patternParentOccurrences("Bind", "body", repeated = false) ++
+      patternParentOccurrences("Typed", "expr", repeated = false)
+
+  private val PatternOwnerAncestors = Vector(
+    InventoryAncestor(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("preRhs"))),
+    InventoryAncestor(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("preBody")))
+  )
+
+  val ConstructorFunOccurrences: Vector[CompilerProductionContextPattern] =
+    patternParentOccurrences("Apply", "fun", repeated = false)
 
   private val nativeMatchTemplate = LocalOutputCompositeTemplate(
     Vector(
@@ -231,6 +331,162 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       ),
       Map.empty
     )
+
+  private def nativeGroupedPatternTemplate(
+      rootId: String,
+      surface: String,
+      outputRole: PsiOutputRoleId,
+      accessors: Vector[AccessorObligation],
+      childrenRole: String,
+      extraMounts: Map[String, String] = Map.empty,
+      childrenRoleOutput: PsiOutputRoleId = PsiOutputRoleId.Patterns,
+      childrenSurface: String = PatternsSurface,
+      childrenAccessors: Vector[AccessorObligation] = PatternsAccessors
+  ) =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          rootId,
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          outputRole,
+          surface,
+          accessors
+        ),
+        outputComposite(
+          s"$rootId-children",
+          Some(rootId),
+          OutputRangeDeclaration.BoundaryDerived(
+            OutputBoundary
+              .ChildStart(childrenRole, ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+            OutputBoundary
+              .ChildEnd(childrenRole, ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
+          ),
+          childrenRoleOutput,
+          childrenSurface,
+          childrenAccessors
+        )
+      ),
+      Map(childrenRole -> Some(s"$rootId-children")) ++ extraMounts.view.mapValues(id => Some(id)).toMap
+    )
+
+  private val nativeTypedPatternTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "typed",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.TypedPattern,
+        Sc3TypedPatternSurface,
+        Sc3TypedPatternAccessors
+      ),
+      outputComposite(
+        "type-pattern",
+        Some("typed"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary
+            .ChildStart("tpt", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+          OutputBoundary
+            .ChildEnd("tpt", ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
+        ),
+        PsiOutputRoleId.TypePattern,
+        TypePatternSurface,
+        TypePatternAccessors
+      )
+    ),
+    Map("expr" -> Some("typed"), "tpt" -> Some("type-pattern"))
+  )
+
+  private val nativeSimpleTypeTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "type",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.SimpleType,
+        SimpleTypeSurface,
+        SimpleTypeAccessors
+      ),
+      outputComposite(
+        "reference",
+        Some("type"),
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.StableReference,
+        StableReferenceSurface,
+        StableReferenceAccessors
+      )
+    ),
+    Map.empty
+  )
+
+  private val namingBodyPatternTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "naming",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.NamingPattern,
+        NamingPatternSurface,
+        NamingPatternAccessors
+      )
+    ),
+    Map("body" -> Some("naming"))
+  )
+
+  private val alternativePatternTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "composite",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.CompositePattern,
+        CompositePatternSurface,
+        CompositePatternAccessors
+      )
+    ),
+    Map("trees" -> Some("composite"))
+  )
+
+  private val sequenceWildcardTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "sequence",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.SeqWildcardPattern,
+        SeqWildcardPatternSurface,
+        SeqWildcardPatternAccessors
+      )
+    ),
+    Map("expr" -> None, "tpt" -> None)
+  )
+
+  private val namingSequenceTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "sequence",
+        Some("naming"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary
+            .ChildStart("tpt", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+          OutputBoundary
+            .ChildEnd("tpt", ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
+        ),
+        PsiOutputRoleId.SeqWildcardPattern,
+        SeqWildcardPatternSurface,
+        SeqWildcardPatternAccessors
+      ),
+      outputComposite(
+        "naming",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.NamingPattern,
+        NamingPatternSurface,
+        NamingPatternAccessors
+      )
+    ),
+    Map("expr" -> None, "tpt" -> None)
+  )
 
   val MatchExpressionContextOccurrences: Vector[CompilerProductionContextPattern] =
     matchContextOccurrences("Match", "selector")
@@ -374,7 +630,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         "pat",
         ChildCardinality.ExactlyOne,
         WildcardProductionId,
-        Set(ReferenceProductionId, LiteralProductionId, "payload-descendant-ident")
+        PatternChildProductionIds - WildcardProductionId
       ),
       ChildDeclaration(
         "guard",
@@ -545,7 +801,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       InventoryKind.Node,
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard))),
-      caseDefChildOccurrences("pat")
+      PatternSpaceOccurrences
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
     children = Vector.empty,
@@ -577,7 +833,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       InventoryKind.Node,
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
-      caseDefChildOccurrences("pat")
+      PatternSpaceOccurrences
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
     children = Vector.empty,
@@ -623,7 +879,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           )
         )
       ),
-      caseDefChildOccurrences("pat")
+      PatternSpaceOccurrences
     ),
     dispositions = Vector(
       FieldDisposition("digits", FieldDispositionKind.SemanticOnly),
@@ -651,6 +907,536 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     outputRoleId = Some(PsiOutputRoleId.LiteralPattern)
   )
 
+  private val PatternStableReference = Scala3PsiProduction(
+    id = StableReferenceProductionId,
+    grammarRoleId = GrammarRoleId.PatternStableIdentifier,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.NonLowercaseName)),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "contents",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = StableReferencePatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = StableReferencePatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      nativePatternTemplate(
+        StableReferencePatternSurface,
+        StableReferencePatternAccessors,
+        PsiOutputRoleId.StableReferencePattern
+      )
+    ),
+    outputRoleId = Some(PsiOutputRoleId.StableReferencePattern)
+  )
+
+  private val PatternTyped = Scala3PsiProduction(
+    id = TypedProductionId,
+    grammarRoleId = GrammarRoleId.PatternTyped,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Typed",
+      Vector(
+        CompilerFieldPattern("expr", CatalogValuePattern.Node),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node)
+      ),
+      PatternSpaceOccurrences.map(value =>
+        value.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Colon)))
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("expr", FieldDispositionKind.Child),
+      FieldDisposition("tpt", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "expr",
+        "expr",
+        ChildCardinality.ExactlyOne,
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      ),
+      ChildDeclaration("tpt", "tpt", ChildCardinality.ExactlyOne, TypeIdentProductionId)
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "colon-gap",
+        TerminalIntervalSelector.ChildGap("expr", "tpt"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = Sc3TypedPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Sc3TypedPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(nativeTypedPatternTemplate),
+    outputRoleId = None,
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "expr",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      ),
+      RequiredChildRootOutcome(
+        "tpt",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType)))
+      )
+    )
+  )
+
+  private val PatternTypeIdent = Scala3PsiProduction(
+    id = TypeIdentProductionId,
+    grammarRoleId = GrammarRoleId.SimpleType,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+      Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchor(
+            InventoryKind.Node,
+            "Typed",
+            Vector(CatalogPathSegment.NamedField("tpt")),
+            MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
+        )
+      )
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "type-text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SimpleTypeSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SimpleTypeAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(nativeSimpleTypeTemplate),
+    outputRoleId = None
+  )
+
+  private val PatternNaming = Scala3PsiProduction(
+    id = NamingProductionId,
+    grammarRoleId = GrammarRoleId.PatternNaming,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Bind",
+      Vector(
+        CompilerFieldPattern("name", CatalogValuePattern.Name),
+        CompilerFieldPattern("body", CatalogValuePattern.Node),
+        CompilerFieldPattern("mods", emptyModifiers(0L))
+      ),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(
+      FieldDisposition("name", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("body", FieldDispositionKind.Child),
+      FieldDisposition("mods", FieldDispositionKind.SemanticOnly)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "body",
+        "body",
+        ChildCardinality.ExactlyOne,
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "binder",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = NamingPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = NamingPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(namingBodyPatternTemplate),
+    outputRoleId = Some(PsiOutputRoleId.NamingPattern),
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "body",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      )
+    )
+  )
+
+  private val PatternNamingSequence = Scala3PsiProduction(
+    id = NamingSequenceProductionId,
+    grammarRoleId = GrammarRoleId.PatternSequenceWildcard,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Typed",
+      Vector(
+        CompilerFieldPattern("expr", CatalogValuePattern.Node),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node)
+      ),
+      PatternSpaceOccurrences.map(value =>
+        value.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.AtSign)))
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("expr", FieldDispositionKind.Child),
+      FieldDisposition("tpt", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "expr",
+        "expr",
+        ChildCardinality.ExactlyOne,
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      ),
+      ChildDeclaration(
+        "tpt",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        TypeIdentProductionId,
+        Set(SequenceWildcardProductionId)
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "binder",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = NamingPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = NamingPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRealizations = Vector(
+      OutputRealization(
+        "native",
+        Vector.empty,
+        namingSequenceTemplate,
+        childClosureAbsorptions = Vector(
+          ChildClosureAbsorption("expr", ChildRootOutcome.AnyReviewed),
+          ChildClosureAbsorption("tpt", ChildRootOutcome.AnyReviewed)
+        )
+      )
+    ),
+    outputRoleId = Some(PsiOutputRoleId.NamingPattern),
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "tpt",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType)))
+      )
+    )
+  )
+
+  private val PatternSequenceWildcard = Scala3PsiProduction(
+    id = SequenceWildcardProductionId,
+    grammarRoleId = GrammarRoleId.PatternSequenceWildcard,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Typed",
+      Vector(
+        CompilerFieldPattern("expr", CatalogValuePattern.Node),
+        CompilerFieldPattern("tpt", CatalogValuePattern.Node)
+      ),
+      PatternSpaceOccurrences.map(_.copy(sourceClassification = SourceClassification.Synthetic))
+    ),
+    dispositions = Vector(
+      FieldDisposition("expr", FieldDispositionKind.Child),
+      FieldDisposition("tpt", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "expr",
+        "expr",
+        ChildCardinality.ExactlyOne,
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      ),
+      ChildDeclaration(
+        "tpt",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        TypeIdentProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "contents",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SeqWildcardPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SeqWildcardPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRealizations = Vector(
+      OutputRealization(
+        "native",
+        Vector.empty,
+        sequenceWildcardTemplate,
+        childClosureAbsorptions = Vector(
+          ChildClosureAbsorption("expr", ChildRootOutcome.AnyReviewed),
+          ChildClosureAbsorption("tpt", ChildRootOutcome.AnyReviewed)
+        )
+      )
+    ),
+    outputRoleId = Some(PsiOutputRoleId.SeqWildcardPattern)
+  )
+
+  private val PatternTuple = Scala3PsiProduction(
+    id = TupleProductionId,
+    grammarRoleId = GrammarRoleId.PatternTuple,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Tuple",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Child)),
+    children = Vector(
+      ChildDeclaration(
+        "trees",
+        "trees",
+        ChildCardinality.Repeated(0, None),
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = TuplePatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = TuplePatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      nativeGroupedPatternTemplate(
+        "tuple",
+        TuplePatternSurface,
+        PsiOutputRoleId.TuplePattern,
+        TuplePatternAccessors,
+        "trees"
+      )
+    ),
+    outputRoleId = None,
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "trees",
+        ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      )
+    )
+  )
+
+  private val PatternAlternative = Scala3PsiProduction(
+    id = AlternativeProductionId,
+    grammarRoleId = GrammarRoleId.PatternAlternative,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Alternative",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Child)),
+    children = Vector(
+      ChildDeclaration(
+        "trees",
+        "trees",
+        ChildCardinality.Repeated(2, None),
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "separators",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = CompositePatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = CompositePatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(alternativePatternTemplate),
+    outputRoleId = Some(PsiOutputRoleId.CompositePattern),
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "trees",
+        ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      )
+    )
+  )
+
+  private val PatternConstructor = Scala3PsiProduction(
+    id = ConstructorProductionId,
+    grammarRoleId = GrammarRoleId.PatternConstructor,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Apply",
+      Vector(
+        CompilerFieldPattern("fun", CatalogValuePattern.Node),
+        CompilerFieldPattern("args", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+      ),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(
+      FieldDisposition("fun", FieldDispositionKind.Child),
+      FieldDisposition("args", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration("fun", "fun", ChildCardinality.ExactlyOne, "atomic-term-ident"),
+      ChildDeclaration(
+        "args",
+        "args",
+        ChildCardinality.Repeated(0, None),
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ConstructorPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = ConstructorPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      nativeGroupedPatternTemplate(
+        "constructor",
+        ConstructorPatternSurface,
+        PsiOutputRoleId.ConstructorPattern,
+        ConstructorPatternAccessors,
+        "args",
+        Map("fun" -> "constructor"),
+        PsiOutputRoleId.PatternArgumentList,
+        PatternArgumentListSurface,
+        PatternArgumentListAccessors
+      )
+    ),
+    outputRoleId = None,
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "fun",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.TermReference)))
+      ),
+      RequiredChildRootOutcome(
+        "args",
+        ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      )
+    )
+  )
+
+  private val PatternBindModifiers = Scala3PsiProduction(
+    id = "match-pattern-binder-modifiers",
+    grammarRoleId = GrammarRoleId.Modifiers,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Product,
+      "Modifiers",
+      Vector(
+        CompilerFieldPattern("flags", CatalogValuePattern.ExactScalar("LongInteger", "LongInteger(0)")),
+        CompilerFieldPattern("privateWithin", CatalogValuePattern.ClassifiedName(NeutralNameClass.Empty)),
+        CompilerFieldPattern("annotations", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("mods", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Positioned))
+      ),
+      PatternOwnerAncestors.map(parent =>
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThroughWithParent(
+            InventoryKind.Node,
+            "Bind",
+            Vector(CatalogPathSegment.NamedField("mods")),
+            PatternNestingEdges,
+            MatchCasesAncestor,
+            parent
+          ),
+          SourceClassification.Absent
+        )
+      )
+    ),
+    dispositions = Vector(
+      FieldDisposition("flags", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("privateWithin", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("annotations", FieldDispositionKind.Synthetic),
+      FieldDisposition("mods", FieldDispositionKind.Synthetic)
+    ),
+    children = Vector.empty,
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = ModifierListSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = Vector.empty,
+    persistence = PersistenceObligations.NotApplicable,
+    outputTemplate = Some(transparentTemplate()),
+    outputRoleId = None
+  )
+
   val MatchExpressionSegment: Vector[Scala3PsiProduction] = Vector(
     Match,
     MatchCaseClause,
@@ -658,5 +1444,15 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     MatchCaseBodyBlock,
     PatternWildcard,
     PatternReference,
-    PatternLiteral
+    PatternLiteral,
+    PatternStableReference,
+    PatternTyped,
+    PatternTypeIdent,
+    PatternNaming,
+    PatternNamingSequence,
+    PatternSequenceWildcard,
+    PatternTuple,
+    PatternAlternative,
+    PatternConstructor,
+    PatternBindModifiers
   )

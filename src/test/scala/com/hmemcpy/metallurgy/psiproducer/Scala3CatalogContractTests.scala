@@ -83,7 +83,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "annotation-designator-select",
         "match-type-pattern-reference",
         "expression-named-type-argument-type",
-        "capture-function-result-ident"
+        "capture-function-result-ident",
+        "match-pattern-type-ident"
       ),
       GrammarRoleId.TypeProjection            -> Set("type-atom-projection"),
       GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
@@ -330,6 +331,16 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       ),
       GrammarRoleId.PatternWildcard           -> Set("match-pattern-wildcard"),
       GrammarRoleId.PatternLiteral            -> Set("match-pattern-literal"),
+      GrammarRoleId.PatternStableIdentifier   -> Set("match-pattern-stable-reference"),
+      GrammarRoleId.PatternTyped              -> Set("match-pattern-typed"),
+      GrammarRoleId.PatternNaming             -> Set("match-pattern-naming"),
+      GrammarRoleId.PatternSequenceWildcard   -> Set(
+        "match-pattern-naming-sequence",
+        "match-pattern-sequence-wildcard"
+      ),
+      GrammarRoleId.PatternTuple              -> Set("match-pattern-tuple"),
+      GrammarRoleId.PatternAlternative        -> Set("match-pattern-alternative"),
+      GrammarRoleId.PatternConstructor        -> Set("match-pattern-constructor"),
       GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),
       GrammarRoleId.TypeAliasDefinition       -> Set(
         "definition-simple-ident-type-alias",

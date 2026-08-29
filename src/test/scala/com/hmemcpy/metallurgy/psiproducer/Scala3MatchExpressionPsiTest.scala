@@ -6,10 +6,17 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.{PsiErrorElement, PsiManager}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScBlock, ScGuard, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
+  ScCompositePatternImpl,
+  ScConstructorPatternImpl,
   ScLiteralPatternImpl,
+  ScNamingPatternImpl,
   ScReferencePatternImpl,
+  ScSeqWildcardPatternImpl,
+  ScStableReferencePatternImpl,
+  ScTuplePatternImpl,
   ScWildcardPatternImpl
 }
+import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.Sc3TypedPatternImpl
 import org.jetbrains.plugins.scala.lang.psi.impl.expr.{ScBlockImpl, ScMatchImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{ScCaseClauseImpl, ScCaseClausesImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
@@ -107,13 +114,40 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(2, descendants[ScBlockImpl](file).size)
 
   @Test
-  def testUnsupportedPatternsFailClosedAtFileScope(): Unit =
-    val source  =
-      """def mixed(x: Any): Any = x match
-        |  case t: String => t
-        |  case _ => "other"
+  def testPatternFamiliesProduceNativePsi(): Unit =
+    val source      =
+      """def families(x: Any): Any = x match
+        |  case typed: String => typed
+        |  case named @ Some(namedInner) => named
+        |  case (tupleA, tupleB) => tupleB
+        |  case 1 | 2 => "alt"
+        |  case Some(0) => "zero"
+        |  case List(head, tail @ _*) => tail
+        |  case Nil => "stable"
         |""".stripMargin
-    val pending = myFixture.addFileToProject("src/MatchUnsupported.scala", source)
+    val file        = physical("MatchPatternFamilies.scala", source)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(7, descendants[ScCaseClauseImpl](file).size)
+    assertEquals(1, descendants[Sc3TypedPatternImpl](file).size)
+    assertEquals(1, descendants[ScStableReferencePatternImpl](file).size)
+    assertEquals("Nil", descendants[ScStableReferencePatternImpl](file).head.getText)
+    assertEquals(2, descendants[ScNamingPatternImpl](file).size)
+    assertEquals(1, descendants[ScTuplePatternImpl](file).size)
+    assertEquals(1, descendants[ScCompositePatternImpl](file).size)
+    assertEquals(3, descendants[ScConstructorPatternImpl](file).size)
+    assertEquals(1, descendants[ScSeqWildcardPatternImpl](file).size)
+    val namingNames = descendants[ScNamingPatternImpl](file).map(_.nameId.getText)
+    assertEquals(Vector("named", "tail"), namingNames)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testUnsupportedPatternShapesFailClosedAtFileScope(): Unit =
+    val source  =
+      """def pending(x: Any): Any = x match
+        |  case 2.5 => "decimal"
+        |""".stripMargin
+    val pending = myFixture.addFileToProject("src/MatchUnsupported2.scala", source)
     val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
     assertEquals(source, file.getText)
     assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
