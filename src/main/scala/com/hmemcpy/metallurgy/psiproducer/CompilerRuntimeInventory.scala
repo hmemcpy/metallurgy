@@ -850,7 +850,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     case CatalogValuePattern.LowercaseName                                 => e.tag(19)
     case CatalogValuePattern.NonLowercaseName                              => e.tag(20)
     case CatalogValuePattern.BacktickedName                                => e.tag(21)
-    case CatalogValuePattern.ExactName(value)                              => e.tag(22); e.string(value)
+    case CatalogValuePattern.ExactName(value)                              => e.tag(24); e.string(value)
     case CatalogValuePattern.Scalar(kind)                                  => e.tag(8); e.string(kind)
     case CatalogValuePattern.ExactScalar(kind, value)                      => e.tag(13); e.string(kind); e.string(value)
     case CatalogValuePattern.Unsupported(runtime)                          => e.tag(9); e.string(runtime)

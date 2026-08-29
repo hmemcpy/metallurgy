@@ -167,10 +167,8 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     val seqNaming     = descendants[ScNamingPatternImpl](file).find(_.nameId.getText == "tail").get
     assertEquals("tail @ _*", seqNaming.getText)
     assertEquals(
-      1,
-      descendants[ScSeqWildcardPatternImpl](file).count(
-        _.getTextRange.getStartOffset >= seqNaming.getTextRange.getStartOffset
-      )
+      Vector(seqNaming),
+      descendants[ScSeqWildcardPatternImpl](file).map(_.getParent)
     )
     assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
     payloadsOutsideMatch(file)
