@@ -304,6 +304,14 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         PsiOutputRoleId.SourceTerminal
       ),
       TerminalDeclaration(
+        "match-residual",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
         "payload",
         TerminalIntervalSelector.WholeProduction,
         TerminalLeafTarget.Parent,
@@ -537,7 +545,15 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         CaseBodyExpressionProductions.tail.toSet
       )
     ),
-    terminals = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "block-residual",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
     layouts = Vector(LayoutAlternative.None),
     recovery = RecoveryPolicy.Reject,
     targetSurfaceId = BlockSurface,
