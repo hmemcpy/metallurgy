@@ -427,8 +427,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
-      ),
-
+      )
     ),
     layouts = Vector(LayoutAlternative.None),
     recovery = RecoveryPolicy.Reject,

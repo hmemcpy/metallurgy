@@ -111,7 +111,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
 
   @Test
   def testUnsupportedPatternsFailClosedAtFileScope(): Unit =
-    val source   =
+    val source  =
       """def mixed(x: Any): Any = x match
         |  case t: String => t
         |  case _ => "other"

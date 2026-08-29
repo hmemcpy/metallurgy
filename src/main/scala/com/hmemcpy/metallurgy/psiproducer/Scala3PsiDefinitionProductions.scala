@@ -499,7 +499,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
         id == Scala3PsiRepeatedArgumentProductions.CandidateProductionId ||
         id == Scala3PsiMatchExpressionProductions.CandidateProductionId ||
         Set("positional-applied-call-candidate", "named-invoked-call-candidate", "named-type-application-candidate")(id)
-    )
+    ) ++ Set(Scala3PsiMatchExpressionProductions.CandidateProductionId)
 
   private def zeroOutput(
       id: String,
