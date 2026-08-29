@@ -251,7 +251,7 @@ private[psiproducer] trait Scala3PsiProductionCatalogTestSupport:
           0,
           0,
           "'@'",
-          ParserScannerTokenKind.Other,
+          ParserScannerTokenKind.AtSign,
           PcSourceRange(0, 1),
           0,
           ParserPositionProvenance.SourceDerived
