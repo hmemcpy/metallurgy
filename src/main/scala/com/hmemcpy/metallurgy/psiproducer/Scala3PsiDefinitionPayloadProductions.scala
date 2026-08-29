@@ -90,6 +90,7 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     "definition-payload-infix",
     "definition-payload-type-apply-positional",
     "definition-payload-type-apply-named",
+    "match-expression-candidate",
     "named-type-application-candidate",
     "definition-payload-applied-call",
     "positional-applied-call-candidate",

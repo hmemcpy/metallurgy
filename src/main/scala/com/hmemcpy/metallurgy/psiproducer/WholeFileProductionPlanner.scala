@@ -482,6 +482,9 @@ private[metallurgy] object WholeFileProductionPlanner:
             found.foreach: (child, path) =>
               val actual         = selected(child)
               if !declaration.productionIds(actual.id) then
+                println(
+                  s"[cm] mismatch parent=${selected(instance).id} prod=${declaration.productionIds} child=${selected(child).id} kind=${child.kind} prefix=${rows(child.kind -> child.valueId).prefix} role=${declaration.roleId} field=${declaration.fieldName} cardinality=${declaration.cardinality}"
+                )
                 break(
                   Left(
                     WholeFilePlanningFailure.ChildProductionMismatch(
