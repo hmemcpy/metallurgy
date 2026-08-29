@@ -11,183 +11,211 @@ private[psiproducer] object Scala3PsiProductionSupport:
     )
   )
 
-  val PackageSurface               =
+  val PackageSurface                =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/packaging/ScPackagingImpl"
-  val EndSurface                   = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
-  val ImportStatementSurface       =
+  val EndSurface                    = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScEndImpl"
+  val ImportStatementSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportStmtImpl"
-  val ExportStatementSurface       =
+  val ExportStatementSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScExportStmtImpl"
-  private val ExportStatementApi   =
+  private val ExportStatementApi    =
     "org/jetbrains/plugins/scala/lang/psi/api/toplevel/imports/ScExportStmt"
-  val ImportExpressionSurface      =
+  val ImportExpressionSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportExprImpl"
-  val ImportSelectorsSurface       =
+  val ImportSelectorsSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorsImpl"
-  val ImportSelectorSurface        =
+  val ImportSelectorSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/imports/ScImportSelectorImpl"
-  val StableReferenceSurface       =
+  val StableReferenceSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStableCodeReferenceImpl"
-  val SimpleTypeSurface            =
+  val SimpleTypeSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSimpleTypeElementImpl"
-  val TypeProjectionSurface        =
+  val TypeProjectionSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeProjectionImpl"
-  val LiteralTypeSurface           =
+  val LiteralTypeSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScLiteralTypeElementImpl"
-  val ParenthesizedTypeSurface     =
+  val ParenthesizedTypeSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParenthesisedTypeElementImpl"
-  val TupleTypeSurface             =
+  val TupleTypeSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTupleTypeElementImpl"
-  val TupleTypesSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypesImpl"
-  val NamedTupleTypeSurface        =
+  val TupleTypesSurface             = "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypesImpl"
+  val NamedTupleTypeSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScNamedTupleTypeElementImpl"
-  val NamedTupleComponentSurface   =
+  val NamedTupleComponentSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScNamedTupleTypeComponentImpl"
-  val FunctionTypeSurface          =
+  val FunctionTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScFunctionalTypeElementImpl"
-  val DependentFunctionTypeSurface =
+  val DependentFunctionTypeSurface  =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScDependentFunctionTypeElementImpl"
-  val PolyFunctionTypeSurface      =
+  val PolyFunctionTypeSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScPolyFunctionTypeElementImpl"
-  val IntegerLiteralSurface        =
+  val IntegerLiteralSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl"
-  val LongLiteralSurface           =
+  val LongLiteralSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScLongLiteralImpl"
-  val FloatLiteralSurface          =
+  val FloatLiteralSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScFloatLiteralImpl"
-  val DoubleLiteralSurface         =
+  val DoubleLiteralSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScDoubleLiteralImpl"
-  val CharLiteralSurface           =
+  val CharLiteralSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScCharLiteralImpl"
-  val StringLiteralSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStringLiteralImpl"
-  val BooleanLiteralSurface        =
+  val StringLiteralSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScStringLiteralImpl"
+  val BooleanLiteralSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScBooleanLiteralImpl"
-  val NullLiteralSurface           =
+  val NullLiteralSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScNullLiteralImpl"
-  val ReferenceExpressionSurface   =
+  val ReferenceExpressionSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScReferenceExpressionImpl"
-  val GenericCallSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScGenericCallImpl"
-  val MethodCallSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScMethodCallImpl"
-  val ArgumentExpressionsSurface   = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
-  val NamedArgumentSurface         =
+  val GenericCallSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScGenericCallImpl"
+  val MethodCallSurface             = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScMethodCallImpl"
+  val ArgumentExpressionsSurface    = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
+  val NamedArgumentSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedArgument"
-  val TypedExpressionSurface       = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScTypedExpressionImpl"
-  val SequenceArgumentSurface      = "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSequenceArgImpl"
-  val ThisReferenceSurface         =
+  val TypedExpressionSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScTypedExpressionImpl"
+  val SequenceArgumentSurface       = "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSequenceArgImpl"
+  val MatchSurface                  = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScMatchImpl"
+  val CaseClausesSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScCaseClausesImpl"
+  val CaseClauseSurface             = "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScCaseClauseImpl"
+  val GuardSurface                  = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScGuardImpl"
+  val BlockSurface                  = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScBlockImpl"
+  val WildcardPatternSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScWildcardPatternImpl"
+  val StableReferencePatternSurface =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScStableReferencePatternImpl"
+  val LiteralPatternSurface         =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScLiteralPatternImpl"
+  val Sc3TypedPatternSurface        =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/Sc3TypedPatternImpl"
+  val TypePatternSurface            =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScTypePatternImpl"
+  val NamingPatternSurface          =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScNamingPatternImpl"
+  val TuplePatternSurface           =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScTuplePatternImpl"
+  val PatternsSurface               = "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScPatternsImpl"
+  val PatternArgumentListSurface    =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScPatternArgumentListImpl"
+  val ConstructorPatternSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScConstructorPatternImpl"
+  val CompositePatternSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScCompositePatternImpl"
+  val SeqWildcardPatternSurface     =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScSeqWildcardPatternImpl"
+  val ThisReferenceSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScThisReferenceImpl"
-  val SuperReferenceSurface        =
+  val SuperReferenceSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScSuperReferenceImpl"
-  val ParameterizedTypeSurface     =
+  val ParameterizedTypeSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScParameterizedTypeElementImpl"
-  val TypeArgumentsSurface         =
+  val TypeArgumentsSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeArgsImpl"
-  val NamedTypeArgumentsSurface    =
+  val NamedTypeArgumentsSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyTypeArguments"
-  val NamedTypeArgumentSurface     =
+  val NamedTypeArgumentSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyNamedTypeArgument"
-  val WildcardTypeSurface          =
+  val WildcardTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScWildcardTypeElementImpl"
-  val ContextBoundSurface          =
+  val ContextBoundSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScContextBoundImpl"
-  val TypeLambdaSurface            =
+  val TypeLambdaSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeLambdaTypeElementImpl"
-  val InfixTypeSurface             =
+  val InfixTypeSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScInfixTypeElementImpl"
-  val MatchTypeSurface             =
+  val MatchTypeSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeElementImpl"
-  val MatchTypeCasesSurface        =
+  val MatchTypeCasesSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeCasesImpl"
-  val MatchTypeCaseSurface         =
+  val MatchTypeCaseSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScMatchTypeCaseImpl"
-  val MatchTypeVariableSurface     =
+  val MatchTypeVariableSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScTypeVariableTypeElementImpl"
-  val CompoundTypeSurface          =
+  val CompoundTypeSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCompoundTypeElementImpl"
-  val RefinementSurface            =
+  val RefinementSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScRefinementImpl"
-  val AnnotatedTypeSurface         =
+  val AnnotatedTypeSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScAnnotTypeElementImpl"
-  val CaptureTypeSurface           =
+  val CaptureTypeSurface            =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScCaptureTypeElementImpl"
-  val CaptureSetSurface            =
+  val CaptureSetSurface             =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureSetImpl"
-  val CaptureReferenceSurface      =
+  val CaptureReferenceSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureRefImpl"
-  val CaptureFilterSurface         =
+  val CaptureFilterSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/cc/ScCaptureFilterImpl"
-  val ModifierListSurface          = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
-  val AccessModifierSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
-  val AnnotationsSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
-  val AnnotationSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl"
-  val AnnotationExprSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl"
-  val ConstructorSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl"
-  val AnnotationArgumentsSurface   =
+  val ModifierListSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScModifierListImpl"
+  val AccessModifierSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScAccessModifierImpl"
+  val AnnotationsSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationsImpl"
+  val AnnotationSurface             = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationImpl"
+  val AnnotationExprSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScAnnotationExprImpl"
+  val ConstructorSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScConstructorInvocationImpl"
+  val AnnotationArgumentsSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScArgumentExprListImpl"
-  val ExpressionPayloadSurface     =
+  val ExpressionPayloadSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyExpressionPayload"
-  private val ExpressionSurface    = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
-  val ClassDefinitionSurface       =
+  private val ExpressionSurface     = "org/jetbrains/plugins/scala/lang/psi/api/expr/ScExpression"
+  val ClassDefinitionSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScClassImpl"
-  val TraitDefinitionSurface       =
+  val TraitDefinitionSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScTraitImpl"
-  val ObjectDefinitionSurface      =
+  val ObjectDefinitionSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScObjectImpl"
-  val EnumDefinitionSurface        =
+  val EnumDefinitionSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/typedef/ScEnumImpl"
-  val EnumCasesSurface             =
+  val EnumCasesSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumCasesImpl"
-  val EnumSingletonCaseSurface     =
+  val EnumSingletonCaseSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumSingletonCaseImpl"
-  val EnumClassCaseSurface         =
+  val EnumClassCaseSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScEnumClassCaseImpl"
-  val ExtendsBlockSurface          =
+  val ExtendsBlockSurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScExtendsBlockImpl"
-  val TemplateBodySurface          =
+  val TemplateBodySurface           =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScTemplateBodyImpl"
-  val PrimaryConstructorSurface    =
+  val PrimaryConstructorSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPrimaryConstructorImpl"
-  val ParameterClausesSurface      =
+  val ParameterClausesSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParametersImpl"
-  val ParameterClauseSurface       =
+  val ParameterClauseSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterClauseImpl"
-  val ParameterSurface             =
+  val ParameterSurface              =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterImpl"
-  val ClassParameterSurface        =
+  val ClassParameterSurface         =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScClassParameterImpl"
-  val ParameterTypeSurface         =
+  val ParameterTypeSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScParameterTypeImpl"
-  val PureParameterTypeSurface     =
+  val PureParameterTypeSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/metallurgy/MetallurgyParameterType"
-  val TemplateParentsSurface       =
+  val TemplateParentsSurface        =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScTemplateParentsImpl"
-  val SelfTypeSurface              =
+  val SelfTypeSurface               =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/types/ScSelfTypeElementImpl"
-  val DerivesClauseSurface         =
+  val DerivesClauseSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/toplevel/templates/ScDerivesClauseImpl"
-  val TypeParameterClauseSurface   =
+  val TypeParameterClauseSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScTypeParamClauseImpl"
-  val TypeParameterSurface         =
+  val TypeParameterSurface          =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/params/ScTypeParamImpl"
-  val FunctionDefinitionSurface    =
+  val FunctionDefinitionSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScFunctionDefinitionImpl"
-  val FunctionDeclarationSurface   =
+  val FunctionDeclarationSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScFunctionDeclarationImpl"
-  val PatternDefinitionSurface     =
+  val PatternDefinitionSurface      =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScPatternDefinitionImpl"
-  val ValueDeclarationSurface      =
+  val ValueDeclarationSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScValueDeclarationImpl"
-  val VariableDefinitionSurface    =
+  val VariableDefinitionSurface     =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScVariableDefinitionImpl"
-  val VariableDeclarationSurface   =
+  val VariableDeclarationSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScVariableDeclarationImpl"
-  val PatternListSurface           = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPatternListImpl"
-  val ReferencePatternSurface      =
+  val PatternListSurface            = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScPatternListImpl"
+  val ReferencePatternSurface       =
     "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScReferencePatternImpl"
-  val IdentifierListSurface        = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScIdListImpl"
-  val FieldIdSurface               = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScFieldIdImpl"
-  val TypeAliasDeclarationSurface  =
+  val IdentifierListSurface         = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScIdListImpl"
+  val FieldIdSurface                = "org/jetbrains/plugins/scala/lang/psi/impl/base/ScFieldIdImpl"
+  val TypeAliasDeclarationSurface   =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScTypeAliasDeclarationImpl"
-  val TypeAliasDefinitionSurface   =
+  val TypeAliasDefinitionSurface    =
     "org/jetbrains/plugins/scala/lang/psi/impl/statements/ScTypeAliasDefinitionImpl"
 
   def parameterPersistence(role: PsiOutputRoleId): PersistenceObligations = role match
@@ -1013,6 +1041,83 @@ private[psiproducer] object Scala3PsiProductionSupport:
     )
   )
   val SequenceArgumentAccessors         = Vector.empty
+  val MatchAccessors                    = Vector(
+    AccessorObligation(s"$MatchSurface#expression()Lscala/Option;", required = true),
+    AccessorObligation(s"$MatchSurface#caseClauses()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$MatchSurface#clauses()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val CaseClausesAccessors              = Vector(
+    AccessorObligation(
+      s"$CaseClausesSurface#caseClauses()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val CaseClauseAccessors               = Vector(
+    AccessorObligation(s"$CaseClauseSurface#pattern()Lscala/Option;", required = true),
+    AccessorObligation(s"$CaseClauseSurface#guard()Lscala/Option;", required = true),
+    AccessorObligation(s"$CaseClauseSurface#expr()Lscala/Option;", required = true)
+  )
+  val GuardAccessors                    = Vector(
+    AccessorObligation(s"$GuardSurface#expr()Lscala/Option;", required = true)
+  )
+  val BlockAccessors                    = Vector(
+    AccessorObligation(s"$BlockSurface#statements()Lscala/collection/Seq;", required = true),
+    AccessorObligation(s"$BlockSurface#resultExpression()Lscala/Option;", required = true)
+  )
+  val WildcardPatternAccessors          = Vector.empty
+  val StableReferencePatternAccessors   = Vector(
+    AccessorObligation(
+      s"$StableReferencePatternSurface#reference()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScReference;",
+      required = true
+    )
+  )
+  val LiteralPatternAccessors           = Vector.empty
+  val Sc3TypedPatternAccessors          = Vector(
+    AccessorObligation(s"$Sc3TypedPatternSurface#pattern()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$Sc3TypedPatternSurface#typePattern()Lscala/Option;",
+      required = true
+    )
+  )
+  val TypePatternAccessors              = Vector.empty
+  val NamingPatternAccessors            = Vector.empty
+  val TuplePatternAccessors             = Vector(
+    AccessorObligation(
+      s"$TuplePatternSurface#patterns()Lscala/Option;",
+      required = true
+    )
+  )
+  val PatternsAccessors                 = Vector(
+    AccessorObligation(
+      s"$PatternsSurface#patterns()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val PatternArgumentListAccessors      = Vector(
+    AccessorObligation(
+      s"$PatternArgumentListSurface#patterns()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val ConstructorPatternAccessors       = Vector(
+    AccessorObligation(s"$ConstructorPatternSurface#reference()Lscala/Option;", required = true),
+    AccessorObligation(s"$ConstructorPatternSurface#args()Lscala/Option;", required = true)
+  )
+  val CompositePatternAccessors         = Vector(
+    AccessorObligation(
+      s"$CompositePatternSurface#patterns()Lscala/collection/immutable/Seq;",
+      required = true,
+      SurfaceFactKind.Method
+    )
+  )
+  val SeqWildcardPatternAccessors       = Vector.empty
   val ExpressionPayloadAccessors        = Vector(
     AccessorObligation(s"$ExpressionSurface#type()Lscala/util/Either;", required = true, SurfaceFactKind.Method),
     AccessorObligation(s"$ExpressionSurface#innerType()Lscala/util/Either;", required = true, SurfaceFactKind.Method)

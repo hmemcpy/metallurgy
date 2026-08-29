@@ -9,7 +9,9 @@ final class TempMatchPatternInventoryProbe:
     val bridge = Scala3ParserBridge
       .open(
         Scala3ParserArtifactCoordinate("org.scala-lang", "scala3-compiler_3", ScalaVersion),
-        Scala3CompilerResolver.publicCoursier.resolve(ScalaVersion).fold(error => throw error.toException, _.map(_.toFile))
+        Scala3CompilerResolver.publicCoursier
+          .resolve(ScalaVersion)
+          .fold(error => throw error.toException, _.map(_.toFile))
       )
       .fold(error => throw AssertionError(error.toString), identity)
     try
@@ -31,14 +33,16 @@ final class TempMatchPatternInventoryProbe:
         val position = node.position match
           case ParserNodePosition.Positioned(range, point, provenance) =>
             s"range=${range.startOffset}-${range.endOffset} point=$point $provenance"
-          case other => s"$other"
-        val fields = node.fields
+          case other                                                   => s"$other"
+        val fields   = node.fields
           .map: field =>
             s"${field.name}=${summarize(field.value.toString)}"
           .mkString(" ")
         println(s"[mprobe] node=${node.production} id=${node.id} $position fields{$fields}")
       snapshot.positioned.foreach: p =>
-        println(s"[mprobe] positioned=${p.production} id=${p.id} fields{${p.fields.map(f => s"${f.name}=${summarize(f.value.toString)}").mkString(" ")}}")
+        println(
+          s"[mprobe] positioned=${p.production} id=${p.id} fields{${p.fields.map(f => s"${f.name}=${summarize(f.value.toString)}").mkString(" ")}}"
+        )
     finally bridge.close()
 
   private def summarize(value: String): String =
