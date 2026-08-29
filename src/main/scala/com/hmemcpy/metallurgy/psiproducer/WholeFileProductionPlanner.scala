@@ -2428,7 +2428,10 @@ private[metallurgy] object WholeFileProductionPlanner:
               Vector(range)
             case _ => Vector.empty
         case TerminalIntervalSelector.ChildGap(startRole, endRole)                                          =>
-          childGapIntervals(instance, startRole, endRole)
+          val dbg = childGapIntervals(instance, startRole, endRole)
+          if selected(instance).id.contains("match") then
+            println(s"[gap] instance=${selected(instance).id} role=$startRole→$endRole intervals=${dbg.map(r => s"${r.startOffset}-${r.endOffset}")}")
+          dbg
         case TerminalIntervalSelector.ChildSeparators(roleId)                                               =>
           childSeparatorIntervals(instance, roleId)
         case TerminalIntervalSelector.BeforeChild(roleId)                                                   =>
@@ -2953,6 +2956,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           val tokenRanges          = terminalTokenRanges(terminal, intervals).toSet
           val gapClaim             = terminal.selector match
             case _: TerminalIntervalSelector.SourceDerivedChildToScannerTokenGap => true
+            case _: TerminalIntervalSelector.ChildGap                            => true
             case _                                                               => false
           val extendedCandidateSet = sourceExtendedAtomSets.getOrElse(instance, Set.empty)
           val terminalCandidates   = terminal.target match

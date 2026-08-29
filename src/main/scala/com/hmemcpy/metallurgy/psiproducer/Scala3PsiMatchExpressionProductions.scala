@@ -277,8 +277,15 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     ),
     terminals = Vector(
       TerminalDeclaration(
+        "match-gap",
+        TerminalIntervalSelector.ChildGap("selector", "cases"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
         "match-keyword",
-        TerminalIntervalSelector.BeforeChild("cases"),
+        TerminalIntervalSelector.ChildGap("selector", "cases"),
         TerminalLeafTarget.Token(NativePsiElementBindings.MatchKeywordTokenSurface, Some("match")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
@@ -326,7 +333,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.CaseClause)))
           )
         ),
-        terminalIds = Some(Set("match-keyword", "right-brace"))
+        terminalIds = Some(Set("match-gap", "match-keyword", "right-brace"))
       ),
       OutputRealization(
         PayloadRealization,
@@ -404,6 +411,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     ),
     terminals = Vector(
       TerminalDeclaration(
+        "case-keyword",
+        TerminalIntervalSelector.BeforeChild("pat"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
         "arrow",
         TerminalIntervalSelector.CompilerScannerTokenInChildGap(
           ParserScannerTokenKind.FunctionArrow,
@@ -413,7 +427,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
-      )
+      ),
+
     ),
     layouts = Vector(LayoutAlternative.None),
     recovery = RecoveryPolicy.Reject,

@@ -183,7 +183,7 @@ final class Scala3NamedArgumentPsiTest extends Scala3CompatTestCase:
   def testNamedArgumentsRemainAstOnlyAcrossStubSerializationUnloadAndReload(): Unit =
     assertEquals(15, Scala3DotcFileElementType.SchemaVersion)
     assertEquals(
-      "073d750008218da7086dd73a78d3e5f0d1d5fbc8c811ec67d2b10c76cb81ff0d",
+      "3cc6359eb67dc74a149f529ee792f99f103fa2e565b33bd2a326a71890f013bb",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     val source      = "package named\nval result = target.call(name = value, count = 1)\n"

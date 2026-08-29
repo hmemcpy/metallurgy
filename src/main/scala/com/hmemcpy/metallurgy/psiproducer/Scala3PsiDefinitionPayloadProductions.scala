@@ -1496,6 +1496,10 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
       if id == "payload-descendant-select" then parents.filterNot(_._1 == "Select")
       else if id == "payload-descendant-ident" then
         parents.filterNot(parent => Set("TypeApply", "NamedArg", "Select")(parent._1))
+      else if id == "payload-descendant-block" then
+        parents.filterNot(parent => parent._1 == "TypeApply" || (parent._1 == "CaseDef" && parent._2.contains(CatalogPathSegment.NamedField("body"))))
+      else if id == "payload-descendant-infix" then
+        parents.filterNot(parent => parent._1 == "TypeApply" || (parent._1 == "CaseDef" && parent._2.contains(CatalogPathSegment.NamedField("guard"))))
       else parents.filterNot(_._1 == "TypeApply")
     val outputFree                   = Set("payload-output-free-ident", "payload-output-free-select").contains(id)
     val candidateFallbackOccurrences =

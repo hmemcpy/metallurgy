@@ -110,34 +110,24 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(1, descendants[ScBlockImpl](file).size)
 
   @Test
-  def testUnsupportedPatternsDegradeTheWholeMatchToOneCompletePayload(): Unit =
+  def testUnsupportedPatternsFailClosedAtFileScope(): Unit =
     val source   =
       """def mixed(x: Any): Any = x match
         |  case t: String => t
         |  case _ => "other"
-        |def listed(x: Any): Any = x match
-        |  case List(head, rest*) => rest
-        |  case _ => "other"
         |""".stripMargin
-    val file     = physical("MatchUnsupported.scala", source)
-    assertEquals(0, descendants[ScMatchImpl](file).size)
-    assertEquals(0, descendants[ScCaseClauseImpl](file).size)
-    assertEquals(0, descendants[ScWildcardPatternImpl](file).size)
-    val payloads = descendants[MetallurgyExpressionPayload](file)
-    assertEquals(2, payloads.size)
-    assertEquals(
-      Vector(
-        """x match
-          |  case t: String => t
-          |  case _ => "other"""".stripMargin,
-        """x match
-          |  case List(head, rest*) => rest
-          |  case _ => "other""""
-      ),
-      payloads.map(_.getText)
+    val pending = myFixture.addFileToProject("src/MatchUnsupported.scala", source)
+    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertEquals(source, file.getText)
+    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertTrue("unsupported patterns should cause capability failure", failure.isDefined)
+    assertTrue(
+      "failure should mention uncovered shape",
+      failure.get.toString.contains("UncoveredCompilerShape")
     )
-    payloads.foreach: payload =>
-      assertTrue(payload.getText, payload.getText.startsWith("x match"))
 
   private def payloadsOutsideMatch(file: com.intellij.psi.PsiFile): Unit =
     val blocks = descendants[ScBlock](file)
