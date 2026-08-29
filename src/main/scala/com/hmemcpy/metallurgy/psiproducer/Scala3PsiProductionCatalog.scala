@@ -144,8 +144,6 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 case ChildClosureAbsorption(roleId, ChildRootOutcome.All(expected), _) =>
                   dependencies(roleId, expected)
       val next                  = persistedRoutingIds ++ routingParents ++ conditionDependencies
-      val added                 = next -- persistedRoutingIds
-      if added.nonEmpty then println(s"[round] +${added.toVector.sorted.mkString(",")}")
       expanded = next.size != persistedRoutingIds.size
       persistedRoutingIds = next
     val rows                 = Vector.newBuilder[String]

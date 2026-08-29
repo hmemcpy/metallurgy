@@ -106,12 +106,12 @@ private[metallurgy] object ScalaPsiSurfaceInventory:
         .filter(_.getSort == org.jetbrains.org.objectweb.asm.Type.OBJECT)
         .map(_.getInternalName)
     val classRows                                                        = surface.classes.flatMap: clazz =>
-      val public   = (clazz.access & Opcodes.ACC_PUBLIC) != 0
-      val concrete = (clazz.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) == 0
-      val psi      = derives(clazz.internalName, Set(psiRoot))
-      val api      = public && psi
-      val stub     = derives(clazz.internalName, stubRoots)
-      val native   = concrete && clazz.methods
+      val public         = (clazz.access & Opcodes.ACC_PUBLIC) != 0
+      val concrete       = (clazz.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) == 0
+      val psi            = derives(clazz.internalName, Set(psiRoot))
+      val api            = public && psi
+      val stub           = derives(clazz.internalName, stubRoots)
+      val native         = concrete && clazz.methods
         .filter(_.name == "<init>")
         .flatMap(method => Try(org.jetbrains.org.objectweb.asm.Type.getArgumentTypes(method.descriptor)).toOption)
         .flatten
@@ -119,14 +119,14 @@ private[metallurgy] object ScalaPsiSurfaceInventory:
           argument.getSort == org.jetbrains.org.objectweb.asm.Type.OBJECT &&
             (argument.getInternalName == "com/intellij/lang/ASTNode" || derives(argument.getInternalName, stubRoots))
         )
-      val evidence = Vector(
+      val evidence       = Vector(
         s"access:${clazz.access}",
         s"super:${clazz.superName.getOrElse("")}",
         s"interfaces:${clazz.interfaces.mkString(",")}",
         s"signature:${clazz.genericSignature.getOrElse("")}",
         s"constructors:${clazz.methods.filter(_.name == "<init>").map(_.descriptor).mkString(",")}"
       )
-      val typeRow  = Some(
+      val typeRow        = Some(
         ScalaPsiSurfaceRow(
           clazz.internalName,
           if stub then SurfaceFactKind.Stub else if psi then SurfaceFactKind.Element else SurfaceFactKind.Class,
@@ -139,7 +139,7 @@ private[metallurgy] object ScalaPsiSurfaceInventory:
           evidence
         )
       )
-      val methods  = clazz.methods
+      val methods        = clazz.methods
         .filter(m => (m.access & Opcodes.ACC_PUBLIC) != 0)
         .filter(m => (m.access & (Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC | Opcodes.ACC_BRIDGE)) == 0)
         .filterNot(m =>
@@ -179,6 +179,8 @@ private[metallurgy] object ScalaPsiSurfaceInventory:
             else SurfaceClassification.Derived,
             evidence
           )
+      val debugGuardRows = methods.collect { case row if row.id.contains("ScGuard#") => s"${row.id} kind=${row.kind}" }
+      debugGuardRows.foreach(r => println(s"[surfdbg] $r"))
       typeRow.toVector ++ methods
     val descriptorRows                                                   = surface.descriptorFacts.map: fact =>
       val kind  = if fact.kind == "stubIndex" then SurfaceFactKind.Index else SurfaceFactKind.Factory

@@ -411,24 +411,6 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       .view
       .mapValues(_.toSet)
       .toMap
-    val diffOut  = new java.io.PrintWriter("/tmp/inv-diff.txt")
-    (expected.keySet ++ actual.keySet).toVector
-      .sortBy(_.value)
-      .foreach: role =>
-        val e = expected.getOrElse(role, Set.empty)
-        val a = actual.getOrElse(role, Set.empty)
-        if e != a then
-          diffOut.println(s"${role.value}")
-          diffOut.println(s"  expected: ${e.toVector.sorted.mkString(",")}")
-          diffOut.println(s"  actual:   ${a.toVector.sorted.mkString(",")}")
-    if catalog.stableRoles.grammarRoles != expected.keySet then
-      diffOut.println(
-        s"KEYSET stable-only=${(catalog.stableRoles.grammarRoles -- expected.keySet).toVector.map(_.value).sorted.mkString(",")}"
-      )
-      diffOut.println(
-        s"KEYSET expected-only=${(expected.keySet -- catalog.stableRoles.grammarRoles).toVector.map(_.value).sorted.mkString(",")}"
-      )
-    diffOut.close()
     assertEquals(expected, actual)
     assertEquals(expected.keySet, catalog.stableRoles.grammarRoles)
     assertTrue(
@@ -456,15 +438,6 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertTrue(syntheticContextBound.effectiveOutputTemplate.composites.isEmpty)
     val terminals             = catalog.productions.flatMap(_.terminals)
     val usedRoles             = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
-    val roleDiff              = new java.io.PrintWriter("/tmp/rolediff.txt")
-    (catalog.stableRoles.outputRoles ++ usedRoles).toVector
-      .map(_.value)
-      .sorted
-      .foreach: value =>
-        val inStable = catalog.stableRoles.outputRoles(PsiOutputRoleId(value))
-        val inUsed   = usedRoles(PsiOutputRoleId(value))
-        if inStable != inUsed then roleDiff.println(s"$value stable=$inStable used=$inUsed")
-    roleDiff.close()
     assertEquals(catalog.stableRoles.outputRoles, usedRoles)
     assertTrue(composites.forall(output => output.outputRoleId.value != output.targetSurfaceId))
     assertTrue(terminals.forall(terminal => catalog.stableRoles.outputRoles(terminal.outputRoleId)))
@@ -633,14 +606,6 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
       Scala3PsiProductionCatalog.catalogPlanStructure(changed).fingerprint
     )
-    val rowDiff = new java.io.PrintWriter("/tmp/rowdiff.txt")
-    currentPersistence.rows
-      .zipAll(changedPersistence.rows, "", "")
-      .foreach: (x, y) =>
-        if x != y then
-          rowDiff.println("A: " + x)
-          rowDiff.println("B: " + y)
-    rowDiff.close()
     assertEquals(currentPersistence.rows, changedPersistence.rows)
     assertEquals(currentPersistence.fingerprint, changedPersistence.fingerprint)
     assertNotEquals(

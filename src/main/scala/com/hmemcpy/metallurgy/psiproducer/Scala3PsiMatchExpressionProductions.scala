@@ -32,6 +32,18 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       MatchCasesAncestor
     )
 
+  def caseDefChildOccurrences(field: String): Vector[CompilerProductionContextPattern] =
+    OwnerAncestors.map: chain =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentWithAncestorPrefix(
+          InventoryKind.Node,
+          "CaseDef",
+          Vector(CatalogPathSegment.NamedField(field)),
+          MatchCasesAncestor +: chain
+        ),
+        SourceClassification.SourceReachable
+      )
+
   private val OwnerAncestors = Vector("DefDef", "ValDef").flatMap: owner =>
     Vector("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
       Vector(
@@ -41,6 +53,25 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           outer,
           Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
         )
+      )
+
+  private val CaseClauseOccurrences = Vector("DefDef", "ValDef").flatMap: owner =>
+    Vector("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
+      CompilerProductionContextPattern(
+        ContextPattern.ParentWithAncestorPrefix(
+          InventoryKind.Node,
+          "Match",
+          Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement),
+          Vector(
+            InventoryAncestor(InventoryKind.Node, owner, Vector(CatalogPathSegment.NamedField("preRhs"))),
+            InventoryAncestor(
+              InventoryKind.Node,
+              outer,
+              Vector(CatalogPathSegment.NamedField(field), CatalogPathSegment.RepeatedElement)
+            )
+          )
+        ),
+        SourceClassification.SourceReachable
       )
 
   def matchContextOccurrences(
@@ -359,12 +390,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         CompilerFieldPattern("guard", CatalogValuePattern.Node),
         CompilerFieldPattern("body", CatalogValuePattern.Node)
       ),
-      Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("pat"),
-          SourceClassification.SourceReachable
-        )
-      )
+      occurrences = CaseClauseOccurrences
     ),
     dispositions = Vector(
       FieldDisposition("pat", FieldDispositionKind.Child),
@@ -423,14 +449,6 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     )
   )
 
-  private def underCaseDefCaseContext(field: String): ContextPattern =
-    ContextPattern.ParentWithAncestor(
-      InventoryKind.Node,
-      "CaseDef",
-      Vector(CatalogPathSegment.NamedField(field)),
-      MatchCasesAncestor
-    )
-
   private val MatchGuard = Scala3PsiProduction(
     id = GuardProductionId,
     grammarRoleId = GrammarRoleId.CaseClause,
@@ -442,12 +460,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         CompilerFieldPattern("op", CatalogValuePattern.Node),
         CompilerFieldPattern("right", CatalogValuePattern.Node)
       ),
-      Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("guard"),
-          SourceClassification.SourceReachable
-        )
-      )
+      caseDefChildOccurrences("guard")
     ),
     dispositions = Vector(
       FieldDisposition("left", FieldDispositionKind.Child),
@@ -498,12 +511,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
         CompilerFieldPattern("expr", CatalogValuePattern.Node)
       ),
-      Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("body"),
-          SourceClassification.SourceReachable
-        )
-      )
+      caseDefChildOccurrences("body")
     ),
     dispositions = Vector(
       FieldDisposition("stats", FieldDispositionKind.Child),
@@ -544,12 +552,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       InventoryKind.Node,
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Wildcard))),
-      Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("pat"),
-          SourceClassification.SourceReachable
-        )
-      )
+      caseDefChildOccurrences("pat")
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
     children = Vector.empty,
@@ -581,12 +584,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       InventoryKind.Node,
       "Ident",
       Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
-      Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("pat"),
-          SourceClassification.SourceReachable
-        )
-      )
+      caseDefChildOccurrences("pat")
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
     children = Vector.empty,
@@ -622,15 +620,22 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     pattern = CompilerProductionPattern(
       InventoryKind.Node,
       "Number",
-      Vector(CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text"))),
       Vector(
-        CompilerProductionContextPattern(
-          underCaseDefCaseContext("pat"),
-          SourceClassification.SourceReachable
+        CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+        CompilerFieldPattern(
+          "kind",
+          CatalogValuePattern.Product(
+            "Whole",
+            Vector(CompilerFieldPattern("radix", CatalogValuePattern.Scalar("Integer")))
+          )
         )
-      )
+      ),
+      caseDefChildOccurrences("pat")
     ),
-    dispositions = Vector(FieldDisposition("digits", FieldDispositionKind.SemanticOnly)),
+    dispositions = Vector(
+      FieldDisposition("digits", FieldDispositionKind.SemanticOnly),
+      FieldDisposition("kind", FieldDispositionKind.SemanticOnly)
+    ),
     children = Vector.empty,
     terminals = Vector(
       TerminalDeclaration(

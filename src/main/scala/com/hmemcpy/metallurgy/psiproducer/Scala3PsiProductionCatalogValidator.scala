@@ -233,6 +233,7 @@ private[metallurgy] object RuntimeRealizationSelector:
               if derived.isEmpty then
                 errors += CatalogValidationError.MissingScenarioOccurrenceContext(instance, occurrence)
               derived.map(Some(_))
+      if row.prefix == "Number" then println(s"[num2] contexts=${contexts.mkString}")
       val matches  = contexts
         .map(context =>
           CatalogShapeMatcher.select(
@@ -1190,6 +1191,26 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
       selected: Vector[Scala3PsiProduction]
   ): Vector[CatalogValidationError] =
     if selected.isEmpty then
+      if prefix == "Number" then
+        catalog.productions
+          .filter(_.pattern.prefix == "Number")
+          .foreach: p =>
+            println(
+              s"[num] prod=${p.id} occs=" + p.pattern.occurrences
+                .map(o => s"${o.context} cls=${o.sourceClassification}")
+                .mkString(" ; ")
+            )
+        println(s"[num] shape ctx=$context")
+      if prefix == "CaseDef" then
+        catalog.productions
+          .filter(_.pattern.prefix == "CaseDef")
+          .foreach: p =>
+            println(
+              s"[cov] prod=${p.id} occs=" + p.pattern.occurrences
+                .map(o => s"ctx=${o.context} cls=${o.sourceClassification}")
+                .mkString(" ; ")
+            )
+        println(s"[cov] shape kind=$kind prefix=$prefix context=$context cls=$sourceClassification")
       Vector(CatalogValidationError.UncoveredCompilerShape(kind, prefix, context, sourceClassification))
     else
       ProductionMatchRetention.retain(catalog, selected) match

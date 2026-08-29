@@ -1042,32 +1042,54 @@ private[psiproducer] object Scala3PsiProductionSupport:
   )
   val SequenceArgumentAccessors         = Vector.empty
   val MatchAccessors                    = Vector(
-    AccessorObligation(s"$MatchSurface#expression()Lscala/Option;", required = true),
-    AccessorObligation(s"$MatchSurface#caseClauses()Lscala/Option;", required = true),
     AccessorObligation(
-      s"$MatchSurface#clauses()Lscala/collection/immutable/Seq;",
-      required = true,
-      SurfaceFactKind.Method
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScMatch#expression()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScMatch#caseClauses()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScMatch#clauses()Lscala/collection/immutable/Seq;",
+      required = true
     )
   )
   val CaseClausesAccessors              = Vector(
     AccessorObligation(
-      s"$CaseClausesSurface#caseClauses()Lscala/collection/immutable/Seq;",
-      required = true,
-      SurfaceFactKind.Method
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCaseClauses#caseClauses()Lscala/collection/immutable/Seq;",
+      required = true
     )
   )
   val CaseClauseAccessors               = Vector(
-    AccessorObligation(s"$CaseClauseSurface#pattern()Lscala/Option;", required = true),
-    AccessorObligation(s"$CaseClauseSurface#guard()Lscala/Option;", required = true),
-    AccessorObligation(s"$CaseClauseSurface#expr()Lscala/Option;", required = true)
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCaseClause#pattern()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCaseClause#guard()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCaseClause#expr()Lscala/Option;",
+      required = true
+    )
   )
   val GuardAccessors                    = Vector(
-    AccessorObligation(s"$GuardSurface#expr()Lscala/Option;", required = true)
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScEnumerator#expr()Lscala/Option;",
+      required = true
+    )
   )
   val BlockAccessors                    = Vector(
-    AccessorObligation(s"$BlockSurface#statements()Lscala/collection/Seq;", required = true),
-    AccessorObligation(s"$BlockSurface#resultExpression()Lscala/Option;", required = true)
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScBlock#statements()Lscala/collection/immutable/Seq;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/expr/ScBlock#resultExpression()Lscala/Option;",
+      required = true
+    )
   )
   val WildcardPatternAccessors          = Vector.empty
   val StableReferencePatternAccessors   = Vector(
@@ -1078,7 +1100,10 @@ private[psiproducer] object Scala3PsiProductionSupport:
   )
   val LiteralPatternAccessors           = Vector.empty
   val Sc3TypedPatternAccessors          = Vector(
-    AccessorObligation(s"$Sc3TypedPatternSurface#pattern()Lscala/Option;", required = true),
+    AccessorObligation(
+      s"$Sc3TypedPatternSurface#pattern()Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern;",
+      required = true
+    ),
     AccessorObligation(
       s"$Sc3TypedPatternSurface#typePattern()Lscala/Option;",
       required = true
@@ -1088,33 +1113,36 @@ private[psiproducer] object Scala3PsiProductionSupport:
   val NamingPatternAccessors            = Vector.empty
   val TuplePatternAccessors             = Vector(
     AccessorObligation(
-      s"$TuplePatternSurface#patterns()Lscala/Option;",
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScTuplePattern#patterns()Lscala/Option;",
       required = true
     )
   )
   val PatternsAccessors                 = Vector(
     AccessorObligation(
-      s"$PatternsSurface#patterns()Lscala/collection/immutable/Seq;",
-      required = true,
-      SurfaceFactKind.Method
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPatterns#patterns()Lscala/collection/immutable/Seq;",
+      required = true
     )
   )
   val PatternArgumentListAccessors      = Vector(
     AccessorObligation(
-      s"$PatternArgumentListSurface#patterns()Lscala/collection/immutable/Seq;",
-      required = true,
-      SurfaceFactKind.Method
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPatternArgumentList#patterns()Lscala/collection/immutable/Seq;",
+      required = true
     )
   )
   val ConstructorPatternAccessors       = Vector(
-    AccessorObligation(s"$ConstructorPatternSurface#reference()Lscala/Option;", required = true),
-    AccessorObligation(s"$ConstructorPatternSurface#args()Lscala/Option;", required = true)
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScConstructorPattern#reference()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScConstructorPattern#args()Lscala/Option;",
+      required = true
+    )
   )
   val CompositePatternAccessors         = Vector(
     AccessorObligation(
-      s"$CompositePatternSurface#patterns()Lscala/collection/immutable/Seq;",
-      required = true,
-      SurfaceFactKind.Method
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScCompositePattern#patterns()Lscala/collection/immutable/Seq;",
+      required = true
     )
   )
   val SeqWildcardPatternAccessors       = Vector.empty

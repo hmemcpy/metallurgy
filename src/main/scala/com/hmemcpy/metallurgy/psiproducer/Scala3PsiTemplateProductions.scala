@@ -1851,48 +1851,38 @@ private[psiproducer] object Scala3PsiTemplateProductions:
         "CaseDef"         -> "guard",
         "Match"           -> "guard",
         "RefinedTypeTree" -> "tpt"
-      ).map { case (owner, field) =>
-        CompilerProductionContextPattern(
-          context =
-            if owner == "TypeBoundsTree" then
-              ContextPattern.ParentWithAncestor(
-                InventoryKind.Node,
-                owner,
-                Vector(CatalogPathSegment.NamedField(field)),
-                InventoryAncestor(InventoryKind.Node, "TypeDef", Vector(CatalogPathSegment.NamedField("rhs")))
-              )
-            else if owner == "CaseDef" then
-              ContextPattern.ParentWithAncestor(
-                InventoryKind.Node,
-                owner,
-                Vector(CatalogPathSegment.NamedField(field)),
-                InventoryAncestor(
+      ).flatMap { case (owner, field) =>
+        owner match
+          case "CaseDef" =>
+            Vector(
+              "MatchTypeTree",
+              "Match"
+            ).map: matchOwner =>
+              CompilerProductionContextPattern(
+                ContextPattern.ParentWithAncestor(
                   InventoryKind.Node,
-                  "MatchTypeTree",
-                  Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
-                )
+                  owner,
+                  Vector(CatalogPathSegment.NamedField(field)),
+                  InventoryAncestor(
+                    InventoryKind.Node,
+                    matchOwner,
+                    Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
+                  )
+                ),
+                SourceClassification.Absent
               )
-            else if owner == "Match" then
-              ContextPattern.ParentWithAncestor(
-                InventoryKind.Node,
-                owner,
-                Vector(CatalogPathSegment.NamedField(field)),
-                InventoryAncestor(
+          case _         =>
+            Vector(
+              CompilerProductionContextPattern(
+                ContextPattern.Parent(
                   InventoryKind.Node,
-                  "Match",
-                  Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
-                )
+                  owner,
+                  Vector(CatalogPathSegment.NamedField(field)) ++
+                    Option.when(owner == "Template")(CatalogPathSegment.RepeatedElement)
+                ),
+                SourceClassification.Absent
               )
-            else
-              ContextPattern.Parent(
-                InventoryKind.Node,
-                owner,
-                Vector(CatalogPathSegment.NamedField(field)) ++
-                  Option.when(owner == "Template")(CatalogPathSegment.RepeatedElement)
-              )
-          ,
-          sourceClassification = SourceClassification.Absent
-        )
+            )
       }
         ++ OwnerTypeAnchors.map { anchor =>
           CompilerProductionContextPattern(
