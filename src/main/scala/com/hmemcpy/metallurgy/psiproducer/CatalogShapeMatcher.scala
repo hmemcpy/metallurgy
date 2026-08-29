@@ -94,6 +94,8 @@ private[metallurgy] object CatalogShapeMatcher:
         CatalogValuePattern.isLowercaseName(value)
       case (CatalogValuePattern.NonLowercaseName, InventoryValueObservation.Name(value))                      =>
         CatalogValuePattern.isNonLowercaseName(value)
+      case (CatalogValuePattern.ExactName(expected), InventoryValueObservation.Name(actual))                  =>
+        expected == actual
       case (CatalogValuePattern.BacktickedName, _: InventoryValueObservation.BacktickedName)                  => true
       case (
             CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary),
@@ -136,6 +138,8 @@ private[metallurgy] object CatalogShapeMatcher:
       case (CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary), CatalogValuePattern.BacktickedName)  => true
       case (CatalogValuePattern.ClassifiedName(expected), CatalogValuePattern.ClassifiedName(observed))         =>
         expected == observed
+      case (CatalogValuePattern.ExactName(_), CatalogValuePattern.Name)                                         =>
+        true
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue))           =>
         covers(expectedValue, observedValue)
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.EmptyOptional(observedValue))      =>

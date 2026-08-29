@@ -337,7 +337,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.PatternNaming             -> Set("match-pattern-naming"),
       GrammarRoleId.PatternSequenceWildcard   -> Set(
         "match-pattern-naming-sequence",
-        "match-pattern-sequence-wildcard"
+        "match-pattern-sequence-wildcard",
+        "match-pattern-sequence-wildcard-marker"
       ),
       GrammarRoleId.PatternTuple              -> Set("match-pattern-tuple"),
       GrammarRoleId.PatternAlternative        -> Set("match-pattern-alternative"),

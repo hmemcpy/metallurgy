@@ -352,10 +352,19 @@ private[metallurgy] object DotcPsiProducer:
             childFrom < from || childTo > to
       )
     then Some("composite containment is invalid")
-    else if roots.map(ranges).sortBy(_._1).sliding(2).exists {
-        case Vector((_, leftTo), (rightFrom, _)) => leftTo > rightFrom
-        case _                                   => false
+    else if {
+      val ordered = roots.map(value => value -> ranges(value)).sortBy(_._2._1)
+      ordered.sliding(2).exists {
+        case Vector((_, (_, leftTo)), (right, (rightFrom, _))) =>
+          if leftTo > rightFrom then
+            println(
+              s"[roots] overlapping left=$leftTo right=${right.origin.valueId}:${right.localOutputId}@$rightFrom all=${ordered.map { case (v, (f, t)) => s"${v.origin.valueId}:${v.localOutputId}@$f-$t" }.mkString(",")}"
+            )
+            true
+          else false
+        case _                                                 => false
       }
+    }
     then Some("composite roots are unordered or overlapping")
     else if plan.composites.exists(value =>
         val normalized = value.children.sortBy: child =>

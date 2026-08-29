@@ -115,7 +115,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
 
   @Test
   def testPatternFamiliesProduceNativePsi(): Unit =
-    val source      =
+    val source        =
       """def families(x: Any): Any = x match
         |  case typed: String => typed
         |  case named @ Some(namedInner) => named
@@ -125,7 +125,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case List(head, tail @ _*) => tail
         |  case Nil => "stable"
         |""".stripMargin
-    val file        = physical("MatchPatternFamilies.scala", source)
+    val file          = physical("MatchPatternFamilies.scala", source)
     assertEquals(1, descendants[ScMatchImpl](file).size)
     assertEquals(7, descendants[ScCaseClauseImpl](file).size)
     assertEquals(1, descendants[Sc3TypedPatternImpl](file).size)
@@ -136,29 +136,90 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(1, descendants[ScCompositePatternImpl](file).size)
     assertEquals(3, descendants[ScConstructorPatternImpl](file).size)
     assertEquals(1, descendants[ScSeqWildcardPatternImpl](file).size)
-    val namingNames = descendants[ScNamingPatternImpl](file).map(_.nameId.getText)
+    val namingNames   = descendants[ScNamingPatternImpl](file).map(_.nameId.getText)
     assertEquals(Vector("named", "tail"), namingNames)
+    val typedPattern  = descendants[Sc3TypedPatternImpl](file).head
+    assertEquals("typed: String", typedPattern.getText)
+    assertEquals(source.indexOf("typed: String"), typedPattern.getTextRange.getStartOffset)
+    val typePatterns  =
+      descendants[org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypePattern](file)
+    assertEquals(Vector("String"), typePatterns.map(_.getText))
+    assertEquals(typedPattern, typePatterns.head.getParent)
+    val argumentLists =
+      descendants[org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScPatternArgumentList](file)
+    // the argument-list composite covers the compiler subpattern range; the parentheses stay constructor-owned
+    assertEquals(Vector("namedInner", "0", "head, tail @ _*"), argumentLists.map(_.getText))
+    val constructors  = descendants[ScConstructorPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("Some(namedInner)", "Some(0)", "List(head, tail @ _*)"), constructors.map(_.getText))
+    constructors.foreach { constructor =>
+      val args = PsiTreeUtil.findChildOfType(
+        constructor,
+        classOf[org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScPatternArgumentList]
+      )
+      assertEquals(constructor, args.getParent)
+    }
+    val composite     = descendants[ScCompositePatternImpl](file).head
+    assertEquals("1 | 2", composite.getText)
+    assertEquals(2, composite.subpatterns.size)
+    val tuple         = descendants[ScTuplePatternImpl](file).head
+    assertEquals("(tupleA, tupleB)", tuple.getText)
+    assertEquals(source.indexOf("(tupleA, tupleB)"), tuple.getTextRange.getStartOffset)
+    val seqNaming     = descendants[ScNamingPatternImpl](file).find(_.nameId.getText == "tail").get
+    assertEquals("tail @ _*", seqNaming.getText)
+    assertEquals(
+      1,
+      descendants[ScSeqWildcardPatternImpl](file).count(
+        _.getTextRange.getStartOffset >= seqNaming.getTextRange.getStartOffset
+      )
+    )
     assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
     payloadsOutsideMatch(file)
 
   @Test
   def testUnsupportedPatternShapesFailClosedAtFileScope(): Unit =
-    val source  =
+    val sources = Vector(
       """def pending(x: Any): Any = x match
         |  case 2.5 => "decimal"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: List[Int] => v
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case "text" => "string"
         |""".stripMargin
-    val pending = myFixture.addFileToProject("src/MatchUnsupported2.scala", source)
-    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
-    assertEquals(source, file.getText)
-    assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
-    val failure = Scala3SyntaxCapabilityService
-      .get(getProject)
-      .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-    assertTrue("unsupported patterns should cause capability failure", failure.isDefined)
-    assertTrue(
-      "failure should mention uncovered shape",
-      failure.get.toString.contains("UncoveredCompilerShape")
     )
+    sources.zipWithIndex.foreach { case (source, index) =>
+      val pending = myFixture.addFileToProject(s"src/MatchUnsupported$index.scala", source)
+      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      assertEquals(source, file.getText)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      val failure = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertTrue(s"unsupported patterns should cause capability failure (source $index)", failure.isDefined)
+      assertTrue(
+        "failure should mention uncovered shape",
+        failure.get.toString.contains("UncoveredCompilerShape")
+      )
+    }
+
+  @Test
+  def testBinderSequenceMarkerProducesSeqWildcardPattern(): Unit =
+    val source   =
+      """def binder(x: Any): Any = x match
+        |  case List(n @ _*) => n
+        |""".stripMargin
+    val file     = physical("MatchBinderMarker.scala", source)
+    val matchPsi = descendants[ScMatchImpl](file)
+    assertEquals(1, matchPsi.size)
+    val naming   = descendants[ScNamingPatternImpl](file)
+    assertEquals(1, naming.size)
+    assertEquals("n", naming.head.nameId.getText)
+    val seq      = descendants[ScSeqWildcardPatternImpl](file)
+    assertEquals(1, seq.size)
+    assertEquals(naming.head, seq.head.getParent)
+    assertEquals("*", seq.head.getText)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
 
   private def payloadsOutsideMatch(file: com.intellij.psi.PsiFile): Unit =
     val blocks = descendants[ScBlock](file)

@@ -252,7 +252,8 @@ private[psiproducer] object Scala3PsiProductionSupport:
       role: PsiOutputRoleId,
       surface: String,
       accessors: Vector[AccessorObligation],
-      requirement: TargetRequirement = TargetRequirement.Native
+      requirement: TargetRequirement = TargetRequirement.Native,
+      realization: OutputCompositeRealization = OutputCompositeRealization.Once
   ): OutputCompositeDeclaration =
     val persistence = role match
       case PsiOutputRoleId.PackageStatement                                           =>
@@ -509,7 +510,7 @@ private[psiproducer] object Scala3PsiProductionSupport:
       accessors,
       persistence,
       Some(NavigationObligation.Self)
-    )
+    ).copy(realization = realization)
 
   lazy val CompoundTypeProductionIds = TypeAtomProductionIds ++ Set(
     "explicit-type-lambda",

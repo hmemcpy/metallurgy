@@ -20,6 +20,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private[psiproducer] val NamingProductionId           = "match-pattern-naming"
   private[psiproducer] val NamingSequenceProductionId   = "match-pattern-naming-sequence"
   private[psiproducer] val SequenceWildcardProductionId = "match-pattern-sequence-wildcard"
+  private[psiproducer] val SequenceMarkerProductionId   = "match-pattern-sequence-wildcard-marker"
   private[psiproducer] val TupleProductionId            = "match-pattern-tuple"
   private[psiproducer] val AlternativeProductionId      = "match-pattern-alternative"
   private[psiproducer] val ConstructorProductionId      = "match-pattern-constructor"
@@ -169,6 +170,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     NamingProductionId,
     NamingSequenceProductionId,
     SequenceWildcardProductionId,
+    SequenceMarkerProductionId,
     TupleProductionId,
     AlternativeProductionId,
     ConstructorProductionId,
@@ -238,6 +240,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
 
   private val PatternOwnerAncestors = Vector(
     InventoryAncestor(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("preRhs"))),
+    InventoryAncestor(InventoryKind.Node, "ValDef", Vector(CatalogPathSegment.NamedField("preRhs"))),
     InventoryAncestor(InventoryKind.Node, "Template", Vector(CatalogPathSegment.NamedField("preBody")))
   )
 
@@ -1011,10 +1014,11 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
       Vector(
         CompilerProductionContextPattern(
-          ContextPattern.ParentUnderAnchor(
+          ContextPattern.ParentUnderAnchorThrough(
             InventoryKind.Node,
             "Typed",
             Vector(CatalogPathSegment.NamedField("tpt")),
+            PatternNestingEdges,
             MatchCasesAncestor
           ),
           SourceClassification.SourceReachable
@@ -1393,6 +1397,39 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     )
   )
 
+  private val PatternSequenceMarker = Scala3PsiProduction(
+    id = SequenceMarkerProductionId,
+    grammarRoleId = GrammarRoleId.PatternSequenceWildcard,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Ident",
+      Vector(CompilerFieldPattern("name", CatalogValuePattern.ExactName("_*"))),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "contents",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = SeqWildcardPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = SeqWildcardPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      nativePatternTemplate(SeqWildcardPatternSurface, SeqWildcardPatternAccessors, PsiOutputRoleId.SeqWildcardPattern)
+    ),
+    outputRoleId = Some(PsiOutputRoleId.SeqWildcardPattern)
+  )
+
   private val PatternBindModifiers = Scala3PsiProduction(
     id = "match-pattern-binder-modifiers",
     grammarRoleId = GrammarRoleId.Modifiers,
@@ -1451,6 +1488,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternNaming,
     PatternNamingSequence,
     PatternSequenceWildcard,
+    PatternSequenceMarker,
     PatternTuple,
     PatternAlternative,
     PatternConstructor,

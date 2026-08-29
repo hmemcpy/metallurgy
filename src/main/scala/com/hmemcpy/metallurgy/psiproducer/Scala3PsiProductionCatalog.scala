@@ -487,6 +487,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TupleProductionId, "payload-descendant-tuple"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.AlternativeProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.ConstructorProductionId, "payload-descendant-apply"),
-      ProductionAlternatives("import-selector-given-bound-absent", "template-absent-tree")
+      ProductionAlternatives("import-selector-given-bound-absent", "template-absent-tree"),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.SequenceMarkerProductionId,
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.SequenceMarkerProductionId,
+        Scala3PsiMatchExpressionProductions.ReferenceProductionId
+      )
     )
   )

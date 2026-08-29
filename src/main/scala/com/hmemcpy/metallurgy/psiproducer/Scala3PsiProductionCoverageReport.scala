@@ -218,6 +218,7 @@ private[metallurgy] object Scala3PsiProductionCoverageReport:
     case CatalogValuePattern.LowercaseName                                 => "LowercaseName"
     case CatalogValuePattern.NonLowercaseName                              => "NonLowercaseName"
     case CatalogValuePattern.BacktickedName                                => "BacktickedName"
+    case CatalogValuePattern.ExactName(value)                              => s"ExactName[$value]"
     case CatalogValuePattern.Scalar(kind)                                  => s"Scalar[$kind]"
     case CatalogValuePattern.ExactScalar(kind, value)                      => s"ExactScalar[$kind,$value]"
     case CatalogValuePattern.Unsupported(runtimeType)                      => s"Unsupported[$runtimeType]"

@@ -694,7 +694,7 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
   def testNamedGenericCallsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
     assertEquals(15, Scala3DotcFileElementType.SchemaVersion)
     assertEquals(
-      "5d0aea234e60b624bf1a9ff1c635dd65562c3cac75efb72e5af1ae2ef3576edd",
+      "871e587be19a8bfa8d68a03458d50253f4bdf922faa6f78476827127b27b2e3a",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     val source      =
