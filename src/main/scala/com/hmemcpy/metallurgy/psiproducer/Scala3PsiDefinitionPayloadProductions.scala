@@ -1311,6 +1311,15 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
 
   private val definitionPayloadProductions = Vector(
     payloadRoot(
+      "definition-payload-match",
+      "Match",
+      Vector(
+        CompilerFieldPattern("selector", CatalogValuePattern.Node),
+        CompilerFieldPattern("cases", CatalogValuePattern.Repeated(CatalogValuePattern.Node))
+      ),
+      Vector.empty
+    ),
+    payloadRoot(
       "definition-payload-number",
       "Number",
       Vector(

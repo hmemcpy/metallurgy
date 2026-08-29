@@ -1849,6 +1849,7 @@ private[psiproducer] object Scala3PsiTemplateProductions:
         "TypeBoundsTree"  -> "alias",
         "Template"        -> "preBody",
         "CaseDef"         -> "guard",
+        "Match"           -> "guard",
         "RefinedTypeTree" -> "tpt"
       ).map { case (owner, field) =>
         CompilerProductionContextPattern(
@@ -1868,6 +1869,17 @@ private[psiproducer] object Scala3PsiTemplateProductions:
                 InventoryAncestor(
                   InventoryKind.Node,
                   "MatchTypeTree",
+                  Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
+                )
+              )
+            else if owner == "Match" then
+              ContextPattern.ParentWithAncestor(
+                InventoryKind.Node,
+                owner,
+                Vector(CatalogPathSegment.NamedField(field)),
+                InventoryAncestor(
+                  InventoryKind.Node,
+                  "Match",
                   Vector(CatalogPathSegment.NamedField("cases"), CatalogPathSegment.RepeatedElement)
                 )
               )

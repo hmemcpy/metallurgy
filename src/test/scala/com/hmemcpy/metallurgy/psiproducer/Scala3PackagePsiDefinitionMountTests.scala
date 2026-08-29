@@ -27,7 +27,7 @@ private[psiproducer] trait Scala3PackagePsiDefinitionMountTests extends Scala3Pa
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     assertEquals(
-      "f54f71c6e093d3dcd2f259ff49685fbdb233bdbbc3eb236245621547cc733527",
+      "e10fc7bedebf448574007ca93d3ea843c21fb683ea3776cca69aa86b9fc28108",
       Scala3DotcFileElementType.CatalogPlanFingerprint
     )
     val source  =

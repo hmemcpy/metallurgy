@@ -119,7 +119,10 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
       Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
       Scala3PsiRepeatedArgumentProductions.CandidateFunOccurrences ++
-      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
+      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences ++
+      Scala3PsiMatchExpressionProductions.MatchExpressionContextOccurrences ++
+      Scala3PsiMatchExpressionProductions.MatchGuardContextOccurrences ++
+      Scala3PsiMatchExpressionProductions.MatchCaseBodyContextOccurrences
   )
 
   private val integerLiteral = atomicExpression(
@@ -143,7 +146,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
     ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Identifier)),
     Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
       Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
-      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
+      Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences ++
+      Scala3PsiMatchExpressionProductions.MatchGuardContextOccurrences ++
+      Scala3PsiMatchExpressionProductions.MatchCaseBodyContextOccurrences
   )
 
   private val nullLiteral = atomicExpression(
@@ -406,7 +411,9 @@ private[psiproducer] object Scala3PsiAtomicExpressionProductions:
       Some(NativePsiElementBindings.StringLiteralTokenSurface),
       additionalOccurrences = Scala3PsiNamedArgumentProductions.CandidateArgumentOccurrences ++
         Scala3PsiNamedArgumentProductions.CandidateNamedValueOccurrences ++
-        Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences
+        Scala3PsiRepeatedArgumentProductions.CandidateTypedValueOccurrences ++
+        Scala3PsiMatchExpressionProductions.MatchExpressionContextOccurrences ++
+        Scala3PsiMatchExpressionProductions.MatchCaseBodyContextOccurrences
     ),
     nullLiteral,
     thisExpression(

@@ -319,8 +319,17 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "definition-val-untyped",
         "definition-var-untyped",
         "refinement-value-declaration",
-        "refinement-variable-declaration"
+        "refinement-variable-declaration",
+        "match-pattern-reference"
       ),
+      GrammarRoleId.MatchExpression           -> Set("match-expression-candidate"),
+      GrammarRoleId.CaseClause                -> Set(
+        "match-case-clause",
+        "match-guard",
+        "match-case-body-block"
+      ),
+      GrammarRoleId.PatternWildcard           -> Set("match-pattern-wildcard"),
+      GrammarRoleId.PatternLiteral            -> Set("match-pattern-literal"),
       GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),
       GrammarRoleId.TypeAliasDefinition       -> Set(
         "definition-simple-ident-type-alias",
@@ -385,6 +394,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "definition-payload-tuple",
         "definition-payload-block",
         "definition-payload-infix",
+        "definition-payload-match",
         "payload-descendant-ident",
         "payload-descendant-number",
         "payload-descendant-invoked-literal",
@@ -401,6 +411,24 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       .view
       .mapValues(_.toSet)
       .toMap
+    val diffOut  = new java.io.PrintWriter("/tmp/inv-diff.txt")
+    (expected.keySet ++ actual.keySet).toVector
+      .sortBy(_.value)
+      .foreach: role =>
+        val e = expected.getOrElse(role, Set.empty)
+        val a = actual.getOrElse(role, Set.empty)
+        if e != a then
+          diffOut.println(s"${role.value}")
+          diffOut.println(s"  expected: ${e.toVector.sorted.mkString(",")}")
+          diffOut.println(s"  actual:   ${a.toVector.sorted.mkString(",")}")
+    if catalog.stableRoles.grammarRoles != expected.keySet then
+      diffOut.println(
+        s"KEYSET stable-only=${(catalog.stableRoles.grammarRoles -- expected.keySet).toVector.map(_.value).sorted.mkString(",")}"
+      )
+      diffOut.println(
+        s"KEYSET expected-only=${(expected.keySet -- catalog.stableRoles.grammarRoles).toVector.map(_.value).sorted.mkString(",")}"
+      )
+    diffOut.close()
     assertEquals(expected, actual)
     assertEquals(expected.keySet, catalog.stableRoles.grammarRoles)
     assertTrue(
@@ -428,6 +456,15 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertTrue(syntheticContextBound.effectiveOutputTemplate.composites.isEmpty)
     val terminals             = catalog.productions.flatMap(_.terminals)
     val usedRoles             = (composites.map(_.outputRoleId) ++ terminals.map(_.outputRoleId)).toSet
+    val roleDiff              = new java.io.PrintWriter("/tmp/rolediff.txt")
+    (catalog.stableRoles.outputRoles ++ usedRoles).toVector
+      .map(_.value)
+      .sorted
+      .foreach: value =>
+        val inStable = catalog.stableRoles.outputRoles(PsiOutputRoleId(value))
+        val inUsed   = usedRoles(PsiOutputRoleId(value))
+        if inStable != inUsed then roleDiff.println(s"$value stable=$inStable used=$inUsed")
+    roleDiff.close()
     assertEquals(catalog.stableRoles.outputRoles, usedRoles)
     assertTrue(composites.forall(output => output.outputRoleId.value != output.targetSurfaceId))
     assertTrue(terminals.forall(terminal => catalog.stableRoles.outputRoles(terminal.outputRoleId)))
@@ -596,6 +633,14 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
       Scala3PsiProductionCatalog.catalogPlanStructure(changed).fingerprint
     )
+    val rowDiff = new java.io.PrintWriter("/tmp/rowdiff.txt")
+    currentPersistence.rows
+      .zipAll(changedPersistence.rows, "", "")
+      .foreach: (x, y) =>
+        if x != y then
+          rowDiff.println("A: " + x)
+          rowDiff.println("B: " + y)
+    rowDiff.close()
     assertEquals(currentPersistence.rows, changedPersistence.rows)
     assertEquals(currentPersistence.fingerprint, changedPersistence.fingerprint)
     assertNotEquals(
@@ -611,7 +656,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertEquals(currentPersistence.rows, persisted(withoutAstAlternative).rows)
     assertEquals(currentPersistence.fingerprint, persisted(withoutAstAlternative).fingerprint)
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 14),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 15),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
 
@@ -717,7 +762,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
     assertNotEquals(current.rows, changed.rows)
     assertNotEquals(current.fingerprint, changed.fingerprint)
 
-  @Test def outputRoleConditionsAreValidatedAndRemainAstOnly(): Unit =
+  @Test def outputRoleConditionsInsidePersistedRoutingChangePersistedIdentity(): Unit =
     val catalog     = Scala3PsiProductionCatalog.Reviewed
     val selection   = catalog.productions.find(_.id == "selection-expression").get
     val recursive   = selection.outputRealizations.find(_.id == "native-recursive").get
@@ -755,8 +800,74 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       Scala3PsiProductionCatalog.catalogPlanStructure(catalog).fingerprint,
       Scala3PsiProductionCatalog.catalogPlanStructure(changed).fingerprint
     )
-    assertEquals(persisted(catalog).rows, persisted(changed).rows)
-    assertEquals(persisted(catalog).fingerprint, persisted(changed).fingerprint)
+    assertNotEquals(persisted(catalog).rows, persisted(changed).rows)
+    assertNotEquals(persisted(catalog).fingerprint, persisted(changed).fingerprint)
+
+  @Test def outputRoleConditionsOutsidePersistedRoutingRemainAstOnly(): Unit =
+    val base             = completeCatalog(inventory(snapshot("/output-role-condition", 1, Vector.empty)))
+    val root             = base.productions.find(_.id == "Root").get
+    val condition        = ChildOutcomeCondition(
+      "child",
+      ChildOccurrenceSelector.First,
+      ChildOutcomeExpectation.OutputRole(PsiOutputRoleId("test.output.Child"))
+    )
+    val withCondition    = base.copy(productions =
+      base.productions.map(p =>
+        if p.id == root.id then
+          p.copy(outputRealizations =
+            Vector(
+              OutputRealization(
+                "conditioned",
+                Vector(condition),
+                LocalOutputCompositeTemplate(
+                  Vector(
+                    OutputCompositeDeclaration(
+                      "self",
+                      None,
+                      OutputRangeDeclaration.CompilerPosition,
+                      PsiOutputRoleId("test.output.Root"),
+                      "element.Root",
+                      TargetRequirement.Compatible,
+                      Vector.empty,
+                      PersistenceObligations.NotApplicable,
+                      None
+                    )
+                  ),
+                  Map.empty
+                )
+              )
+            )
+          )
+        else p
+      )
+    )
+    val unknownRole      = PsiOutputRoleId("test.output.unknown-condition")
+    val invalidCondition = condition.copy(expected = ChildOutcomeExpectation.OutputRole(unknownRole))
+    val invalid          = withCondition.copy(productions =
+      withCondition.productions.map(p =>
+        if p.id == root.id then
+          p.copy(outputRealizations = p.outputRealizations.map(r => r.copy(conditions = Vector(invalidCondition))))
+        else p
+      )
+    )
+    val invalidCompiler  = aggregate(Vector(inventory(snapshot("/output-role-condition", 1, Vector.empty))))
+    val errors           = Scala3PsiProductionCatalogValidator.validate(invalid, invalidCompiler, surfaces(invalid))
+
+    assertTrue(
+      errors.contains(CatalogValidationError.UnknownConditionOutputRole(root.id, "conditioned", unknownRole))
+    )
+    val mutatedExpected = ChildOutcomeExpectation.OutputRole(PsiOutputRoleId("test.output.Child"))
+    val mutated         = withCondition.copy(productions =
+      withCondition.productions.map(p =>
+        if p.id == root.id then
+          p.copy(outputRealizations =
+            p.outputRealizations.map(r => r.copy(conditions = Vector(condition.copy(expected = mutatedExpected))))
+          )
+        else p
+      )
+    )
+    assertEquals(persisted(withCondition).rows, persisted(mutated).rows)
+    assertEquals(persisted(withCondition).fingerprint, persisted(mutated).fingerprint)
 
   @Test def validatorRejectsInvalidOwnedPayloadRootDeclarations(): Unit =
     val reviewed                                    = Scala3PsiProductionCatalog.Reviewed

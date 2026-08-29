@@ -144,6 +144,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
                 case ChildClosureAbsorption(roleId, ChildRootOutcome.All(expected), _) =>
                   dependencies(roleId, expected)
       val next                  = persistedRoutingIds ++ routingParents ++ conditionDependencies
+      val added                 = next -- persistedRoutingIds
+      if added.nonEmpty then println(s"[round] +${added.toVector.sorted.mkString(",")}")
       expanded = next.size != persistedRoutingIds.size
       persistedRoutingIds = next
     val rows                 = Vector.newBuilder[String]
@@ -416,6 +418,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiNamedArgumentProductions.NamedArgumentSegment ++
       Scala3PsiRepeatedArgumentProductions.RepeatedArgumentSegment ++
       Scala3PsiApplicationExpressionProductions.ApplicationExpressionSegment ++
+      Scala3PsiMatchExpressionProductions.MatchExpressionSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
       Scala3PsiDefinitionPayloadProductions.DefinitionPayloadSegment ++
@@ -436,6 +439,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(
         Scala3PsiRepeatedArgumentProductions.CandidateProductionId,
         Scala3PsiApplicationExpressionProductions.FallbackProductionId
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.CandidateProductionId,
+        Scala3PsiMatchExpressionProductions.FallbackProductionId
       ),
       ProductionAlternatives("term-named-argument", "payload-descendant-named-arg"),
       ProductionAlternatives("term-repeated-argument", "repeated-term-output-free-typed-synthetic"),
