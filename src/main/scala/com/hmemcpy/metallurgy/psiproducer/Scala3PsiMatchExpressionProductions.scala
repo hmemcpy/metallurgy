@@ -277,19 +277,6 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     ),
     terminals = Vector(
       TerminalDeclaration(
-        "right-brace",
-        TerminalIntervalSelector.BalancedScannerTokenAfterChild(
-          ParserScannerTokenKind.RightBrace,
-          ParserScannerTokenKind.LeftBrace,
-          ParserScannerTokenKind.RightBrace,
-          "selector",
-          ScannerTokenOccurrence.Last
-        ),
-        TerminalLeafTarget.Parent,
-        OccurrenceCardinality.Optional,
-        PsiOutputRoleId.SourceTerminal
-      ),
-      TerminalDeclaration(
         "match-residual",
         TerminalIntervalSelector.WholeProduction,
         TerminalLeafTarget.Parent,
@@ -327,7 +314,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.CaseClause)))
           )
         ),
-        terminalIds = Some(Set("match-residual", "right-brace"))
+        terminalIds = Some(Set("match-residual"))
       ),
       OutputRealization(
         PayloadRealization,
