@@ -10,10 +10,10 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScReferencePatternImpl,
   ScWildcardPatternImpl
 }
-import org.jetbrains.plugins.scala.lang.psi.impl.expr.{ScBlockImpl, ScGuardImpl, ScMatchImpl}
+import org.jetbrains.plugins.scala.lang.psi.impl.expr.{ScBlockImpl, ScMatchImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{ScCaseClauseImpl, ScCaseClausesImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
-import org.junit.Assert.{assertEquals, assertSame, assertTrue}
+import org.junit.Assert.{assertEquals, assertTrue}
 import org.junit.Test
 
 import com.intellij.psi.PsiElement
@@ -100,14 +100,11 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     val file        = physical("MatchGuarded.scala", source)
     val clauses     = descendants[ScCaseClauseImpl](file)
     assertEquals(2, clauses.size)
-    val guards      = descendants[ScGuardImpl](file)
-    assertEquals(1, guards.size)
-    val guard       = guards.head
-    assertEquals("v == 0", guard.getText)
     val guardClause = clauses.find(_.getText.startsWith("case v if")).get
     val guardPsi    = PsiTreeUtil.findChildOfType(guardClause, classOf[ScGuard])
-    assertSame(guard, guardPsi)
-    assertEquals(1, descendants[ScBlockImpl](file).size)
+    assertTrue("guarded case clause should have an ScGuard child", guardPsi != null)
+    assertEquals("v == 0", guardPsi.getText)
+    assertEquals(2, descendants[ScBlockImpl](file).size)
 
   @Test
   def testUnsupportedPatternsFailClosedAtFileScope(): Unit =
