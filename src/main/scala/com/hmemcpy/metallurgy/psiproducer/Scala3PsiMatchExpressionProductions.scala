@@ -427,6 +427,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "pat-body-gap",
+        TerminalIntervalSelector.ChildGap("pat", "body"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal
       )
     ),
     layouts = Vector(LayoutAlternative.None),
