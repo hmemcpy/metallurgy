@@ -125,7 +125,8 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
     id.startsWith("definition-payload-") ||
       id == "positional-applied-call-candidate" ||
       id == "named-invoked-call-candidate" ||
-      id == "named-term-application-candidate"
+      id == "named-term-application-candidate" ||
+      id == "match-expression-candidate"
   )
   private val payloadLocalDefinitionIds = Set("payload-descendant-val", "payload-descendant-var")
 

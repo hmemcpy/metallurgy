@@ -278,24 +278,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     terminals = Vector(
       TerminalDeclaration(
         "match-keyword",
-        TerminalIntervalSelector.CompilerScannerTokenInChildGap(
-          ParserScannerTokenKind.Other,
-          "selector",
-          "cases"
-        ),
-        TerminalLeafTarget.Parent,
-        OccurrenceCardinality.ExactlyOne,
-        PsiOutputRoleId.SourceTerminal
-      ),
-      TerminalDeclaration(
-        "left-brace",
-        TerminalIntervalSelector.BalancedScannerTokenAfterChild(
-          ParserScannerTokenKind.LeftBrace,
-          ParserScannerTokenKind.LeftBrace,
-          ParserScannerTokenKind.RightBrace,
-          "selector",
-          ScannerTokenOccurrence.First
-        ),
+        TerminalIntervalSelector.BeforeChild("cases"),
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
@@ -343,7 +326,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.CaseClause)))
           )
         ),
-        terminalIds = Some(Set("match-keyword", "left-brace", "right-brace"))
+        terminalIds = Some(Set("match-keyword", "right-brace"))
       ),
       OutputRealization(
         PayloadRealization,
@@ -428,7 +411,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           "body"
         ),
         TerminalLeafTarget.Parent,
-        OccurrenceCardinality.ExactlyOne,
+        OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       )
     ),

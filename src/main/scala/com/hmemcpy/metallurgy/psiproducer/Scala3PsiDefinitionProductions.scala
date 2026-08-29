@@ -466,6 +466,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
     Scala3PsiApplicationExpressionProductions.CandidateProductionId,
     Scala3PsiNamedArgumentProductions.CandidateProductionId,
     Scala3PsiRepeatedArgumentProductions.CandidateProductionId,
+    Scala3PsiMatchExpressionProductions.CandidateProductionId,
     "definition-payload-number",
     "definition-payload-ident",
     "definition-payload-apply",
@@ -496,6 +497,7 @@ private[psiproducer] object Scala3PsiDefinitionProductions:
         id == Scala3PsiApplicationExpressionProductions.CandidateProductionId ||
         id == Scala3PsiNamedArgumentProductions.CandidateProductionId ||
         id == Scala3PsiRepeatedArgumentProductions.CandidateProductionId ||
+        id == Scala3PsiMatchExpressionProductions.CandidateProductionId ||
         Set("positional-applied-call-candidate", "named-invoked-call-candidate", "named-type-application-candidate")(id)
     )
 
