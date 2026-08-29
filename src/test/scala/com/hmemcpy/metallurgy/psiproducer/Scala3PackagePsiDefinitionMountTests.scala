@@ -19,7 +19,7 @@ import scala.jdk.CollectionConverters.*
 private[psiproducer] trait Scala3PackagePsiDefinitionMountTests extends Scala3PackagePsiProducerTestSupport:
   def testSimpleOwnerTypeMountsUseNativePhysicalPsi(): Unit =
     assertEquals(
-      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 14),
+      Math.addExact(org.jetbrains.plugins.scala.lang.parser.Scala3ParserDefinition.FileNodeType.getStubVersion, 15),
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
@@ -27,7 +27,7 @@ private[psiproducer] trait Scala3PackagePsiDefinitionMountTests extends Scala3Pa
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     assertEquals(
-      "e10fc7bedebf448574007ca93d3ea843c21fb683ea3776cca69aa86b9fc28108",
+      "171604aa5f5740bd6e9c63746294b6ac1a812abbc509021845896440318e54ea",
       Scala3DotcFileElementType.CatalogPlanFingerprint
     )
     val source  =
