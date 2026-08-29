@@ -367,19 +367,7 @@ private[metallurgy] object DotcPsiProducer:
         }
       )
     then Some("composite children are unordered or overlapping")
-    else if !lexerBoundariesAreSafe(boundaries, builder) then
-      val observed = rawTokenStarts(builder)
-      val failing  = boundaries -- observed
-      val owners   = plan.composites
-        .filter(value => failing(value.range.startOffset) || failing(value.range.endOffset))
-        .map(value =>
-          s"${value.instance.origin.valueId}:${value.instance.localOutputId}:${value.range.startOffset}-${value.range.endOffset}"
-        )
-      val near     = (0 until builder.getOriginalText.length).filter(observed.contains(_))
-      println(
-        s"[boundaries] failing=${failing.mkString(",")} composites=${owners.mkString(",")} near=${near.filter(v => v > failing.head - 12 && v < failing.head + 12).mkString(",")}"
-      )
-      Some("composite boundary is not a lexer boundary")
+    else if !lexerBoundariesAreSafe(boundaries, builder) then Some("composite boundary is not a lexer boundary")
     else if !tokenRangesAreSafe(
         leaves.collect { case leaf if leaf.target.isInstanceOf[TerminalLeafTarget.Token] => leaf },
         builder

@@ -217,7 +217,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "modifiers-annotations-source",
         "modifiers-keywords",
         "modifiers-annotations-keywords",
-        "modifiers-absent"
+        "modifiers-absent",
+        "match-pattern-binder-modifiers"
       ),
       GrammarRoleId.AccessModifier            -> Set("modifier-access-private", "modifier-access-protected"),
       GrammarRoleId.KeywordModifier           -> Set(

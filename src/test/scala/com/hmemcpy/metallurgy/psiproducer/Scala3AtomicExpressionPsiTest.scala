@@ -271,7 +271,7 @@ final class Scala3AtomicExpressionPsiTest extends Scala3CompatTestCase:
   def testAtomicExpressionsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
     assertEquals(15, Scala3DotcFileElementType.SchemaVersion)
     assertEquals(
-      "3cc6359eb67dc74a149f529ee792f99f103fa2e565b33bd2a326a71890f013bb",
+      "8de4594b2580e7ba589114ace834483a4943b27d04a794706569b776ff1beacb",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     val source      = "package atoms\nval stable = source\nclass C { val self = C.this }\n"
