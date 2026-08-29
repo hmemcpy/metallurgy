@@ -333,7 +333,7 @@ private[psiproducer] object Scala3PsiModifierAnnotationProductions:
           CompilerFieldPattern("args", arguments)
         ),
         annotationOccurrences(SourceClassification.SourceReachable, SourceClassification.Synthetic).map(
-          _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))
+          _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.AtSign)))
         )
       ),
       dispositions = Vector(
@@ -486,7 +486,7 @@ private[psiproducer] object Scala3PsiModifierAnnotationProductions:
       Vector(CatalogPathSegment.NamedField("fun")),
       Vector.empty,
       SourceClassification.Synthetic
-    ).map(_.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))),
+    ).map(_.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.AtSign)))),
     Vector(
       FieldDisposition("qualifier", FieldDispositionKind.Child),
       FieldDisposition("name", FieldDispositionKind.SemanticOnly)

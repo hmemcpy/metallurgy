@@ -756,7 +756,7 @@ private[psiproducer] object Scala3PsiCaptureTypeProductions:
           ),
           SourceClassification.Synthetic
         )
-      ).map(_.copy(scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Other))))
+      ).map(_.copy(scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.AtSign))))
     ),
     dispositions = Vector(
       FieldDisposition("fun", FieldDispositionKind.Child),
@@ -828,7 +828,7 @@ private[psiproducer] object Scala3PsiCaptureTypeProductions:
       )
     ),
     AncestorEvidencePattern(
-      scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.Other)),
+      scannerEvidence = ScannerEvidencePattern(forbidden = Set(ParserScannerTokenKind.AtSign)),
       directNodeEvidence = Vector(
         DirectNodeFieldEvidence("annot", SourceClassification.Synthetic, hasSourceWidth = Some(true))
       )

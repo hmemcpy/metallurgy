@@ -522,7 +522,7 @@ private[psiproducer] object Scala3PsiCompoundTypeProductions:
         CompilerFieldPattern("annot", CatalogValuePattern.NodePrefix("Apply"))
       ),
       (typeAtomOccurrences ++ compoundTypeArgumentOccurrences).map(
-        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.Other)))
+        _.copy(scannerEvidence = ScannerEvidencePattern(required = Set(ParserScannerTokenKind.AtSign)))
       ),
       Vector(DirectNodeFieldEvidence("annot", SourceClassification.Synthetic, hasSourceWidth = Some(true)))
     ),
