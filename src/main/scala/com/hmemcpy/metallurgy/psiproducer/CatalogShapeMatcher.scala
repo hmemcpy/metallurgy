@@ -444,21 +444,6 @@ private[metallurgy] object CatalogShapeMatcher:
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
     )
-    if prefix == "Number" then
-      matched.foreach: p =>
-        println(s"[numsel] matched=${p.id}")
-      catalog.productions
-        .filter(_.pattern.prefix == "Number")
-        .foreach: p =>
-          println(s"[numsel] prod=${p.id} occs=${p.pattern.occurrences.map(o => s"${o.context}").mkString(" ; ")}")
-    if prefix == "Number" then
-      catalog.productions
-        .filter(_.pattern.prefix == "Number")
-        .foreach: p =>
-          val ctx = p.pattern.occurrences
-            .map(o => contextMatches(o.context, context, ownedRootMatches, enabledCandidateRootMatches))
-          val cls = p.pattern.occurrences.map(_.sourceClassification == sourceClassification)
-          println(s"[selnum] prod=${p.id} ctx=$ctx cls=$cls fieldsOK=${matchesFields(p.pattern.fields, fields)}")
     val scored               = matched.map: production =>
       val ownedRootSpecificity = production.pattern.occurrences.count:
         case CompilerProductionContextPattern(
