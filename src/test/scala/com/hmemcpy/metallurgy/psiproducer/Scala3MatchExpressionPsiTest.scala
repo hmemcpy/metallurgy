@@ -13,6 +13,8 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScDoubleLiteral,
   ScFloatLiteral,
   ScIntegerLiteral,
+  ScLongLiteral,
+  ScNullLiteral,
   ScStringLiteral
 }
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeArgs
@@ -21,7 +23,7 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.types.{
   ScSimpleTypeElementImpl,
   ScTypeArgsImpl
 }
-import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScBlock, ScGuard, ScReferenceExpression}
+import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScBlock, ScGuard, ScReferenceExpression, ScUnitExpr}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScCompositePatternImpl,
   ScConstructorPatternImpl,
@@ -644,16 +646,10 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
   def testUnsupportedPatternShapesFailClosedAtFileScope(): Unit =
     val sources = Vector(
       """def pending(x: Any): Any = x match
-        |  case 9_223L => "long"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case null => "null"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case s"lit" => "interp"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case -9_223L => "neglong"
+        |  case (1) => "paren"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case v: a.B => "qualified"
@@ -723,6 +719,9 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
       )
       PsiDocumentManager.getInstance(getProject).commitDocument(document)
     replaceLiteral("9_223L")
+    assertEquals(Vector("9_223L"), descendants[ScLiteralPatternImpl](file).map(_.getText))
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    replaceLiteral("s\"lit\"")
     assertTrue(descendants[ScLiteralPatternImpl](file).isEmpty)
     assertTrue(descendants[ScMatchImpl](file).isEmpty)
     assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
@@ -736,6 +735,183 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     replaceLiteral("2.5")
     assertEquals(Vector("2.5"), descendants[ScLiteralPatternImpl](file).map(_.getText))
     assertEquals(1, descendants[ScMatchImpl](file).size)
+
+  @Test
+  def testLongLiteralPatternsLowerToNativePsiAcrossTheExactLexicalMatrix(): Unit =
+    val source     =
+      """def longs(x: Any): Any = x match
+        |  case 5L => "dec"
+        |  case 5l => "lower"
+        |  case 0xFFL => "hexU"
+        |  case 0XffL => "hexu"
+        |  case 0b101L => "bin"
+        |  case 1_0_0L => "under"
+        |  case 9_223_372_036_854_775_807L => "max"
+        |  case -9_223_372_036_854_775_808L => "min"
+        |  case -9_223L => "neg"
+        |  case -0L => "negzero"
+        |  case _ => 0
+        |""".stripMargin
+    val file       = physical("MatchLongLiterals.scala", source)
+    val capability = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(11, descendants[ScCaseClauseImpl](file).size)
+    val literals   = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(10, literals.size)
+    assertEquals(
+      Vector(
+        "5L",
+        "5l",
+        "0xFFL",
+        "0XffL",
+        "0b101L",
+        "1_0_0L",
+        "9_223_372_036_854_775_807L",
+        "-9_223_372_036_854_775_808L",
+        "-9_223L",
+        "-0L"
+      ),
+      literals.map(_.getText)
+    )
+    literals.foreach: literal =>
+      assertTrue(literal.getText, literal.getLiteral.isInstanceOf[ScLongLiteral])
+      assertEquals(literal.getLiteral, literal.getChildren.head)
+      assertEquals(literal.getTextRange, literal.getLiteral.getTextRange)
+    val byText     = literals.map(literal => literal.getText -> literal).toMap
+    assertEquals(java.lang.Long.valueOf(5L), byText("5L").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(5L), byText("5l").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(255L), byText("0xFFL").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(255L), byText("0XffL").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(5L), byText("0b101L").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(100L), byText("1_0_0L").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(9223372036854775807L), byText("9_223_372_036_854_775_807L").getLiteral.getValue)
+    assertEquals(
+      java.lang.Long.valueOf(-9223372036854775808L),
+      byText("-9_223_372_036_854_775_808L").getLiteral.getValue
+    )
+    assertEquals(java.lang.Long.valueOf(-9223L), byText("-9_223L").getLiteral.getValue)
+    assertEquals(java.lang.Long.valueOf(0L), byText("-0L").getLiteral.getValue)
+    assertEquals("9223372036854775807L", byText("9_223_372_036_854_775_807L").getLiteral.literalType.canonicalText)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testNullLiteralPatternLowersToNativeNullLiteralPsi(): Unit =
+    val source      =
+      """def nulls(x: Any): Any = x match
+        |  case null => "none"
+        |  case _ => 0
+        |""".stripMargin
+    val file        = physical("MatchNullLiteral.scala", source)
+    val capability  = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(2, descendants[ScCaseClauseImpl](file).size)
+    val literals    = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("null"), literals.map(_.getText))
+    val nullPattern = literals.head
+    assertTrue(nullPattern.getLiteral.isInstanceOf[ScNullLiteral])
+    assertEquals(nullPattern.getLiteral, nullPattern.getChildren.head)
+    assertEquals(nullPattern.getTextRange, nullPattern.getLiteral.getTextRange)
+    assertNull(nullPattern.getLiteral.getValue)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testUnitTuplePatternLowersToEmptyNativeTuplePsi(): Unit =
+    val source     =
+      """def units(x: Any): Any = x match
+        |  case () => "unit"
+        |  case ( ) => "spaced"
+        |  case (/*c*/) => "commented"
+        |  case _ => 0
+        |""".stripMargin
+    val file       = physical("MatchUnitTuple.scala", source)
+    val capability = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(4, descendants[ScCaseClauseImpl](file).size)
+    val tuples     = descendants[ScTuplePatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(3, tuples.size)
+    assertEquals(Vector("()", "( )", "(/*c*/)"), tuples.map(_.getText))
+    tuples.foreach: tuple =>
+      assertEquals(None, tuple.patternList)
+      assertEquals(Vector.empty, tuple.subpatterns)
+    assertTrue(descendants[ScLiteralPatternImpl](file).isEmpty)
+    assertTrue(descendants[ScUnitExpr](file).isEmpty)
+    assertTrue(descendants[ScCompositePatternImpl](file).isEmpty)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testConstantPatternsNestThroughExistingPatternEdgesAndCoexistWithGuardsAndBodies(): Unit =
+    val source     =
+      """def nested(c: C2, x: Any, n: Int): Any = x match
+        |  case (5L, null, ()) => "tuple"
+        |  case 5L | null | () => "alt"
+        |  case C2(5L, null) => "ctor"
+        |  case w @ 5L => "named"
+        |  case 9_223L if n > 0 => "guarded"
+        |  case _ => 0
+        |""".stripMargin
+    val file       = physical("MatchConstantNesting.scala", source)
+    val capability = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(6, descendants[ScCaseClauseImpl](file).size)
+    val literals   = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(
+      Vector("5L", "null", "5L", "null", "5L", "null", "5L", "9_223L"),
+      literals.map(_.getText)
+    )
+    literals.foreach: literal =>
+      assertTrue(
+        literal.getText,
+        literal.getLiteral.isInstanceOf[ScLongLiteral] || literal.getLiteral.isInstanceOf[ScNullLiteral]
+      )
+    val tuples     = descendants[ScTuplePatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("(5L, null, ())", "()", "()"), tuples.map(_.getText))
+    assertEquals(3, tuples.head.subpatterns.size)
+    assertEquals(None, tuples(1).patternList)
+    assertEquals(None, tuples(2).patternList)
+    assertEquals(1, descendants[ScNamingPatternImpl](file).size)
+    assertEquals(1, descendants[ScGuard](file).size)
+    assertEquals(1, descendants[ScConstructorPatternImpl](file).size)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testUnitTuplePatternEditsTransitionBetweenNativeAndFailClosed(): Unit =
+    val template                                =
+      """def transitions(x: Any): Any = x match
+        |  case PAREN => "u"
+        |""".stripMargin
+    val supported                               = template.replace("PAREN", "()")
+    val file                                    = physical("MatchUnitTransition.scala", supported)
+    assertEquals(Vector("()"), descendants[ScTuplePatternImpl](file).map(_.getText))
+    val document                                = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    def replaceParen(replacement: String): Unit =
+      WriteCommandAction.runWriteCommandAction(
+        getProject,
+        new Runnable:
+          override def run(): Unit =
+            document.replaceString(0, document.getTextLength, template.replace("PAREN", replacement))
+      )
+      PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    replaceParen("(1)")
+    assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
+    assertTrue(descendants[ScMatchImpl](file).isEmpty)
+    assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
+    replaceParen("( )")
+    assertEquals(Vector("( )"), descendants[ScTuplePatternImpl](file).map(_.getText))
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    replaceParen("(2, 3)")
+    assertEquals(Vector("(2, 3)"), descendants[ScTuplePatternImpl](file).map(_.getText))
+    assertEquals(2, descendants[ScTuplePatternImpl](file).head.subpatterns.size)
+    replaceParen("()")
+    assertEquals(Vector("()"), descendants[ScTuplePatternImpl](file).map(_.getText))
+    assertEquals(None, descendants[ScTuplePatternImpl](file).head.patternList)
 
   @Test
   def testScalarLiteralPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
@@ -784,6 +960,59 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
     val literals      = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(Vector("2.5", "'c'"), literals.map(_.getText))
+    literals.foreach: literal =>
+      assertSame(literal, literal.getNavigationElement)
+      assertSame(literal.getLiteral, literal.getLiteral.getNavigationElement)
+
+  @Test
+  def testConstantPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
+    val source        =
+      """package constants
+        |def constant(x: Any): Any = x match
+        |  case 5L => "long"
+        |  case -9_223L => "neglong"
+        |  case null => "null"
+        |  case () => "unit"
+        |""".stripMargin
+    val file          = physical("MatchConstantPersistence.scala", source).asInstanceOf[PsiFileImpl]
+    val document      = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    val tree          = file.calcStubTree
+    val stubs         = tree.getPlainList.asScala.toVector
+    val shape         = stubShape(stubs)
+    assertFalse(shape.exists(name => name.contains("Literal") || name.contains("Pattern") || name.contains("Tuple")))
+    val beforeIndex   = indexShape(stubs)
+    val output        = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
+    val bytes         = output.toByteArray
+    val restored      = new StubTree(
+      SerializationManagerEx.getInstanceEx
+        .deserialize(new ByteArrayInputStream(bytes))
+        .asInstanceOf[PsiFileStub[?]]
+    )
+    assertEquals(shape, stubShape(restored.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala.toVector))
+    val repeated      = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(restored.getRoot, repeated)
+    assertArrayEquals(bytes, repeated.toByteArray)
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    val reloadedStubs = file.getStubTree.getPlainList.asScala.toVector
+    assertEquals(shape, stubShape(reloadedStubs))
+    assertEquals(beforeIndex, indexShape(reloadedStubs))
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.replaceString(0, document.getTextLength, source)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    val literals      = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("5L", "-9_223L", "null"), literals.map(_.getText))
     literals.foreach: literal =>
       assertSame(literal, literal.getNavigationElement)
       assertSame(literal.getLiteral, literal.getLiteral.getNavigationElement)

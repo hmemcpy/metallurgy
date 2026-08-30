@@ -326,9 +326,12 @@ completed in the same packet.
   final log only after IDE shutdown so teardown exceptions cannot escape observation. First-run, trust, update, tips,
   and onboarding UI remain suppressed through `ideprobe.conf` and generated IDE settings. On macOS the IDE child needs
   the GUI login session (WindowServer); over SSH the probe times out waiting for it. Run the harness by writing an
-  executable `.command` wrapper that exports `METALLURGY_REPO_ROOT`, `METALLURGY_INTELLIJ_HOME`, and `JAVA_HOME`, unsets
+  executable `.command` wrapper that exports `METALLURGY_REPO_ROOT`, `METALLURGY_INTELLIJ_HOME`, and `JAVA_HOME`, puts
+  `$JAVA_HOME/bin` on `PATH`, unsets
   `_JAVA_OPTIONS` and `METALLURGY_IDEA_JAVA_OPTIONS`, redirects all output to a log file, runs `packageArtifact` and
-  `run-ide-probe.sh sbt -batch -no-colors test`, copies the artifacts and test reports into `target/test-evidence/`, and
+  `run-ide-probe.sh sbt -java-home "$JAVA_HOME" -batch -no-colors test` - the sbt launcher script ignores the
+  `JAVA_HOME` environment variable, so `-java-home` must select the JBR explicitly - copies the artifacts and test
+  reports into `target/test-evidence/`, and
   writes a completion marker - then launch it with `open -a Terminal <wrapper>` so it runs unattended inside the desktop
   session, and validate the results from the copied log files and evidence.
 - **Platform sources:** the pinned IntelliJ source archive is under the resolved SDK's `sources/` directory, the pinned

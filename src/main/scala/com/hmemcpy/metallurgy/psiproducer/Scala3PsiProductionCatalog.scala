@@ -498,6 +498,14 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         Scala3PsiMatchExpressionProductions.LiteralFloatProductionId,
         "payload-descendant-invoked-literal"
       ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralLongProductionId,
+        "payload-descendant-invoked-literal"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralNullProductionId,
+        "payload-descendant-invoked-literal"
+      ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypeIdentProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.NamingProductionId, "payload-descendant-ident"),
@@ -510,6 +518,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "payload-descendant-ident"
       ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TupleProductionId, "payload-descendant-tuple"),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.UnitTupleProductionId,
+        "payload-descendant-tuple"
+      ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.AlternativeProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.ConstructorProductionId, "payload-descendant-apply"),
       ProductionAlternatives("import-selector-given-bound-absent", "template-absent-tree"),

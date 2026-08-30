@@ -341,7 +341,9 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-pattern-literal-char",
         "match-pattern-literal-boolean",
         "match-pattern-literal-double",
-        "match-pattern-literal-float"
+        "match-pattern-literal-float",
+        "match-pattern-literal-long",
+        "match-pattern-literal-null"
       ),
       GrammarRoleId.PatternStableIdentifier   -> Set("match-pattern-stable-reference"),
       GrammarRoleId.PatternTyped              -> Set("match-pattern-typed"),
@@ -351,7 +353,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-pattern-sequence-wildcard",
         "match-pattern-sequence-wildcard-marker"
       ),
-      GrammarRoleId.PatternTuple              -> Set("match-pattern-tuple"),
+      GrammarRoleId.PatternTuple              -> Set("match-pattern-tuple", "match-pattern-unit-tuple"),
       GrammarRoleId.PatternAlternative        -> Set("match-pattern-alternative"),
       GrammarRoleId.PatternConstructor        -> Set("match-pattern-constructor"),
       GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),

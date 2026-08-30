@@ -21,6 +21,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private[psiproducer] val LiteralBooleanProductionId   = "match-pattern-literal-boolean"
   private[psiproducer] val LiteralDoubleProductionId    = "match-pattern-literal-double"
   private[psiproducer] val LiteralFloatProductionId     = "match-pattern-literal-float"
+  private[psiproducer] val LiteralLongProductionId      = "match-pattern-literal-long"
+  private[psiproducer] val LiteralNullProductionId      = "match-pattern-literal-null"
   private[psiproducer] val StableReferenceProductionId  = "match-pattern-stable-reference"
   private[psiproducer] val TypedProductionId            = "match-pattern-typed"
   private[psiproducer] val TypeIdentProductionId        = "match-pattern-type-ident"
@@ -29,6 +31,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private[psiproducer] val SequenceWildcardProductionId = "match-pattern-sequence-wildcard"
   private[psiproducer] val SequenceMarkerProductionId   = "match-pattern-sequence-wildcard-marker"
   private[psiproducer] val TupleProductionId            = "match-pattern-tuple"
+  private[psiproducer] val UnitTupleProductionId        = "match-pattern-unit-tuple"
   private[psiproducer] val AlternativeProductionId      = "match-pattern-alternative"
   private[psiproducer] val ConstructorProductionId      = "match-pattern-constructor"
 
@@ -179,6 +182,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     LiteralBooleanProductionId,
     LiteralDoubleProductionId,
     LiteralFloatProductionId,
+    LiteralLongProductionId,
+    LiteralNullProductionId,
     StableReferenceProductionId,
     TypedProductionId,
     NamingProductionId,
@@ -186,6 +191,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     SequenceWildcardProductionId,
     SequenceMarkerProductionId,
     TupleProductionId,
+    UnitTupleProductionId,
     AlternativeProductionId,
     ConstructorProductionId,
     "payload-descendant-ident"
@@ -348,6 +354,20 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       ),
       Map.empty
     )
+
+  private val nativeUnitTuplePatternTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "tuple",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.TuplePattern,
+        TuplePatternSurface,
+        TuplePatternAccessors
+      )
+    ),
+    Map.empty
+  )
 
   private def nativeGroupedPatternTemplate(
       rootId: String,
@@ -1057,6 +1077,11 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private val PatternLiteralFloat   =
     constPatternLiteral(LiteralFloatProductionId, "FloatDecimal", FloatLiteralSurface, PsiOutputRoleId.FloatExpression)
 
+  private val PatternLiteralLong =
+    constPatternLiteral(LiteralLongProductionId, "LongInteger", LongLiteralSurface, PsiOutputRoleId.LongExpression)
+  private val PatternLiteralNull =
+    constPatternLiteral(LiteralNullProductionId, "NullValue", NullLiteralSurface, PsiOutputRoleId.NullExpression)
+
   private val PatternStableReference = Scala3PsiProduction(
     id = StableReferenceProductionId,
     grammarRoleId = GrammarRoleId.PatternStableIdentifier,
@@ -1414,7 +1439,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     pattern = CompilerProductionPattern(
       InventoryKind.Node,
       "Tuple",
-      Vector(CompilerFieldPattern("trees", CatalogValuePattern.Repeated(CatalogValuePattern.Node))),
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Node))),
       PatternSpaceOccurrences
     ),
     dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.Child)),
@@ -1459,6 +1484,37 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         ChildRootOutcome.All(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
       )
     )
+  )
+
+  private val PatternUnitTuple = Scala3PsiProduction(
+    id = UnitTupleProductionId,
+    grammarRoleId = GrammarRoleId.PatternTuple,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Tuple",
+      Vector(CompilerFieldPattern("trees", CatalogValuePattern.EmptyRepeated(CatalogValuePattern.Node))),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("trees", FieldDispositionKind.SemanticOnly)),
+    children = Vector.empty,
+    terminals = Vector(
+      TerminalDeclaration(
+        "text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = TuplePatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = TuplePatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(nativeUnitTuplePatternTemplate),
+    outputRoleId = None
   )
 
   private val PatternAlternative = Scala3PsiProduction(
@@ -1666,6 +1722,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternLiteralBoolean,
     PatternLiteralDouble,
     PatternLiteralFloat,
+    PatternLiteralLong,
+    PatternLiteralNull,
     PatternStableReference,
     PatternTyped,
     PatternTypeIdent,
@@ -1674,6 +1732,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternSequenceWildcard,
     PatternSequenceMarker,
     PatternTuple,
+    PatternUnitTuple,
     PatternAlternative,
     PatternConstructor,
     PatternBindModifiers
