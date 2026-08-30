@@ -473,6 +473,26 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "payload-descendant-ident"
       ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.LiteralProductionId, "payload-descendant-number"),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralStringProductionId,
+        "payload-descendant-invoked-literal"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralCharProductionId,
+        "payload-descendant-invoked-literal"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralBooleanProductionId,
+        "payload-descendant-invoked-literal"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralDoubleProductionId,
+        "payload-descendant-invoked-literal"
+      ),
+      ProductionAlternatives(
+        Scala3PsiMatchExpressionProductions.LiteralFloatProductionId,
+        "payload-descendant-invoked-literal"
+      ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypeIdentProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.NamingProductionId, "payload-descendant-ident"),

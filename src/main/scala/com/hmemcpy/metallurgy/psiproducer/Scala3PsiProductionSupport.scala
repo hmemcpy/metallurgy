@@ -1120,7 +1120,12 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
-  val LiteralPatternAccessors           = Vector.empty
+  val LiteralPatternAccessors           = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScLiteralPattern#getLiteral()Lorg/jetbrains/plugins/scala/lang/psi/api/base/ScLiteral;",
+      required = true
+    )
+  )
   val Sc3TypedPatternAccessors          = Vector(
     AccessorObligation(
       s"$Sc3TypedPatternSurface#pattern()Lorg/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScPattern;",

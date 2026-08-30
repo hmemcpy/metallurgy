@@ -331,7 +331,16 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-case-body-block"
       ),
       GrammarRoleId.PatternWildcard           -> Set("match-pattern-wildcard"),
-      GrammarRoleId.PatternLiteral            -> Set("match-pattern-literal"),
+      GrammarRoleId.PatternLiteral            -> Set(
+        "match-pattern-literal",
+        "match-pattern-literal-decimal",
+        "match-pattern-literal-floating",
+        "match-pattern-literal-string",
+        "match-pattern-literal-char",
+        "match-pattern-literal-boolean",
+        "match-pattern-literal-double",
+        "match-pattern-literal-float"
+      ),
       GrammarRoleId.PatternStableIdentifier   -> Set("match-pattern-stable-reference"),
       GrammarRoleId.PatternTyped              -> Set("match-pattern-typed"),
       GrammarRoleId.PatternNaming             -> Set("match-pattern-naming"),

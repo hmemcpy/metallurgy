@@ -302,7 +302,7 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
       assertTrue(
         report,
         report.contains(
-          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:atomic-literal-integer,named-invoked-literal-integer,type-atom-literal-value-integer**"
+          "`Element:org/jetbrains/plugins/scala/lang/psi/impl/base/literals/ScIntegerLiteralImpl` — **Available:catalog-referenced:atomic-literal-integer,match-pattern-literal,named-invoked-literal-integer,type-atom-literal-value-integer**"
         )
       )
       assertNoUnsupportedValues(first)

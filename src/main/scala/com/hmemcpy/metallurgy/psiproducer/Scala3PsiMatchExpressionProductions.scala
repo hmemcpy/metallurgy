@@ -14,6 +14,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private[psiproducer] val WildcardProductionId         = "match-pattern-wildcard"
   private[psiproducer] val ReferenceProductionId        = "match-pattern-reference"
   private[psiproducer] val LiteralProductionId          = "match-pattern-literal"
+  private[psiproducer] val LiteralDecimalProductionId   = "match-pattern-literal-decimal"
+  private[psiproducer] val LiteralFloatingProductionId  = "match-pattern-literal-floating"
+  private[psiproducer] val LiteralStringProductionId    = "match-pattern-literal-string"
+  private[psiproducer] val LiteralCharProductionId      = "match-pattern-literal-char"
+  private[psiproducer] val LiteralBooleanProductionId   = "match-pattern-literal-boolean"
+  private[psiproducer] val LiteralDoubleProductionId    = "match-pattern-literal-double"
+  private[psiproducer] val LiteralFloatProductionId     = "match-pattern-literal-float"
   private[psiproducer] val StableReferenceProductionId  = "match-pattern-stable-reference"
   private[psiproducer] val TypedProductionId            = "match-pattern-typed"
   private[psiproducer] val TypeIdentProductionId        = "match-pattern-type-ident"
@@ -165,6 +172,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     WildcardProductionId,
     ReferenceProductionId,
     LiteralProductionId,
+    LiteralDecimalProductionId,
+    LiteralFloatingProductionId,
+    LiteralStringProductionId,
+    LiteralCharProductionId,
+    LiteralBooleanProductionId,
+    LiteralDoubleProductionId,
+    LiteralFloatProductionId,
     StableReferenceProductionId,
     TypedProductionId,
     NamingProductionId,
@@ -905,10 +919,143 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     accessors = LiteralPatternAccessors,
     persistence = PersistenceObligations.NotApplicable,
     navigation = Some(NavigationObligation.Self),
-    outputTemplate =
-      Some(nativePatternTemplate(LiteralPatternSurface, LiteralPatternAccessors, PsiOutputRoleId.LiteralPattern)),
+    outputTemplate = Some(nativeLiteralPatternTemplate(IntegerLiteralSurface, PsiOutputRoleId.IntegerExpression)),
     outputRoleId = Some(PsiOutputRoleId.LiteralPattern)
   )
+
+  private def nativeLiteralPatternTemplate(literalSurface: String, literalRole: PsiOutputRoleId) =
+    LocalOutputCompositeTemplate(
+      Vector(
+        outputComposite(
+          "pattern",
+          None,
+          OutputRangeDeclaration.CompilerPosition,
+          PsiOutputRoleId.LiteralPattern,
+          LiteralPatternSurface,
+          LiteralPatternAccessors
+        ),
+        outputComposite(
+          "literal",
+          Some("pattern"),
+          OutputRangeDeclaration.CompilerPosition,
+          literalRole,
+          literalSurface,
+          AtomicLiteralAccessors
+        )
+      ),
+      Map.empty
+    )
+
+  private def numberPatternLiteral(
+      id: String,
+      numberKind: String,
+      literalSurface: String,
+      literalRole: PsiOutputRoleId
+  ): Scala3PsiProduction =
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.PatternLiteral,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Number",
+        Vector(
+          CompilerFieldPattern("digits", CatalogValuePattern.Scalar("Text")),
+          CompilerFieldPattern("kind", CatalogValuePattern.Product(numberKind, Vector.empty))
+        ),
+        PatternSpaceOccurrences
+      ),
+      dispositions = Vector(
+        FieldDisposition("digits", FieldDispositionKind.SemanticOnly),
+        FieldDisposition("kind", FieldDispositionKind.SemanticOnly)
+      ),
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "contents",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = LiteralPatternSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = LiteralPatternAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(nativeLiteralPatternTemplate(literalSurface, literalRole)),
+      outputRoleId = Some(PsiOutputRoleId.LiteralPattern)
+    )
+
+  private val PatternLiteralDecimal  =
+    numberPatternLiteral(LiteralDecimalProductionId, "Decimal", DoubleLiteralSurface, PsiOutputRoleId.DoubleExpression)
+  private val PatternLiteralFloating =
+    numberPatternLiteral(
+      LiteralFloatingProductionId,
+      "Floating",
+      DoubleLiteralSurface,
+      PsiOutputRoleId.DoubleExpression
+    )
+
+  private def constPatternLiteral(
+      id: String,
+      scalarKind: String,
+      literalSurface: String,
+      literalRole: PsiOutputRoleId
+  ): Scala3PsiProduction =
+    Scala3PsiProduction(
+      id = id,
+      grammarRoleId = GrammarRoleId.PatternLiteral,
+      pattern = CompilerProductionPattern(
+        InventoryKind.Node,
+        "Literal",
+        Vector(
+          CompilerFieldPattern(
+            "const",
+            CatalogValuePattern.Product(
+              "",
+              Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar(scalarKind)))
+            )
+          )
+        ),
+        PatternSpaceOccurrences
+      ),
+      dispositions = Vector(
+        FieldDisposition("const", FieldDispositionKind.SemanticOnly)
+      ),
+      children = Vector.empty,
+      terminals = Vector(
+        TerminalDeclaration(
+          "contents",
+          TerminalIntervalSelector.WholeProduction,
+          TerminalLeafTarget.Parent,
+          OccurrenceCardinality.ExactlyOne,
+          PsiOutputRoleId.SourceTerminal
+        )
+      ),
+      layouts = Vector(LayoutAlternative.None),
+      recovery = RecoveryPolicy.Reject,
+      targetSurfaceId = LiteralPatternSurface,
+      targetRequirement = TargetRequirement.Native,
+      accessors = LiteralPatternAccessors,
+      persistence = PersistenceObligations.NotApplicable,
+      navigation = Some(NavigationObligation.Self),
+      outputTemplate = Some(nativeLiteralPatternTemplate(literalSurface, literalRole)),
+      outputRoleId = Some(PsiOutputRoleId.LiteralPattern)
+    )
+
+  private val PatternLiteralString  =
+    constPatternLiteral(LiteralStringProductionId, "Text", StringLiteralSurface, PsiOutputRoleId.StringExpression)
+  private val PatternLiteralChar    =
+    constPatternLiteral(LiteralCharProductionId, "Character", CharLiteralSurface, PsiOutputRoleId.CharExpression)
+  private val PatternLiteralBoolean =
+    constPatternLiteral(LiteralBooleanProductionId, "Logical", BooleanLiteralSurface, PsiOutputRoleId.BooleanExpression)
+  private val PatternLiteralDouble  =
+    constPatternLiteral(LiteralDoubleProductionId, "Decimal", DoubleLiteralSurface, PsiOutputRoleId.DoubleExpression)
+  private val PatternLiteralFloat   =
+    constPatternLiteral(LiteralFloatProductionId, "FloatDecimal", FloatLiteralSurface, PsiOutputRoleId.FloatExpression)
 
   private val PatternStableReference = Scala3PsiProduction(
     id = StableReferenceProductionId,
@@ -1482,6 +1629,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternWildcard,
     PatternReference,
     PatternLiteral,
+    PatternLiteralDecimal,
+    PatternLiteralFloating,
+    PatternLiteralString,
+    PatternLiteralChar,
+    PatternLiteralBoolean,
+    PatternLiteralDouble,
+    PatternLiteralFloat,
     PatternStableReference,
     PatternTyped,
     PatternTypeIdent,
