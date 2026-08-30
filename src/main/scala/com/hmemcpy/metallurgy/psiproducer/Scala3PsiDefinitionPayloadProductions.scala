@@ -437,12 +437,17 @@ private[psiproducer] object Scala3PsiDefinitionPayloadProductions:
   ): Vector[CompilerProductionContextPattern] =
     ExpressionTypeApplicationAnchors.map: anchor =>
       CompilerProductionContextPattern(
-        ContextPattern.ParentUnderAnchor(
+        ContextPattern.ParentUnderAnchorExceptAncestor(
           InventoryKind.Node,
           owner,
           Vector(CatalogPathSegment.NamedField(field)) ++
             Option.when(field == "args")(CatalogPathSegment.RepeatedElement),
-          anchor
+          anchor,
+          InventoryAncestor(
+            InventoryKind.Node,
+            "CaseDef",
+            Vector(CatalogPathSegment.NamedField("pat"))
+          )
         ),
         SourceClassification.SourceReachable
       )

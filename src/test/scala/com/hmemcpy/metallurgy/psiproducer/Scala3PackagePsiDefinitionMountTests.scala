@@ -23,11 +23,11 @@ private[psiproducer] trait Scala3PackagePsiDefinitionMountTests extends Scala3Pa
       Scala3DotcParserDefinition.FileNodeType.getStubVersion
     )
     assertEquals(
-      "3929da9b84cad934713513498d68df42153f3ee8b0de9ec7fa66b213f751f04f",
+      "903f8bb2f85bab49b73220a82f058494655842996440315b10814ef5a5022b95",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     assertEquals(
-      "bdc7873bb3f71f5c88a6ae0453db6b89296c748625bd7216232a475a5712b513",
+      "e93c90b547649380c8acdd909ad28683d0d2766a490311162571781b39109f96",
       Scala3DotcFileElementType.CatalogPlanFingerprint
     )
     val source  =

@@ -417,6 +417,7 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiRepeatedArgumentProductions.RepeatedArgumentSegment ++
       Scala3PsiApplicationExpressionProductions.ApplicationExpressionSegment ++
       Scala3PsiMatchExpressionProductions.MatchExpressionSegment ++
+      Scala3PsiPatternAppliedTypeProductions.PatternAppliedTypeSegment ++
       Scala3PsiAtomicExpressionProductions.AtomicExpressionSegment ++
       Scala3PsiSelectionExpressionProductions.SelectionExpressionSegment ++
       Scala3PsiDefinitionPayloadProductions.DefinitionPayloadSegment ++
@@ -473,6 +474,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
         "payload-descendant-ident"
       ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.LiteralProductionId, "payload-descendant-number"),
+      ProductionAlternatives(
+        Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
+        "expression-type-argument-applied"
+      ),
       ProductionAlternatives(
         Scala3PsiMatchExpressionProductions.LiteralStringProductionId,
         "payload-descendant-invoked-literal"

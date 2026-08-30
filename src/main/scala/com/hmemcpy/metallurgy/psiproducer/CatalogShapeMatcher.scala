@@ -229,6 +229,11 @@ private[metallurgy] object CatalogShapeMatcher:
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p && value.ancestors.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorExceptAncestor(kind, owner, p, anchor, forbidden)                   =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.contains(anchor) && !value.ancestors.contains(forbidden)
+      )
     case ContextPattern.ParentUnderAnchorWithEvidence(kind, owner, p, anchor, patterns)                      =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
@@ -315,6 +320,11 @@ private[metallurgy] object CatalogShapeMatcher:
     case ContextPattern.Root                                                                                 => context.isEmpty
     case ContextPattern.Parent(kind, owner, p)                                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
+    case ContextPattern.ParentUnderAnchorExceptAncestor(kind, owner, p, anchor, forbidden)                   =>
+      context.exists(value =>
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+          value.ancestors.contains(anchor) && !value.ancestors.contains(forbidden)
+      )
     case ContextPattern.ParentWithNodeField(kind, owner, p, fieldName, fieldPrefix)                          =>
       context.exists(value =>
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&

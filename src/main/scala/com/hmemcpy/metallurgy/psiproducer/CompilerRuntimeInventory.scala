@@ -303,6 +303,13 @@ private[metallurgy] enum ContextPattern:
       path: Vector[CatalogPathSegment],
       anchor: InventoryAncestor
   )
+  case ParentUnderAnchorExceptAncestor(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      anchor: InventoryAncestor,
+      forbidden: InventoryAncestor
+  )
   case ParentUnderAnchorWithEvidence(
       ownerKind: InventoryKind,
       ownerPrefix: String,

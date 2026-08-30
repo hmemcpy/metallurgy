@@ -19,12 +19,17 @@ private[psiproducer] object Scala3PsiAppliedTypeProductions:
   private def appliedTypeChildOccurrences(field: String): Vector[CompilerProductionContextPattern] =
     OwnerTypeAnchors.map: anchor =>
       CompilerProductionContextPattern(
-        ContextPattern.ParentUnderAnchor(
+        ContextPattern.ParentUnderAnchorExceptAncestor(
           InventoryKind.Node,
           "AppliedTypeTree",
           Vector(CatalogPathSegment.NamedField(field)) ++
             Option.when(field == "args")(CatalogPathSegment.RepeatedElement),
-          anchor
+          anchor,
+          InventoryAncestor(
+            InventoryKind.Node,
+            "CaseDef",
+            Vector(CatalogPathSegment.NamedField("pat"))
+          )
         ),
         SourceClassification.SourceReachable
       )
@@ -106,35 +111,35 @@ private[psiproducer] object Scala3PsiAppliedTypeProductions:
       persistence = PersistenceObligations.NotApplicable,
       navigation = Some(NavigationObligation.Self),
       outputRoleId = None,
-      outputTemplate = Some(
-        LocalOutputCompositeTemplate(
-          Vector(
-            outputComposite(
-              "parameterized",
-              None,
-              OutputRangeDeclaration.CompilerPosition,
-              PsiOutputRoleId.ParameterizedType,
-              ParameterizedTypeSurface,
-              ParameterizedTypeAccessors
-            ),
-            outputComposite(
-              "arguments",
-              Some("parameterized"),
-              OutputRangeDeclaration.BoundaryDerived(
-                OutputBoundary
-                  .ChildEnd("constructor", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
-                OutputBoundary.ProductionEnd()
-              ),
-              PsiOutputRoleId.TypeArguments,
-              TypeArgumentsSurface,
-              TypeArgumentsAccessors
-            )
-          ),
-          Map("constructor" -> Some("parameterized"), "arguments" -> Some("arguments"))
-        )
-      ),
+      outputTemplate = Some(appliedTypeOutputTemplate),
       additionalGrammarRoleIds = additionalRoles + GrammarRoleId.TypeArgumentList
     )
+
+  private[psiproducer] val appliedTypeOutputTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "parameterized",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.ParameterizedType,
+        ParameterizedTypeSurface,
+        ParameterizedTypeAccessors
+      ),
+      outputComposite(
+        "arguments",
+        Some("parameterized"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary
+            .ChildEnd("constructor", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
+          OutputBoundary.ProductionEnd()
+        ),
+        PsiOutputRoleId.TypeArguments,
+        TypeArgumentsSurface,
+        TypeArgumentsAccessors
+      )
+    ),
+    Map("constructor" -> Some("parameterized"), "arguments" -> Some("arguments"))
+  )
 
   private val positionalTypeArgumentProduction = Scala3PsiProduction(
     id = "type-argument-ident",

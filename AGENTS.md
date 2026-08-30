@@ -324,7 +324,13 @@ completed in the same packet.
   0.53 plugin, then opens the real `dogfood` sbt project under Xvfb. Preserve the stage timeline and exported `idea.log`,
   wait for import/indexing and Metallurgy module readiness, run highlighting, inspect `MessagePool`, and validate the
   final log only after IDE shutdown so teardown exceptions cannot escape observation. First-run, trust, update, tips,
-  and onboarding UI remain suppressed through `ideprobe.conf` and generated IDE settings.
+  and onboarding UI remain suppressed through `ideprobe.conf` and generated IDE settings. On macOS the IDE child needs
+  the GUI login session (WindowServer); over SSH the probe times out waiting for it. Run the harness by writing an
+  executable `.command` wrapper that exports `METALLURGY_REPO_ROOT`, `METALLURGY_INTELLIJ_HOME`, and `JAVA_HOME`, unsets
+  `_JAVA_OPTIONS` and `METALLURGY_IDEA_JAVA_OPTIONS`, redirects all output to a log file, runs `packageArtifact` and
+  `run-ide-probe.sh sbt -batch -no-colors test`, copies the artifacts and test reports into `target/test-evidence/`, and
+  writes a completion marker - then launch it with `open -a Terminal <wrapper>` so it runs unattended inside the desktop
+  session, and validate the results from the copied log files and evidence.
 - **Platform sources:** the pinned IntelliJ source archive is under the resolved SDK's `sources/` directory, the pinned
   Scala plugin is under `custom-plugins/Scala`, and ide-probe sources may be checked out under `target/` for comparison.
   Use the upstream IntelliJ Community, intellij-scala, Scala 3, Metals, and ide-probe repositories when local artifacts

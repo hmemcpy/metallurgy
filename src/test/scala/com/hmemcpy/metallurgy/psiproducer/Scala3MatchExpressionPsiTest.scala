@@ -15,6 +15,12 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScIntegerLiteral,
   ScStringLiteral
 }
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeArgs
+import org.jetbrains.plugins.scala.lang.psi.impl.base.types.{
+  ScParameterizedTypeElementImpl,
+  ScSimpleTypeElementImpl,
+  ScTypeArgsImpl
+}
 import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScBlock, ScGuard, ScReferenceExpression}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScCompositePatternImpl,
@@ -31,7 +37,7 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.Sc3TypedPatternIm
 import org.jetbrains.plugins.scala.lang.psi.impl.expr.{ScBlockImpl, ScMatchImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{ScCaseClauseImpl, ScCaseClausesImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
-import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertNull, assertSame, assertTrue}
+import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertNull, assertSame, assertTrue, fail}
 import org.junit.Test
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -390,13 +396,255 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     )
 
   @Test
+  def testAppliedTypedPatternsProduceNativePsi(): Unit =
+    val source        =
+      """def applied(x: Any): Any = x match
+        |  case y: List[Int] => "a"
+        |  case y: Either[String, Int] => "b"
+        |  case y: Outer[Middle[Inner]] => "c"
+        |  case Some(y: Map[Int, String]) => "d"
+        |  case (y: Option[Int], z) => "e"
+        |  case w: List[Option[Either[Int, String]]] => "f"
+        |  case _: Option[Int] | _: List[Int] => "alt"
+        |""".stripMargin
+    val file          = physical("MatchAppliedTypes.scala", source)
+    assertEquals(7, descendants[ScCaseClauseImpl](file).size)
+    val typed         = descendants[Sc3TypedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(8, typed.size)
+    val parameterized = descendants[ScParameterizedTypeElementImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(11, parameterized.size)
+    assertEquals(
+      Vector(
+        "List[Int]",
+        "Either[String, Int]",
+        "Outer[Middle[Inner]]",
+        "Middle[Inner]",
+        "Map[Int, String]",
+        "Option[Int]",
+        "List[Option[Either[Int, String]]]",
+        "Option[Either[Int, String]]",
+        "Either[Int, String]",
+        "Option[Int]",
+        "List[Int]"
+      ),
+      parameterized.map(_.getText)
+    )
+    assertEquals(11, descendants[ScTypeArgsImpl](file).size)
+    val matchPsi      = descendants[ScMatchImpl](file).head
+    assertEquals(
+      22,
+      PsiTreeUtil.findChildrenOfType(matchPsi, classOf[ScSimpleTypeElementImpl]).asScala.toVector.size
+    )
+    parameterized.foreach: applied =>
+      val args = applied.typeArgList
+      assertEquals(applied.getTextRange.getEndOffset, args.getTextRange.getEndOffset)
+      assertTrue(args.isInstanceOf[ScTypeArgs])
+      applied.getParent match
+        case wrapper: org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypePattern =>
+          assertEquals(applied.getTextRange, wrapper.getTextRange)
+        case nestedArgs: ScTypeArgs                                                        =>
+          assertEquals(applied.getTextRange.getStartOffset - 1, nestedArgs.getTextRange.getStartOffset)
+          assertEquals(applied.getTextRange.getEndOffset + 1, nestedArgs.getTextRange.getEndOffset)
+        case other                                                                         =>
+          fail(s"unexpected applied-type parent: ${other.getClass.getName}")
+    val rootApplied   = parameterized.head
+    assertEquals("List[Int]", rootApplied.getText)
+    assertEquals("List", rootApplied.typeElement.getText)
+    assertEquals(1, rootApplied.typeArgList.typeArgs.size)
+    val multiArg      = parameterized(1)
+    assertEquals(2, multiArg.typeArgList.typeArgs.size)
+    val nested        = parameterized(3)
+    assertEquals("Middle[Inner]", nested.getText)
+    assertTrue(nested.typeElement.isInstanceOf[ScSimpleTypeElementImpl])
+    val deep          = parameterized(6)
+    assertEquals("List", deep.typeElement.getText)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+    val stubClasses   = file.asInstanceOf[PsiFileImpl].calcStubTree.getPlainList.asScala.toVector.map(_.getClass.getName)
+    assertFalse(stubClasses.exists(name => name.contains("Type") || name.contains("Pattern")))
+
+  @Test
+  def testAppliedTypedPatternsHandleDeepAndWideTypes(): Unit =
+    val source        =
+      """def edges(x: Any): Any = x match
+        |  case y: L2[L3[L4[L5[L6[L7[L8[L9[L10[L11[L12[L13[L14[L15[L16[Inner]]]]]]]]]]]]]]] => "deep"
+        |  case y: W1[W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25, W26, W27, W28, W29, W30, W31, W32, Inner] => "wide"
+        |  case y: F[A][B] => "curried"
+        |""".stripMargin
+    val file          = physical("MatchAppliedEdges.scala", source)
+    assertEquals(3, descendants[ScCaseClauseImpl](file).size)
+    val parameterized = descendants[ScParameterizedTypeElementImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(18, parameterized.size)
+    assertEquals(
+      "L2[L3[L4[L5[L6[L7[L8[L9[L10[L11[L12[L13[L14[L15[L16[Inner]]]]]]]]]]]]]]]",
+      parameterized.head.getText
+    )
+    assertTrue(
+      s"parameterized texts: ${parameterized.map(_.getText).mkString(",")}",
+      parameterized.exists(_.getText == "F[A][B]")
+    )
+    val curried       = parameterized.find(_.getText == "F[A][B]").get
+    assertTrue(curried.typeElement.isInstanceOf[ScParameterizedTypeElementImpl])
+    assertEquals("F[A]", curried.typeElement.getText)
+    assertEquals(1, curried.typeArgList.typeArgs.size)
+    assertTrue(parameterized.exists(_.getText == "F[A]"))
+    var depth         = 1
+    var current       = parameterized.head
+    while current.typeArgList.typeArgs.head.isInstanceOf[ScParameterizedTypeElementImpl] do
+      depth += 1
+      current = current.typeArgList.typeArgs.head.asInstanceOf[ScParameterizedTypeElementImpl]
+    assertEquals(15, depth)
+    val wide          = parameterized(15)
+    assertEquals(
+      "W1[W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25, W26, W27, W28, W29, W30, W31, W32, Inner]",
+      wide.getText
+    )
+    assertEquals(32, wide.typeArgList.typeArgs.size)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+
+  @Test
+  def testAppliedTypedPatternsTolerateTriviaAndSurviveLifecycle(): Unit =
+    val source    =
+      """def trivia(x: Any): Any = x match
+        |  case y: Either[
+        |    Int, // first
+        |    String
+        |  ] => "trivia"
+        |""".stripMargin
+    val file      = physical("MatchAppliedTrivia.scala", source)
+    val typed     = descendants[Sc3TypedPatternImpl](file)
+    assertEquals(1, typed.size)
+    val applied   = descendants[ScParameterizedTypeElementImpl](file)
+    assertEquals(1, applied.size)
+    assertEquals("Either", applied.head.typeElement.getText)
+    val argTexts  = applied.head.typeArgList.typeArgs.map(_.getText)
+    assertEquals(Vector("Int", "String"), argTexts)
+    val original  = typed.head
+    val pointer   = SmartPointerManager.getInstance(getProject).createSmartPsiElementPointer(original)
+    assertEquals(
+      applied.head.getText,
+      PsiTreeUtil.findChildOfType(file.copy(), classOf[ScParameterizedTypeElementImpl]).getText
+    )
+    val document  = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.replaceString(0, document.getTextLength, source.replace("// first", ""))
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    val afterEdit = descendants[ScParameterizedTypeElementImpl](file)
+    assertEquals(1, afterEdit.size)
+    assertEquals(Vector("Int", "String"), afterEdit.head.typeArgList.typeArgs.map(_.getText))
+    assertEquals("Either[Int,String]", afterEdit.head.getText.replaceAll("\\s+", ""))
+    assertEquals(
+      "y:Either[Int,String]",
+      pointer.getElement.getText.replaceAll("\\s+", "")
+    )
+
+  @Test
+  def testAppliedTypedPatternEditTransitionsBetweenNativeAndFailClosed(): Unit =
+    val supported                              =
+      """def transitions(x: Any): Any = x match
+        |  case y: List[Int] => "dec"
+        |""".stripMargin
+    val file                                   = physical("MatchAppliedTransition.scala", supported)
+    assertEquals(1, descendants[ScParameterizedTypeElementImpl](file).size)
+    val document                               = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    def replaceType(replacement: String): Unit =
+      WriteCommandAction.runWriteCommandAction(
+        getProject,
+        new Runnable:
+          override def run(): Unit =
+            document.replaceString(0, document.getTextLength, supported.replace("List[Int]", replacement))
+      )
+      PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    replaceType("List[_]")
+    assertTrue(descendants[ScParameterizedTypeElementImpl](file).isEmpty)
+    assertTrue(descendants[ScMatchImpl](file).isEmpty)
+    assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+    replaceType("List[Int]")
+    assertEquals(1, descendants[ScParameterizedTypeElementImpl](file).size)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+
+  @Test
+  def testAppliedTypedPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
+    val source      =
+      """package applied
+        |def applied(x: Any): Any = x match
+        |  case y: List[Int] => "dec"
+        |  case y: Either[String, Int] => "b"
+        |""".stripMargin
+    val file        = physical("MatchAppliedPersistence.scala", source).asInstanceOf[PsiFileImpl]
+    val document    = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    val tree        = file.calcStubTree
+    val stubs       = tree.getPlainList.asScala.toVector
+    val shape       = stubShape(stubs)
+    assertFalse(shape.exists(name => name.contains("Type") || name.contains("Pattern")))
+    val beforeIndex = indexShape(stubs)
+    val output      = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
+    val bytes       = output.toByteArray
+    val restored    = new StubTree(
+      SerializationManagerEx.getInstanceEx
+        .deserialize(new ByteArrayInputStream(bytes))
+        .asInstanceOf[PsiFileStub[?]]
+    )
+    assertEquals(shape, stubShape(restored.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala.toVector))
+    val repeated    = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(restored.getRoot, repeated)
+    assertArrayEquals(bytes, repeated.toByteArray)
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.replaceString(0, document.getTextLength, source)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    val literals    = descendants[ScParameterizedTypeElementImpl](file).map(_.getText)
+    assertEquals(Vector("List[Int]", "Either[String, Int]"), literals)
+    literals.foreach: text =>
+      val element = descendants[ScParameterizedTypeElementImpl](file).find(_.getText == text).get
+      assertSame(element, element.getNavigationElement)
+
+  @Test
+  def testAppliedTypePatternsWithCoveredGuardAndBodyStayFullyNative(): Unit =
+    val source        =
+      """def guardBody(x: Any): Any = x match
+        |  case v if v == 0 => v
+        |  case y: List[Int] => y
+        |  case y: Either[String, Int] => y
+        |  case _ => 0
+        |""".stripMargin
+    val file          = physical("MatchAppliedGuardBody.scala", source)
+    val capability    = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(4, descendants[ScCaseClauseImpl](file).size)
+    assertEquals(1, descendants[ScGuard](file).size)
+    val parameterized = descendants[ScParameterizedTypeElementImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(2, parameterized.size)
+    assertEquals(Vector("List[Int]", "Either[String, Int]"), parameterized.map(_.getText))
+    val guards        = descendants[ScGuard](file)
+    assertEquals(1, guards.size)
+    assertTrue(guards.head.getText.contains("v == 0"))
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
   def testUnsupportedPatternShapesFailClosedAtFileScope(): Unit =
     val sources = Vector(
       """def pending(x: Any): Any = x match
         |  case 9_223L => "long"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case v: List[Int] => v
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case null => "null"
@@ -406,6 +654,33 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case -9_223L => "neglong"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: a.B => "qualified"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: List[_] => "wildcard"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: (Int) => "paren"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: (Int, Int) => "tuple"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: (Int => Int) => "fn"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: Any { type X } => "refine"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: Int @unchecked => "annot"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: (Int & String) => "intersect"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case v: (Int | String) => "union"
         |""".stripMargin
     )
     sources.zipWithIndex.foreach { case (source, index) =>
@@ -418,12 +693,15 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
       assertTrue(s"unsupported patterns should cause capability failure (source $index)", failure.isDefined)
       assertTrue(
-        "failure should mention uncovered shape",
+        s"failure should mention uncovered shape: ${failure.get}",
         failure.get.toString.contains("UncoveredCompilerShape")
       )
       assertTrue(descendants[ScMatchImpl](file).isEmpty)
       assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
       assertTrue(descendants[ScLiteralPatternImpl](file).isEmpty)
+      assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+      assertTrue(descendants[ScParameterizedTypeElementImpl](file).isEmpty)
+      assertTrue(descendants[ScTypeArgsImpl](file).isEmpty)
     }
 
   @Test

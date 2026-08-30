@@ -191,7 +191,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     "payload-descendant-ident"
   )
 
-  private val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
+  private[psiproducer] val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
     InventoryAncestor(
       InventoryKind.Node,
       "CaseDef",
@@ -1120,7 +1120,15 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         WildcardProductionId,
         PatternChildProductionIds - WildcardProductionId
       ),
-      ChildDeclaration("tpt", "tpt", ChildCardinality.ExactlyOne, TypeIdentProductionId)
+      ChildDeclaration(
+        "tpt",
+        "tpt",
+        ChildCardinality.ExactlyOne,
+        TypeIdentProductionId,
+        Set(
+          Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId
+        )
+      )
     ),
     terminals = Vector(
       TerminalDeclaration(
@@ -1147,7 +1155,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       ),
       RequiredChildRootOutcome(
         "tpt",
-        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType)))
+        ChildRootOutcome.One(
+          ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType))
+        )
       )
     )
   )
@@ -1166,6 +1176,26 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             "Typed",
             Vector(CatalogPathSegment.NamedField("tpt")),
             PatternNestingEdges,
+            MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "AppliedTypeTree",
+            Vector(CatalogPathSegment.NamedField("tpt")),
+            Scala3PsiPatternAppliedTypeProductions.nestedAppliedTypeEdges,
+            MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "AppliedTypeTree",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+            Scala3PsiPatternAppliedTypeProductions.nestedAppliedTypeEdges,
             MatchCasesAncestor
           ),
           SourceClassification.SourceReachable

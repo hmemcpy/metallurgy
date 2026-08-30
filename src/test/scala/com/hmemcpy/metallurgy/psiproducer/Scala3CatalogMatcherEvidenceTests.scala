@@ -81,6 +81,39 @@ private[psiproducer] trait Scala3CatalogMatcherEvidenceTests extends Scala3PsiPr
       assertFalse(CatalogShapeMatcher.contextMatches(sequence, candidate))
       assertFalse(CatalogShapeMatcher.aggregateContextMatches(sequence, candidate))
 
+  @Test def exceptAncestorMatchesUntilTheForbiddenLineageAppears(): Unit =
+    val anchor                                        = InventoryAncestor(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("preRhs")))
+    val forbidden                                     = InventoryAncestor(InventoryKind.Node, "CaseDef", Vector(CatalogPathSegment.NamedField("pat")))
+    val atArgs                                        = InventoryAncestor(
+      InventoryKind.Node,
+      "AppliedTypeTree",
+      Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    )
+    val pattern                                       = ContextPattern.ParentUnderAnchorExceptAncestor(
+      InventoryKind.Node,
+      "AppliedTypeTree",
+      atArgs.path,
+      anchor,
+      forbidden
+    )
+    def context(ancestors: Vector[InventoryAncestor]) =
+      Some(InventoryContext(InventoryKind.Node, "AppliedTypeTree", atArgs.path, ancestors))
+    val expressionChain                               = context(Vector(anchor))
+    val nestedChain                                   = context(Vector(atArgs, anchor))
+    val patternChain                                  = context(Vector(forbidden, anchor))
+    val deepPatternChain                              = context(Vector(atArgs, forbidden, anchor))
+    val wrongAnchor                                   = InventoryAncestor(InventoryKind.Node, "ValDef", Vector(CatalogPathSegment.NamedField("preRhs")))
+    assertTrue(CatalogShapeMatcher.contextMatches(pattern, expressionChain))
+    assertTrue(CatalogShapeMatcher.contextMatches(pattern, nestedChain))
+    assertTrue(CatalogShapeMatcher.aggregateContextMatches(pattern, expressionChain))
+    assertTrue(CatalogShapeMatcher.aggregateContextMatches(pattern, nestedChain))
+    assertFalse(CatalogShapeMatcher.contextMatches(pattern, patternChain))
+    assertFalse(CatalogShapeMatcher.contextMatches(pattern, deepPatternChain))
+    assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, patternChain))
+    assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, deepPatternChain))
+    assertFalse(CatalogShapeMatcher.contextMatches(pattern, context(Vector(wrongAnchor))))
+    assertFalse(CatalogShapeMatcher.aggregateContextMatches(pattern, context(Vector(wrongAnchor))))
+
   @Test def sourceOrderedTerminalRangeWorkRetainsExactSelectionsWithNLogNGrowth(): Unit =
     val sizes = Vector(32, 64, 128, 256, 512)
     val work  = sizes.map: size =>

@@ -121,6 +121,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       ),
       GrammarRoleId.AppliedType               -> Set(
         "import-selector-bound-applied-type",
+        "match-pattern-applied-type",
         "ordinary-applied-type",
         "type-argument-applied",
         "expression-type-argument-applied"
@@ -147,6 +148,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.TermLambda                -> Set("type-definition-term-lambda"),
       GrammarRoleId.TypeArgumentList          -> Set(
         "import-selector-bound-applied-type",
+        "match-pattern-applied-type",
         "ordinary-applied-type",
         "type-argument-applied",
         "expression-type-argument-applied",
