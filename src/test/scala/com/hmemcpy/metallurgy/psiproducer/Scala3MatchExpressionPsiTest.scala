@@ -1110,28 +1110,19 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
       """def catcher(x: Any): Any = try x catch { case given T => "catch" }"""
     )
     sources.zipWithIndex.foreach { case (source, index) =>
-      val pending       = myFixture.addFileToProject(s"src/MatchGivenContext$index.scala", source)
-      val file          = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
-      val givenPatterns = descendants[ScGivenPatternImpl](file)
-      val failure       = Scala3SyntaxCapabilityService
+      val pending = myFixture.addFileToProject(s"src/MatchGivenContext$index.scala", source)
+      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      assertEquals(source, file.getText)
+      // Forces the deferred PSI parse before the capability failure is read.
+      val _       = descendants[ScGivenPatternImpl](file)
+      val failure = Scala3SyntaxCapabilityService
         .get(getProject)
         .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-      if failure.isDefined then
-        assertTrue(
-          s"whole-file failure must leave no partial native pattern PSI (source $index)",
-          descendants[ScGivenPatternImpl](file).isEmpty && descendants[ScNamingPatternImpl](file).isEmpty &&
-            descendants[Sc3TypedPatternImpl](file).isEmpty
-        )
-      else assertTrue(s"admitted context must contain given patterns (source $index)", givenPatterns.nonEmpty)
-      givenPatterns.foreach: givenPattern =>
-        assertNotNull(givenPattern.typeElement)
-        assertSame(givenPattern.typeElement, givenPattern.nameId)
-        assertEquals(1, givenPattern.getNode.getChildren(null).count(child => child.getText == "given"))
+      assertTrue(s"excluded context must fail closed (source $index)", failure.isDefined)
       assertTrue(
         s"whole-file failure must leave no partial native pattern PSI (source $index)",
-        failure.isEmpty || (descendants[ScGivenPatternImpl](file).isEmpty &&
-          descendants[ScNamingPatternImpl](file).isEmpty && descendants[Sc3TypedPatternImpl](file).isEmpty &&
-          descendants[ScMatchImpl](file).isEmpty)
+        descendants[ScGivenPatternImpl](file).isEmpty && descendants[ScNamingPatternImpl](file).isEmpty &&
+          descendants[Sc3TypedPatternImpl](file).isEmpty && descendants[ScMatchImpl](file).isEmpty
       )
     }
 

@@ -428,7 +428,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiTupleFunctionTypeProductions.TupleFunctionSuffixSegment ++
       Scala3PsiCompoundTypeProductions.CompoundTypeSegment ++
       Scala3PsiCaptureTypeProductions.CaptureTypeSegment ++
-      Scala3PsiTypeAtomProductions.TypeAtomSegment,
+      Scala3PsiTypeAtomProductions.TypeAtomSegment ++
+      Scala3PsiMatchExpressionProductions.MatchGivenSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(
@@ -509,9 +510,6 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypeIdentProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.NamingProductionId, "payload-descendant-ident"),
-      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenProductionId, "payload-descendant-ident"),
-      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenNamedProductionId, "payload-descendant-ident"),
-      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenTypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(
         Scala3PsiMatchExpressionProductions.NamingSequenceProductionId,
         "payload-descendant-ident"
@@ -535,6 +533,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(
         Scala3PsiMatchExpressionProductions.SequenceMarkerProductionId,
         Scala3PsiMatchExpressionProductions.ReferenceProductionId
-      )
+      ),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenNamedProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenTypedProductionId, "payload-descendant-ident")
     )
   )

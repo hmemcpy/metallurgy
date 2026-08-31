@@ -1723,12 +1723,28 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     CompilerFieldPattern("mods", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Positioned))
   )
 
+  // dotc lowers partial-function and catch case blocks to Match with a synthetic EmptyTree
+  // selector; requiring a source-positioned selector on the anchor keeps given binds inside
+  // real match ownership and leaves those forms fail-closed.
+  private val GivenMatchAnchorEvidence = Vector(
+    AncestorEvidencePattern(
+      directNodeEvidence = Vector(
+        DirectNodeFieldEvidence("selector", SourceClassification.SourceReachable)
+      )
+    )
+  )
+
   private def givenBindOccurrences(
       requiredScannerKinds: Set[ParserScannerTokenKind]
   ): Vector[CompilerProductionContextPattern] =
     PatternSpaceOccurrences.map(value =>
-      value.copy(scannerEvidence =
-        ScannerEvidencePattern(
+      value.copy(
+        context = value.context match
+          case ContextPattern.ParentUnderAnchorThrough(kind, owner, path, edges, anchor) =>
+            ContextPattern
+              .ParentUnderAnchorThroughWithEvidence(kind, owner, path, edges, anchor, GivenMatchAnchorEvidence)
+          case other                                                                     => other,
+        scannerEvidence = ScannerEvidencePattern(
           required = requiredScannerKinds,
           forbidden = if requiredScannerKinds.isEmpty then Set(ParserScannerTokenKind.AtSign) else Set.empty
         )
@@ -2072,7 +2088,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternUnitTuple,
     PatternAlternative,
     PatternConstructor,
-    PatternBindModifiers,
+    PatternBindModifiers
+  )
+
+  // Appended after every base segment in the catalog so persisted production numbering stays
+  // additive when this family grows; reinserting these into MatchExpressionSegment renumbers
+  // all later segments' persisted rows.
+  val MatchGivenSuffixSegment: Vector[Scala3PsiProduction] = Vector(
     PatternGiven,
     PatternGivenNamed,
     PatternGivenTyped,

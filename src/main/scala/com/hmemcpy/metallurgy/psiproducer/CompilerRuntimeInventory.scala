@@ -324,6 +324,14 @@ private[metallurgy] enum ContextPattern:
       ancestors: Vector[InventoryAncestor],
       anchor: InventoryAncestor
   )
+  case ParentUnderAnchorThroughWithEvidence(
+      ownerKind: InventoryKind,
+      ownerPrefix: String,
+      path: Vector[CatalogPathSegment],
+      ancestors: Vector[InventoryAncestor],
+      anchor: InventoryAncestor,
+      evidence: Vector[AncestorEvidencePattern]
+  )
   case DescendantOfOwnedRoot(routes: Vector[OwnedRootRoute])
   case DescendantOfEnabledCandidateRoot(routes: Vector[OwnedRootRoute])
   case ParentUnderAnchorThroughWithParent(

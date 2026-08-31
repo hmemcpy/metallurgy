@@ -250,6 +250,19 @@ private[metallurgy] object CatalogShapeMatcher:
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorThroughWithEvidence(kind, owner, p, through, anchor, patterns)      =>
+      context.exists: value =>
+        val anchored = value.ancestors.indexWhere(ancestor => ancestor == anchor || !through.contains(ancestor))
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+        value.ancestors.lift(anchored).contains(anchor) &&
+        value.ancestorEvidence
+          .lift(anchored)
+          .exists(observed =>
+            patterns.exists(pattern =>
+              scannerEvidenceMatches(pattern.scannerEvidence, observed.scannerTokenKinds) &&
+                directNodeEvidenceMatches(pattern.directNodeEvidence, observed.directNodeEvidence)
+            )
+          )
     case ContextPattern.DescendantOfOwnedRoot(routes)                                                        =>
       context.exists: value =>
         val lineage = InventoryAncestor(value.ownerKind, value.ownerPrefix, value.path) +: value.ancestors
@@ -365,6 +378,19 @@ private[metallurgy] object CatalogShapeMatcher:
         value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
           value.ancestors.dropWhile(value => value != anchor && ancestors.contains(value)).headOption.contains(anchor)
       )
+    case ContextPattern.ParentUnderAnchorThroughWithEvidence(kind, owner, p, through, anchor, patterns)      =>
+      context.exists: value =>
+        val anchored = value.ancestors.indexWhere(ancestor => ancestor == anchor || !through.contains(ancestor))
+        value.ownerKind == kind && value.ownerPrefix == owner && value.path == p &&
+        value.ancestors.lift(anchored).contains(anchor) &&
+        value.ancestorEvidence
+          .lift(anchored)
+          .exists(observed =>
+            patterns.exists(pattern =>
+              scannerEvidenceMatches(pattern.scannerEvidence, observed.scannerTokenKinds) &&
+                directNodeEvidenceMatches(pattern.directNodeEvidence, observed.directNodeEvidence)
+            )
+          )
     case ContextPattern.DescendantOfOwnedRoot(routes)                                                        =>
       false
     case ContextPattern.DescendantOfEnabledCandidateRoot(routes)                                             =>
