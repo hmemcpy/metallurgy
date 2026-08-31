@@ -1199,6 +1199,8 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     val parens  = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(Vector("(y "), parens.map(_.getText))
     assertEquals(Vector("y"), parens.head.innerElement.toVector.map(_.getText))
+    // sameTreeParent of the wrapper pattern resolves to no enclosing pattern in this fixture.
+    assertEquals(None, parens.head.sameTreeParent)
     val errors  = descendants[PsiErrorElement](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(1, errors.size)
     assertEquals("missing-close-before-case-arrow", errors.head.getErrorDescription)

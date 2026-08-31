@@ -3259,7 +3259,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     case wrapper @ (composite, _, _) if group.forall(other => {
                           val ownerOrigin = composite.instance.origin
                           val otherOrigin = other._1.instance.origin
-                          otherOrigin == ownerOrigin || isAncestor(ownerOrigin, otherOrigin)
+                          otherOrigin == ownerOrigin || isAncestor(otherOrigin, ownerOrigin)
                         }) =>
                       wrapper
                   }
