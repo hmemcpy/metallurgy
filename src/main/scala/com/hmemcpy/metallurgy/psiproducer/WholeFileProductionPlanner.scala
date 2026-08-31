@@ -3186,7 +3186,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           case (_, id, _) if inactiveOutputs(id) => Vector.empty
           case (declaration, id, _)              =>
             declaration.navigation.map(PlannedNavigationAssertion(id, _))
-      recoveryOwnershipRecords(snapshot, composites, participating, resolvedRealizations, selected) match
+      recoveryOwnershipRecords(snapshot, composites, participating, resolvedRealizations, selected, isAncestor) match
         case Left(failure)             => Left(failure)
         case Right(recoveryOwnerships) =>
           val plan = WholeFileProductionPlan(
@@ -3220,7 +3220,8 @@ private[metallurgy] object WholeFileProductionPlanner:
       composites: Vector[PlannedComposite],
       participating: Vector[ProductionInstanceId],
       resolvedRealizations: collection.Map[ProductionInstanceId, OutputRealization],
-      selected: ProductionInstanceId => Scala3PsiProduction
+      selected: ProductionInstanceId => Scala3PsiProduction,
+      isAncestor: (ProductionInstanceId, ProductionInstanceId) => Boolean
   ): Either[WholeFilePlanningFailure, Vector[PlannedRecoveryOwnership]] =
     val wrappers: Vector[(PlannedComposite, ParserDiagnosticSeverity, String)] = composites.flatMap: composite =>
       val instance = composite.instance.origin
@@ -3246,23 +3247,55 @@ private[metallurgy] object WholeFileProductionPlanner:
           val (offset, group) = offsetGroup
           failure.orElse {
             val atOffset = snapshot.diagnostics.zipWithIndex.filter: (diagnostic, _) =>
-              diagnostic.severity == group.head._2 && diagnostic.position.exists(_.range.startOffset == offset)
+              diagnostic.severity == group.head._2 && diagnostic.position.exists: position =>
+                position.provenance == ParserDiagnosticPositionProvenance.Synthetic &&
+                  position.range.startOffset == offset && position.point == offset &&
+                  position.range.startOffset <= position.range.endOffset &&
+                  position.range.endOffset <= snapshot.sourceLength
             atOffset match
               case Vector((diagnostic, ordinal)) =>
-                val innermost = group.maxBy(_._1.range.startOffset)._1
-                group.foreach: (composite, severity, alternativeId) =>
-                  records += PlannedRecoveryOwnership(
-                    composite.instance.origin,
-                    composite.instance.localOutputId,
-                    ordinal,
-                    severity,
-                    diagnostic.position.fold(PcSourceRange(offset, offset))(_.range),
-                    diagnostic.position.fold(offset)(_.point),
-                    offset,
-                    alternativeId,
-                    sharing = composite ne innermost
-                  )
-                None
+                val ownerOption: Option[(PlannedComposite, ParserDiagnosticSeverity, String)] =
+                  group.collectFirst {
+                    case wrapper @ (composite, _, _) if group.forall(other => {
+                          val ownerOrigin = composite.instance.origin
+                          val otherOrigin = other._1.instance.origin
+                          otherOrigin == ownerOrigin || isAncestor(ownerOrigin, otherOrigin)
+                        }) =>
+                      wrapper
+                  }
+                ownerOption match
+                  case Some((ownerComposite, _, _))
+                      if group.length == 1 || group
+                        .forall(other => isAncestor(other._1.instance.origin, ownerComposite.instance.origin)) =>
+                    group.foreach: (composite, severity, alternativeId) =>
+                      records += PlannedRecoveryOwnership(
+                        composite.instance.origin,
+                        composite.instance.localOutputId,
+                        ordinal,
+                        severity,
+                        diagnostic.position.fold(
+                          ParserDiagnosticPositionProvenance.Synthetic
+                        )(_.provenance),
+                        diagnostic.position.fold(PcSourceRange(offset, offset))(_.range),
+                        diagnostic.position.fold(offset)(_.point),
+                        offset,
+                        alternativeId,
+                        sharing = (composite ne ownerComposite) && isAncestor(
+                          composite.instance.origin,
+                          ownerComposite.instance.origin
+                        )
+                      )
+                    None
+                  case _ =>
+                    val representative = group.minBy(_._1.range.startOffset)
+                    Some(
+                      WholeFilePlanningFailure.UnassignedRecoveryDiagnostic(
+                        representative._1.instance.origin,
+                        representative._3,
+                        offset,
+                        representative._2
+                      )
+                    )
               case Vector()                      =>
                 // A selected recovery realization without its exact clamp-point diagnostic is
                 // an unowned recovery event and must fail planning.

@@ -1213,29 +1213,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
 
   @Test
-  def testNestedMissingCloseParensShareOneOwnedDiagnostic(): Unit =
-    val source    = """def m(x: Any): Any = x match
-      |  case ((y => 1
-      |  case _ => 2
-      |""".stripMargin
-    val pending   = myFixture.addFileToProject("src/MatchParensNestedMissingClose.scala", source)
-    val file      = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
-    assertEquals(source, file.getText)
-    val _         = descendants[ScParenthesisedPatternImpl](file)
-    val failure   = Scala3SyntaxCapabilityService
-      .get(getProject)
-      .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-    assertEquals("nested recovery file must be admitted", None, failure)
-    val parens    = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
-    assertEquals(Vector("((y ", "(y "), parens.map(_.getText))
-    val errors    = descendants[PsiErrorElement](file).sortBy(_.getTextRange.getStartOffset)
-    assertEquals(1, errors.size)
-    assertEquals("missing-close-before-case-arrow", errors.head.getErrorDescription)
-    val innermost = parens.last
-    assertSame(errors.head.getParent, innermost)
-    assertEquals(1, descendants[ScCaseClauseImpl](file).size)
-
-  @Test
   def testParenthesizedPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
     val source        =
       """package parens

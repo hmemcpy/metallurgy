@@ -809,6 +809,66 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
       ).isRight
     )
 
+  @Test def diagnosticGateDischargesPerOrdinalAndFailsOnLaterUnownedErrors(): Unit =
+    val value             = snapshot("/recovered-ordinal", 1, Vector.empty)
+    val withDiagnostics   = value.copy(diagnostics =
+      Vector(
+        ParserDiagnostic(
+          ParserDiagnosticSeverity.Error,
+          "recovered",
+          Some(ParserDiagnosticPosition(PcSourceRange(1, 1), 1, ParserDiagnosticPositionProvenance.Synthetic))
+        ),
+        ParserDiagnostic(
+          ParserDiagnosticSeverity.Error,
+          "unowned",
+          Some(ParserDiagnosticPosition(PcSourceRange(0, 0), 0, ParserDiagnosticPositionProvenance.Synthetic))
+        )
+      )
+    )
+    val compiler          = inventory(withDiagnostics)
+    val base              = completeCatalog(compiler)
+    val recovered         = base.copy(productions = base.productions.map: production =>
+      if production.id == "Child" then
+        production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")))
+      else if production.id == "Root" then
+        production.copy(terminals =
+          Vector(
+            TerminalDeclaration(
+              "source",
+              TerminalIntervalSelector.WholeSource,
+              TerminalLeafTarget.Parent,
+              OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal
+            )
+          )
+        )
+      else production)
+    val onlyRecovered     = withDiagnostics.copy(diagnostics = withDiagnostics.diagnostics.take(1))
+    val onlyCompiler      = inventory(onlyRecovered)
+    val onlyRecoveredPlan = planned(
+      onlyRecovered,
+      ProvisionalSourceEvidencePlanner.plan(onlyRecovered).toOption.get,
+      recovered,
+      aggregate(Vector(onlyCompiler)),
+      surfaces(recovered)
+    )
+    assertTrue(
+      s"a discharged diagnostic admits the recovery file: ${onlyRecoveredPlan.left.toOption.map(_.toString.take(400))}",
+      onlyRecoveredPlan.isRight
+    )
+    val gateFailure       = planned(
+      withDiagnostics,
+      ProvisionalSourceEvidencePlanner.plan(withDiagnostics).toOption.get,
+      recovered,
+      aggregate(Vector(compiler)),
+      surfaces(recovered)
+    ).left.toOption.get
+    assertEquals(
+      "an unowned later Error must fail closed at its own ordinal",
+      WholeFilePlanningFailure.UnassignedDiagnostic(1),
+      gateFailure
+    )
+
   @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
     val baseValue       = snapshot("/transparent-siblings", 1, Vector.empty)
     val root            = baseValue.nodes.head.copy(fields =
