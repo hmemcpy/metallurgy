@@ -162,7 +162,12 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) match
                   case Left(_)     => false
                   case Right(plan) => provesCandidates(plan, roots)
-              compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
+              // When no candidate trial proves out, the fallback plan ships with every Error
+              // diagnostic unowned unless a recovery record discharges each ordinal.
+              if accepted.isEmpty && firstUndischargedError.nonEmpty then
+                Left(WholeFilePlanningFailure.UnassignedDiagnostic(firstUndischargedError.head))
+              else
+                compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
             case _                                       =>
               compileAttempt(
                 snapshot,
