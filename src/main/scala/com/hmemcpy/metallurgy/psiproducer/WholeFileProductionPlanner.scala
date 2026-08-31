@@ -3246,8 +3246,12 @@ private[metallurgy] object WholeFileProductionPlanner:
         .foldLeft[Option[WholeFilePlanningFailure]](None): (failure, offsetGroup) =>
           val (offset, group) = offsetGroup
           failure.orElse {
-            val atOffset = snapshot.diagnostics.zipWithIndex.filter: (diagnostic, _) =>
-              diagnostic.severity == group.head._2 && diagnostic.position.exists: position =>
+            // Recovery diagnostics are parser-synthesized (measured Synthetic for missing-close);
+            // the provenance label is trusted only while the parser publishes it.
+            val provenanceTrusted =
+              snapshot.capabilities.diagnosticPositionProvenance == ParserCapabilityStatus.Available
+            val atOffset          = snapshot.diagnostics.zipWithIndex.filter: (diagnostic, _) =>
+              provenanceTrusted && diagnostic.severity == group.head._2 && diagnostic.position.exists: position =>
                 position.provenance == ParserDiagnosticPositionProvenance.Synthetic &&
                   position.range.startOffset == offset && position.point == offset &&
                   position.range.startOffset <= position.range.endOffset &&
