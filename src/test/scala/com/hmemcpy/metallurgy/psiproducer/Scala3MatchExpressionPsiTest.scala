@@ -1124,7 +1124,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
 
   @Test
   def testParenthesizedPatternsOwnSingleParensAcrossTheShapeMatrix(): Unit =
-    val source  =
+    val source =
       """def parens(x: Any): Any = x match
         |  case (y) => "ident"
         |  case (_) => "wildcard"
@@ -1140,8 +1140,8 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case (()) => "unitInner"
         |  case other => "fallback"
         |""".stripMargin
-    val file    = physical("MatchParenthesizedMatrix.scala", source)
-    val parens  = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    val file   = physical("MatchParenthesizedMatrix.scala", source)
+    val parens = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(13, parens.size)
     assertEquals(13, descendants[ScCaseClauseImpl](file).size)
     assertEquals(1, descendants[ScMatchImpl](file).size)
@@ -1150,6 +1150,24 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(Vector("((deep))", "(deep)"), parens.collect { case p if p.getText.contains("deep") => p.getText })
     assertEquals(1, descendants[ScGivenPatternImpl](file).size)
     assertEquals(2, descendants[ScTuplePatternImpl](file).size)
+
+    // Exact ranges, delimiter tokens, direct children, and nested sameTreeParent linkage.
+    val firstWrapper     = source.indexOf("(y)")
+    assertEquals(firstWrapper, parens.head.getTextRange.getStartOffset)
+    assertEquals(firstWrapper + 3, parens.head.getTextRange.getEndOffset)
+    val wrapperChildren  = parens.head.getNode.getChildren(null).toVector.map(_.getText)
+    assertEquals(Vector("(", "y", ")"), wrapperChildren)
+    val deepPair         = parens.collect { case p if p.getText.contains("deep") => p }
+    assertEquals(source.indexOf("((deep))"), deepPair.head.getTextRange.getStartOffset)
+    assertEquals(source.indexOf("((deep))") + 8, deepPair.head.getTextRange.getEndOffset)
+    assertEquals(deepPair.last, deepPair.head.innerElement.get)
+    assertSame(deepPair.head, deepPair.last.sameTreeParent.get)
+    // The delimiter leaves are token leaves directly under the wrapper, with no synthetic text.
+    val wrapperNodes     = parens.head.getNode.getChildren(null).toVector
+    val wrapperLeafTexts = wrapperNodes.collect { case leaf if leaf.getFirstChildNode == null => leaf.getText }
+    assertEquals(Vector("("), wrapperLeafTexts.take(1))
+    assertEquals(Vector(")"), wrapperLeafTexts.takeRight(1))
+
     val failure = Scala3SyntaxCapabilityService
       .get(getProject)
       .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
@@ -1213,6 +1231,20 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     // dotc recovery absorbs the trailing clauses into the retained wrapper's span.
     assertEquals(1, descendants[ScCaseClauseImpl](file).size)
     assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
+
+    // The wrapper children are the open delimiter, the inner pattern, and the owned zero-width
+    // recovery error; no synthetic close delimiter is emitted anywhere in the file.
+    val childrenTexts = parens.head.getNode.getChildren(null).toVector.map(_.getText)
+    assertTrue("no synthetic close delimiter may be emitted", !childrenTexts.contains(")"))
+    assertSame(errors.head.getParent, parens.head)
+    val arrowOffset   = source.indexOf("=>")
+    val arrowLeaf     = file.findElementAt(arrowOffset)
+    assertNotNull(arrowLeaf)
+    assertEquals("=>", arrowLeaf.getText)
+    assertTrue(
+      "the case arrow must remain outside the recovered wrapper",
+      arrowLeaf.getTextRange.getStartOffset >= parens.head.getTextRange.getEndOffset
+    )
 
   @Test
   def testParenthesizedPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
