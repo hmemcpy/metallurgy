@@ -1004,7 +1004,8 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case _                                                                       => ()
       if p.recovery != RecoveryPolicy.Reject then
         p.effectiveOutputRealizations.foreach: realization =>
-          if realization.template.composites.count(_.parentId.isEmpty) != 1 then
+          val roots = realization.template.composites.filter(_.parentId.isEmpty)
+          if roots.size != 1 || roots.head.realization != OutputCompositeRealization.Once then
             errors += CatalogValidationError.AmbiguousRecoveryComposite(p.id, realization.id)
       duplicates(p.dispositions.map(_.fieldName))
         .foreach(n => errors += CatalogValidationError.DuplicateFieldDisposition(p.id, n))

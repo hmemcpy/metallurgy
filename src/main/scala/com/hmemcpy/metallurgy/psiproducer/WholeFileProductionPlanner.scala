@@ -3223,17 +3223,22 @@ private[metallurgy] object WholeFileProductionPlanner:
       selected: ProductionInstanceId => Scala3PsiProduction,
       isAncestor: (ProductionInstanceId, ProductionInstanceId) => Boolean
   ): Either[WholeFilePlanningFailure, Vector[PlannedRecoveryOwnership]] =
-    val wrappers: Vector[(PlannedComposite, ParserDiagnosticSeverity, String)] = composites.flatMap: composite =>
-      val instance = composite.instance.origin
-      if !participating.contains(instance) then Vector.empty
-      else
+    val wrappers: Vector[(PlannedComposite, ParserDiagnosticSeverity, String)] =
+      participating.flatMap: instance =>
         val maybe = Option(selected(instance)).flatMap: production =>
           production.recovery match
             case RecoveryPolicy.DiagnosticBound(severity, alternatives) =>
               resolvedRealizations
                 .get(instance)
                 .filter(realization => alternatives.contains(realization.id))
-                .map(realization => (composite, severity, realization.id))
+                .flatMap: realization =>
+                  val rootDeclaration = realization.template.composites.find(_.parentId.isEmpty)
+                  rootDeclaration.flatMap: declaration =>
+                    composites
+                      .find: composite =>
+                        composite.instance.origin == instance &&
+                          composite.instance.localOutputId == declaration.id
+                      .map(composite => (composite, severity, realization.id))
             case _                                                      => None
         maybe.toVector
     if wrappers.isEmpty then Right(Vector.empty)
