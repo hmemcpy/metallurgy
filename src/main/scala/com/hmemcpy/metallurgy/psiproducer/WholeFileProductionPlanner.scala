@@ -130,10 +130,16 @@ private[metallurgy] object WholeFileProductionPlanner:
         baseline.recoveryOwnerships.exists(ownership =>
           ownership.diagnosticOrdinal == index && ownership.severity == ParserDiagnosticSeverity.Error && !ownership.sharing
         )
+      // Each Error diagnostic is discharged only by a non-sharing recovery ownership record that
+      // owns exactly that ordinal; every other Error requires the atomic candidate path.
+      val firstUndischargedError                                                                     = snapshot.diagnostics.zipWithIndex.collect:
+        case (diagnostic, index)
+            if diagnostic.severity == ParserDiagnosticSeverity.Error && !dischargedByRecovery(index) =>
+          index
       snapshot.diagnostics.indexWhere(_.severity == ParserDiagnosticSeverity.Error) match
-        case index if index >= 0 && candidateOwners.isEmpty && !dischargedByRecovery(index) =>
-          Left(WholeFilePlanningFailure.UnassignedDiagnostic(index))
-        case _                                                                              =>
+        case _ if candidateOwners.isEmpty && firstUndischargedError.nonEmpty =>
+          Left(WholeFilePlanningFailure.UnassignedDiagnostic(firstUndischargedError.head))
+        case _                                                               =>
           val candidateRoots = candidateOwners.flatMap(owner => atomicCandidateRoot(snapshot, compiler, owner))
           AtomicWholePlanCandidateScope
             .validate(
