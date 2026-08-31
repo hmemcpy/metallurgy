@@ -2347,7 +2347,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             .collect:
               case (`role`, _, child) => position(child)
             .collect:
-              case ParserNodePosition.Positioned(range, _, _) => range
+              case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
         (ranges(startRole), ranges(endRole)) match
           case (starts, ends) if starts.nonEmpty && ends.nonEmpty =>
             val start = starts.maxBy(_.endOffset)
