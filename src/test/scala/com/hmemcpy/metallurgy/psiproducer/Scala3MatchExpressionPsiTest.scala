@@ -1223,11 +1223,15 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(1, errors.size)
     assertEquals("missing-close-before-case-arrow", errors.head.getErrorDescription)
     assertTrue("the recovery error must be zero-width", errors.head.getTextRange.isEmpty)
-    // The missing close belongs immediately after the inner pattern content.
+    // The zero-width recovery error sits immediately after the inner pattern content; the wrapper
+    // itself extends through the retained trivia up to the case arrow, which stays outside it.
     assertEquals(
+      "the recovery error must sit immediately after the retained inner pattern",
       parens.head.innerElement.get.getTextRange.getEndOffset,
       errors.head.getTextRange.getStartOffset
     )
+    assertTrue(errors.head.getTextRange.isEmpty)
+    assertEquals(source.indexOf("=>"), parens.head.getTextRange.getEndOffset)
     // dotc recovery absorbs the trailing clauses into the retained wrapper's span.
     assertEquals(1, descendants[ScCaseClauseImpl](file).size)
     assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
