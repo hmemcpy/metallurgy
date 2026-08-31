@@ -77,6 +77,7 @@ private[metallurgy] enum CatalogValidationError:
   case EmptyLayoutAlternatives(productionId: String)
   case DuplicateLayoutAlternative(productionId: String, alternative: LayoutAlternative)
   case EmptyRecoveryAlternatives(productionId: String)
+  case AmbiguousRecoveryComposite(productionId: String, realizationId: String)
   case DuplicateSurfaceId(id: String)
   case UnclassifiedSurface(id: String)
   case UnresolvedSurface(id: String, status: FactStatus)
@@ -1001,6 +1002,10 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
         case RecoveryPolicy.DiagnosticBound(_, alternatives) if alternatives.isEmpty =>
           errors += CatalogValidationError.EmptyRecoveryAlternatives(p.id)
         case _                                                                       => ()
+      if p.recovery != RecoveryPolicy.Reject then
+        p.effectiveOutputRealizations.foreach: realization =>
+          if realization.template.composites.count(_.parentId.isEmpty) != 1 then
+            errors += CatalogValidationError.AmbiguousRecoveryComposite(p.id, realization.id)
       duplicates(p.dispositions.map(_.fieldName))
         .foreach(n => errors += CatalogValidationError.DuplicateFieldDisposition(p.id, n))
       names

@@ -197,7 +197,8 @@ private[metallurgy] object DotcPsiProducer:
           advanceTo(to, builder, tokenRemaps)
           recoveryOwnerships
             .find(ownership =>
-              !ownership.sharing && ownership.owner == current.instance.origin && ownership.errorOffset == to
+              !ownership.sharing && ownership.owner == current.instance.origin &&
+                ownership.compositeId == current.instance.localOutputId && ownership.errorOffset == to
             )
             .foreach: ownership =>
               val errorMarker = builder.mark()
