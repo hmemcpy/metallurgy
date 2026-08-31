@@ -76,6 +76,12 @@ private[metallurgy] enum WholeFilePlanningFailure:
   )
   case UnsupportedLayout(owner: ProductionInstanceId, alternatives: Vector[LayoutAlternative])
   case UnsupportedRecovery(owner: ProductionInstanceId, policy: RecoveryPolicy)
+  case UnassignedRecoveryDiagnostic(
+      owner: ProductionInstanceId,
+      alternativeId: String,
+      errorOffset: Int,
+      boundSeverity: ParserDiagnosticSeverity
+  )
   case UnprobedNativeCandidate(
       owner: ProductionInstanceId,
       productionId: String,
@@ -393,6 +399,17 @@ private[metallurgy] final case class PlannedRealizationSelection(
     realizationId: String,
     reason: RealizationSelectionReason
 )
+private[metallurgy] final case class PlannedRecoveryOwnership(
+    owner: ProductionInstanceId,
+    compositeId: String,
+    diagnosticOrdinal: Int,
+    severity: ParserDiagnosticSeverity,
+    diagnosticRange: PcSourceRange,
+    diagnosticPoint: Int,
+    errorOffset: Int,
+    alternativeId: String,
+    sharing: Boolean
+)
 private[metallurgy] final case class WholeFileProductionPlan(
     sourceUri: ParserSourceUri,
     sourceDigest: String,
@@ -407,7 +424,8 @@ private[metallurgy] final case class WholeFileProductionPlan(
     stubAssertions: Vector[PlannedStubAssertion],
     navigationAssertions: Vector[PlannedNavigationAssertion],
     childClosureAbsorptions: Vector[PlannedChildClosureAbsorption] = Vector.empty,
-    realizationSelections: Vector[PlannedRealizationSelection] = Vector.empty
+    realizationSelections: Vector[PlannedRealizationSelection] = Vector.empty,
+    recoveryOwnerships: Vector[PlannedRecoveryOwnership] = Vector.empty
 )
 
 private[metallurgy] final case class WholeFilePlanStructure(rows: Vector[String]):
@@ -521,6 +539,22 @@ private[metallurgy] object WholeFileProductionPlanRenderer:
         selection.owner,
         selection.realizationId,
         selection.reason
+      )
+    )
+    plan.recoveryOwnerships.zipWithIndex.foreach((ownership, index) =>
+      rows += StructuralRows.row(
+        "recovery-ownership",
+        index,
+        ownership.owner,
+        ownership.compositeId,
+        ownership.diagnosticOrdinal,
+        ownership.severity,
+        ownership.diagnosticRange.startOffset,
+        ownership.diagnosticRange.endOffset,
+        ownership.diagnosticPoint,
+        ownership.errorOffset,
+        ownership.alternativeId,
+        ownership.sharing
       )
     )
     WholeFilePlanStructure(rows.result())

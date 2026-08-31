@@ -65,7 +65,9 @@ private[metallurgy] object DotcPsiProducer:
         val root                 = builder.mark()
         roots
           .sortBy(value => (value.range.startOffset, value.range.endOffset, value.instance.toString))
-          .foreach(emit(_, byId, targetRoles, bindings, builder, tokenRemaps, trailingTriviaOwners))
+          .foreach(
+            emit(_, byId, targetRoles, bindings, builder, tokenRemaps, trailingTriviaOwners, plan.recoveryOwnerships)
+          )
         advanceTo(builder.getOriginalText.length, builder, tokenRemaps)
         root.done(fileElementType)
         Right(())
@@ -176,7 +178,8 @@ private[metallurgy] object DotcPsiProducer:
       bindings: NativePsiElementBindings,
       builder: PsiBuilder,
       tokenRemaps: Map[Int, IElementType] = Map.empty,
-      trailingTriviaOwners: Set[CompositeInstanceId] = Set.empty
+      trailingTriviaOwners: Set[CompositeInstanceId] = Set.empty,
+      recoveryOwnerships: Vector[PlannedRecoveryOwnership] = Vector.empty
   ): Unit =
     val pending = new ArrayDeque[EmitEvent]()
     pending.addFirst(EmitEvent.Enter(composite))
@@ -192,6 +195,13 @@ private[metallurgy] object DotcPsiProducer:
             .foreach(child => pending.addFirst(EmitEvent.Enter(child)))
         case EmitEvent.Exit(marker, current, to, elementType) =>
           advanceTo(to, builder, tokenRemaps)
+          recoveryOwnerships
+            .find(ownership =>
+              !ownership.sharing && ownership.owner == current.instance.origin && ownership.errorOffset == to
+            )
+            .foreach: ownership =>
+              val errorMarker = builder.mark()
+              errorMarker.error(ownership.alternativeId)
           if trailingTriviaOwners(current.instance) then
             marker.setCustomEdgeTokenBinders(null, WhitespacesBinders.GREEDY_RIGHT_BINDER)
           marker.done(elementType)

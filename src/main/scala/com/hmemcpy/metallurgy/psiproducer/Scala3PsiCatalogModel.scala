@@ -105,6 +105,7 @@ private[metallurgy] object GrammarRoleId:
   val PatternNaming             = GrammarRoleId("scala.pattern.naming")
   val PatternGiven              = GrammarRoleId("scala.pattern.given")
   val PatternTuple              = GrammarRoleId("scala.pattern.tuple")
+  val PatternParenthesized      = GrammarRoleId("scala.pattern.parenthesized")
   val PatternConstructor        = GrammarRoleId("scala.pattern.constructor")
   val PatternAlternative        = GrammarRoleId("scala.pattern.alternative")
   val PatternSequenceWildcard   = GrammarRoleId("scala.pattern.sequence-wildcard")
@@ -154,7 +155,12 @@ private[metallurgy] enum TerminalIntervalSelector:
   )
   case CompilerScannerTokenBeforeChildOutputs(kind: ParserScannerTokenKind, roleId: String)
   case CompilerScannerTokenInChildGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
-  case CompilerScannerTokenInChildOutputGap(kind: ParserScannerTokenKind, startRole: String, endRole: String)
+  case CompilerScannerTokenInChildOutputGap(
+      kind: ParserScannerTokenKind,
+      startRole: String,
+      endRole: String,
+      occurrence: ScannerTokenOccurrence = ScannerTokenOccurrence.All
+  )
   case BalancedScannerTokenAfterChild(
       kind: ParserScannerTokenKind,
       opening: ParserScannerTokenKind,
@@ -403,6 +409,7 @@ private[metallurgy] object PsiOutputRoleId:
   val NamingPattern          = PsiOutputRoleId("scala.pattern.naming")
   val GivenPattern           = PsiOutputRoleId("scala.pattern.given")
   val TuplePattern           = PsiOutputRoleId("scala.pattern.tuple")
+  val ParenthesizedPattern   = PsiOutputRoleId("scala.pattern.parenthesized")
   val Patterns               = PsiOutputRoleId("scala.patterns")
   val PatternArgumentList    = PsiOutputRoleId("scala.pattern.argument-list")
   val ConstructorPattern     = PsiOutputRoleId("scala.pattern.constructor")
@@ -519,6 +526,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.PatternGiven,
       GrammarRoleId.PatternSequenceWildcard,
       GrammarRoleId.PatternTuple,
+      GrammarRoleId.PatternParenthesized,
       GrammarRoleId.PatternAlternative,
       GrammarRoleId.PatternConstructor,
       GrammarRoleId.TypeAliasDeclaration,
@@ -644,6 +652,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.GivenPattern,
       PsiOutputRoleId.SeqWildcardPattern,
       PsiOutputRoleId.TuplePattern,
+      PsiOutputRoleId.ParenthesizedPattern,
       PsiOutputRoleId.Patterns,
       PsiOutputRoleId.PatternArgumentList,
       PsiOutputRoleId.ConstructorPattern,
@@ -895,6 +904,7 @@ private[metallurgy] final case class RealizationChoice(
 )
 private[metallurgy] enum EvidenceCondition:
   case TemplateBodyLayout(present: Boolean)
+  case TrailingProductionScannerToken(kind: ParserScannerTokenKind, present: Boolean)
   case RepeatedFieldOccurrence(fieldName: String, valuePattern: CatalogValuePattern, present: Boolean)
   case RepeatedFieldSize(fieldName: String, minimum: Int, maximum: Option[Int])
   case RepeatedNodeFieldDistinct(repeatedFieldName: String, nodePrefix: String, nodeFieldName: String)

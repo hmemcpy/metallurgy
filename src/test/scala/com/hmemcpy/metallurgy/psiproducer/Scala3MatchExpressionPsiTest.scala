@@ -34,6 +34,7 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScGivenPatternImpl,
   ScLiteralPatternImpl,
   ScNamingPatternImpl,
+  ScParenthesisedPatternImpl,
   ScReferencePatternImpl,
   ScSeqWildcardPatternImpl,
   ScStableReferencePatternImpl,
@@ -663,9 +664,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case s"lit" => "interp"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case (1) => "paren"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case v: a.B => "qualified"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
@@ -922,9 +920,10 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
       )
       PsiDocumentManager.getInstance(getProject).commitDocument(document)
     replaceParen("(1)")
+    assertEquals(Vector("(1)"), descendants[ScParenthesisedPatternImpl](file).map(_.getText))
+    assertEquals(Vector("1"), descendants[ScLiteralPatternImpl](file).map(_.getText))
+    assertEquals(1, descendants[ScMatchImpl](file).size)
     assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
-    assertTrue(descendants[ScMatchImpl](file).isEmpty)
-    assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
     replaceParen("( )")
     assertEquals(Vector("( )"), descendants[ScTuplePatternImpl](file).map(_.getText))
     assertEquals(1, descendants[ScMatchImpl](file).size)
@@ -1052,9 +1051,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
   def testGivenPatternShapesStayFailClosedOrRemainReferencePatterns(): Unit =
     val sources = Vector(
       """def pending(x: Any): Any = x match
-        |  case (given T) => "paren"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case given a.B => "qualified"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
@@ -1125,6 +1121,162 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
           descendants[Sc3TypedPatternImpl](file).isEmpty && descendants[ScMatchImpl](file).isEmpty
       )
     }
+
+  @Test
+  def testParenthesizedPatternsOwnSingleParensAcrossTheShapeMatrix(): Unit =
+    val source  =
+      """def parens(x: Any): Any = x match
+        |  case (y) => "ident"
+        |  case (_) => "wildcard"
+        |  case (1) => "literal"
+        |  case (Nil) => "stable"
+        |  case (t: String) => "typed"
+        |  case (Some(inner)) => "constructor"
+        |  case (named @ Some(renamed)) => "naming"
+        |  case (1 | 2) => "alternative"
+        |  case (given Ordering[Int]) => "given"
+        |  case ((deep)) => "nested"
+        |  case ((a, b)) => "tupleInner"
+        |  case (()) => "unitInner"
+        |  case other => "fallback"
+        |""".stripMargin
+    val file    = physical("MatchParenthesizedMatrix.scala", source)
+    val parens  = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(13, parens.size)
+    assertEquals(13, descendants[ScCaseClauseImpl](file).size)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals("(y)", parens.head.getText)
+    assertEquals("y", parens.head.innerElement.toVector.map(_.getText).mkString)
+    assertEquals(Vector("((deep))", "(deep)"), parens.collect { case p if p.getText.contains("deep") => p.getText })
+    assertEquals(1, descendants[ScGivenPatternImpl](file).size)
+    assertEquals(2, descendants[ScTuplePatternImpl](file).size)
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertEquals(None, failure)
+
+  @Test
+  def testParenthesizedPatternDisambiguationStaysCompilerShapeAuthoritative(): Unit =
+    val owned         = physical(
+      "MatchParensDisambiguation.scala",
+      """def disambiguation(x: Any): Any = x match
+        |  case (a, b) => "tuple"
+        |  case (p) => "parens"
+        |  case other => "fallback"
+        |""".stripMargin
+    )
+    assertEquals(Vector("(a, b)"), descendants[ScTuplePatternImpl](owned).map(_.getText))
+    assertEquals(Vector("(p)"), descendants[ScParenthesisedPatternImpl](owned).map(_.getText))
+    val closedSource  = """def trailing(x: Any): Any = x match
+      |  case (y,) => "comma"
+      |  case other => "fallback"
+      |""".stripMargin
+    val closedPending = myFixture.addFileToProject("src/MatchParensTrailingComma.scala", closedSource)
+    val closedFile    = PsiManager.getInstance(getProject).findFile(closedPending.getVirtualFile)
+    assertEquals(closedSource, closedFile.getText)
+    // Forces the deferred PSI parse before the capability failure is read.
+    val _             = descendants[ScParenthesisedPatternImpl](closedFile)
+    val failure       = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(closedPending.getVirtualFile, ParserSyntaxSnapshot.digest(closedSource))
+    assertTrue("trailing comma pattern must fail closed", failure.isDefined)
+
+  @Test
+  def testMissingCloseParenthesizedPatternsRecoverWithOwnedDiagnostic(): Unit =
+    val source  = """def m(x: Any): Any = x match
+      |  case (y => 1
+      |  case _ => 2
+      |""".stripMargin
+    val pending = myFixture.addFileToProject("src/MatchParensMissingClose.scala", source)
+    val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertEquals(source, file.getText)
+    // Forces the deferred PSI parse before the capability failure is read.
+    val _       = descendants[ScParenthesisedPatternImpl](file)
+    val failure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertEquals("recovery file must be admitted", None, failure)
+    val parens  = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("(y "), parens.map(_.getText))
+    assertEquals(Vector("y"), parens.head.innerElement.toVector.map(_.getText))
+    val errors  = descendants[PsiErrorElement](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(1, errors.size)
+    assertEquals("missing-close-before-case-arrow", errors.head.getErrorDescription)
+    assertTrue("the recovery error must be zero-width", errors.head.getTextRange.isEmpty)
+    // The missing close belongs immediately after the inner pattern content.
+    assertEquals(
+      parens.head.innerElement.get.getTextRange.getEndOffset,
+      errors.head.getTextRange.getStartOffset
+    )
+    // dotc recovery absorbs the trailing clauses into the retained wrapper's span.
+    assertEquals(1, descendants[ScCaseClauseImpl](file).size)
+    assertTrue(descendants[ScTuplePatternImpl](file).isEmpty)
+
+  @Test
+  def testNestedMissingCloseParensShareOneOwnedDiagnostic(): Unit =
+    val source    = """def m(x: Any): Any = x match
+      |  case ((y => 1
+      |  case _ => 2
+      |""".stripMargin
+    val pending   = myFixture.addFileToProject("src/MatchParensNestedMissingClose.scala", source)
+    val file      = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+    assertEquals(source, file.getText)
+    val _         = descendants[ScParenthesisedPatternImpl](file)
+    val failure   = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+    assertEquals("nested recovery file must be admitted", None, failure)
+    val parens    = descendants[ScParenthesisedPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("((y ", "(y "), parens.map(_.getText))
+    val errors    = descendants[PsiErrorElement](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(1, errors.size)
+    assertEquals("missing-close-before-case-arrow", errors.head.getErrorDescription)
+    val innermost = parens.last
+    assertSame(errors.head.getParent, innermost)
+    assertEquals(1, descendants[ScCaseClauseImpl](file).size)
+
+  @Test
+  def testParenthesizedPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
+    val source        =
+      """package parens
+        |def parenPat(x: Any): Any = x match
+        |  case (y) => "simple"
+        |  case (p: String) => "typed"
+        |""".stripMargin
+    val file          = physical("MatchParenthesizedPersistence.scala", source).asInstanceOf[PsiFileImpl]
+    val document      = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    val tree          = file.calcStubTree
+    val stubs         = tree.getPlainList.asScala.toVector
+    val shape         = stubShape(stubs)
+    assertFalse(shape.exists(name => name.contains("Parenthesised") || name.contains("Pattern")))
+    val beforeIndex   = indexShape(stubs)
+    val output        = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
+    val bytes         = output.toByteArray
+    val restored      = new StubTree(
+      SerializationManagerEx.getInstanceEx
+        .deserialize(new ByteArrayInputStream(bytes))
+        .asInstanceOf[PsiFileStub[?]]
+    )
+    assertEquals(shape, stubShape(restored.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala.toVector))
+    val repeated      = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(restored.getRoot, repeated)
+    assertArrayEquals(bytes, repeated.toByteArray)
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    val reloadedStubs = file.getStubTree.getPlainList.asScala.toVector
+    assertEquals(shape, stubShape(reloadedStubs))
+    assertEquals(beforeIndex, indexShape(reloadedStubs))
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.replaceString(0, document.getTextLength, source)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    file.setTreeElementPointer(null)
 
   @Test
   def testGivenPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =

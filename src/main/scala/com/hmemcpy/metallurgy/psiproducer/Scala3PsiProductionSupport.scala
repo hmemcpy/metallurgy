@@ -1150,6 +1150,18 @@ private[psiproducer] object Scala3PsiProductionSupport:
       required = true
     )
   )
+  val ParenthesizedPatternSurface       =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScParenthesisedPatternImpl"
+  val ParenthesizedPatternAccessors     = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScParenthesisedPattern#innerElement()Lscala/Option;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScParenthesisedPattern#sameTreeParent()Lscala/Option;",
+      required = true
+    )
+  )
   val TuplePatternAccessors             = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScTuplePattern#patternList()Lscala/Option;",

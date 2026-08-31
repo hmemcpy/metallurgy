@@ -724,10 +724,10 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
     assertTrue(failure(unsupported).isInstanceOf[WholeFilePlanningFailure.UnsupportedFieldDisposition])
 
   @Test def wholeFilePlanningRejectsInactiveUnsupportedOrRecoveredCompilerDescendants(): Unit =
-    val value                                                                  = snapshot("/inactive-unsupported", 1, Vector.empty)
-    val compiler                                                               = inventory(value)
-    val base                                                                   = completeCatalog(compiler)
-    val inactiveChild                                                          = base.copy(productions = base.productions.map: production =>
+    val value               = snapshot("/inactive-unsupported", 1, Vector.empty)
+    val compiler            = inventory(value)
+    val base                = completeCatalog(compiler)
+    val inactiveChild       = base.copy(productions = base.productions.map: production =>
       if production.id == "Root" then
         production.copy(
           dispositions = Vector(FieldDisposition("children", FieldDispositionKind.SemanticOnly)),
@@ -743,15 +743,6 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
           )
         )
       else production)
-    def failure(catalog: Scala3PsiProductionCatalog): WholeFilePlanningFailure =
-      planned(
-        value,
-        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
-        catalog,
-        aggregate(Vector(compiler)),
-        surfaces(catalog)
-      ).left.toOption.get
-
     val unsupported         = inactiveChild.copy(productions = inactiveChild.productions.map: production =>
       if production.id == "Child" then
         production.copy(
@@ -805,11 +796,18 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
       if production.id == "Child" then
         production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("recovered")))
       else production)
-    failure(recovered) match
-      case WholeFilePlanningFailure.UnsupportedRecovery(owner, _) =>
-        assertEquals(2, owner.valueId)
-        assertTrue(owner.occurrence.nonEmpty)
-      case other                                                  => fail(other.toString)
+    // A DiagnosticBound production whose realizations never match its declared alternative id plans
+    // ordinarily; the recovery activation requires a selected recovery realization plus its diagnostic.
+    assertTrue(
+      "a diagnostic-bound production without a recovery realization plans ordinarily",
+      planned(
+        value,
+        ProvisionalSourceEvidencePlanner.plan(value).toOption.get,
+        recovered,
+        aggregate(Vector(compiler)),
+        surfaces(recovered)
+      ).isRight
+    )
 
   @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
     val baseValue       = snapshot("/transparent-siblings", 1, Vector.empty)

@@ -1883,7 +1883,24 @@ private[psiproducer] object Scala3PsiTemplateProductions:
                 SourceClassification.Absent
               )
             )
-      }
+      } ++ Vector(
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "Block",
+            Vector(CatalogPathSegment.NamedField("expr"))
+          ),
+          SourceClassification.Absent
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.Parent(
+            InventoryKind.Node,
+            "Block",
+            Vector(CatalogPathSegment.NamedField("expr"))
+          ),
+          SourceClassification.Synthetic
+        )
+      )
         ++ OwnerTypeAnchors.map { anchor =>
           CompilerProductionContextPattern(
             ContextPattern.ParentUnderAnchorThrough(

@@ -320,6 +320,8 @@ private[metallurgy] object RuntimeRealizationSelector:
         case EvidenceCondition.RepeatedNodesTrailingPrefix(_, _)                             => false
         case EvidenceCondition.ProductionStartsWith(kind, leftPresent)                       =>
           right.evidenceConditions.contains(EvidenceCondition.ProductionStartsWith(kind, !leftPresent))
+        case EvidenceCondition.TrailingProductionScannerToken(kind, leftPresent)             =>
+          right.evidenceConditions.contains(EvidenceCondition.TrailingProductionScannerToken(kind, !leftPresent))
         case EvidenceCondition.RuntimeSupplementPositive(fieldName, leftPresent)             =>
           right.evidenceConditions.contains(EvidenceCondition.RuntimeSupplementPositive(fieldName, !leftPresent))
         case EvidenceCondition.LeadingBeforeRuntimeTailPresent(repeated, count, leftPresent) =>
@@ -757,15 +759,15 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
               "absorbed child output is selected"
             )
           val outputSelectors = p.terminals.exists(_.selector match
-            case TerminalIntervalSelector.BeforeChildOutputs(role)                             => role == absorption.roleId
-            case TerminalIntervalSelector.ChildOutputGap(left, right)                          =>
+            case TerminalIntervalSelector.BeforeChildOutputs(role)                                => role == absorption.roleId
+            case TerminalIntervalSelector.ChildOutputGap(left, right)                             =>
               left == absorption.roleId || right == absorption.roleId
-            case TerminalIntervalSelector.ChildOutputSeparators(role)                          => role == absorption.roleId
-            case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role)      =>
+            case TerminalIntervalSelector.ChildOutputSeparators(role)                             => role == absorption.roleId
+            case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role)         =>
               role == absorption.roleId
-            case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, left, right) =>
+            case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, left, right, _) =>
               left == absorption.roleId || right == absorption.roleId
-            case _                                                                             => false
+            case _                                                                                => false
           )
           if outputSelectors then
             errors += CatalogValidationError.ConflictingChildClosureParticipation(
@@ -1036,7 +1038,7 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
                 TerminalIntervalSelector.CompilerScannerToken(_, _) |
                 TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, _) |
                 TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, _, _) |
-                TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, _, _) |
+                TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, _, _, _) |
                 TerminalIntervalSelector.BalancedScannerTokenAfterChild(_, _, _, _, _) |
                 TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(_, _, _, _) |
                 TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(_, _, _) |
@@ -1046,51 +1048,51 @@ private[metallurgy] object Scala3PsiProductionCatalogValidator:
           )
           if !declared then errors += CatalogValidationError.MissingTerminalDeclaration(p.id, name)
       p.terminals.foreach(_.selector match
-        case TerminalIntervalSelector.FieldBounds(a, b)                               =>
+        case TerminalIntervalSelector.FieldBounds(a, b)                                =>
           Vector(a, b)
             .filterNot(names.contains)
             .foreach(n => errors += CatalogValidationError.UnknownTerminalField(p.id, n))
-        case TerminalIntervalSelector.ChildGap(a, b)                                  =>
+        case TerminalIntervalSelector.ChildGap(a, b)                                   =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.ChildSeparators(role)                           =>
+        case TerminalIntervalSelector.ChildSeparators(role)                            =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.BeforeChild(role)                               =>
+        case TerminalIntervalSelector.BeforeChild(role)                                =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.AfterChild(role)                                =>
+        case TerminalIntervalSelector.AfterChild(role)                                 =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.BeforeChildOutputs(role)                        =>
+        case TerminalIntervalSelector.BeforeChildOutputs(role)                         =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.ChildOutputGap(a, b)                            =>
+        case TerminalIntervalSelector.ChildOutputGap(a, b)                             =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.ChildOutputSeparators(role)                     =>
+        case TerminalIntervalSelector.ChildOutputSeparators(role)                      =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role) =>
+        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(_, role)  =>
           if !childRoles(role) then errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role)
-        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, a, b)         =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(_, a, b)          =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, a, b)   =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(_, a, b, _) =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(_, _, a, b)     =>
+        case TerminalIntervalSelector.BalancedKeywordBeforeFirstChild(_, _, a, b)      =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(_, a, b)         =>
+        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(_, a, b)          =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case TerminalIntervalSelector.BalancedSuffixAfterLastChild(_, _, a, b)        =>
+        case TerminalIntervalSelector.BalancedSuffixAfterLastChild(_, _, a, b)         =>
           Vector(a, b)
             .filterNot(childRoles)
             .foreach(role => errors += CatalogValidationError.UnknownTerminalChildRole(p.id, role))
-        case _                                                                        => ()
+        case _                                                                         => ()
       )
       p.terminals.foreach:
         case TerminalDeclaration(_, _, TerminalLeafTarget.Token(id, _), _, outputRoleId, _) =>

@@ -126,10 +126,14 @@ private[metallurgy] object WholeFileProductionPlanner:
         roots.forall(root => selections.get(root).contains(RealizationSelectionReason.PreferredCandidate))
       val candidateOwners                                                                            = baseline.realizationSelections.collect:
         case PlannedRealizationSelection(owner, _, RealizationSelectionReason.AtomicWholePlanFallback) => owner
+      def dischargedByRecovery(index: Int): Boolean                                                  =
+        baseline.recoveryOwnerships.exists(ownership =>
+          ownership.diagnosticOrdinal == index && ownership.severity == ParserDiagnosticSeverity.Error && !ownership.sharing
+        )
       snapshot.diagnostics.indexWhere(_.severity == ParserDiagnosticSeverity.Error) match
-        case index if index >= 0 && candidateOwners.isEmpty =>
+        case index if index >= 0 && candidateOwners.isEmpty && !dischargedByRecovery(index) =>
           Left(WholeFilePlanningFailure.UnassignedDiagnostic(index))
-        case _                                              =>
+        case _                                                                              =>
           val candidateRoots = candidateOwners.flatMap(owner => atomicCandidateRoot(snapshot, compiler, owner))
           AtomicWholePlanCandidateScope
             .validate(
@@ -444,7 +448,9 @@ private[metallurgy] object WholeFileProductionPlanner:
         if production.layouts != Vector(LayoutAlternative.None) then
           break(Left(WholeFilePlanningFailure.UnsupportedLayout(instance, production.layouts)))
         if production.recovery != RecoveryPolicy.Reject then
-          break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
+          production.recovery match
+            case RecoveryPolicy.DiagnosticBound(_, alternatives) if alternatives.nonEmpty => ()
+            case _                                                                        => break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
       ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)
@@ -739,6 +745,15 @@ private[metallurgy] object WholeFileProductionPlanner:
                     values.exists(CatalogShapeMatcher.matches(valuePattern, _))
                   case _                                                                           => false
               hasMatchingOccurrence == present
+            case EvidenceCondition.TrailingProductionScannerToken(kind, present)             =>
+              val endsWithToken = position(instance) match
+                case ParserNodePosition.Positioned(range, _, _) =>
+                  snapshot.scannerTokens.exists(token =>
+                    token.kind == kind && token.range.endOffset == range.endOffset &&
+                      range.startOffset <= token.range.startOffset
+                  )
+                case _                                          => false
+              endsWithToken == present
             case EvidenceCondition.RepeatedFieldSize(fieldName, minimum, maximum)            =>
               val size = rows(instance.kind -> instance.valueId).observation
                 .find(_.name == fieldName)
@@ -1438,7 +1453,11 @@ private[metallurgy] object WholeFileProductionPlanner:
               case ChildOccurrenceSelector.Last           => candidates.lastOption
               case ChildOccurrenceSelector.Exact(ordinal) => candidates.lift(ordinal)
             val childEnd      = selectedChild
-              .map(child => positionedRange(child, policy, value, outputId).endOffset)
+              .flatMap: child =>
+                val resolvedEnd = outputRows
+                  .getOrElse(child, Vector.empty)
+                  .collectFirst { case (declaration, _, range) if declaration.parentId.isEmpty => range.endOffset }
+                Some(resolvedEnd.getOrElse(positionedRange(child, policy, value, outputId).endOffset))
               .getOrElse(
                 break(
                   Left(
@@ -2322,7 +2341,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             .collect:
               case (`role`, _, child) => position(child)
             .collect:
-              case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
+              case ParserNodePosition.Positioned(range, _, _) => range
         (ranges(startRole), ranges(endRole)) match
           case (starts, ends) if starts.nonEmpty && ends.nonEmpty =>
             val start = starts.maxBy(_.endOffset)
@@ -2394,7 +2413,7 @@ private[metallurgy] object WholeFileProductionPlanner:
           production: Scala3PsiProduction,
           terminal: TerminalDeclaration
       ): Vector[PcSourceRange] = terminal.selector match
-        case TerminalIntervalSelector.WholeSource if instance != root                                       =>
+        case TerminalIntervalSelector.WholeSource if instance != root                                            =>
           break(
             Left(
               WholeFilePlanningFailure.UnsupportedTerminalSelector(
@@ -2404,13 +2423,13 @@ private[metallurgy] object WholeFileProductionPlanner:
               )
             )
           )
-        case TerminalIntervalSelector.WholeSource                                                           =>
+        case TerminalIntervalSelector.WholeSource                                                                =>
           Vector(PcSourceRange(0, snapshot.sourceLength))
-        case TerminalIntervalSelector.LocalOutput(outputId)                                                 =>
+        case TerminalIntervalSelector.LocalOutput(outputId)                                                      =>
           outputRows
             .getOrElse(instance, Vector.empty)
             .collect { case (declaration, _, range) if declaration.id == outputId => range }
-        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)                                      =>
+        case TerminalIntervalSelector.RootOutsideLocalOutput(outputId)                                           =>
           if instance != root then Vector.empty
           else
             outputRows
@@ -2421,17 +2440,17 @@ private[metallurgy] object WholeFileProductionPlanner:
                 Vector(PcSourceRange(0, range.startOffset), PcSourceRange(range.endOffset, snapshot.sourceLength))
                   .filter(value => value.startOffset < value.endOffset)
               )
-        case TerminalIntervalSelector.WholeProduction                                                       =>
+        case TerminalIntervalSelector.WholeProduction                                                            =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived)
                 if range.startOffset < range.endOffset =>
               Vector(range)
             case _ => Vector.empty
-        case TerminalIntervalSelector.ChildGap(startRole, endRole)                                          =>
+        case TerminalIntervalSelector.ChildGap(startRole, endRole)                                               =>
           childGapIntervals(instance, startRole, endRole)
-        case TerminalIntervalSelector.ChildSeparators(roleId)                                               =>
+        case TerminalIntervalSelector.ChildSeparators(roleId)                                                    =>
           childSeparatorIntervals(instance, roleId)
-        case TerminalIntervalSelector.BeforeChild(roleId)                                                   =>
+        case TerminalIntervalSelector.BeforeChild(roleId)                                                        =>
           (
             position(instance),
             compilerChildren.getOrElse(instance, Vector.empty).collectFirst { case (`roleId`, _, child) =>
@@ -2444,7 +2463,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if parent.startOffset <= child.startOffset =>
               Vector(PcSourceRange(parent.startOffset, child.startOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.AfterChild(roleId)                                                    =>
+        case TerminalIntervalSelector.AfterChild(roleId)                                                         =>
           (
             position(instance),
             compilerChildren
@@ -2458,19 +2477,19 @@ private[metallurgy] object WholeFileProductionPlanner:
                 ) if child.endOffset <= parent.endOffset =>
               Vector(PcSourceRange(child.endOffset, parent.endOffset))
             case _ => Vector.empty
-        case TerminalIntervalSelector.BeforeChildOutputs(roleId)                                            =>
+        case TerminalIntervalSelector.BeforeChildOutputs(roleId)                                                 =>
           val outputs = childOutputRanges(instance, roleId)
           position(instance) match
             case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
               Vector(PcSourceRange(parent.startOffset, outputs.head.startOffset))
             case _                                                                                             => Vector.empty
-        case TerminalIntervalSelector.ChildOutputGap(startRole, endRole)                                    =>
+        case TerminalIntervalSelector.ChildOutputGap(startRole, endRole)                                         =>
           val starts = childOutputRanges(instance, startRole)
           val ends   = childOutputRanges(instance, endRole)
           if starts.last.endOffset <= ends.head.startOffset then
             Vector(PcSourceRange(starts.last.endOffset, ends.head.startOffset))
           else Vector.empty
-        case TerminalIntervalSelector.ChildOutputSeparators(roleId)                                         =>
+        case TerminalIntervalSelector.ChildOutputSeparators(roleId)                                              =>
           if compilerChildren.getOrElse(instance, Vector.empty).exists(_._1 == roleId) then
             childOutputRanges(instance, roleId, requireOutput = false)
               .sliding(2)
@@ -2478,9 +2497,9 @@ private[metallurgy] object WholeFileProductionPlanner:
                 case Vector(left, right) => PcSourceRange(left.endOffset, right.startOffset)
               .toVector
           else Vector.empty
-        case TerminalIntervalSelector.CompilerEndMarkerKeyword                                              =>
+        case TerminalIntervalSelector.CompilerEndMarkerKeyword                                                   =>
           compilerEndMarker(instance).map(_._2).toVector
-        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence)                                =>
+        case TerminalIntervalSelector.CompilerScannerToken(kind, occurrence)                                     =>
           position(instance) match
             case ParserNodePosition.Positioned(range, _, _) =>
               val matches = snapshot.scannerTokens
@@ -2526,7 +2545,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                     .map(token => PcSourceRange(child.endOffset, token.range.startOffset))
                     .filter(range => range.startOffset < range.endOffset)
             case _                                               => Vector.empty
-        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)                  =>
+        case TerminalIntervalSelector.CompilerScannerTokenBeforeChildOutputs(kind, roleId)                       =>
           val outputs = childOutputRanges(instance, roleId)
           position(instance) match
             case ParserNodePosition.Positioned(parent, _, _) if parent.startOffset <= outputs.head.startOffset =>
@@ -2537,23 +2556,27 @@ private[metallurgy] object WholeFileProductionPlanner:
                 )
                 .map(_.range)
             case _                                                                                             => Vector.empty
-        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, startRole, endRole)              =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildGap(kind, startRole, endRole)                   =>
           childGapIntervals(instance, startRole, endRole).flatMap: gap =>
             snapshot.scannerTokens
               .filter(token =>
                 token.kind == kind && gap.startOffset <= token.range.startOffset && token.range.endOffset <= gap.endOffset
               )
               .map(_.range)
-        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(kind, startRole, endRole)        =>
+        case TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(kind, startRole, endRole, occurrence) =>
           val starts = childOutputRanges(instance, startRole)
           val ends   = childOutputRanges(instance, endRole)
           if starts.last.endOffset <= ends.head.startOffset then
-            val gap = PcSourceRange(starts.last.endOffset, ends.head.startOffset)
-            snapshot.scannerTokens
+            val gap     = PcSourceRange(starts.last.endOffset, ends.head.startOffset)
+            val matches = snapshot.scannerTokens
               .filter(token =>
                 token.kind == kind && gap.startOffset <= token.range.startOffset && token.range.endOffset <= gap.endOffset
               )
               .map(_.range)
+            occurrence match
+              case ScannerTokenOccurrence.All   => matches
+              case ScannerTokenOccurrence.First => matches.take(1)
+              case ScannerTokenOccurrence.Last  => matches.takeRight(1)
           else Vector.empty
         case TerminalIntervalSelector.BalancedScannerTokenAfterChild(
               kind,
@@ -2639,7 +2662,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 val values  = matches.result()
                 if closed || values.size != 1 then Vector.empty else values
             case _ => Vector.empty
-        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(opening, precedingRoleId, childRoleId) =>
+        case TerminalIntervalSelector.BalancedPrefixBeforeFirstChild(opening, precedingRoleId, childRoleId)      =>
           val precedingEnd    = compilerChildren
             .getOrElse(instance, Vector.empty)
             .collectFirst { case (`precedingRoleId`, _, child) => position(child) }
@@ -2703,7 +2726,7 @@ private[metallurgy] object WholeFileProductionPlanner:
                 .filter(range => range.startOffset < range.endOffset)
                 .toVector
             case _ => Vector.empty
-        case other                                                                                          =>
+        case other                                                                                               =>
           break(Left(WholeFilePlanningFailure.UnsupportedTerminalSelector(production.id, terminal.id, other)))
 
       def terminalTokenRanges(
@@ -3157,30 +3180,107 @@ private[metallurgy] object WholeFileProductionPlanner:
           case (_, id, _) if inactiveOutputs(id) => Vector.empty
           case (declaration, id, _)              =>
             declaration.navigation.map(PlannedNavigationAssertion(id, _))
-      val plan                                                                                            = WholeFileProductionPlan(
-        snapshot.sourceUri,
-        snapshot.sourceDigest,
-        evidence.parserEvidenceFingerprint,
-        finalEvidence.evidence.lexicalContract,
-        leaves,
-        finalEvidence.eventOwnership.map(ownership =>
-          PlannedStructuralEvidenceOwnership(ownership.eventId, ownership.owner)
-        ),
-        Vector.empty,
-        composites,
-        targets,
-        accessors,
-        stubs,
-        navigation,
-        participation.absorptions,
-        realizationSelections.values.toVector
-      )
-      Right(plan)
+      recoveryOwnershipRecords(snapshot, composites, participating, resolvedRealizations, selected) match
+        case Left(failure)             => Left(failure)
+        case Right(recoveryOwnerships) =>
+          val plan = WholeFileProductionPlan(
+            snapshot.sourceUri,
+            snapshot.sourceDigest,
+            evidence.parserEvidenceFingerprint,
+            finalEvidence.evidence.lexicalContract,
+            leaves,
+            finalEvidence.eventOwnership.map(ownership =>
+              PlannedStructuralEvidenceOwnership(ownership.eventId, ownership.owner)
+            ),
+            Vector.empty,
+            composites,
+            targets,
+            accessors,
+            stubs,
+            navigation,
+            participation.absorptions,
+            realizationSelections.values.toVector,
+            recoveryOwnerships
+          )
+          Right(plan)
 
   private def claims(instance: ProductionInstanceId, claim: SourceClaim): Boolean = (instance.kind, claim) match
     case (InventoryKind.Node, SourceClaim.Node(id, _))             => instance.valueId == id
     case (InventoryKind.Positioned, SourceClaim.Positioned(id, _)) => instance.valueId == id
     case _                                                         => false
+
+  private def recoveryOwnershipRecords(
+      snapshot: ParserSyntaxSnapshot,
+      composites: Vector[PlannedComposite],
+      participating: Vector[ProductionInstanceId],
+      resolvedRealizations: collection.Map[ProductionInstanceId, OutputRealization],
+      selected: ProductionInstanceId => Scala3PsiProduction
+  ): Either[WholeFilePlanningFailure, Vector[PlannedRecoveryOwnership]] =
+    val wrappers: Vector[(PlannedComposite, ParserDiagnosticSeverity, String)] = composites.flatMap: composite =>
+      val instance = composite.instance.origin
+      if !participating.contains(instance) then Vector.empty
+      else
+        val maybe = Option(selected(instance)).flatMap: production =>
+          production.recovery match
+            case RecoveryPolicy.DiagnosticBound(severity, alternatives) =>
+              resolvedRealizations
+                .get(instance)
+                .filter(realization => alternatives.contains(realization.id))
+                .map(realization => (composite, severity, realization.id))
+            case _                                                      => None
+        maybe.toVector
+    if wrappers.isEmpty then Right(Vector.empty)
+    else
+      val records   = Vector.newBuilder[PlannedRecoveryOwnership]
+      val failureOr = wrappers
+        .groupBy(_._1.range.endOffset)
+        .toVector
+        .sortBy(_._1)
+        .foldLeft[Option[WholeFilePlanningFailure]](None): (failure, offsetGroup) =>
+          val (offset, group) = offsetGroup
+          failure.orElse {
+            val atOffset = snapshot.diagnostics.zipWithIndex.filter: (diagnostic, _) =>
+              diagnostic.severity == group.head._2 && diagnostic.position.exists(_.range.startOffset == offset)
+            atOffset match
+              case Vector((diagnostic, ordinal)) =>
+                val innermost = group.maxBy(_._1.range.startOffset)._1
+                group.foreach: (composite, severity, alternativeId) =>
+                  records += PlannedRecoveryOwnership(
+                    composite.instance.origin,
+                    composite.instance.localOutputId,
+                    ordinal,
+                    severity,
+                    diagnostic.position.fold(PcSourceRange(offset, offset))(_.range),
+                    diagnostic.position.fold(offset)(_.point),
+                    offset,
+                    alternativeId,
+                    sharing = composite ne innermost
+                  )
+                None
+              case Vector()                      =>
+                // A selected recovery realization without its exact clamp-point diagnostic is
+                // an unowned recovery event and must fail planning.
+                val representative = group.minBy(_._1.range.startOffset)
+                Some(
+                  WholeFilePlanningFailure.UnassignedRecoveryDiagnostic(
+                    representative._1.instance.origin,
+                    representative._3,
+                    offset,
+                    representative._2
+                  )
+                )
+              case _                             =>
+                val representative = group.minBy(_._1.range.startOffset)
+                Some(
+                  WholeFilePlanningFailure.UnassignedRecoveryDiagnostic(
+                    representative._1.instance.origin,
+                    representative._3,
+                    offset,
+                    representative._2
+                  )
+                )
+          }
+      failureOr.toLeft(records.result())
 
   private def accepts(cardinality: ChildCardinality, actual: Int): Boolean = cardinality match
     case ChildCardinality.ExactlyOne                 => actual == 1

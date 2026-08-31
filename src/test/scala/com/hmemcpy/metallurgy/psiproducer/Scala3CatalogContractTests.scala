@@ -338,7 +338,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.CaseClause                -> Set(
         "match-case-clause",
         "match-guard",
-        "match-case-body-block"
+        "match-case-body-block",
+        "match-case-body-block-recovered"
       ),
       GrammarRoleId.PatternWildcard           -> Set("match-pattern-wildcard"),
       GrammarRoleId.PatternLiteral            -> Set(
@@ -362,6 +363,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-pattern-sequence-wildcard-marker"
       ),
       GrammarRoleId.PatternTuple              -> Set("match-pattern-tuple", "match-pattern-unit-tuple"),
+      GrammarRoleId.PatternParenthesized      -> Set("match-pattern-parenthesized"),
       GrammarRoleId.PatternAlternative        -> Set("match-pattern-alternative"),
       GrammarRoleId.PatternConstructor        -> Set("match-pattern-constructor"),
       GrammarRoleId.TypeAliasDeclaration      -> Set("definition-unbounded-type-alias"),

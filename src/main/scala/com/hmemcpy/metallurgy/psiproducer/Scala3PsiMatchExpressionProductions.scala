@@ -1,5 +1,6 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.pc.ParserDiagnosticSeverity
 import com.hmemcpy.metallurgy.pc.ParserScannerTokenKind
 
 import Scala3PsiProductionSupport.*
@@ -32,6 +33,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   private[psiproducer] val SequenceMarkerProductionId   = "match-pattern-sequence-wildcard-marker"
   private[psiproducer] val TupleProductionId            = "match-pattern-tuple"
   private[psiproducer] val UnitTupleProductionId        = "match-pattern-unit-tuple"
+  private[psiproducer] val ParenthesizedProductionId    = "match-pattern-parenthesized"
   private[psiproducer] val GivenProductionId            = "match-pattern-given"
   private[psiproducer] val GivenNamedProductionId       = "match-pattern-given-named"
   private[psiproducer] val GivenTypedProductionId       = "match-pattern-given-typed"
@@ -69,6 +71,17 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         ),
         SourceClassification.SourceReachable
       )
+
+  private def caseDefSyntheticChildOccurrence(field: String): CompilerProductionContextPattern =
+    CompilerProductionContextPattern(
+      ContextPattern.ParentWithAncestorPrefix(
+        InventoryKind.Node,
+        "CaseDef",
+        Vector(CatalogPathSegment.NamedField(field)),
+        Vector(MatchCasesAncestor)
+      ),
+      SourceClassification.Synthetic
+    )
 
   private val OwnerAncestors = Vector("DefDef", "ValDef").flatMap: owner =>
     Vector("PackageDef" -> "stats", "Template" -> "preBody").map: (outer, field) =>
@@ -174,6 +187,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PsiOutputRoleId.GivenPattern,
     PsiOutputRoleId.SeqWildcardPattern,
     PsiOutputRoleId.TuplePattern,
+    PsiOutputRoleId.ParenthesizedPattern,
     PsiOutputRoleId.CompositePattern,
     PsiOutputRoleId.ConstructorPattern
   )
@@ -201,6 +215,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     SequenceMarkerProductionId,
     TupleProductionId,
     UnitTupleProductionId,
+    ParenthesizedProductionId,
     AlternativeProductionId,
     ConstructorProductionId,
     "payload-descendant-ident"
@@ -211,6 +226,11 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       InventoryKind.Node,
       "CaseDef",
       Vector(CatalogPathSegment.NamedField("pat"))
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Parens",
+      Vector(CatalogPathSegment.NamedField("t"))
     ),
     InventoryAncestor(
       InventoryKind.Node,
@@ -265,7 +285,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       patternParentOccurrences("Tuple", "trees", repeated = true) ++
       patternParentOccurrences("Alternative", "trees", repeated = true) ++
       patternParentOccurrences("Bind", "body", repeated = false) ++
-      patternParentOccurrences("Typed", "expr", repeated = false)
+      patternParentOccurrences("Typed", "expr", repeated = false) ++
+      patternParentOccurrences("Parens", "t", repeated = false)
 
   private val PatternOwnerAncestors = Vector(
     InventoryAncestor(InventoryKind.Node, "DefDef", Vector(CatalogPathSegment.NamedField("preRhs"))),
@@ -689,7 +710,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         "body",
         "body",
         ChildCardinality.ExactlyOne,
-        CaseBodyProductionId
+        CaseBodyProductionId,
+        Set("match-case-body-block-recovered")
       )
     ),
     terminals = Vector(
@@ -707,7 +729,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           "pat",
           "body"
         ),
-        TerminalLeafTarget.Parent,
+        TerminalLeafTarget.Token(NativePsiElementBindings.FunctionArrowTokenSurface, Some("=>")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       ),
@@ -716,7 +738,28 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TerminalIntervalSelector.ChildGap("pat", "body"),
         TerminalLeafTarget.Parent,
         OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
+      ),
+      TerminalDeclaration(
+        "recovered-arrow",
+        TerminalIntervalSelector.CompilerScannerTokenInChildOutputGap(
+          ParserScannerTokenKind.FunctionArrow,
+          "pat",
+          "body",
+          ScannerTokenOccurrence.First
+        ),
+        TerminalLeafTarget.Token(NativePsiElementBindings.FunctionArrowTokenSurface, Some("=>")),
+        OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "recovered-pat-body-gap",
+        TerminalIntervalSelector.ChildOutputGap("pat", "body"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.Repeated(0, None),
+        PsiOutputRoleId.SourceTerminal,
+        ownsStructuralEvidence = Some(false)
       )
     ),
     layouts = Vector(LayoutAlternative.None),
@@ -726,7 +769,26 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     accessors = CaseClauseAccessors,
     persistence = PersistenceObligations.NotApplicable,
     navigation = Some(NavigationObligation.Self),
-    outputTemplate = Some(nativeCaseClauseTemplate),
+    outputRealizations = Vector(
+      OutputRealization(
+        id = "node-gap",
+        conditions = Vector.empty,
+        template = nativeCaseClauseTemplate,
+        terminalIds = Some(Set("case-keyword", "arrow", "pat-body-gap"))
+      ),
+      OutputRealization(
+        id = "recovered-pat",
+        conditions = Vector(
+          ChildOutcomeCondition(
+            "pat",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Realization("missing-close-before-case-arrow")
+          )
+        ),
+        template = nativeCaseClauseTemplate,
+        terminalIds = Some(Set("case-keyword", "recovered-arrow", "recovered-pat-body-gap"))
+      )
+    ),
     outputRoleId = None,
     nestedChildRequirements = Vector(
       RequiredChildRootOutcome(
@@ -2094,6 +2156,173 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   // Appended after every base segment in the catalog so persisted production numbering stays
   // additive when this family grows; reinserting these into MatchExpressionSegment renumbers
   // all later segments' persisted rows.
+  // Appended after MatchGivenSuffixSegment in the catalog so persisted production numbering stays
+  // additive; the Parens/t nesting edge routes nested pattern children through this wrapper.
+  private val PatternParenthesized = Scala3PsiProduction(
+    id = ParenthesizedProductionId,
+    grammarRoleId = GrammarRoleId.PatternParenthesized,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Parens",
+      Vector(CompilerFieldPattern("t", CatalogValuePattern.Node)),
+      PatternSpaceOccurrences
+    ),
+    dispositions = Vector(FieldDisposition("t", FieldDispositionKind.Child)),
+    children = Vector(
+      ChildDeclaration(
+        "t",
+        "t",
+        ChildCardinality.ExactlyOne,
+        WildcardProductionId,
+        PatternChildProductionIds - WildcardProductionId
+      )
+    ),
+    terminals = Vector(
+      TerminalDeclaration(
+        "text",
+        TerminalIntervalSelector.WholeProduction,
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      ),
+      TerminalDeclaration(
+        "recovered",
+        TerminalIntervalSelector.LocalOutput("parens"),
+        TerminalLeafTarget.Parent,
+        OccurrenceCardinality.ExactlyOne,
+        PsiOutputRoleId.SourceTerminal
+      )
+    ),
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.DiagnosticBound(
+      ParserDiagnosticSeverity.Error,
+      Vector("missing-close-before-case-arrow")
+    ),
+    targetSurfaceId = ParenthesizedPatternSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = ParenthesizedPatternAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputRealizations = Vector(
+      OutputRealization(
+        id = "close-delimiter-present",
+        conditions = Vector.empty,
+        template = LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "parens",
+              None,
+              OutputRangeDeclaration.CompilerPosition,
+              PsiOutputRoleId.ParenthesizedPattern,
+              ParenthesizedPatternSurface,
+              ParenthesizedPatternAccessors
+            )
+          ),
+          Map("t" -> Some("parens"))
+        ),
+        evidenceConditions = Vector(
+          EvidenceCondition.TrailingProductionScannerToken(ParserScannerTokenKind.RightParenthesis, present = true)
+        ),
+        terminalIds = Some(Set("text"))
+      ),
+      OutputRealization(
+        id = "missing-close-before-case-arrow",
+        conditions = Vector.empty,
+        template = LocalOutputCompositeTemplate(
+          Vector(
+            outputComposite(
+              "parens",
+              None,
+              OutputRangeDeclaration.BoundaryDerived(
+                OutputBoundary.ProductionStart(PositionProvenancePolicy.SourceDerivedOnly),
+                OutputBoundary.NextScannerTokenStartAfterChild(
+                  "t",
+                  ChildOccurrenceSelector.First,
+                  ParserScannerTokenKind.FunctionArrow,
+                  PositionProvenancePolicy.SourceDerivedOnly
+                )
+              ),
+              PsiOutputRoleId.ParenthesizedPattern,
+              ParenthesizedPatternSurface,
+              ParenthesizedPatternAccessors
+            )
+          ),
+          Map("t" -> Some("parens"))
+        ),
+        evidenceConditions = Vector(
+          EvidenceCondition.TrailingProductionScannerToken(ParserScannerTokenKind.RightParenthesis, present = false)
+        ),
+        terminalIds = Some(Set("recovered"))
+      )
+    ),
+    outputRoleId = None,
+    nestedChildRequirements = Vector(
+      RequiredChildRootOutcome(
+        "t",
+        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(PatternPatternRoles))
+      )
+    )
+  )
+
+  // dotc recovery drops the case body of a clause whose pattern recovery swallowed the arrow, so the
+  // retained body block is synthetic and empty; owning it keeps those files admitted fail-closed-free.
+  private val MatchCaseBodyBlockRecovered = Scala3PsiProduction(
+    id = "match-case-body-block-recovered",
+    grammarRoleId = GrammarRoleId.CaseClause,
+    pattern = CompilerProductionPattern(
+      InventoryKind.Node,
+      "Block",
+      Vector(
+        CompilerFieldPattern("stats", CatalogValuePattern.Repeated(CatalogValuePattern.Node)),
+        CompilerFieldPattern("expr", CatalogValuePattern.Node)
+      ),
+      Vector(caseDefSyntheticChildOccurrence("body"))
+    ),
+    dispositions = Vector(
+      FieldDisposition("stats", FieldDispositionKind.Child),
+      FieldDisposition("expr", FieldDispositionKind.Child)
+    ),
+    children = Vector(
+      ChildDeclaration(
+        "stats",
+        "stats",
+        ChildCardinality.Repeated(0, None),
+        CaseBodyExpressionProductions.head,
+        CaseBodyExpressionProductions.tail.toSet
+      ),
+      ChildDeclaration(
+        "expr",
+        "expr",
+        ChildCardinality.ExactlyOne,
+        "template-absent-tree"
+      )
+    ),
+    terminals = Vector.empty,
+    layouts = Vector(LayoutAlternative.None),
+    recovery = RecoveryPolicy.Reject,
+    targetSurfaceId = BlockSurface,
+    targetRequirement = TargetRequirement.Native,
+    accessors = BlockAccessors,
+    persistence = PersistenceObligations.NotApplicable,
+    navigation = Some(NavigationObligation.Self),
+    outputTemplate = Some(
+      LocalOutputCompositeTemplate(
+        Vector(
+          outputComposite(
+            "recovered-block",
+            None,
+            OutputRangeDeclaration.CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic),
+            PsiOutputRoleId.Block,
+            BlockSurface,
+            BlockAccessors
+          )
+        ),
+        Map("stats" -> Some("recovered-block"), "expr" -> Some("recovered-block"))
+      )
+    ),
+    outputRoleId = None
+  )
+
   val MatchGivenSuffixSegment: Vector[Scala3PsiProduction] = Vector(
     PatternGiven,
     PatternGivenNamed,
@@ -2101,4 +2330,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     PatternGivenWildcard,
     PatternGivenModifiers,
     PatternGivenModifier
+  )
+
+  val MatchParenthesizedSuffixSegment: Vector[Scala3PsiProduction] = Vector(
+    PatternParenthesized,
+    MatchCaseBodyBlockRecovered
   )
