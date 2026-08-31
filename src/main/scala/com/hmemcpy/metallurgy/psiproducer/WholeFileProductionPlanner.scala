@@ -169,15 +169,20 @@ private[metallurgy] object WholeFileProductionPlanner:
               else
                 compileAttempt(snapshot, evidence, catalog, compiler, unavailableRealizations, workObserver, accepted)
             case _                                       =>
-              compileAttempt(
-                snapshot,
-                evidence,
-                catalog,
-                compiler,
-                unavailableRealizations,
-                workObserver,
-                Set.empty
-              )
+              // Without a usable candidate scope, no atomic path can own an Error diagnostic;
+              // the fallback plan may only ship when a recovery record discharges every ordinal.
+              if firstUndischargedError.nonEmpty then
+                Left(WholeFilePlanningFailure.UnassignedDiagnostic(firstUndischargedError.head))
+              else
+                compileAttempt(
+                  snapshot,
+                  evidence,
+                  catalog,
+                  compiler,
+                  unavailableRealizations,
+                  workObserver,
+                  Set.empty
+                )
 
   private def atomicCandidateRoot(
       snapshot: ParserSyntaxSnapshot,

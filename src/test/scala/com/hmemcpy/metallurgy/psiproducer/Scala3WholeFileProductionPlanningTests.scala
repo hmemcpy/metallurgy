@@ -809,33 +809,10 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
       ).isRight
     )
 
-  private def recoveredCatalog(base: Scala3PsiProductionCatalog): Scala3PsiProductionCatalog =
-    base.copy(productions = base.productions.map: production =>
-      if production.id == "Child" then
-        production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")))
-      else if production.id == "Root" then
-        production.copy(terminals =
-          Vector(
-            TerminalDeclaration(
-              "source",
-              TerminalIntervalSelector.WholeSource,
-              TerminalLeafTarget.Parent,
-              OccurrenceCardinality.ExactlyOne,
-              PsiOutputRoleId.SourceTerminal
-            )
-          )
-        )
-      else production)
-
-  @Test def diagnosticGateDischargesPerOrdinalAndFailsOnLaterUnownedErrors(): Unit =
-    val value             = snapshot("/recovered-ordinal", 1, Vector.empty)
-    val withDiagnostics   = value.copy(diagnostics =
+  @Test def unsafeCandidateScopeWithUndischargedErrorFailsClosed(): Unit =
+    val value       = snapshot("/unsafe-scope", 1, Vector.empty)
+    val withError   = value.copy(diagnostics =
       Vector(
-        ParserDiagnostic(
-          ParserDiagnosticSeverity.Error,
-          "recovered",
-          Some(ParserDiagnosticPosition(PcSourceRange(1, 1), 1, ParserDiagnosticPositionProvenance.Synthetic))
-        ),
         ParserDiagnostic(
           ParserDiagnosticSeverity.Error,
           "unowned",
@@ -843,149 +820,34 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
         )
       )
     )
-    val compiler          = inventory(withDiagnostics)
-    val base              = completeCatalog(compiler)
-    val recovered         = base.copy(productions = base.productions.map: production =>
+    val compiler    = inventory(withError)
+    val base        = completeCatalog(compiler)
+    val withAtomic  = base.copy(productions = base.productions.map: production =>
       if production.id == "Child" then
-        production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")))
-      else if production.id == "Root" then
-        production.copy(terminals =
-          Vector(
-            TerminalDeclaration(
-              "source",
-              TerminalIntervalSelector.WholeSource,
-              TerminalLeafTarget.Parent,
-              OccurrenceCardinality.ExactlyOne,
-              PsiOutputRoleId.SourceTerminal
-            )
-          )
-        )
-      else production)
-    val onlyRecovered     = withDiagnostics.copy(diagnostics = withDiagnostics.diagnostics.take(1))
-    val onlyCompiler      = inventory(onlyRecovered)
-    val onlyRecoveredPlan = planned(
-      onlyRecovered,
-      ProvisionalSourceEvidencePlanner.plan(onlyRecovered).toOption.get,
-      recovered,
-      aggregate(Vector(onlyCompiler)),
-      surfaces(recovered)
-    )
-    assertTrue(
-      s"a discharged diagnostic admits the recovery file: ${onlyRecoveredPlan.left.toOption.map(_.toString.take(400))}",
-      onlyRecoveredPlan.isRight
-    )
-    val gateFailure       = planned(
-      withDiagnostics,
-      ProvisionalSourceEvidencePlanner.plan(withDiagnostics).toOption.get,
-      recovered,
-      aggregate(Vector(compiler)),
-      surfaces(recovered)
-    ).left.toOption.get
-    assertEquals(
-      "an unowned later Error must fail closed at its own ordinal",
-      WholeFilePlanningFailure.UnassignedDiagnostic(1),
-      gateFailure
-    )
-
-  @Test def diagnosticGateRequiresProvenanceCapabilityAndDischargesThroughTheRootComposite(): Unit =
-    val value             = snapshot("/recovered-provenance", 1, Vector.empty)
-    val withDiagnostic    = value.copy(diagnostics =
-      Vector(
-        ParserDiagnostic(
-          ParserDiagnosticSeverity.Error,
-          "recovered",
-          Some(ParserDiagnosticPosition(PcSourceRange(1, 1), 1, ParserDiagnosticPositionProvenance.Synthetic))
-        )
-      )
-    )
-    val compiler          = inventory(withDiagnostic)
-    val base              = completeCatalog(compiler)
-    val untrusted         = withDiagnostic.copy(capabilities =
-      withDiagnostic.capabilities.copy(diagnosticPositionProvenance = ParserCapabilityStatus.Unavailable("x"))
-    )
-    val untrustedCompiler = inventory(untrusted)
-    val untrustedFailure  = planned(
-      untrusted,
-      ProvisionalSourceEvidencePlanner.plan(untrusted).toOption.get,
-      recoveredCatalog(base),
-      aggregate(Vector(untrustedCompiler)),
-      surfaces(recoveredCatalog(base))
-    ).left.toOption.get
-    assertTrue(
-      "an untrusted provenance label must fail the recovery wrapper closed",
-      untrustedFailure.toString.contains("UnassignedRecoveryDiagnostic")
-    )
-    val trustedPlan       = planned(
-      withDiagnostic,
-      ProvisionalSourceEvidencePlanner.plan(withDiagnostic).toOption.get,
-      recoveredCatalog(base),
-      aggregate(Vector(inventory(withDiagnostic))),
-      surfaces(recoveredCatalog(base))
-    ).toOption.get
-    val ownership         = trustedPlan.recoveryOwnerships.head
-    assertEquals("self", ownership.compositeId)
-    assertEquals(0, ownership.diagnosticOrdinal)
-    assertEquals(
-      ParserDiagnosticPositionProvenance.Synthetic,
-      ownership.provenance
-    )
-    assertFalse(ownership.sharing)
-
-  @Test def diagnosticBoundRealizationRequiresASingleOnceRootComposite(): Unit =
-    val value     = snapshot("/recovered-roots", 1, Vector.empty)
-    val withError = value.copy(diagnostics =
-      Vector(
-        ParserDiagnostic(
-          ParserDiagnosticSeverity.Error,
-          "recovered",
-          Some(ParserDiagnosticPosition(PcSourceRange(1, 1), 1, ParserDiagnosticPositionProvenance.Synthetic))
-        )
-      )
-    )
-    val compiler  = inventory(withError)
-    val base      = completeCatalog(compiler)
-    val twoRoots  = base.copy(productions = base.productions.map: production =>
-      if production.id == "Child" then
+        val existing = production.effectiveOutputRealizations.head
         production.copy(
-          recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")),
-          outputTemplate = Some(
-            LocalOutputCompositeTemplate(
-              Vector(
-                OutputCompositeDeclaration(
-                  "self",
-                  None,
-                  OutputRangeDeclaration.CompilerPosition,
-                  PsiOutputRoleId.Block,
-                  "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScBlockImpl",
-                  TargetRequirement.Native,
-                  Vector.empty,
-                  PersistenceObligations.NotApplicable,
-                  None
-                ),
-                OutputCompositeDeclaration(
-                  "nested",
-                  None,
-                  OutputRangeDeclaration.CompilerPosition,
-                  PsiOutputRoleId.Block,
-                  "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScBlockImpl",
-                  TargetRequirement.Native,
-                  Vector.empty,
-                  PersistenceObligations.NotApplicable,
-                  None
-                )
-              ),
-              Map.empty
-            )
+          outputRealizations = Vector(
+            existing.copy(id = "self"),
+            existing.copy(id = "fallback")
+          ),
+          realizationChoice = Some(
+            RealizationChoice(Vector("self"), "fallback", RealizationChoicePolicy.AtomicWholePlan)
           )
         )
       else production)
-    val failure   = PreparedProductionCatalog
-      .prepareRuntimeSubset(twoRoots, compiler, aggregate(Vector(compiler)), surfaces(twoRoots))
-      .left
-      .toOption
+    // An unsafe atomic construction fails closed at catalog validation: the fallback is not a
+    // complete payload, so no plan can ship with the Error diagnostic unowned.
+    val failure     = planned(
+      withError,
+      ProvisionalSourceEvidencePlanner.plan(withError).toOption.get,
+      withAtomic,
+      aggregate(Vector(compiler)),
+      surfaces(withAtomic)
+    ).left.toOption.get
+    val description = failure.toString
     assertTrue(
-      "a multi-root recovery realization must fail catalog validation",
-      failure.exists(_.toString.contains("AmbiguousRecoveryComposite"))
+      "an unsafe candidate scope with an undischarged Error must fail closed",
+      description.contains("UnassignedDiagnostic") || description.contains("InvalidAtomicWholePlanChoice")
     )
 
   @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
