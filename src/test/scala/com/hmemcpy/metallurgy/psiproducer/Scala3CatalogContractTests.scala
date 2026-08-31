@@ -220,7 +220,15 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "modifiers-keywords",
         "modifiers-annotations-keywords",
         "modifiers-absent",
-        "match-pattern-binder-modifiers"
+        "match-pattern-binder-modifiers",
+        "match-pattern-given-modifiers"
+      ),
+      GrammarRoleId.PatternGiven              -> Set(
+        "match-pattern-given",
+        "match-pattern-given-named",
+        "match-pattern-given-typed",
+        "match-pattern-given-modifier",
+        "match-pattern-given-wildcard"
       ),
       GrammarRoleId.AccessModifier            -> Set("modifier-access-private", "modifier-access-protected"),
       GrammarRoleId.KeywordModifier           -> Set(

@@ -45,6 +45,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.{
   Sc3TypedPattern,
   ScLiteralPattern,
   ScNamingPattern,
+  ScGivenPattern,
   ScPatternArgumentList,
   ScPatterns,
   ScReferencePattern,
@@ -353,6 +354,8 @@ private[metallurgy] object NativePsiElementBindings:
           |val nativeRepeatedCall = nativeRepeated(atomicInteger, nativeInts*)
           |def matchProbe(x: Any): Any = x match
           |  case _ => atomicString
+          |  case given String => givenProbe
+          |  case namedGiven @ given String => namedGiven
           |  case wildcardBound => wildcardBound
           |  case Nil => "stable"
           |  case 1 | 2 => atomicInteger
@@ -785,6 +788,7 @@ private[metallurgy] object NativePsiElementBindings:
     val typedPatterns                                          = PsiTreeUtil.findChildrenOfType(file, classOf[Sc3TypedPattern]).asScala.toVector
     val typePatterns                                           = PsiTreeUtil.findChildrenOfType(file, classOf[ScTypePattern]).asScala.toVector
     val namingPatterns                                         = PsiTreeUtil.findChildrenOfType(file, classOf[ScNamingPattern]).asScala.toVector
+    val givenPatterns                                          = PsiTreeUtil.findChildrenOfType(file, classOf[ScGivenPattern]).asScala.toVector
     val tuplePatterns                                          = PsiTreeUtil.findChildrenOfType(file, classOf[ScTuplePattern]).asScala.toVector
     val matchPatterns                                          = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatterns]).asScala.toVector
     val patternArgumentLists                                   = PsiTreeUtil.findChildrenOfType(file, classOf[ScPatternArgumentList]).asScala.toVector
@@ -882,6 +886,7 @@ private[metallurgy] object NativePsiElementBindings:
         typedPatterns.headOption.orNull,
         typePatterns.headOption.orNull,
         namingPatterns.headOption.orNull,
+        givenPatterns.headOption.orNull,
         tuplePatterns.headOption.orNull,
         matchPatterns.headOption.orNull,
         patternArgumentLists.headOption.orNull,
@@ -1631,6 +1636,7 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TypedPattern           -> typedPatterns.head.getNode.getElementType,
               PsiOutputRoleId.TypePattern            -> typePatterns.head.getNode.getElementType,
               PsiOutputRoleId.NamingPattern          -> namingPatterns.head.getNode.getElementType,
+              PsiOutputRoleId.GivenPattern           -> givenPatterns.head.getNode.getElementType,
               PsiOutputRoleId.TuplePattern           -> tuplePatterns.head.getNode.getElementType,
               PsiOutputRoleId.Patterns               -> matchPatterns.head.getNode.getElementType,
               PsiOutputRoleId.PatternArgumentList    -> patternArgumentLists.head.getNode.getElementType,
@@ -1658,6 +1664,7 @@ private[metallurgy] object NativePsiElementBindings:
               PsiOutputRoleId.TypedPattern           -> surfaceId(typedPatterns.head.getClass),
               PsiOutputRoleId.TypePattern            -> surfaceId(typePatterns.head.getClass),
               PsiOutputRoleId.NamingPattern          -> surfaceId(namingPatterns.head.getClass),
+              PsiOutputRoleId.GivenPattern           -> surfaceId(givenPatterns.head.getClass),
               PsiOutputRoleId.SeqWildcardPattern     -> surfaceId(seqWildcardPatterns.head.getClass),
               PsiOutputRoleId.TuplePattern           -> surfaceId(tuplePatterns.head.getClass),
               PsiOutputRoleId.Patterns               -> surfaceId(matchPatterns.head.getClass),

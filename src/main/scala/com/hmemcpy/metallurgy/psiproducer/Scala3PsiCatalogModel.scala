@@ -103,6 +103,7 @@ private[metallurgy] object GrammarRoleId:
   val PatternLiteral            = GrammarRoleId("scala.pattern.literal")
   val PatternTyped              = GrammarRoleId("scala.pattern.typed")
   val PatternNaming             = GrammarRoleId("scala.pattern.naming")
+  val PatternGiven              = GrammarRoleId("scala.pattern.given")
   val PatternTuple              = GrammarRoleId("scala.pattern.tuple")
   val PatternConstructor        = GrammarRoleId("scala.pattern.constructor")
   val PatternAlternative        = GrammarRoleId("scala.pattern.alternative")
@@ -400,6 +401,7 @@ private[metallurgy] object PsiOutputRoleId:
   val TypedPattern           = PsiOutputRoleId("scala.pattern.typed")
   val TypePattern            = PsiOutputRoleId("scala.pattern.type")
   val NamingPattern          = PsiOutputRoleId("scala.pattern.naming")
+  val GivenPattern           = PsiOutputRoleId("scala.pattern.given")
   val TuplePattern           = PsiOutputRoleId("scala.pattern.tuple")
   val Patterns               = PsiOutputRoleId("scala.patterns")
   val PatternArgumentList    = PsiOutputRoleId("scala.pattern.argument-list")
@@ -514,6 +516,7 @@ private[metallurgy] object StableRoleInventory:
       GrammarRoleId.PatternStableIdentifier,
       GrammarRoleId.PatternTyped,
       GrammarRoleId.PatternNaming,
+      GrammarRoleId.PatternGiven,
       GrammarRoleId.PatternSequenceWildcard,
       GrammarRoleId.PatternTuple,
       GrammarRoleId.PatternAlternative,
@@ -638,6 +641,7 @@ private[metallurgy] object StableRoleInventory:
       PsiOutputRoleId.TypedPattern,
       PsiOutputRoleId.TypePattern,
       PsiOutputRoleId.NamingPattern,
+      PsiOutputRoleId.GivenPattern,
       PsiOutputRoleId.SeqWildcardPattern,
       PsiOutputRoleId.TuplePattern,
       PsiOutputRoleId.Patterns,

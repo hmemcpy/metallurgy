@@ -1138,6 +1138,18 @@ private[psiproducer] object Scala3PsiProductionSupport:
   )
   val TypePatternAccessors              = Vector.empty
   val NamingPatternAccessors            = Vector.empty
+  val GivenPatternSurface               =
+    "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScGivenPatternImpl"
+  val GivenPatternAccessors             = Vector(
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScGivenPatternImpl#typeElement()Lorg/jetbrains/plugins/scala/lang/psi/api/base/types/ScTypeElement;",
+      required = true
+    ),
+    AccessorObligation(
+      "org/jetbrains/plugins/scala/lang/psi/impl/base/patterns/ScGivenPatternImpl#nameId()Lcom/intellij/psi/PsiElement;",
+      required = true
+    )
+  )
   val TuplePatternAccessors             = Vector(
     AccessorObligation(
       "org/jetbrains/plugins/scala/lang/psi/api/base/patterns/ScTuplePattern#patternList()Lscala/Option;",

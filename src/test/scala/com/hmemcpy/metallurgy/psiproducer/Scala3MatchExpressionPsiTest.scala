@@ -17,6 +17,10 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.literals.{
   ScNullLiteral,
   ScStringLiteral
 }
+import org.jetbrains.plugins.scala.lang.psi.api.base.ScModifierList
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScGivenPattern
+import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScPatterns
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeArgs
 import org.jetbrains.plugins.scala.lang.psi.impl.base.types.{
   ScParameterizedTypeElementImpl,
@@ -27,6 +31,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.expr.{ScBlock, ScGuard, ScRefere
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScCompositePatternImpl,
   ScConstructorPatternImpl,
+  ScGivenPatternImpl,
   ScLiteralPatternImpl,
   ScNamingPatternImpl,
   ScReferencePatternImpl,
@@ -39,7 +44,16 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.Sc3TypedPatternIm
 import org.jetbrains.plugins.scala.lang.psi.impl.expr.{ScBlockImpl, ScMatchImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{ScCaseClauseImpl, ScCaseClausesImpl}
 import org.jetbrains.plugins.scala.lang.psi.impl.metallurgy.MetallurgyExpressionPayload
-import org.junit.Assert.{assertArrayEquals, assertEquals, assertFalse, assertNull, assertSame, assertTrue, fail}
+import org.junit.Assert.{
+  assertArrayEquals,
+  assertEquals,
+  assertFalse,
+  assertNotNull,
+  assertNull,
+  assertSame,
+  assertTrue,
+  fail
+}
 import org.junit.Test
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -846,7 +860,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
 
   @Test
   def testConstantPatternsNestThroughExistingPatternEdgesAndCoexistWithGuardsAndBodies(): Unit =
-    val source     =
+    val source       =
       """def nested(c: C2, x: Any, n: Int): Any = x match
         |  case (5L, null, ()) => "tuple"
         |  case 5L | null | () => "alt"
@@ -855,12 +869,12 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case 9_223L if n > 0 => "guarded"
         |  case _ => 0
         |""".stripMargin
-    val file       = physical("MatchConstantNesting.scala", source)
-    val capability = Scala3SyntaxCapabilityService.get(getProject)
+    val file         = physical("MatchConstantNesting.scala", source)
+    val capability   = Scala3SyntaxCapabilityService.get(getProject)
     assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
     assertEquals(1, descendants[ScMatchImpl](file).size)
     assertEquals(6, descendants[ScCaseClauseImpl](file).size)
-    val literals   = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    val literals     = descendants[ScLiteralPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(
       Vector("5L", "null", "5L", "null", "5L", "null", "5L", "9_223L"),
       literals.map(_.getText)
@@ -870,7 +884,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         literal.getText,
         literal.getLiteral.isInstanceOf[ScLongLiteral] || literal.getLiteral.isInstanceOf[ScNullLiteral]
       )
-    val tuples     = descendants[ScTuplePatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    val tuples       = descendants[ScTuplePatternImpl](file).sortBy(_.getTextRange.getStartOffset)
     assertEquals(Vector("(5L, null, ())", "()", "()"), tuples.map(_.getText))
     assertEquals(3, tuples.head.subpatterns.size)
     assertEquals(None, tuples(1).patternList)
@@ -878,6 +892,14 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     assertEquals(1, descendants[ScNamingPatternImpl](file).size)
     assertEquals(1, descendants[ScGuard](file).size)
     assertEquals(1, descendants[ScConstructorPatternImpl](file).size)
+    val nestedTuples = descendants[ScTuplePatternImpl](file).filter(_.subpatterns.nonEmpty)
+    nestedTuples.foreach: tuple =>
+      val givenChildren = tuple.subpatterns.collect { case g: ScGivenPatternImpl => g }
+      givenChildren.foreach: givenPattern =>
+        val kwLeaf = givenPattern.getNode.getChildren(null).find(_.getText == "given").orNull
+        assertNotNull(kwLeaf)
+        assertEquals(5, kwLeaf.getTextRange.getLength)
+        assertEquals(givenPattern.getTextRange.getStartOffset, kwLeaf.getTextRange.getStartOffset)
     assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
     payloadsOutsideMatch(file)
 
@@ -912,6 +934,254 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     replaceParen("()")
     assertEquals(Vector("()"), descendants[ScTuplePatternImpl](file).map(_.getText))
     assertEquals(None, descendants[ScTuplePatternImpl](file).head.patternList)
+
+  @Test
+  def testGivenPatternsLowerToNativePsiAcrossSimpleAndAppliedTypes(): Unit =
+    val source        =
+      """def givens1(x: Any): Any = x match
+        |  case given T => "simple"
+        |
+        |def givens2(y: Any): Any = y match
+        |  case given Ordering[Int] => "applied"
+        |
+        |def givens3(z: Any): Any = z match
+        |  case given Ordering[Outer[Middle[Inner]]] => "deep"
+        |""".stripMargin
+    val file          = physical("MatchGivenPatterns.scala", source)
+    val capability    = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(3, descendants[ScMatchImpl](file).size)
+    assertEquals(3, descendants[ScCaseClauseImpl](file).size)
+    val givenPatterns = descendants[ScGivenPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(
+      Vector("given T", "given Ordering[Int]", "given Ordering[Outer[Middle[Inner]]]"),
+      givenPatterns.map(_.getText)
+    )
+    assertEquals(Vector("given_T", "given_Ordering_Int", "given_Ordering_Outer"), givenPatterns.map(_.name))
+    givenPatterns.foreach: givenPattern =>
+      assertTrue(givenPattern.isInstanceOf[ScGivenPattern])
+      val typeElement  = givenPattern.typeElement
+      assertNotNull(typeElement)
+      assertSame(typeElement, givenPattern.nameId)
+      assertFalse(givenPattern.isWildcard)
+      assertEquals(givenPattern.getTextRange.getEndOffset, typeElement.getTextRange.getEndOffset)
+      assertEquals(givenPattern.getText, givenPattern.getTextRange.substring(file.getText))
+      val astChildren  = givenPattern.getNode.getChildren(null).toVector
+      val keywordLeaf  = astChildren.find(child => child.getText == "given").orNull
+      assertNotNull("direct GivenKeyword leaf with exact text 'given' is missing", keywordLeaf)
+      assertEquals(org.jetbrains.plugins.scala.lang.lexer.ScalaTokenType.GivenKeyword, keywordLeaf.getElementType)
+      assertEquals(5, keywordLeaf.getTextRange.getLength)
+      assertEquals(givenPattern.getTextRange.getStartOffset, keywordLeaf.getTextRange.getStartOffset)
+      val typeChildren = astChildren.filter(child => child.getPsi.isInstanceOf[ScTypeElement])
+      assertEquals(1, typeChildren.size)
+      assertSame(typeElement, typeChildren.head.getPsi)
+      assertTrue(astChildren.exists(child => child.getElementType.toString == "WHITE_SPACE"))
+      assertTrue(PsiTreeUtil.findChildrenOfType(givenPattern, classOf[ScPatterns]).isEmpty)
+      assertTrue(PsiTreeUtil.findChildOfType(givenPattern, classOf[ScModifierList]) == null)
+      assertTrue(givenPattern.name != null && givenPattern.name.nonEmpty)
+    assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+    assertTrue(descendants[ScParameterizedTypeElementImpl](file).size >= 2)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testNamedGivenPatternsLowerToNamingWrapperContainingGivenPattern(): Unit =
+    val source         =
+      """def namedGivens1(x: Any): Any = x match
+        |  case ord @ given Ordering[Int] => "named"
+        |
+        |def namedGivens2(y: Any): Any = y match
+        |  case _ @ given T => "wildcardBinder"
+        |
+        |def namedGivens3(z: Any): Any = z match
+        |  case `back-tick` @ given T => "backticked"
+        |""".stripMargin
+    val file           = physical("MatchNamedGivenPatterns.scala", source)
+    val capability     = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(3, descendants[ScMatchImpl](file).size)
+    val namingPatterns = descendants[ScNamingPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(
+      Vector("ord @ given Ordering[Int]", "_ @ given T", "`back-tick` @ given T"),
+      namingPatterns.map(_.getText)
+    )
+    val givenPatterns  = descendants[ScGivenPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("given Ordering[Int]", "given T", "given T"), givenPatterns.map(_.getText))
+    namingPatterns.zip(givenPatterns).foreach { case (naming, givenPattern) =>
+      assertSame(givenPattern, naming.named)
+      assertTrue(naming.getTextRange.contains(givenPattern.getTextRange))
+      assertFalse(naming.nameId.getText, naming.nameId.getText.isEmpty)
+    }
+    assertEquals("`back-tick`", namingPatterns(2).nameId.getText)
+    givenPatterns.foreach: givenPattern =>
+      assertSame(givenPattern.typeElement, givenPattern.nameId)
+      assertFalse(givenPattern.isWildcard)
+    assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testGivenPatternsNestThroughExistingEdgesAndCoexistWithGuards(): Unit =
+    val source        =
+      """def nested(c: C3, x: Any, n: Int): Any = x match
+        |  case (given T, given Ordering[Int]) => "tuple"
+        |  case given T | given Ordering[Int] => "alt"
+        |  case C3(given T) => "ctor"
+        |  case w @ given T if n > 0 => "guarded"
+        |  case _ => 0
+        |""".stripMargin
+    val file          = physical("MatchGivenNesting.scala", source)
+    val capability    = Scala3SyntaxCapabilityService.get(getProject)
+    assertTrue(capability.failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source)).isEmpty)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(5, descendants[ScCaseClauseImpl](file).size)
+    val givenPatterns = descendants[ScGivenPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(
+      Vector("given T", "given Ordering[Int]", "given T", "given Ordering[Int]", "given T", "given T"),
+      givenPatterns.map(_.getText)
+    )
+    assertEquals(1, descendants[ScGuard](file).size)
+    assertEquals(1, descendants[ScConstructorPatternImpl](file).size)
+    val tuples        = descendants[ScTuplePatternImpl](file)
+    assertEquals(1, tuples.size)
+    assertEquals(2, tuples.head.subpatterns.size)
+    assertTrue(descendants[MetallurgyExpressionPayload](file).isEmpty)
+    payloadsOutsideMatch(file)
+
+  @Test
+  def testGivenPatternShapesStayFailClosedOrRemainReferencePatterns(): Unit =
+    val sources = Vector(
+      """def pending(x: Any): Any = x match
+        |  case (given T) => "paren"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case given a.B => "qualified"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case given (T, U) => "tupleType"
+        |""".stripMargin
+    )
+    sources.zipWithIndex.foreach { case (source, index) =>
+      val pending = myFixture.addFileToProject(s"src/MatchGivenUnsupported$index.scala", source)
+      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
+      val failure = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertTrue(s"unsupported given shape should fail closed (source $index): ${failure}", failure.isDefined)
+      assertTrue(descendants[ScGivenPatternImpl](file).isEmpty)
+      assertTrue(descendants[ScMatchImpl](file).isEmpty)
+    }
+  @Test
+  def testGivenPatternEditsTransitionBetweenNativeAndFailClosed(): Unit     =
+    val template                                =
+      """def transitions(x: Any): Any = x match
+        |  case GIVEN => "g"
+        |""".stripMargin
+    val supported                               = template.replace("GIVEN", "given T")
+    val file                                    = physical("MatchGivenTransition.scala", supported)
+    assertEquals(Vector("given T"), descendants[ScGivenPatternImpl](file).map(_.getText))
+    val document                                = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    def replaceGiven(replacement: String): Unit =
+      WriteCommandAction.runWriteCommandAction(
+        getProject,
+        new Runnable:
+          override def run(): Unit =
+            document.replaceString(0, document.getTextLength, template.replace("GIVEN", replacement))
+      )
+      PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    replaceGiven("given a.B")
+    assertTrue(descendants[ScGivenPatternImpl](file).isEmpty)
+    assertTrue(descendants[ScMatchImpl](file).isEmpty)
+    replaceGiven("ord @ given Ordering[Int]")
+    assertEquals(1, descendants[ScNamingPatternImpl](file).size)
+    assertEquals(Vector("given Ordering[Int]"), descendants[ScGivenPatternImpl](file).map(_.getText))
+    replaceGiven("given T")
+    assertEquals(Vector("given T"), descendants[ScGivenPatternImpl](file).map(_.getText))
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+
+  @Test
+  def testGivenPatternsOutsideMatchOwnershipStayFailClosed(): Unit =
+    val sources = Vector(
+      """def partial(x: Any): PartialFunction[Any, Any] = { case given T => "pf" }""",
+      """def generator(xs: List[Any]): List[Any] = for given T <- xs yield givenCheck""",
+      """def quoted(x: Any): Any = '{ case given T => "q" }""",
+      "given T = new T",
+      """def catcher(x: Any): Any = try x catch { case given T => "catch" }"""
+    )
+    sources.zipWithIndex.foreach { case (source, index) =>
+      val pending       = myFixture.addFileToProject(s"src/MatchGivenContext$index.scala", source)
+      val file          = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
+      val givenPatterns = descendants[ScGivenPatternImpl](file)
+      val failure       = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      if failure.isDefined then
+        assertTrue(
+          s"whole-file failure must leave no partial native pattern PSI (source $index)",
+          descendants[ScGivenPatternImpl](file).isEmpty && descendants[ScNamingPatternImpl](file).isEmpty &&
+            descendants[Sc3TypedPatternImpl](file).isEmpty
+        )
+      else assertTrue(s"admitted context must contain given patterns (source $index)", givenPatterns.nonEmpty)
+      givenPatterns.foreach: givenPattern =>
+        assertNotNull(givenPattern.typeElement)
+        assertSame(givenPattern.typeElement, givenPattern.nameId)
+        assertEquals(1, givenPattern.getNode.getChildren(null).count(child => child.getText == "given"))
+      assertTrue(
+        s"whole-file failure must leave no partial native pattern PSI (source $index)",
+        failure.isEmpty || (descendants[ScGivenPatternImpl](file).isEmpty &&
+          descendants[ScNamingPatternImpl](file).isEmpty && descendants[Sc3TypedPatternImpl](file).isEmpty &&
+          descendants[ScMatchImpl](file).isEmpty)
+      )
+    }
+
+  @Test
+  def testGivenPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =
+    val source        =
+      """package givenpats
+        |def givenPat(x: Any): Any = x match
+        |  case given T => "simple"
+        |  case ord @ given Ordering[Int] => "named"
+        |""".stripMargin
+    val file          = physical("MatchGivenPersistence.scala", source).asInstanceOf[PsiFileImpl]
+    val document      = PsiDocumentManager.getInstance(getProject).getDocument(file)
+    val tree          = file.calcStubTree
+    val stubs         = tree.getPlainList.asScala.toVector
+    val shape         = stubShape(stubs)
+    assertFalse(shape.exists(name => name.contains("Given") || name.contains("Pattern")))
+    val beforeIndex   = indexShape(stubs)
+    val output        = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(tree.getRoot, output)
+    val bytes         = output.toByteArray
+    val restored      = new StubTree(
+      SerializationManagerEx.getInstanceEx
+        .deserialize(new ByteArrayInputStream(bytes))
+        .asInstanceOf[PsiFileStub[?]]
+    )
+    assertEquals(shape, stubShape(restored.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(restored.getPlainList.asScala.toVector))
+    val repeated      = new ByteArrayOutputStream
+    SerializationManagerEx.getInstanceEx.serialize(restored.getRoot, repeated)
+    assertArrayEquals(bytes, repeated.toByteArray)
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    val reloadedStubs = file.getStubTree.getPlainList.asScala.toVector
+    assertEquals(shape, stubShape(reloadedStubs))
+    assertEquals(beforeIndex, indexShape(reloadedStubs))
+    WriteCommandAction.runWriteCommandAction(
+      getProject,
+      new Runnable:
+        override def run(): Unit = document.replaceString(0, document.getTextLength, source)
+    )
+    PsiDocumentManager.getInstance(getProject).commitDocument(document)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    file.setTreeElementPointer(null)
+    assertNull(file.getTreeElement)
+    assertEquals(shape, stubShape(file.getStubTree.getPlainList.asScala.toVector))
+    assertEquals(beforeIndex, indexShape(file.getStubTree.getPlainList.asScala.toVector))
+    val givenPatterns = descendants[ScGivenPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
+    assertEquals(Vector("given T", "given Ordering[Int]"), givenPatterns.map(_.getText))
 
   @Test
   def testScalarLiteralPatternsRemainAstOnlyAcrossStubSerializationAndAstReload(): Unit =

@@ -509,6 +509,9 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TypeIdentProductionId, "payload-descendant-ident"),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.NamingProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenNamedProductionId, "payload-descendant-ident"),
+      ProductionAlternatives(Scala3PsiMatchExpressionProductions.GivenTypedProductionId, "payload-descendant-ident"),
       ProductionAlternatives(
         Scala3PsiMatchExpressionProductions.NamingSequenceProductionId,
         "payload-descendant-ident"
