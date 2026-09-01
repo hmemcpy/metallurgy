@@ -90,10 +90,22 @@ private[metallurgy] object CatalogShapeMatcher:
       case (CatalogValuePattern.GeneratedName, InventoryValueObservation.GeneratedName(_, _, _))              => true
       case (CatalogValuePattern.ClassifiedName(expected), InventoryValueObservation.Name(value))              =>
         expected == NeutralNameClass.classify(value)
+      case (
+            CatalogValuePattern.ClassifiedNameExcept(expected, excluded),
+            InventoryValueObservation.Name(value)
+          ) =>
+        expected == NeutralNameClass.classify(value) && value != excluded
+      case (
+            CatalogValuePattern.ClassifiedNameExcept(NeutralNameClass.Ordinary, _),
+            _: InventoryValueObservation.BacktickedName
+          ) =>
+        true
       case (CatalogValuePattern.LowercaseName, InventoryValueObservation.Name(value))                         =>
         CatalogValuePattern.isLowercaseName(value)
       case (CatalogValuePattern.NonLowercaseName, InventoryValueObservation.Name(value))                      =>
         CatalogValuePattern.isNonLowercaseName(value)
+      case (CatalogValuePattern.NonLowercaseNameExcept(excluded), InventoryValueObservation.Name(value))      =>
+        CatalogValuePattern.isNonLowercaseName(value) && value != excluded
       case (CatalogValuePattern.ExactName(expected), InventoryValueObservation.Name(actual))                  =>
         expected == actual
       case (CatalogValuePattern.BacktickedName, _: InventoryValueObservation.BacktickedName)                  => true
@@ -138,6 +150,18 @@ private[metallurgy] object CatalogShapeMatcher:
       case (CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary), CatalogValuePattern.BacktickedName)  => true
       case (CatalogValuePattern.ClassifiedName(expected), CatalogValuePattern.ClassifiedName(observed))         =>
         expected == observed
+      case (
+            CatalogValuePattern.NonLowercaseName,
+            CatalogValuePattern.NonLowercaseNameExcept(_)
+          ) =>
+        true
+      case (
+            CatalogValuePattern.ClassifiedNameExcept(expected, excluded),
+            CatalogValuePattern.ClassifiedName(observed)
+          ) =>
+        expected == observed && excluded != null
+      case (CatalogValuePattern.ClassifiedNameExcept(_, _), CatalogValuePattern.Name)                           =>
+        true
       case (CatalogValuePattern.ExactName(_), CatalogValuePattern.Name)                                         =>
         true
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue))           =>
@@ -536,6 +560,11 @@ private[metallurgy] object CatalogShapeMatcher:
             CatalogValuePattern.isLowercaseName(value)
           case (
                 CompilerFieldPattern(_, CatalogValuePattern.NonLowercaseName),
+                InventoryFieldObservation(_, InventoryValueObservation.Name(value), _)
+              ) =>
+            CatalogValuePattern.isNonLowercaseName(value)
+          case (
+                CompilerFieldPattern(_, CatalogValuePattern.NonLowercaseNameExcept(_)),
                 InventoryFieldObservation(_, InventoryValueObservation.Name(value), _)
               ) =>
             CatalogValuePattern.isNonLowercaseName(value)

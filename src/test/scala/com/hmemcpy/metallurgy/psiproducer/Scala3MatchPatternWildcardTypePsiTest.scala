@@ -147,23 +147,37 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
         |  case given Box[? <: A] => "anon"
         |  case ord @ given Box[_ >: A <: B] => "named"
         |  case given Option[? >: A] => "applied"
+        |  case _ @ given Box[? >: A] => "wildcardBinder"
+        |  case `back-tick` @ given Box[? <: A] => "backtickedBinder"
         |""".stripMargin
     val file      = physical("MatchWildcardTypesGiven.scala", source)
     val givens    = descendants[ScGivenPatternImpl](file).sortBy(_.getTextRange.getStartOffset)
-    assertEquals(3, givens.size)
+    assertEquals(5, givens.size)
     assertEquals(
-      Vector("given Box[? <: A]", "given Box[_ >: A <: B]", "given Option[? >: A]"),
+      Vector(
+        "given Box[? <: A]",
+        "given Box[_ >: A <: B]",
+        "given Option[? >: A]",
+        "given Box[? >: A]",
+        "given Box[? <: A]"
+      ),
       givens.map(_.getText)
     )
     val wildcards = wildcardTypeElements(file)
-    assertEquals(3, wildcards.size)
+    assertEquals(5, wildcards.size)
     val markers   =
       wildcards.map(w => markerLeaf(w, if w.getText.startsWith("?") then "?" else "_").getNode.getElementType)
     assertEquals(
-      Vector(ScalaTokenType.WildcardTypeQuestionMark, ScalaTokenTypes.tUNDER, ScalaTokenType.WildcardTypeQuestionMark),
+      Vector(
+        ScalaTokenType.WildcardTypeQuestionMark,
+        ScalaTokenTypes.tUNDER,
+        ScalaTokenType.WildcardTypeQuestionMark,
+        ScalaTokenType.WildcardTypeQuestionMark,
+        ScalaTokenType.WildcardTypeQuestionMark
+      ),
       markers
     )
-    assertEquals(3, descendants[ScCaseClauseImpl](file).size)
+    assertEquals(5, descendants[ScCaseClauseImpl](file).size)
 
   @Test
   def testMatchOwnedWildcardBoundsCloseOverOwnedTypeFamilies(): Unit =
@@ -264,6 +278,9 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
         |  case y: ? => "bare"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
+        |  case ? => "bareRoot"
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
         |  case y: _ => "bareLegacy"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
@@ -292,6 +309,13 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
       val failure = Scala3SyntaxCapabilityService
         .get(getProject)
         .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      if !failure.isDefined && source.contains("case ? =>") then
+        println(s"########## DEBUG case ? failure=$failure")
+        def walk(e: PsiElement, d: Int): Unit =
+          if d < 10 then
+            println(s"${"  " * d}${e.getClass.getSimpleName} [${e.getText.take(40).replace("\n", " ")}]")
+            e.getChildren.toVector.foreach(walk(_, d + 1))
+        walk(file, 0)
       assertTrue(s"unsupported wildcard shape should fail closed (source $index)", failure.isDefined)
       assertTrue(wildcardTypeElements(file).isEmpty)
       assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)

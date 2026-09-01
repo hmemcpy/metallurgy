@@ -953,7 +953,12 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     pattern = CompilerProductionPattern(
       InventoryKind.Node,
       "Ident",
-      Vector(CompilerFieldPattern("name", CatalogValuePattern.ClassifiedName(NeutralNameClass.Ordinary))),
+      Vector(
+        CompilerFieldPattern(
+          "name",
+          CatalogValuePattern.ClassifiedNameExcept(NeutralNameClass.Ordinary, "?")
+        )
+      ),
       PatternSpaceOccurrences
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
@@ -1172,7 +1177,12 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     pattern = CompilerProductionPattern(
       InventoryKind.Node,
       "Ident",
-      Vector(CompilerFieldPattern("name", CatalogValuePattern.NonLowercaseName)),
+      Vector(
+        CompilerFieldPattern(
+          "name",
+          CatalogValuePattern.NonLowercaseNameExcept("?")
+        )
+      ),
       PatternSpaceOccurrences
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),

@@ -200,7 +200,10 @@ private[metallurgy] enum CatalogValuePattern:
   case Product(prefix: String, fields: Vector[CompilerFieldPattern])
   case Name, GeneratedName
   case ClassifiedName(nameClass: NeutralNameClass)
+  case ClassifiedNameExcept(nameClass: NeutralNameClass, excluded: String)
+  case ClassifiedNameValue(nameClass: NeutralNameClass, value: String)
   case LowercaseName, NonLowercaseName, BacktickedName
+  case NonLowercaseNameExcept(excluded: String)
   case ExactName(value: String)
   case Scalar(kind: String)
   case ExactScalar(kind: String, rendered: String)
@@ -866,6 +869,11 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
     case CatalogValuePattern.NonLowercaseName                              => e.tag(20)
     case CatalogValuePattern.BacktickedName                                => e.tag(21)
     case CatalogValuePattern.ExactName(value)                              => e.tag(24); e.string(value)
+    case CatalogValuePattern.ClassifiedNameExcept(value, excluded)         =>
+      e.tag(25); e.string(value.toString); e.string(excluded)
+    case CatalogValuePattern.ClassifiedNameValue(value, text)              =>
+      e.tag(26); e.string(value.toString); e.string(text)
+    case CatalogValuePattern.NonLowercaseNameExcept(excluded)              => e.tag(27); e.string(excluded)
     case CatalogValuePattern.Scalar(kind)                                  => e.tag(8); e.string(kind)
     case CatalogValuePattern.ExactScalar(kind, value)                      => e.tag(13); e.string(kind); e.string(value)
     case CatalogValuePattern.Unsupported(runtime)                          => e.tag(9); e.string(runtime)
@@ -1257,7 +1265,8 @@ private[metallurgy] object CompilerRuntimeInventory:
         )
       case InventoryValueObservation.Product(prefix, fields) =>
         CatalogValuePattern.Product(prefix, fields.map(f => CompilerFieldPattern(f.name, pattern(f.value))))
-      case InventoryValueObservation.Name(value)             => CatalogValuePattern.ClassifiedName(NeutralNameClass.classify(value))
+      case InventoryValueObservation.Name(value)             =>
+        CatalogValuePattern.ClassifiedNameValue(NeutralNameClass.classify(value), value)
       case InventoryValueObservation.BacktickedName(_)       => CatalogValuePattern.BacktickedName
       case InventoryValueObservation.GeneratedName(_, _, _)  => CatalogValuePattern.GeneratedName
       case InventoryValueObservation.Scalar(value)           => CatalogValuePattern.Scalar(value.productPrefix)
