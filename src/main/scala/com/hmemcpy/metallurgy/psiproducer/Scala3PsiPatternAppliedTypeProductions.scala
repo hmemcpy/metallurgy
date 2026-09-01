@@ -48,7 +48,39 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
       ),
       SourceClassification.SourceReachable
     ),
-    Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence
+    Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence,
+    Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("lo"),
+    Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("hi"),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "AppliedTypeTree",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "AppliedTypeTree",
+        Vector(CatalogPathSegment.NamedField("tpt")),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "Tuple",
+        Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+      ),
+      SourceClassification.SourceReachable
+    )
   )
 
   private val patternAppliedType = Scala3PsiProduction(
@@ -82,7 +114,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         Scala3PsiMatchExpressionProductions.TypeIdentProductionId,
         Set(
           AppliedTypeProductionId,
-          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
+          Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId
         )
       )
     ),
@@ -118,7 +151,12 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "arguments",
         ChildRootOutcome.All(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TupleType)
+            Set(
+              PsiOutputRoleId.SimpleType,
+              PsiOutputRoleId.ParameterizedType,
+              PsiOutputRoleId.TupleType,
+              PsiOutputRoleId.WildcardType
+            )
           )
         )
       )

@@ -21,6 +21,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.base.ScModifierList
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScGivenPattern
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScPatterns
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeElement
+import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScWildcardTypeElement
 import org.jetbrains.plugins.scala.lang.psi.api.base.types.ScTypeArgs
 import org.jetbrains.plugins.scala.lang.psi.impl.base.types.{
   ScParameterizedTypeElementImpl,
@@ -575,7 +576,12 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
             document.replaceString(0, document.getTextLength, supported.replace("List[Int]", replacement))
       )
       PsiDocumentManager.getInstance(getProject).commitDocument(document)
-    replaceType("List[_]")
+    replaceType("List[_ <: Int]")
+    assertEquals(1, descendants[ScParameterizedTypeElementImpl](file).size)
+    assertEquals(1, descendants[ScWildcardTypeElement](file).size)
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    assertEquals(1, descendants[Sc3TypedPatternImpl](file).size)
+    replaceType("List[? <: Int >: Int]")
     assertTrue(descendants[ScParameterizedTypeElementImpl](file).isEmpty)
     assertTrue(descendants[ScMatchImpl](file).isEmpty)
     assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
@@ -665,9 +671,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case v: a.B => "qualified"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case v: List[_] => "wildcard"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case v: (Int) => "paren"

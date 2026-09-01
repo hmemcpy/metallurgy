@@ -1312,7 +1312,39 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           ),
           SourceClassification.SourceReachable
         ),
-        Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence
+        Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence,
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("lo"),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("hi"),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "AppliedTypeTree",
+            Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "AppliedTypeTree",
+            Vector(CatalogPathSegment.NamedField("tpt")),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "Tuple",
+            Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+          ),
+          SourceClassification.SourceReachable
+        )
       )
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),

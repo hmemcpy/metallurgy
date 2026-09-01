@@ -170,7 +170,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
       GrammarRoleId.NamedTypeArgument         -> Set("expression-named-type-argument"),
       GrammarRoleId.WildcardType              -> Set(
         "import-selector-given-bound-wildcard-type",
-        "ordinary-wildcard-type"
+        "ordinary-wildcard-type",
+        "match-pattern-wildcard-type"
       ),
       GrammarRoleId.InfixType                 -> Set("ordinary-infix-type"),
       GrammarRoleId.MatchType                 -> Set("ordinary-match-type"),

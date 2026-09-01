@@ -305,9 +305,6 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
         |  case y: a.B => "qualified"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case y: Box[? <: Int] => "bounds"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case y: Any { type X } => "refine"
         |""".stripMargin,
       """def pending(x: Any): Any = x match

@@ -63,6 +63,28 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
     matchTupleNestedOccurrence(
       "AppliedTypeTree",
       Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    ),
+    Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("lo"),
+    Scala3PsiPatternWildcardTypeProductions.matchWildcardBoundOccurrence("hi"),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "Tuple",
+        Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "AppliedTypeTree",
+        Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
     )
   )
 
