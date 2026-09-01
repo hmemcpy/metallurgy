@@ -589,10 +589,15 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
     val mixed       = myFixture.addFileToProject("src/AppliedNamedClosed1.scala", mixedSource)
     val mixedFile   = PsiManager.getInstance(getProject).findFile(mixed.getVirtualFile)
     mixedFile.getChildren
+    // The 3.5.2 parser rejects named type arguments on an applied type (']' expected, but '=' found),
+    // so the file is compiler-invalid here and must fail closed without any partial PSI.
+    val mixedFailure = Scala3SyntaxCapabilityService
+      .get(getProject)
+      .failureFor(mixed.getVirtualFile, ParserSyntaxSnapshot.digest(mixedSource))
+    assertTrue(mixedSource, mixedFailure.isDefined)
     assertTrue(genericCalls(mixedFile).isEmpty)
-    assertEquals(
-      Vector("pair[Int, B = String]"),
-      PsiTreeUtil.findChildrenOfType(mixedFile, classOf[MetallurgyExpressionPayload]).asScala.map(_.getText).toVector
+    assertTrue(
+      PsiTreeUtil.findChildrenOfType(mixedFile, classOf[MetallurgyExpressionPayload]).asScala.isEmpty
     )
     assertTrue(PsiTreeUtil.findChildrenOfType(mixedFile, classOf[ScReferenceExpression]).isEmpty)
     assertTrue(PsiTreeUtil.findChildrenOfType(mixedFile, classOf[ScTypeArgs]).isEmpty)
