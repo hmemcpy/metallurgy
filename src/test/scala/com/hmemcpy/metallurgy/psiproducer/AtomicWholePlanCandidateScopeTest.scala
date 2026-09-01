@@ -289,6 +289,8 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
     )
 
   @Test def plannerUsesTheCompleteFallbackPlanForUnsafeErrorEvidence(): Unit =
+    // Unsafe Error evidence (synthetic provenance) can never prove a candidate trial, so the
+    // planner fails closed on the undischarged diagnostic instead of shipping the fallback.
     val value = atomicPlanningSnapshot(
       Vector(
         diagnostic(
@@ -301,12 +303,14 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
       )
     )
 
-    assertEquals(
-      Vector(
-        2L -> RealizationSelectionReason.AtomicWholePlanFallback,
-        3L -> RealizationSelectionReason.AtomicWholePlanFallback
-      ),
-      atomicSelectionReasons(value)
+    val runtime  = inventory(value)
+    val catalog  = atomicPlanningCatalog(runtime)
+    val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
+    val failure  = planned(value, evidence, catalog, aggregate(Vector(runtime)), surfaces(catalog))
+      .left.toOption.get
+    assertTrue(
+      "unsafe Error evidence must fail closed with the diagnostic unowned",
+      failure.toString.contains("UnassignedDiagnostic(0)")
     )
 
   private def atomicSelectionReasons(
