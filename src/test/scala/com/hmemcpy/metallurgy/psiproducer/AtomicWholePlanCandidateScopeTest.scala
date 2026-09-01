@@ -306,8 +306,7 @@ final class AtomicWholePlanCandidateScopeTest extends Scala3PsiProductionCatalog
     val runtime  = inventory(value)
     val catalog  = atomicPlanningCatalog(runtime)
     val evidence = ProvisionalSourceEvidencePlanner.plan(value).toOption.get
-    val failure  = planned(value, evidence, catalog, aggregate(Vector(runtime)), surfaces(catalog))
-      .left.toOption.get
+    val failure  = planned(value, evidence, catalog, aggregate(Vector(runtime)), surfaces(catalog)).left.toOption.get
     assertTrue(
       "unsafe Error evidence must fail closed with the diagnostic unowned",
       failure.toString.contains("UnassignedDiagnostic(0)")

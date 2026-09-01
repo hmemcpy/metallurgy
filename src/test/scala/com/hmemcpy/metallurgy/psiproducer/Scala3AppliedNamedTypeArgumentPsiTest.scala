@@ -584,10 +584,10 @@ final class Scala3AppliedNamedTypeArgumentPsiTest extends Scala3CompatTestCase:
     assertEquals("pair[A = Long]", genericCalls(file).head.getText)
 
   def testMixedAndOrdinaryNamedTypeArgumentsFailClosedWithoutPartialPsi(): Unit =
-    val mixedSource =
+    val mixedSource  =
       "import scala.language.experimental.namedTypeArguments\nval mixed = pair[Int, B = String]\n"
-    val mixed       = myFixture.addFileToProject("src/AppliedNamedClosed1.scala", mixedSource)
-    val mixedFile   = PsiManager.getInstance(getProject).findFile(mixed.getVirtualFile)
+    val mixed        = myFixture.addFileToProject("src/AppliedNamedClosed1.scala", mixedSource)
+    val mixedFile    = PsiManager.getInstance(getProject).findFile(mixed.getVirtualFile)
     mixedFile.getChildren
     // The 3.5.2 parser rejects named type arguments on an applied type (']' expected, but '=' found),
     // so the file is compiler-invalid here and must fail closed without any partial PSI.
