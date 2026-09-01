@@ -142,7 +142,7 @@ final class Scala3SelectionExpressionPsiTest extends Scala3CompatTestCase:
   def testSelectionsRemainAstOnlyAcrossStubSerializationAndReload(): Unit =
     assertEquals(15, Scala3DotcFileElementType.SchemaVersion)
     assertEquals(
-      "c14af31a5208fc230bc4bce30cd394a2dddab331af06db9682b8436469b55657",
+      "ac2e67bbee932cbee07daf4e50dd5f4c5f818f832ea3669be19fb2bc68f3c866",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     val source      =
