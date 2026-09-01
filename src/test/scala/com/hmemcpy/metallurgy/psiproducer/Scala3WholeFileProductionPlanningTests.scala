@@ -809,45 +809,133 @@ private[psiproducer] trait Scala3WholeFileProductionPlanningTests extends Scala3
       ).isRight
     )
 
-  @Test def unsafeCandidateScopeWithUndischargedErrorFailsClosed(): Unit =
-    val value       = snapshot("/unsafe-scope", 1, Vector.empty)
-    val withError   = value.copy(diagnostics =
-      Vector(
-        ParserDiagnostic(
-          ParserDiagnosticSeverity.Error,
-          "unowned",
-          Some(ParserDiagnosticPosition(PcSourceRange(0, 0), 0, ParserDiagnosticPositionProvenance.Synthetic))
-        )
-      )
-    )
-    val compiler    = inventory(withError)
-    val base        = completeCatalog(compiler)
-    val withAtomic  = base.copy(productions = base.productions.map: production =>
+  private def recoveredCatalog(base: Scala3PsiProductionCatalog): Scala3PsiProductionCatalog =
+    base.copy(productions = base.productions.map: production =>
       if production.id == "Child" then
-        val existing = production.effectiveOutputRealizations.head
-        production.copy(
-          outputRealizations = Vector(
-            existing.copy(id = "self"),
-            existing.copy(id = "fallback")
-          ),
-          realizationChoice = Some(
-            RealizationChoice(Vector("self"), "fallback", RealizationChoicePolicy.AtomicWholePlan)
+        production.copy(recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")))
+      else if production.id == "Root" then
+        production.copy(terminals =
+          Vector(
+            TerminalDeclaration(
+              "source",
+              TerminalIntervalSelector.WholeSource,
+              TerminalLeafTarget.Parent,
+              OccurrenceCardinality.ExactlyOne,
+              PsiOutputRoleId.SourceTerminal
+            )
           )
         )
       else production)
-    // An unsafe atomic construction fails closed at catalog validation: the fallback is not a
-    // complete payload, so no plan can ship with the Error diagnostic unowned.
-    val failure     = planned(
-      withError,
-      ProvisionalSourceEvidencePlanner.plan(withError).toOption.get,
-      withAtomic,
+
+  private def recoveredDiagnostic(at: Int): ParserDiagnostic =
+    ParserDiagnostic(
+      ParserDiagnosticSeverity.Error,
+      "recovered",
+      Some(ParserDiagnosticPosition(PcSourceRange(at, at), at, ParserDiagnosticPositionProvenance.Synthetic))
+    )
+
+  @Test def diagnosticGateDischargesPerOrdinalAndFailsOnLaterUnownedErrors(): Unit =
+    val value           = snapshot("/recovered-ordinal", 1, Vector.empty)
+    val withDiagnostics = value.copy(diagnostics = Vector(recoveredDiagnostic(1), recoveredDiagnostic(0)))
+    val compiler        = inventory(withDiagnostics)
+    val failure         = planned(
+      withDiagnostics,
+      ProvisionalSourceEvidencePlanner.plan(withDiagnostics).toOption.get,
+      recoveredCatalog(base = completeCatalog(compiler)),
       aggregate(Vector(compiler)),
-      surfaces(withAtomic)
+      surfaces(recoveredCatalog(base = completeCatalog(compiler)))
     ).left.toOption.get
-    val description = failure.toString
+    assertEquals(
+      "an unowned later Error must fail closed at its own ordinal",
+      WholeFilePlanningFailure.UnassignedDiagnostic(1),
+      failure
+    )
+
+  @Test def provenanceTrustGateFailsRecoveryWithoutPublishedProvenance(): Unit =
+    val value     = snapshot("/recovered-provenance", 1, Vector.empty)
+    val untrusted = value.copy(
+      diagnostics = Vector(recoveredDiagnostic(1)),
+      capabilities = value.capabilities.copy(
+        diagnosticPositionProvenance = ParserCapabilityStatus.Unavailable("provenance unpublished")
+      )
+    )
+    val compiler  = inventory(untrusted)
+    val failure   = planned(
+      untrusted,
+      ProvisionalSourceEvidencePlanner.plan(untrusted).toOption.get,
+      recoveredCatalog(base = completeCatalog(compiler)),
+      aggregate(Vector(compiler)),
+      surfaces(recoveredCatalog(base = completeCatalog(compiler)))
+    ).left.toOption.get
     assertTrue(
-      "an unsafe candidate scope with an undischarged Error must fail closed",
-      description.contains("UnassignedDiagnostic") || description.contains("InvalidAtomicWholePlanChoice")
+      "an unpublished provenance label must fail the recovery wrapper closed",
+      failure.toString.contains("UnassignedRecoveryDiagnostic")
+    )
+
+  @Test def recoveryOwnershipSelectsTheRealizationRootComposite(): Unit =
+    val value          = snapshot("/recovered-root", 1, Vector.empty)
+    val withDiagnostic = value.copy(diagnostics = Vector(recoveredDiagnostic(1)))
+    val compiler       = inventory(withDiagnostic)
+    val plan           = planned(
+      withDiagnostic,
+      ProvisionalSourceEvidencePlanner.plan(withDiagnostic).toOption.get,
+      recoveredCatalog(base = completeCatalog(compiler)),
+      aggregate(Vector(compiler)),
+      surfaces(recoveredCatalog(base = completeCatalog(compiler)))
+    ).toOption.get
+    val ownership      = plan.recoveryOwnerships.head
+    assertEquals("self", ownership.compositeId)
+    assertEquals(0, ownership.diagnosticOrdinal)
+    assertFalse(ownership.sharing)
+
+  @Test def diagnosticBoundRealizationRequiresASingleOnceRootComposite(): Unit =
+    val value     = snapshot("/recovered-roots", 1, Vector.empty)
+    val withError = value.copy(diagnostics = Vector(recoveredDiagnostic(1)))
+    val compiler  = inventory(withError)
+    val base      = completeCatalog(compiler)
+    val twoRoots  = base.copy(productions = base.productions.map: production =>
+      if production.id == "Child" then
+        production.copy(
+          recovery = RecoveryPolicy.DiagnosticBound(ParserDiagnosticSeverity.Error, Vector("self")),
+          outputTemplate = Some(
+            LocalOutputCompositeTemplate(
+              Vector(
+                OutputCompositeDeclaration(
+                  "self",
+                  None,
+                  OutputRangeDeclaration.CompilerPosition,
+                  PsiOutputRoleId.Block,
+                  "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScBlockImpl",
+                  TargetRequirement.Native,
+                  Vector.empty,
+                  PersistenceObligations.NotApplicable,
+                  None,
+                  realization = OutputCompositeRealization.PerChildRole("t")
+                ),
+                OutputCompositeDeclaration(
+                  "nested",
+                  None,
+                  OutputRangeDeclaration.CompilerPosition,
+                  PsiOutputRoleId.Block,
+                  "org/jetbrains/plugins/scala/lang/psi/impl/expr/ScBlockImpl",
+                  TargetRequirement.Native,
+                  Vector.empty,
+                  PersistenceObligations.NotApplicable,
+                  None
+                )
+              ),
+              Map.empty
+            )
+          )
+        )
+      else production)
+    val failure   = PreparedProductionCatalog
+      .prepareRuntimeSubset(twoRoots, compiler, aggregate(Vector(compiler)), surfaces(twoRoots))
+      .left
+      .toOption
+    assertTrue(
+      "a multi-root recovery realization must fail catalog validation",
+      failure.exists(_.toString.contains("AmbiguousRecoveryComposite"))
     )
 
   @Test def transparentSiblingLeafProvenanceDoesNotBecomeFileRootAncestry(): Unit =
