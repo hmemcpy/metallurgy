@@ -673,9 +673,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case v: (Int) => "paren"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case v: (Int, Int) => "tuple"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case v: (Int => Int) => "fn"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
@@ -1052,9 +1049,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     val sources = Vector(
       """def pending(x: Any): Any = x match
         |  case given a.B => "qualified"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case given (T, U) => "tupleType"
         |""".stripMargin
     )
     sources.zipWithIndex.foreach { case (source, index) =>

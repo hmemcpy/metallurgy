@@ -430,7 +430,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiCaptureTypeProductions.CaptureTypeSegment ++
       Scala3PsiTypeAtomProductions.TypeAtomSegment ++
       Scala3PsiMatchExpressionProductions.MatchGivenSuffixSegment ++
-      Scala3PsiMatchExpressionProductions.MatchParenthesizedSuffixSegment,
+      Scala3PsiMatchExpressionProductions.MatchParenthesizedSuffixSegment ++
+      Scala3PsiPatternTupleTypeProductions.PatternTupleTypeSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(
@@ -522,6 +523,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.TupleProductionId, "payload-descendant-tuple"),
       ProductionAlternatives(
         Scala3PsiMatchExpressionProductions.UnitTupleProductionId,
+        "payload-descendant-tuple"
+      ),
+      ProductionAlternatives(
+        Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
         "payload-descendant-tuple"
       ),
       ProductionAlternatives(Scala3PsiMatchExpressionProductions.AlternativeProductionId, "payload-descendant-ident"),

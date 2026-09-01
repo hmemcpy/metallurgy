@@ -47,7 +47,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         Scala3PsiMatchExpressionProductions.MatchCasesAncestor
       ),
       SourceClassification.SourceReachable
-    )
+    ),
+    Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence
   )
 
   private val patternAppliedType = Scala3PsiProduction(
@@ -79,7 +80,10 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "args",
         ChildCardinality.Repeated(1, None),
         Scala3PsiMatchExpressionProductions.TypeIdentProductionId,
-        Set(AppliedTypeProductionId)
+        Set(
+          AppliedTypeProductionId,
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
+        )
       )
     ),
     terminals = Vector(
@@ -114,7 +118,7 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "arguments",
         ChildRootOutcome.All(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType)
+            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TupleType)
           )
         )
       )

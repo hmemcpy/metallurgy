@@ -221,6 +221,19 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     "payload-descendant-ident"
   )
 
+  // dotc lowers partial-function and catch case blocks to Match with a synthetic EmptyTree
+  // selector; requiring a source-positioned selector on the anchor keeps match-scoped pattern
+  // and pattern-type ownership inside real matches and leaves those forms fail-closed.
+  // Declared before the cross-object-referenced edges: pattern-type productions initialize
+  // through this object mid-cycle and read this value during their own initialization.
+  private[psiproducer] val SourceSelectorAnchorEvidence: Vector[AncestorEvidencePattern] = Vector(
+    AncestorEvidencePattern(
+      directNodeEvidence = Vector(
+        DirectNodeFieldEvidence("selector", SourceClassification.SourceReachable)
+      )
+    )
+  )
+
   private[psiproducer] val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
     InventoryAncestor(
       InventoryKind.Node,
@@ -1222,7 +1235,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         ChildCardinality.ExactlyOne,
         TypeIdentProductionId,
         Set(
-          Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId
+          Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
         )
       )
     ),
@@ -1252,7 +1266,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
       RequiredChildRootOutcome(
         "tpt",
         ChildRootOutcome.One(
-          ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType))
+          ChildOutcomeExpectation.OutputRoles(
+            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TupleType)
+          )
         )
       )
     )
@@ -1295,7 +1311,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             MatchCasesAncestor
           ),
           SourceClassification.SourceReachable
-        )
+        ),
+        Scala3PsiPatternTupleTypeProductions.matchTupleComponentOccurrence
       )
     ),
     dispositions = Vector(FieldDisposition("name", FieldDispositionKind.SemanticOnly)),
@@ -1785,17 +1802,6 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     CompilerFieldPattern("mods", CatalogValuePattern.NonEmptyRepeated(CatalogValuePattern.Positioned))
   )
 
-  // dotc lowers partial-function and catch case blocks to Match with a synthetic EmptyTree
-  // selector; requiring a source-positioned selector on the anchor keeps given binds inside
-  // real match ownership and leaves those forms fail-closed.
-  private val GivenMatchAnchorEvidence = Vector(
-    AncestorEvidencePattern(
-      directNodeEvidence = Vector(
-        DirectNodeFieldEvidence("selector", SourceClassification.SourceReachable)
-      )
-    )
-  )
-
   private def givenBindOccurrences(
       requiredScannerKinds: Set[ParserScannerTokenKind]
   ): Vector[CompilerProductionContextPattern] =
@@ -1804,7 +1810,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         context = value.context match
           case ContextPattern.ParentUnderAnchorThrough(kind, owner, path, edges, anchor) =>
             ContextPattern
-              .ParentUnderAnchorThroughWithEvidence(kind, owner, path, edges, anchor, GivenMatchAnchorEvidence)
+              .ParentUnderAnchorThroughWithEvidence(kind, owner, path, edges, anchor, SourceSelectorAnchorEvidence)
           case other                                                                     => other,
         scannerEvidence = ScannerEvidencePattern(
           required = requiredScannerKinds,
@@ -1981,7 +1987,10 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         "tpt",
         ChildCardinality.ExactlyOne,
         TypeIdentProductionId,
-        Set(Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId)
+        Set(
+          Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
+        )
       )
     ),
     terminals = Vector.empty,
