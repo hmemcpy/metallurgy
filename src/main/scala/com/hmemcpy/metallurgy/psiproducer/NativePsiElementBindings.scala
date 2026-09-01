@@ -313,6 +313,7 @@ private[metallurgy] object NativePsiElementBindings:
           |import alpha.beta.given Ordering[Int]
           |import alpha.beta.given alpha.gamma.Bound
           |import alpha.beta.given alpha.gamma.Box[? >: Lower <: Upper]
+          |import alpha.beta.given alpha.gamma.Box[_ >: Lower <: Upper]
           |import alpha.beta.given Left | Middle & Right
           |import alpha.beta.`back-tick`
           |import alpha.beta._
@@ -497,6 +498,15 @@ private[metallurgy] object NativePsiElementBindings:
     val wildcardQuestion                                       = Option(wildcardType).flatMap(leafAtText(_, "?")).orNull
     val lowerBoundToken                                        = Option(wildcardType).flatMap(leafAtText(_, ">:")).orNull
     val upperBoundToken                                        = Option(wildcardType).flatMap(leafAtText(_, "<:")).orNull
+    val wildcardUnderType                                      = PsiTreeUtil
+      .findChildrenOfType(file, classOf[ScWildcardTypeElement])
+      .asScala
+      .toVector
+      .find(_.getText == "_ >: Lower <: Upper")
+      .orNull
+    val wildcardUnderLower                                     = Option(wildcardUnderType).flatMap(_.lowerTypeElement).orNull
+    val wildcardUnderUpper                                     = Option(wildcardUnderType).flatMap(_.upperTypeElement).orNull
+    val wildcardUnderMarker                                    = Option(wildcardUnderType).flatMap(leafAtText(_, "_")).orNull
     val infixType                                              = PsiTreeUtil
       .findChildrenOfType(file, classOf[ScInfixTypeElement])
       .asScala
@@ -917,8 +927,10 @@ private[metallurgy] object NativePsiElementBindings:
     else if packaging == null || reference == null || qualifier == null || bracedPackaging == null || outerPackaging == null ||
       innerPackaging == null || innerEnd == null || outerEnd == null || bracedImport == null || innerExport == null
     then Left("native package PSI probe is incomplete")
-    else if statements.size != 10 || expressions.size != 10 || selectorSets.size != 6 || selectors.size != 8 then
-      Left("native import PSI probe is incomplete")
+    else if statements.size != 11 || expressions.size != 11 || selectorSets.size != 7 || selectors.size != 9 then
+      Left(
+        s"native import PSI probe is incomplete: statements=${statements.size} expressions=${expressions.size} selectorSets=${selectorSets.size} selectors=${selectors.size} givenSelectors=${selectors.count(_.isGivenSelector)}"
+      )
     else if exportStatements.size != 1 || exportExpressions.map(_.getText) !=
         Vector("alpha.beta.{Original as Exported, given Bound, *}") || exportSelectorSets.size != 1 ||
         exportSelectors.size != 3
@@ -967,6 +979,7 @@ private[metallurgy] object NativePsiElementBindings:
         "alpha.beta.given Ordering[Int]",
         "alpha.beta.given alpha.gamma.Bound",
         "alpha.beta.given alpha.gamma.Box[? >: Lower <: Upper]",
+        "alpha.beta.given alpha.gamma.Box[_ >: Lower <: Upper]",
         "alpha.beta.given Left | Middle & Right",
         "alpha.beta.`back-tick`",
         "alpha.beta._"
@@ -977,8 +990,8 @@ private[metallurgy] object NativePsiElementBindings:
       expressions(1).wildcardElement.forall(_.getText != "*") || expressions(1).selectorSet.nonEmpty ||
       expressions(2).qualifier.forall(_.getText != "alpha.beta") || !expressions(2).hasWildcardSelector ||
       !expressions(2).hasGivenSelector || !expressions(4).hasGivenSelector ||
-      expressions(8).reference.forall(_.refName != "`back-tick`") ||
-      !expressions(9).hasWildcardSelector || expressions(9).wildcardElement.forall(_.getText != "_")
+      expressions(9).reference.forall(_.refName != "`back-tick`") ||
+      !expressions(10).hasWildcardSelector || expressions(10).wildcardElement.forall(_.getText != "_")
     then Left("native import expression accessors are inconsistent")
     else if aliasSelectors.size != 2 || aliasSelectors.exists(_.importedName != Some("Renamed")) ||
       aliasSelectors.exists(_.aliasName != Some("Renamed")) ||
@@ -1021,6 +1034,13 @@ private[metallurgy] object NativePsiElementBindings:
       lowerBoundToken.getNode.getElementType != ScalaTokenTypes.tLOWER_BOUND ||
       upperBoundToken.getNode.getElementType != ScalaTokenTypes.tUPPER_BOUND
     then Left("native wildcard given type PSI is inconsistent")
+    else if wildcardUnderType == null || wildcardUnderLower == null || wildcardUnderUpper == null ||
+      wildcardUnderMarker == null || wildcardUnderType.getText != "_ >: Lower <: Upper" ||
+      wildcardUnderLower.getText != "Lower" || wildcardUnderUpper.getText != "Upper" ||
+      wildcardUnderLower.getParent != wildcardUnderType || wildcardUnderUpper.getParent != wildcardUnderType ||
+      wildcardUnderMarker.getParent != wildcardUnderType ||
+      wildcardUnderMarker.getNode.getElementType != ScalaTokenTypes.tUNDER
+    then Left("native legacy wildcard type PSI is inconsistent")
     else if infixType == null || nestedInfixType == null || infixLeft == null || infixRight == null ||
       infixOperation == null || infixLeft.getText != "Left" || infixOperation.getText != "|" ||
       infixRight.getText != "Middle & Right" || nestedInfixType.left.getText != "Middle" ||

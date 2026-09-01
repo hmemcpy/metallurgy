@@ -80,6 +80,31 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
     children.foreach(child => assertSame(element.getNode, child.getTreeParent))
 
   @Test
+  def testQuoteCaseBlocksAscriptionsAndDoubleParensStayFailClosedWithoutTuplePsi(): Unit =
+    val sources = Vector(
+      """def quoted(x: Any): Any = '{ case y: (Int, String) => 1 }""",
+      """def pending(x: Any): Any = x match
+        |  case _ => v: (Int, String)
+        |""".stripMargin,
+      """def pending(x: Any): Any = (x: (Int, String)) match
+        |  case _ => 1
+        |""".stripMargin,
+      """def pending(x: Any): Any = x match
+        |  case given ((Int, String)) => 1
+        |""".stripMargin
+    )
+    sources.zipWithIndex.foreach { case (source, index) =>
+      val file    = pendingFile(s"MatchTupleStructuralExclusion$index.scala", source)
+      val failure = Scala3SyntaxCapabilityService
+        .get(getProject)
+        .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
+      assertTrue(s"structurally excluded tuple-type shape should fail closed (source $index)", failure.isDefined)
+      assertTrue(tupleTypeElements(file).isEmpty)
+      assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+      assertTrue(descendants[ScGivenPatternImpl](file).isEmpty)
+    }
+
+  @Test
   def testMatchScopedTupleTypesProduceNativePsiAcrossTheAdmittedMatrix(): Unit =
     val source  =
       """def shapes(x: Any): Any = x match
