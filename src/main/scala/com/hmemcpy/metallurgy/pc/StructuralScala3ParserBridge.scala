@@ -908,25 +908,26 @@ private final class StructuralScala3ParserBridge private (
       sourceText: String,
       nodes: Vector[ParserSyntaxNode]
   ): Vector[ParserNodeSeparator] =
-    val distinct = recorded
-      .groupMap((tokenId, offset, _) => (tokenId, offset))(value => value)
-      .map: (_, observations) =>
-        if observations.distinct.size != 1 then None
-        else
-          val (tokenId, offset, lastOffset) = observations.head
-          val runtimeKind                   =
-            active.scannerReader.showTokenDetailed
-              .invoke(active.scannerReader.tokens, Int.box(tokenId))
-              .asInstanceOf[String]
-          val end                           = math.max(offset, lastOffset)
-          val kind                          =
-            scannerTokenKind(runtimeKind, sourceText.substring(offset, math.min(end, sourceText.length)))
-          Some(offset -> (end, kind))
-      .toVector
-    if distinct.exists(_.isEmpty) then Vector.empty
+    val byOffset =
+      recorded
+        .groupMap((tokenId, offset, _) => (tokenId, offset))(value => value)
+        .map { case ((tokenId, offset), observations) =>
+          val ends = observations.map((_, _, lastOffset) => math.max(offset, lastOffset)).distinct
+          if ends.size != 1 then None
+          else
+            val runtimeKind =
+              active.scannerReader.showTokenDetailed
+                .invoke(active.scannerReader.tokens, Int.box(tokenId))
+                .asInstanceOf[String]
+            val kind        =
+              scannerTokenKind(runtimeKind, sourceText.substring(offset, math.min(ends.head, sourceText.length)))
+            Some(offset -> (ends.head, kind))
+        }
+        .toVector
+    if byOffset.exists(_.isEmpty) then Vector.empty
     else
-      val byOffset = distinct.collect { case Some(entry) => entry }.toMap
-      nodes.flatMap(node => separatorForSelect(byOffset, sourceText, nodes, node))
+      val offsets = byOffset.collect { case Some(entry) => entry }.toMap
+      nodes.flatMap(node => separatorForSelect(offsets, sourceText, nodes, node))
 
   private def separatorForSelect(
       byOffset: Map[Int, (Int, ParserScannerTokenKind)],

@@ -131,6 +131,7 @@ final class Scala3CaptureCapabilityTypeParserInventoryTest:
             Some(context),
             row.sourceClassification,
             row.scannerTokenKinds,
+            row.separatorKinds,
             row.directNodeEvidence,
             row.rootAttachments
           )

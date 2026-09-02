@@ -566,7 +566,7 @@ private[pc] trait Scala3ImportExportParserTests extends Scala3ParserTestSupport:
           "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
           "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
           "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
-          "e8ef4d383e4006dbdeae5ae29abb7e1cd9310682aca40a517c21e5b33ed627a8"
+          "e55679b7e1b950215bdf2f210a9b08ce92749adf16f7acad091b041b512b44ab"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )

@@ -244,6 +244,7 @@ private[metallurgy] object RuntimeRealizationSelector:
             context,
             row.sourceClassification,
             row.scannerTokenKinds,
+            row.separatorKinds,
             row.directNodeEvidence,
             row.rootAttachments,
             route =>

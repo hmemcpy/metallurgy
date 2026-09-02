@@ -325,9 +325,9 @@ private[psiproducer] trait Scala3CatalogValidationTests extends Scala3PsiProduct
     val crossed = paired.copy(productions =
       paired.productions.map(row =>
         row.copy(occurrences = row.occurrences.map {
-          case CompilerProductionContext(None, _, _, _, _)          =>
+          case CompilerProductionContext(None, _, _, _, _, _)          =>
             CompilerProductionContext(None, SourceClassification.Synthetic)
-          case CompilerProductionContext(Some(context), _, _, _, _) =>
+          case CompilerProductionContext(Some(context), _, _, _, _, _) =>
             CompilerProductionContext(Some(context), SourceClassification.SourceReachable)
         })
       )

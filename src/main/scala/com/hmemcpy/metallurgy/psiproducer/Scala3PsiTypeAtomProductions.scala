@@ -88,11 +88,10 @@ private[psiproducer] object Scala3PsiTypeAtomProductions:
           CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
           CompilerFieldPattern("name", CatalogValuePattern.Name)
         ),
-        typeAtomOccurrences.map(
-          _.copy(scannerEvidence =
-            ScannerEvidencePattern(
-              required = Set(ParserScannerTokenKind.Hash)
-            )
+        typeAtomOccurrences.map(pattern =>
+          CompilerProductionContextPattern(
+            ContextPattern.SeparatorOwned(ParserScannerTokenKind.Hash, pattern.context),
+            pattern.sourceClassification
           )
         )
       ),

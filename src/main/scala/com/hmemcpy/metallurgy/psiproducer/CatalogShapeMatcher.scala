@@ -226,9 +226,18 @@ private[metallurgy] object CatalogShapeMatcher:
       pattern: ContextPattern,
       context: Option[InventoryContext],
       ownedRootMatches: OwnedRootRoute => Boolean = _ => false,
-      enabledCandidateRootMatches: OwnedRootRoute => Boolean = _ => false
+      enabledCandidateRootMatches: OwnedRootRoute => Boolean = _ => false,
+      separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty
   ): Boolean = pattern match
     case ContextPattern.Any                                                                                  => true
+    case ContextPattern.SeparatorOwned(kind, underlying)                                                     =>
+      separatorKinds.contains(kind) && contextMatches(
+        underlying,
+        context,
+        ownedRootMatches,
+        enabledCandidateRootMatches,
+        separatorKinds
+      )
     case ContextPattern.Root                                                                                 => context.isEmpty
     case ContextPattern.Parent(kind, owner, p)                                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
@@ -355,9 +364,15 @@ private[metallurgy] object CatalogShapeMatcher:
           value.ancestors.dropWhile(_ == repeated).startsWith(ancestors)
       )
 
-  def aggregateContextMatches(pattern: ContextPattern, context: Option[InventoryContext]): Boolean = pattern match
+  def aggregateContextMatches(
+      pattern: ContextPattern,
+      context: Option[InventoryContext],
+      separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty
+  ): Boolean = pattern match
     case ContextPattern.Any                                                                                  => false
     case ContextPattern.Root                                                                                 => context.isEmpty
+    case ContextPattern.SeparatorOwned(kind, underlying)                                                     =>
+      separatorKinds.contains(kind) && aggregateContextMatches(underlying, context, separatorKinds)
     case ContextPattern.Parent(kind, owner, p)                                                               =>
       context.exists(value => value.ownerKind == kind && value.ownerPrefix == owner && value.path == p)
     case ContextPattern.ParentUnderAnchorExceptAncestor(kind, owner, p, anchor, forbidden)                   =>
@@ -496,6 +511,7 @@ private[metallurgy] object CatalogShapeMatcher:
       context: Option[InventoryContext],
       sourceClassification: SourceClassification,
       scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+      separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty,
       directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
       rootAttachments: Vector[AttachmentEvidence] = Vector.empty,
       ownedRootMatches: OwnedRootRoute => Boolean = _ => false,
@@ -506,7 +522,13 @@ private[metallurgy] object CatalogShapeMatcher:
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, directNodeEvidence) &&
         rootAttachmentEvidenceMatches(p.pattern.requiredAttachments, rootAttachments) &&
         p.pattern.occurrences.exists(occurrence =>
-          contextMatches(occurrence.context, context, ownedRootMatches, enabledCandidateRootMatches) &&
+          contextMatches(
+            occurrence.context,
+            context,
+            ownedRootMatches,
+            enabledCandidateRootMatches,
+            separatorKinds
+          ) &&
             occurrence.sourceClassification == sourceClassification
             && scannerEvidenceMatches(occurrence.scannerEvidence, scannerTokenKinds)
         )
@@ -614,7 +636,7 @@ private[metallurgy] object CatalogShapeMatcher:
         directNodeEvidenceMatches(p.pattern.directNodeEvidence, occurrence.directNodeEvidence) &&
         rootAttachmentEvidenceMatches(p.pattern.requiredAttachments, occurrence.rootAttachments) &&
         p.pattern.occurrences.exists(pattern =>
-          aggregateContextMatches(pattern.context, occurrence.context) &&
+          aggregateContextMatches(pattern.context, occurrence.context, occurrence.separatorKinds) &&
             pattern.sourceClassification == occurrence.sourceClassification &&
             scannerEvidenceMatches(pattern.scannerEvidence, occurrence.scannerTokenKinds)
         )

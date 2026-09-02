@@ -337,6 +337,11 @@ private[metallurgy] enum ContextPattern:
   )
   case DescendantOfOwnedRoot(routes: Vector[OwnedRootRoute])
   case DescendantOfEnabledCandidateRoot(routes: Vector[OwnedRootRoute])
+
+  /** Parser-owned separator ownership: the production's node must carry exactly this source-derived separator kind, and
+    * the wrapped context must also match.
+    */
+  case SeparatorOwned(kind: ParserScannerTokenKind, underlying: ContextPattern)
   case ParentUnderAnchorThroughWithParent(
       ownerKind: InventoryKind,
       ownerPrefix: String,
@@ -404,6 +409,7 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     contexts: Vector[InventoryContext],
     sourceClassification: SourceClassification,
     scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+    separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty,
     directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
     rootAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
@@ -425,6 +431,7 @@ private[metallurgy] final case class CompilerProductionContext(
     context: Option[InventoryContext],
     sourceClassification: SourceClassification,
     scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+    separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty,
     directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
     rootAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
@@ -560,6 +567,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
                     _,
                     row.sourceClassification,
                     row.scannerTokenKinds,
+                    row.separatorKinds,
                     row.directNodeEvidence,
                     row.rootAttachments
                   )
@@ -756,6 +764,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
         e.string(field.name); writeObservation(field.value, e)
       e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
       e.sequence(row.scannerTokenKinds)(kind => e.tag(kind.ordinal))
+      e.sequence(row.separatorKinds)(kind => e.tag(kind.ordinal))
       writeDirectNodeEvidence(row.directNodeEvidence, e)
       if row.rootAttachments.nonEmpty then writeAttachmentEvidence(row.rootAttachments, e)
 
@@ -807,6 +816,7 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
   private def writeProductionContext(context: CompilerProductionContext, e: CanonicalByteEncoder): Unit =
     writeOptionalContext(context.context, e); e.tag(context.sourceClassification.ordinal)
     e.sequence(context.scannerTokenKinds)(kind => e.tag(kind.ordinal))
+    e.sequence(context.separatorKinds)(kind => e.tag(kind.ordinal))
     writeDirectNodeEvidence(context.directNodeEvidence, e)
     if context.rootAttachments.nonEmpty then writeAttachmentEvidence(context.rootAttachments, e)
 
@@ -1319,6 +1329,9 @@ private[metallurgy] object CompilerRuntimeInventory:
             .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
             .map(_.kind)
         case _                                          => Vector.empty
+      val separatorKinds     = snapshot.nodeSeparators
+        .filter(separator => separator.ownerNodeId == id)
+        .map(_.kind)
       val directNodeEvidence = fields.flatMap: field =>
         field.value match
           case ParserFieldValue.Node(childId) =>
@@ -1354,6 +1367,7 @@ private[metallurgy] object CompilerRuntimeInventory:
         occurrences.flatMap(contexts(kind, id, _)).distinct,
         classification,
         scannerTokenKinds,
+        separatorKinds,
         directNodeEvidence,
         rootAttachments
       )

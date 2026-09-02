@@ -76,6 +76,7 @@ private[metallurgy] enum WholeFilePlanningFailure:
   )
   case UnsupportedLayout(owner: ProductionInstanceId, alternatives: Vector[LayoutAlternative])
   case UnsupportedRecovery(owner: ProductionInstanceId, policy: RecoveryPolicy)
+  case SeparatorReplayDisagreement(owner: ProductionInstanceId, kind: ParserScannerTokenKind)
   case UnassignedRecoveryDiagnostic(
       owner: ProductionInstanceId,
       alternativeId: String,

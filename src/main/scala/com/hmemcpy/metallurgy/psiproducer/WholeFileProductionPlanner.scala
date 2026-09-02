@@ -361,6 +361,7 @@ private[metallurgy] object WholeFileProductionPlanner:
             context,
             row.sourceClassification,
             row.scannerTokenKinds,
+            row.separatorKinds,
             row.directNodeEvidence,
             row.rootAttachments,
             route =>
@@ -467,6 +468,12 @@ private[metallurgy] object WholeFileProductionPlanner:
           production.recovery match
             case RecoveryPolicy.DiagnosticBound(_, alternatives) if alternatives.nonEmpty => ()
             case _                                                                        => break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
+        production.pattern.occurrences.foreach:
+          case CompilerProductionContextPattern(ContextPattern.SeparatorOwned(kind, _), _, _) =>
+            val row = rows(instance.kind -> instance.valueId)
+            if !row.scannerTokenKinds.contains(kind) then
+              break(Left(WholeFilePlanningFailure.SeparatorReplayDisagreement(instance, kind)))
+          case _                                                                              => ()
       ordered.foreach: instance =>
         if active(instance) then
           val production      = selected(instance)

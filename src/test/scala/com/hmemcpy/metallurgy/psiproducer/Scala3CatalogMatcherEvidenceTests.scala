@@ -415,7 +415,8 @@ private[psiproducer] trait Scala3CatalogMatcherEvidenceTests extends Scala3PsiPr
         prefix: String,
         fields: Vector[InventoryFieldObservation],
         scanner: Vector[ParserScannerTokenKind],
-        classification: SourceClassification = SourceClassification.SourceReachable
+        classification: SourceClassification = SourceClassification.SourceReachable,
+        separators: Vector[ParserScannerTokenKind] = Vector.empty
     ): Vector[String] =
       CatalogShapeMatcher
         .select(
@@ -425,22 +426,37 @@ private[psiproducer] trait Scala3CatalogMatcherEvidenceTests extends Scala3PsiPr
           fields,
           direct,
           classification,
-          scanner
+          scanner,
+          separators
         )
         .map(_.id)
 
     assertEquals(
       Vector("import-selector-given-bound-qualified-type"),
-      selected("Select", selectFields, Vector(ParserScannerTokenKind.Dot))
+      selected(
+        "Select",
+        selectFields,
+        Vector(ParserScannerTokenKind.Dot),
+        separators = Vector(ParserScannerTokenKind.Dot)
+      )
     )
     assertEquals(
       Vector("type-atom-projection"),
-      selected("Select", selectFields, Vector(ParserScannerTokenKind.Hash))
+      selected(
+        "Select",
+        selectFields,
+        Vector(ParserScannerTokenKind.Hash),
+        separators = Vector(ParserScannerTokenKind.Hash)
+      )
     )
-    assertTrue(selected("Select", selectFields, Vector.empty).isEmpty)
-    assertEquals(
-      Vector("type-atom-projection"),
-      selected("Select", selectFields, Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash))
+    assertTrue(
+      "Selects without parser-owned separator evidence stay unselected",
+      selected(
+        "Select",
+        selectFields,
+        Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash),
+        separators = Vector.empty
+      ).isEmpty
     )
 
     val singletonFields = Vector(

@@ -1396,12 +1396,10 @@ private[psiproducer] object Scala3PsiPackageImportExportProductions:
           CompilerFieldPattern("qualifier", CatalogValuePattern.Node),
           CompilerFieldPattern("name", CatalogValuePattern.Name)
         ),
-        typeAtomOccurrences.map(
-          _.copy(scannerEvidence =
-            ScannerEvidencePattern(
-              required = Set(ParserScannerTokenKind.Dot),
-              forbidden = Set(ParserScannerTokenKind.Hash)
-            )
+        typeAtomOccurrences.map(pattern =>
+          CompilerProductionContextPattern(
+            ContextPattern.SeparatorOwned(ParserScannerTokenKind.Dot, pattern.context),
+            pattern.sourceClassification
           )
         )
       ),

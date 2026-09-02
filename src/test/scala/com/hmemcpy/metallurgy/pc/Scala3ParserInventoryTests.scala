@@ -69,7 +69,7 @@ private[pc] trait Scala3ParserInventoryTests extends Scala3ParserTestSupport:
         value.nodes
       )
       assertEquals(PackageSource, evidence.reconstruct(PackageSource))
-      assertEquals("0d4d81125c3e63a2b27a1d05938c9350114eb819a05c6afa0aa7fd23274ca2bc", aggregate.fingerprint)
+      assertEquals("ba839c28489b21b03305f26c8cefefd1c5b501f9b223af2277f5013d3d7e04f2", aggregate.fingerprint)
       val identifierPackage    = parse(bridge, "package example\n", "file:///Scala3IdentifierPackageFamily.scala")
       val identifierInventory  = CompilerRuntimeInventory
         .from(identifierPackage)
@@ -204,7 +204,7 @@ private[pc] trait Scala3ParserInventoryTests extends Scala3ParserTestSupport:
         ),
         first.nodes.map(_.occurrences)
       )
-      assertEquals("0c4cfa1dc465bd211ba35b80193b798d2b06499464f16ecd6ebd05cab9d18f24", aggregate.fingerprint)
+      assertEquals("3abe98c62642a41249211ef2a4289457fa7a15752066d827c9c4d75cdd1d730f", aggregate.fingerprint)
       val catalog                = Scala3PsiProductionCatalog(
         Scala3PsiProductionCatalog.Reviewed.productions.filter(production =>
           production.id.startsWith("file-package") || production.id.startsWith("package-stable")
