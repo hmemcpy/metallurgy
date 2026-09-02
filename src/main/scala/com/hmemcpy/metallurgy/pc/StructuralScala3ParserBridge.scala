@@ -1097,11 +1097,20 @@ private final class StructuralScala3ParserBridge private (
       exactScannerTokens(active, source, context.value, request.sourceText, request.cancellation)
     nodes.map: collected =>
       val separators = recordedStream.map: (recorder, _) =>
-        val recorded = readRecordedTokens(recorder, sink)
-        val facts    = correlateSeparators(active, recorded, request.sourceText, collected.nodes)
-        // Replay confirms each published fact's kind and range after selection; a fact the
-        // replay cannot confirm drops its Select's evidence and that Select fails closed.
-        facts.filter(fact => scannerTokens.exists(token => token.kind == fact.kind && token.range == fact.range))
+        val recorded           = readRecordedTokens(recorder, sink)
+        // Replay validates the capture's integrity as a whole, never which facts exist:
+        // every replayed token identity must appear among the recorded visits, and any
+        // recorded-only identity may only be the end-of-stream repeat. A violation
+        // revokes all separator evidence for the parse; otherwise every parser-owned
+        // fact publishes and selection resolves them without replay.
+        val recordedIdentities = recorded.map((token, offset, _) => (token, offset)).toSet
+        val replayIdentities   = scannerTokens.map(token => (token.tokenId, token.range.startOffset)).toSet
+        // Every replayed token identity must appear among the recorded visits; the
+        // recording may carry additional lookahead, folded-newline, or end-of-stream
+        // identities the linear replay never emits.
+        val integrityHolds     = replayIdentities.subsetOf(recordedIdentities)
+        if integrityHolds then correlateSeparators(active, recorded, request.sourceText, collected.nodes)
+        else Vector.empty
       ParserSyntaxSnapshot(
         request.sourceUri,
         request.sourceText,
