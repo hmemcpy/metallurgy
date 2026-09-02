@@ -229,19 +229,28 @@ final class Scala3SelectSeparatorProvenanceProbeTest:
 
   @Test
   def parsesNeverDriveTheHostCopyOfTheRecordingScanner(): Unit =
-    // The bridge defines its own bytecode copy inside the isolated compiler loader; a
-    // parse must never set the host copy's construction-phase sink.
-    val bridge = openBridge(ScalaVersion)
+    // The bridge defines its own bytecode copy inside the isolated compiler loader. A
+    // sentinel placed in the HOST copy's construction sink detects any driving of that
+    // copy: tokens would be recorded into it or its thread-local would be cleared.
+    val sentinel = new java.util.ArrayList[SeparatorRecordingScanner.Token]
+    SeparatorRecordingScanner.constructionSink.set(sentinel)
     try
-      val source   = wrapMatch(SelectShapes.head.source)
-      val snapshot = parse(bridge, source, "file:///HostIsolationCheck.scala")
-      assertTrue(snapshot.nodeSeparators.nonEmpty)
-    finally bridge.close()
-    assertEquals(
-      "the host copy of the recording scanner must stay untouched by parses",
-      null,
-      SeparatorRecordingScanner.constructionSink.get
-    )
+      val bridge = openBridge(ScalaVersion)
+      try
+        val source   = wrapMatch(SelectShapes.head.source)
+        val snapshot = parse(bridge, source, "file:///HostIsolationCheck.scala")
+        assertTrue(snapshot.nodeSeparators.nonEmpty)
+      finally bridge.close()
+      assertSame(
+        "nothing may clear the host copy's construction sink",
+        sentinel,
+        SeparatorRecordingScanner.constructionSink.get
+      )
+      assertTrue(
+        "no parse token may be recorded through the host copy",
+        sentinel.isEmpty
+      )
+    finally SeparatorRecordingScanner.constructionSink.set(null)
 
   @Test
   def productionSnapshotsCarryParserOwnedSeparators(): Unit =
