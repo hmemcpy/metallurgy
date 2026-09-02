@@ -59,4 +59,46 @@ final class Scala3SeparatorConsistencyInventoryTest extends Scala3ParserTestSupp
       val honestRow =
         honest.shapes.find(row => row.id == outerSelect.id).getOrElse(throw new AssertionError("row missing"))
       assertEquals(Vector(ParserScannerTokenKind.Hash), honestRow.separatorKinds)
+
+      // A fabricated Dot fact positioned inside the interval survives position
+      // consistency, so replay never filters it pre-selection; the matcher then sees
+      // both separator kinds on one Select and no production is silently chosen.
+      val hashToken           = snapshot.scannerTokens
+        .find(token => token.kind == ParserScannerTokenKind.Hash)
+        .getOrElse(throw new AssertionError("hash token missing"))
+      val fabricated          = snapshot.copy(nodeSeparators =
+        snapshot.nodeSeparators :+ com.hmemcpy.metallurgy.pc
+          .ParserNodeSeparator(
+            outerSelect.id,
+            ParserScannerTokenKind.Dot,
+            PcSourceRange(hashToken.range.startOffset, hashToken.range.endOffset),
+            hashToken.range.startOffset,
+            hashToken.provenance
+          )
+      )
+      val fabricatedInventory = CompilerRuntimeInventory
+        .from(fabricated)
+        .fold(failures => throw new AssertionError(failures.mkString("\n")), identity)
+      val fabricatedRow       = fabricatedInventory.shapes
+        .find(row => row.kind == InventoryKind.Node && row.id == outerSelect.id)
+        .getOrElse(throw new AssertionError("row missing"))
+      assertEquals(
+        "the in-interval fabrication stays in evidence for selection to resolve atomically",
+        Vector(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash),
+        fabricatedRow.separatorKinds.sortBy(_.ordinal)
+      )
+      val dottedClaim         = com.hmemcpy.metallurgy.psiproducer.CatalogShapeMatcher.select(
+        com.hmemcpy.metallurgy.psiproducer.Scala3PsiProductionCatalog.Reviewed,
+        InventoryKind.Node,
+        fabricatedRow.prefix,
+        fabricatedRow.observation,
+        fabricatedRow.contexts.headOption,
+        fabricatedRow.sourceClassification,
+        fabricatedRow.scannerTokenKinds,
+        fabricatedRow.separatorKinds
+      )
+      assertTrue(
+        "a Select carrying contradictory separator kinds must claim multiple hierarchies and fail atomically",
+        dottedClaim.size > 1
+      )
     finally bridge.close()

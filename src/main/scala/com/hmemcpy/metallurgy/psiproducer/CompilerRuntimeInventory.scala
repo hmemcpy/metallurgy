@@ -410,6 +410,8 @@ private[metallurgy] final case class CompilerShapeInventoryRow(
     sourceClassification: SourceClassification,
     scannerTokenKinds: Vector[ParserScannerTokenKind] = Vector.empty,
     separatorKinds: Vector[ParserScannerTokenKind] = Vector.empty,
+    separatorRanges: Vector[(ParserScannerTokenKind, Int, Int)] = Vector.empty,
+    replayTokenRanges: Vector[(ParserScannerTokenKind, Int, Int)] = Vector.empty,
     directNodeEvidence: Vector[DirectNodeFieldEvidence] = Vector.empty,
     rootAttachments: Vector[AttachmentEvidence] = Vector.empty
 )
@@ -765,6 +767,10 @@ private[metallurgy] object AggregatedCompilerProductionInventory:
       e.sequence(row.contexts)(writeContext(_, e)); e.tag(row.sourceClassification.ordinal)
       e.sequence(row.scannerTokenKinds)(kind => e.tag(kind.ordinal))
       e.sequence(row.separatorKinds)(kind => e.tag(kind.ordinal))
+      e.sequence(row.separatorRanges): (kind, start, end) =>
+        e.tag(kind.ordinal); e.int(start); e.int(end)
+      e.sequence(row.replayTokenRanges): (kind, start, end) =>
+        e.tag(kind.ordinal); e.int(start); e.int(end)
       writeDirectNodeEvidence(row.directNodeEvidence, e)
       if row.rootAttachments.nonEmpty then writeAttachmentEvidence(row.rootAttachments, e)
 
@@ -1329,16 +1335,14 @@ private[metallurgy] object CompilerRuntimeInventory:
             .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
             .map(_.kind)
         case _                                          => Vector.empty
-      // A separator fact enters the inventory only when the replayed scanner confirms its
-      // exact kind and range AND the fact sits inside the node-bounded interval between
-      // the qualifier end and the proven name start; otherwise the Select stays without
-      // separator evidence and the planner's selection fails closed for it.
-      val separatorKinds     = snapshot.nodeSeparators
+      // A separator fact stays in selection evidence only through parser-owned position
+      // consistency: it must sit after the qualifier end and inside the Select range.
+      // Replay never filters here; the planner confirms exact kind and range only after
+      // a production is selected.
+      val separatorFacts     = snapshot.nodeSeparators
         .filter(separator => separator.ownerNodeId == id)
         .filter: separator =>
-          val replayConfirmed =
-            snapshot.scannerTokens.exists(token => token.kind == separator.kind && token.range == separator.range)
-          val intervalBounded = position match
+          position match
             case ParserNodePosition.Positioned(range, _, _) =>
               val qualifierEnd = fields
                 .collectFirst:
@@ -1356,8 +1360,14 @@ private[metallurgy] object CompilerRuntimeInventory:
                   separator.range.endOffset <= range.endOffset
               )
             case _                                          => false
-          replayConfirmed && intervalBounded
-        .map(_.kind)
+      val separatorKinds     = separatorFacts.map(_.kind)
+      val separatorRanges    = separatorFacts.map(fact => (fact.kind, fact.range.startOffset, fact.range.endOffset))
+      val replayTokenRanges  = position match
+        case ParserNodePosition.Positioned(range, _, _) =>
+          snapshot.scannerTokens
+            .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
+            .map(token => (token.kind, token.range.startOffset, token.range.endOffset))
+        case _                                          => Vector.empty
       val directNodeEvidence = fields.flatMap: field =>
         field.value match
           case ParserFieldValue.Node(childId) =>
@@ -1394,6 +1404,8 @@ private[metallurgy] object CompilerRuntimeInventory:
         classification,
         scannerTokenKinds,
         separatorKinds,
+        separatorRanges,
+        replayTokenRanges,
         directNodeEvidence,
         rootAttachments
       )
