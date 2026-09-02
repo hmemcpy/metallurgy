@@ -173,6 +173,7 @@ lazy val root =
           .exclude("org.eclipse.lsp4j", "org.eclipse.lsp4j.jsonrpc"),
         "io.get-coursier"   % "interface"         % "1.0.28",
         "net.bytebuddy"     % "byte-buddy-agent" % "1.18.11",
+        ("org.scala-lang"    % "scala3-compiler_3" % "3.7.4") % Test,
         "junit"             % "junit"             % "4.13.2" % Test,
         "com.github.sbt"    % "junit-interface"   % "0.13.3" % Test,
         "org.junit.jupiter" % "junit-jupiter-api" % "5.13.0" % Test
