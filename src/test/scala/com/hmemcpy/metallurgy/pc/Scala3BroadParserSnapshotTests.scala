@@ -197,7 +197,7 @@ private[pc] trait Scala3BroadParserSnapshotTests extends Scala3ParserTestSupport
         .installed()
         .fold(message => throw new AssertionError(message), identity)
       val surfaces                                                                                 = withImportTokenSurfaces(installedSurfaces)
-      assertEquals("926e79bb7035b291206e8a5cbe7aa9e6ae95a743d7d1b494eb5c3f39050abafc", aggregate.fingerprint)
+      assertEquals("2aec869d8bf6bd3f26194f8b20da1a054f0f813f7d0ea4d7c674b3375f63a45c", aggregate.fingerprint)
       assertEquals("878bfefb423fd893f2a0fae757394766452d75950757ff05b24ccae6c8e5cd0a", installedSurfaces.fingerprint)
       val catalogErrors                                                                            = Scala3PsiProductionCatalogValidator.validate(
         Scala3PsiProductionCatalog.Reviewed,

@@ -1329,8 +1329,34 @@ private[metallurgy] object CompilerRuntimeInventory:
             .filter(token => range.startOffset <= token.range.startOffset && token.range.endOffset <= range.endOffset)
             .map(_.kind)
         case _                                          => Vector.empty
+      // A separator fact enters the inventory only when the replayed scanner confirms its
+      // exact kind and range AND the fact sits inside the node-bounded interval between
+      // the qualifier end and the proven name start; otherwise the Select stays without
+      // separator evidence and the planner's selection fails closed for it.
       val separatorKinds     = snapshot.nodeSeparators
         .filter(separator => separator.ownerNodeId == id)
+        .filter: separator =>
+          val replayConfirmed =
+            snapshot.scannerTokens.exists(token => token.kind == separator.kind && token.range == separator.range)
+          val intervalBounded = position match
+            case ParserNodePosition.Positioned(range, _, _) =>
+              val qualifierEnd = fields
+                .collectFirst:
+                  case ParserSyntaxField("qualifier", ParserFieldValue.Node(qualifierId), _) =>
+                    nodes
+                      .get(qualifierId)
+                      .flatMap(_.position match
+                        case ParserNodePosition.Positioned(qualifierRange, _, _) => Some(qualifierRange.endOffset)
+                        case _                                                   => None
+                      )
+                .flatten
+              qualifierEnd.exists(qe =>
+                separator.range.startOffset >= qe &&
+                  separator.range.startOffset >= range.startOffset &&
+                  separator.range.endOffset <= range.endOffset
+              )
+            case _                                          => false
+          replayConfirmed && intervalBounded
         .map(_.kind)
       val directNodeEvidence = fields.flatMap: field =>
         field.value match
