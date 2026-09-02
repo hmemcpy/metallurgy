@@ -1093,12 +1093,11 @@ private final class StructuralScala3ParserBridge private (
       exactScannerTokens(active, source, context.value, request.sourceText, request.cancellation)
     nodes.map: collected =>
       val separators = recordedStream.map: (recorder, _) =>
-        correlateSeparators(
-          active,
-          readRecordedTokens(recorder, sink),
-          request.sourceText,
-          collected.nodes
-        )
+        val recorded = readRecordedTokens(recorder, sink)
+        val facts    = correlateSeparators(active, recorded, request.sourceText, collected.nodes)
+        // Replay confirms each published fact's kind and range after selection; a fact the
+        // replay cannot confirm drops its Select's evidence and that Select fails closed.
+        facts.filter(fact => scannerTokens.exists(token => token.kind == fact.kind && token.range == fact.range))
       ParserSyntaxSnapshot(
         request.sourceUri,
         request.sourceText,
