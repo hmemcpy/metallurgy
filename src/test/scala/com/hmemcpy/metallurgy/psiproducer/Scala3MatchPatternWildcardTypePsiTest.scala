@@ -187,17 +187,33 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
         |  case y: Box[? >: (A, B)] => "tuple"
         |  case y: Box[Option[? <: A]] => "nested"
         |  case y: Box[(Option[? >: A], B)] => "nested-tuple"
+        |  case y: Box[? <: Option[? <: A]] => "nested-bounded-q"
+        |  case y: Box[_ <: Option[_ >: A]] => "nested-bounded-u"
+        |  case y: Box[? >: A <: Option[? >: A <: B]] => "nested-bounded-both"
         |  case y: Box[A, ? <: B, Option[C]] => "mixed"
         |  case y: Box[
         |      /* c1 */ ? <: A // c2
         |    ] => "trivia"
         |""".stripMargin
     val file      = physical("MatchWildcardTypesBounds.scala", source)
-    assertEquals(6, descendants[ScCaseClauseImpl](file).size)
+    assertEquals(9, descendants[ScCaseClauseImpl](file).size)
     val wildcards = wildcardTypeElements(file)
-    assertEquals(6, wildcards.size)
+    assertEquals(12, wildcards.size)
     assertEquals(
-      Vector("Box[A]", "(A, B)", "A", "A", "B", "A"),
+      Vector(
+        "Box[A]",
+        "(A, B)",
+        "A",
+        "A",
+        "Option[? <: A]",
+        "A",
+        "Option[_ >: A]",
+        "A",
+        "Option[? >: A <: B]",
+        "B",
+        "B",
+        "A"
+      ),
       wildcards.map(w => w.upperTypeElement.orElse(w.lowerTypeElement).map(_.getText).getOrElse(""))
     )
     val applied   = descendants[ScParameterizedTypeElementImpl](file).map(_.getText)
@@ -309,13 +325,6 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
       val failure = Scala3SyntaxCapabilityService
         .get(getProject)
         .failureFor(file.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-      if !failure.isDefined && source.contains("case ? =>") then
-        println(s"########## DEBUG case ? failure=$failure")
-        def walk(e: PsiElement, d: Int): Unit =
-          if d < 10 then
-            println(s"${"  " * d}${e.getClass.getSimpleName} [${e.getText.take(40).replace("\n", " ")}]")
-            e.getChildren.toVector.foreach(walk(_, d + 1))
-        walk(file, 0)
       assertTrue(s"unsupported wildcard shape should fail closed (source $index)", failure.isDefined)
       assertTrue(wildcardTypeElements(file).isEmpty)
       assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)

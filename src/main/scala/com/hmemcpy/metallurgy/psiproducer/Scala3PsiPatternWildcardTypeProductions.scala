@@ -1,5 +1,7 @@
 package com.hmemcpy.metallurgy.psiproducer
 
+import com.hmemcpy.metallurgy.pc.*
+
 import Scala3PsiProductionSupport.*
 
 private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
@@ -99,28 +101,28 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
       ),
       TerminalDeclaration(
         "question-mark",
-        TerminalIntervalSelector.WholeProduction,
+        TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Identifier, ScannerTokenOccurrence.First),
         TerminalLeafTarget.Token(NativePsiElementBindings.WildcardQuestionTokenSurface, Some("?")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       ),
       TerminalDeclaration(
         "under-marker",
-        TerminalIntervalSelector.WholeProduction,
+        TerminalIntervalSelector.CompilerScannerToken(ParserScannerTokenKind.Other, ScannerTokenOccurrence.First),
         TerminalLeafTarget.Token(NativePsiElementBindings.ImportLegacyWildcardTokenSurface, Some("_")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       ),
       TerminalDeclaration(
         "lower-bound-token",
-        TerminalIntervalSelector.WholeProduction,
+        TerminalIntervalSelector.BeforeChild("lower-bound"),
         TerminalLeafTarget.Token(NativePsiElementBindings.LowerTypeBoundTokenSurface, Some(">:")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
       ),
       TerminalDeclaration(
         "upper-bound-token",
-        TerminalIntervalSelector.WholeProduction,
+        TerminalIntervalSelector.BeforeChild("upper-bound"),
         TerminalLeafTarget.Token(NativePsiElementBindings.UpperTypeBoundTokenSurface, Some("<:")),
         OccurrenceCardinality.Optional,
         PsiOutputRoleId.SourceTerminal
