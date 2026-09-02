@@ -357,7 +357,7 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
           "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
           "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
           "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "0d745c2029cd1d13666821589e7d4e73785a6391a7cb87a2abcd208a9da8f7db"
+          "84fe8a622399a2e2da211429778d13102edca31f135a72262a1bbde7c403402e"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
