@@ -332,6 +332,15 @@ private[metallurgy] object CanonicalByteEncoder:
           case ParserAttachmentValue.Name(value)         => e.tag(2); e.string(value)
           case ParserAttachmentValue.Scalar(value)       => e.tag(3); writeScalar(value, e)
           case ParserAttachmentValue.RuntimeKind(kind)   => e.tag(4); e.string(kind)
+    capabilities.separatorProvenance match
+      case ParserCapabilityStatus.Available                => ()
+      case unavailable: ParserCapabilityStatus.Unavailable =>
+        e.tag(14); writeCapability(unavailable, e)
+    if snapshot.nodeSeparators.nonEmpty then
+      e.tag(15)
+      e.sequence(snapshot.nodeSeparators): separator =>
+        e.long(separator.ownerNodeId); e.tag(separator.kind.ordinal)
+        writeRange(separator.range, e); e.int(separator.point); e.tag(separator.provenance.ordinal)
     e.result()
 
   private def writeSyntax(

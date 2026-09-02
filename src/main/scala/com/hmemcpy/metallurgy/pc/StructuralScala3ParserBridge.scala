@@ -816,10 +816,12 @@ private final class StructuralScala3ParserBridge private (
 
   private val runtime = new AtomicReference[Option[ParserRuntimeLease]](Some(new ParserRuntimeLease(initialRuntime)))
 
+  private val separatorAdmitted: Boolean =
+    initialRuntime.separatorRecorder.exists(recorder => separatorAdmissionProbe(initialRuntime, recorder).isRight)
+
   private val separatorStatus: ParserCapabilityStatus =
-    initialRuntime.separatorRecorder
-      .flatMap(recorder => separatorAdmissionProbe(initialRuntime, recorder))
-      .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available)
+    if separatorAdmitted then ParserCapabilityStatus.Available
+    else ParserCapabilityStatus.Unavailable("parser-owned separator admission failed")
 
   override val capabilities: Scala3ParserCapabilities =
     val base = availableCapabilities(
@@ -844,18 +846,19 @@ private final class StructuralScala3ParserBridge private (
             ParserSourceUri
               .from("file:///separator-admission-probe.scala")
               .getOrElse(throw new IllegalStateException()),
-            "class SeparatorAdmissionProbe",
+            "class SeparatorAdmissionProbe { def bound(v: pkg.Outer#T): pkg.Outer#T = v }",
             Vector.empty,
             Scala3ParserCancellation.Never
           )
         ) match
           case Left(error)    => Left(error.toString)
           case Right(context) =>
-            val source      = active.sourceFactory.create("probe.scala", "class SeparatorAdmissionProbe")
-            val stockParser = active.parserFactory.create(source, context.value)
-            val stockRoot   = stockParser.getClass.getMethod("parse").invoke(stockParser)
+            val probeText = "class SeparatorAdmissionProbe { def bound(v: pkg.Outer#T): pkg.Outer#T = v }"
+            val source    = active.sourceFactory.create("probe.scala", probeText)
+            val stockRoot = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue].parse()
             if stockRoot == null then Left("the stock parser produced no tree")
             else
+              val stockNodes     = collectNodes(active, stockRoot, context.value, probeText, Scala3ParserCancellation.Never)
               val sink           = new java.util.ArrayList[AnyRef]
               val recorderParser =
                 constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue]
@@ -863,18 +866,25 @@ private final class StructuralScala3ParserBridge private (
               val recorded       = readRecordedTokens(recorder, sink)
               if recordingRoot == null || recorded.isEmpty then Left("the recording parse produced no tree or tokens")
               else
-                val replay             = exactScannerTokens(
-                  active,
-                  source,
-                  context.value,
-                  "class SeparatorAdmissionProbe",
-                  Scala3ParserCancellation.Never
-                )
-                val recordedProjection = recorded.map((token, offset, _) => (token, offset))
-                val replayProjection   = replay.map(token => (token.tokenId, token.range.startOffset))
-                if recordedProjection.take(replayProjection.size) != replayProjection then
-                  Left("the recording parse diverged from the stock scanner stream")
-                else Right(())
+                val recordingNodes  =
+                  collectNodes(active, recordingRoot, context.value, probeText, Scala3ParserCancellation.Never)
+                val treesEquivalent = (stockNodes, recordingNodes) match
+                  case (Right(left), Right(right)) => left == right
+                  case _                           => false
+                if !treesEquivalent then Left("the recording parse changed the tree inventory")
+                else
+                  val replay             = exactScannerTokens(
+                    active,
+                    source,
+                    context.value,
+                    probeText,
+                    Scala3ParserCancellation.Never
+                  )
+                  val recordedProjection = recorded.map((token, offset, _) => (token, offset))
+                  val replayProjection   = replay.map(token => (token.tokenId, token.range.startOffset))
+                  if recordedProjection.take(replayProjection.size) != replayProjection then
+                    Left("the recording parse diverged from the stock scanner stream")
+                  else Right(())
     catch case NonFatal(error) => Left(errorMessage(error))
 
   /** Constructs a parser whose scanner records the exact parse's consumed tokens. */
@@ -931,11 +941,13 @@ private final class StructuralScala3ParserBridge private (
         .toVector
     if byOffset.exists(_.isEmpty) then Vector.empty
     else
-      val offsets = byOffset.collect { case Some(entry) => entry }.toMap
+      val offsets = byOffset
+        .collect { case Some(entry) => entry }
+        .groupMap((offset, _) => offset)((_, fact) => fact)
       nodes.flatMap(node => separatorForSelect(offsets, sourceText, nodes, node))
 
   private def separatorForSelect(
-      byOffset: Map[Int, (Int, ParserScannerTokenKind)],
+      byOffset: Map[Int, Vector[(Int, ParserScannerTokenKind)]],
       sourceText: String,
       nodes: Vector[ParserSyntaxNode],
       node: ParserSyntaxNode
@@ -957,23 +969,25 @@ private final class StructuralScala3ParserBridge private (
                               case _ => None
             name         <- node.fields.collectFirst:
                               case ParserSyntaxField("name", ParserFieldValue.Name(value), _) => value
-            nameBoundary  = byOffset.collect:
-                              case (offset, (end, _)) if end == range.endOffset =>
-                                val slice = sourceText.substring(offset, range.endOffset)
-                                if slice == name || slice == s"`$name`" then offset else Int.MinValue
-            nameStart    <- nameBoundary.toVector.filter(_ != Int.MinValue) match
+            nameBoundary  = byOffset.toVector.flatMap: (offset, facts) =>
+                              facts.collectFirst:
+                                case (end, _) if end == range.endOffset =>
+                                  val slice = sourceText.substring(offset, range.endOffset)
+                                  if slice == name || slice == s"`$name`" then offset else Int.MinValue
+            nameStart    <- nameBoundary.filter(_ != Int.MinValue) match
                               case Vector(single) => Some(single)
                               case _              =>
                                 val derived = range.endOffset - name.length
                                 val slice   = sourceText.substring(derived, range.endOffset)
-                                println(s"SEP-DEBUG-FORMULA name=$name derived=$derived slice='$slice'")
                                 if slice == name then Some(derived) else None
             if nameStart > qualifierEnd
-            candidates    = byOffset.collect:
-                              case (offset, (end, kind))
-                                  if offset >= qualifierEnd && end <= nameStart &&
-                                    (kind == ParserScannerTokenKind.Dot || kind == ParserScannerTokenKind.Hash) =>
-                                (offset, end, kind)
+            candidates    = byOffset.toVector.flatMap: (offset, facts) =>
+                              facts.collect:
+                                case (end, kind)
+                                    if offset >= qualifierEnd && end <= nameStart &&
+                                      (kind == ParserScannerTokenKind.Dot ||
+                                        kind == ParserScannerTokenKind.Hash) =>
+                                  (offset, end, kind)
             separator    <- candidates.toVector match
                               case Vector(single) => Some(single)
                               case _              => None
@@ -1064,12 +1078,12 @@ private final class StructuralScala3ParserBridge private (
     val source                   = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
     val sink                     = new java.util.ArrayList[AnyRef]
     val (parser, recordedStream) = active.separatorRecorder match
-      case Right(recorder) =>
+      case Right(recorder) if separatorAdmitted =>
         (
           constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue],
           Some((recorder, readRecordedTokens(recorder, sink)))
         )
-      case Left(_)         =>
+      case _                                    =>
         (active.parserFactory.create(source, context.value).asInstanceOf[ParserValue], None)
     val root                     = parser.parse()
     request.cancellation.checkCanceled()

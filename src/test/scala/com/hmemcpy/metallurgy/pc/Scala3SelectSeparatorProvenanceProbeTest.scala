@@ -238,17 +238,33 @@ final class Scala3SelectSeparatorProvenanceProbeTest:
             bridge.capabilities.separatorProvenance == ParserCapabilityStatus.Available
         )
         SelectShapes.foreach: shape =>
-          val source         = wrapMatch(shape.source)
-          val snapshot       = parse(bridge, source, s"file:///ProductionSeparators-$version-${shape.id}.scala")
-          val selects        = snapshot.nodes.count(node => node.production == "Select")
-          val expectedKinds  = Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash)
-          val rootSeparators = snapshot.nodeSeparators
+          val source          = wrapMatch(shape.source)
+          val snapshot        = parse(bridge, source, s"file:///ProductionSeparators-$version-${shape.id}.scala")
+          val selects         = snapshot.nodes.count(node => node.production == "Select")
+          val expectedKinds   = Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash)
+          val rootSeparators  = snapshot.nodeSeparators
           assertTrue(
             s"$version shape ${shape.id}: separator evidence expected ($selects selects, ${rootSeparators.size} facts)",
             rootSeparators.nonEmpty &&
               rootSeparators.forall(fact =>
                 expectedKinds(fact.kind) && fact.provenance == ParserPositionProvenance.SourceDerived
               )
+          )
+          val eligibleSelects = snapshot.nodes.count: node =>
+            node.production == "Select" && node.position.isInstanceOf[ParserNodePosition.Positioned] &&
+              node.fields.exists(field =>
+                field.name == "qualifier" && field.value.isInstanceOf[ParserFieldValue.Node]
+              ) &&
+              node.fields.exists(field => field.name == "name" && field.value.isInstanceOf[ParserFieldValue.Name])
+          assertEquals(
+            s"$version shape ${shape.id}: every eligible Select owns exactly one separator fact",
+            eligibleSelects,
+            rootSeparators.size
+          )
+          assertEquals(
+            s"$version shape ${shape.id}: separator owners are distinct Selects",
+            rootSeparators.map(_.ownerNodeId).distinct.size,
+            rootSeparators.size
           )
           rootSeparators.foreach: separator =>
             val select = snapshot.nodes.find(_.id == separator.ownerNodeId)
@@ -278,7 +294,9 @@ final class Scala3SelectSeparatorProvenanceProbeTest:
     Shape("applied-argument", """case y: Box[a.B] => 8"""),
     Shape("tuple-component", """case y: (a.B, Outer#T) => 9"""),
     Shape("wildcard-bound", """case y: Box[? <: a.B] => 10"""),
-    Shape("dot-after-hash-recovered", """case y: Outer#T.U => 11""")
+    Shape("dot-after-hash-recovered", """case y: Outer#T.U => 11"""),
+    Shape("backticked-segment", """case y: pkg.`type`.T => 12"""),
+    Shape("indentation-stress", """case y: a.B\n    .C => 13""")
   )
 
   private def wrapMatch(body: String): String =
