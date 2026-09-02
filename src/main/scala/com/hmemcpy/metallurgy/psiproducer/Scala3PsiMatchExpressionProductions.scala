@@ -234,6 +234,16 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     )
   )
 
+  // The match-owned type positions shared by stable Select and wildcard type productions.
+  private[psiproducer] val MatchPatternTypeEdges: Vector[(String, Vector[CatalogPathSegment])] = Vector(
+    ("Typed", Vector(CatalogPathSegment.NamedField("tpt"))),
+    ("AppliedTypeTree", Vector(CatalogPathSegment.NamedField("tpt"))),
+    ("AppliedTypeTree", Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)),
+    ("Tuple", Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)),
+    ("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("lo"))),
+    ("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi")))
+  )
+
   private[psiproducer] val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
     InventoryAncestor(
       InventoryKind.Node,
@@ -1246,7 +1256,10 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TypeIdentProductionId,
         Set(
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
-          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
+          Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
         )
       )
     ),
@@ -1277,7 +1290,12 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         "tpt",
         ChildRootOutcome.One(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TupleType)
+            Set(
+              PsiOutputRoleId.SimpleType,
+              PsiOutputRoleId.ParameterizedType,
+              PsiOutputRoleId.TupleType,
+              PsiOutputRoleId.TypeProjection
+            )
           )
         )
       )
@@ -1497,7 +1515,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     nestedChildRequirements = Vector(
       RequiredChildRootOutcome(
         "tpt",
-        ChildRootOutcome.One(ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType)))
+        ChildRootOutcome.One(
+          ChildOutcomeExpectation.OutputRoles(Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.TypeProjection))
+        )
       )
     )
   )
@@ -2031,7 +2051,10 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
         TypeIdentProductionId,
         Set(
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
-          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId
+          Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
+          Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
         )
       )
     ),

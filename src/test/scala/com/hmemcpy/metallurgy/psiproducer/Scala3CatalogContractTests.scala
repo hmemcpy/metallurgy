@@ -22,6 +22,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "template-absent-tree"
       ),
       GrammarRoleId.StableReference           -> Set(
+        "match-pattern-dotted-reference",
+        "match-pattern-dotted-reference-ident",
         "import-path-identifier-reference",
         "import-path-reference",
         "import-path-identifier",
@@ -77,6 +79,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "import-selector-empty-name"
       ),
       GrammarRoleId.SimpleType                -> Set(
+        "match-pattern-dotted-type",
         "import-selector-bound-type",
         "import-selector-given-bound-qualified-type",
         "annotation-designator-ident",
@@ -86,7 +89,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "capture-function-result-ident",
         "match-pattern-type-ident"
       ),
-      GrammarRoleId.TypeProjection            -> Set("type-atom-projection"),
+      GrammarRoleId.TypeProjection            -> Set("type-atom-projection", "match-pattern-hash-projection"),
       GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
       GrammarRoleId.LiteralType               -> Set("type-atom-literal"),
       GrammarRoleId.ParenthesizedType         -> Set("type-atom-parenthesized"),

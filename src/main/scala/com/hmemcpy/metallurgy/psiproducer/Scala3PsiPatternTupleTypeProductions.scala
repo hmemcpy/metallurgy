@@ -115,7 +115,9 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
         Set(
           Scala3PsiMatchExpressionProductions.TypeIdentProductionId,
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
-          MatchTupleTypeProductionId
+          MatchTupleTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
         )
       )
     ),
@@ -213,7 +215,12 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
         "components",
         ChildRootOutcome.All(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TupleType)
+            Set(
+              PsiOutputRoleId.SimpleType,
+              PsiOutputRoleId.ParameterizedType,
+              PsiOutputRoleId.TupleType,
+              PsiOutputRoleId.TypeProjection
+            )
           )
         )
       )

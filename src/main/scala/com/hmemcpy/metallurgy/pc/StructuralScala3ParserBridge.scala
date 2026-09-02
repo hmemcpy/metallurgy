@@ -908,11 +908,16 @@ private final class StructuralScala3ParserBridge private (
       sourceText: String,
       nodes: Vector[ParserSyntaxNode]
   ): Vector[ParserNodeSeparator] =
-    val byOffset =
-      recorded
+    // Each recorded observation names the token that became current and the end of the
+    // token before it; a token's own end is the next observation's carried end.
+    val consumption = recorded
+      .zip(recorded.drop(1) :+ recorded.last)
+      .map { case ((tokenId, offset, _), (_, _, nextEnd)) => (tokenId, offset, math.max(offset, nextEnd)) }
+    val byOffset    =
+      consumption
         .groupMap((tokenId, offset, _) => (tokenId, offset))(value => value)
         .map { case ((tokenId, offset), observations) =>
-          val ends = observations.map((_, _, lastOffset) => math.max(offset, lastOffset)).distinct
+          val ends = observations.map((_, _, end) => end).distinct
           if ends.size != 1 then None
           else
             val runtimeKind =
@@ -952,9 +957,18 @@ private final class StructuralScala3ParserBridge private (
                               case _ => None
             name         <- node.fields.collectFirst:
                               case ParserSyntaxField("name", ParserFieldValue.Name(value), _) => value
-            nameStart     = range.endOffset - name.length
+            nameBoundary  = byOffset.collect:
+                              case (offset, (end, _)) if end == range.endOffset =>
+                                val slice = sourceText.substring(offset, range.endOffset)
+                                if slice == name || slice == s"`$name`" then offset else Int.MinValue
+            nameStart    <- nameBoundary.toVector.filter(_ != Int.MinValue) match
+                              case Vector(single) => Some(single)
+                              case _              =>
+                                val derived = range.endOffset - name.length
+                                val slice   = sourceText.substring(derived, range.endOffset)
+                                println(s"SEP-DEBUG-FORMULA name=$name derived=$derived slice='$slice'")
+                                if slice == name then Some(derived) else None
             if nameStart > qualifierEnd
-            if sourceText.substring(nameStart, range.endOffset) == name
             candidates    = byOffset.collect:
                               case (offset, (end, kind))
                                   if offset >= qualifierEnd && end <= nameStart &&

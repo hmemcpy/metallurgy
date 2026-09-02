@@ -432,7 +432,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiMatchExpressionProductions.MatchGivenSuffixSegment ++
       Scala3PsiMatchExpressionProductions.MatchParenthesizedSuffixSegment ++
       Scala3PsiPatternTupleTypeProductions.PatternTupleTypeSuffixSegment ++
-      Scala3PsiPatternWildcardTypeProductions.PatternWildcardTypeSuffixSegment,
+      Scala3PsiPatternWildcardTypeProductions.PatternWildcardTypeSuffixSegment ++
+      Scala3PsiPatternStableSelectProductions.PatternStableSelectSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(
@@ -544,6 +545,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(
         Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
         "payload-descendant-tuple"
+      ),
+      ProductionAlternatives(
+        Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+        "payload-descendant-select"
+      ),
+      ProductionAlternatives(
+        Scala3PsiPatternStableSelectProductions.MatchDottedReferenceProductionId,
+        "payload-descendant-select"
+      ),
+      ProductionAlternatives(
+        Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+        "payload-descendant-select"
       )
     )
   )

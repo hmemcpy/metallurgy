@@ -670,9 +670,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case s"lit" => "interp"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case v: a.B => "qualified"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case v: (Int) => "paren"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
@@ -1048,25 +1045,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
     payloadsOutsideMatch(file)
 
   @Test
-  def testGivenPatternShapesStayFailClosedOrRemainReferencePatterns(): Unit =
-    val sources = Vector(
-      """def pending(x: Any): Any = x match
-        |  case given a.B => "qualified"
-        |""".stripMargin
-    )
-    sources.zipWithIndex.foreach { case (source, index) =>
-      val pending = myFixture.addFileToProject(s"src/MatchGivenUnsupported$index.scala", source)
-      val file    = PsiManager.getInstance(getProject).findFile(pending.getVirtualFile)
-      assertTrue(PsiTreeUtil.findChildrenOfType(file, classOf[PsiErrorElement]).isEmpty)
-      val failure = Scala3SyntaxCapabilityService
-        .get(getProject)
-        .failureFor(pending.getVirtualFile, ParserSyntaxSnapshot.digest(source))
-      assertTrue(s"unsupported given shape should fail closed (source $index): ${failure}", failure.isDefined)
-      assertTrue(descendants[ScGivenPatternImpl](file).isEmpty)
-      assertTrue(descendants[ScMatchImpl](file).isEmpty)
-    }
-  @Test
-  def testGivenPatternEditsTransitionBetweenNativeAndFailClosed(): Unit     =
+  def testGivenPatternEditsTransitionBetweenNativeAndFailClosed(): Unit =
     val template                                =
       """def transitions(x: Any): Any = x match
         |  case GIVEN => "g"
@@ -1084,6 +1063,9 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
       )
       PsiDocumentManager.getInstance(getProject).commitDocument(document)
     replaceGiven("given a.B")
+    assertEquals(Vector("given a.B"), descendants[ScGivenPatternImpl](file).map(_.getText))
+    assertEquals(1, descendants[ScMatchImpl](file).size)
+    replaceGiven("given Outer[Int]#T")
     assertTrue(descendants[ScGivenPatternImpl](file).isEmpty)
     assertTrue(descendants[ScMatchImpl](file).isEmpty)
     replaceGiven("ord @ given Ordering[Int]")

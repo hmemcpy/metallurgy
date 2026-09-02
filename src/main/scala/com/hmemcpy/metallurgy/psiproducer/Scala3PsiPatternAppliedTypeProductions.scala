@@ -105,7 +105,11 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "tpt",
         ChildCardinality.ExactlyOne,
         Scala3PsiMatchExpressionProductions.TypeIdentProductionId,
-        Set(AppliedTypeProductionId)
+        Set(
+          AppliedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+        )
       ),
       ChildDeclaration(
         "arguments",
@@ -115,7 +119,9 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         Set(
           AppliedTypeProductionId,
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
-          Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId
+          Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
         )
       )
     ),
@@ -143,7 +149,7 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "constructor",
         ChildRootOutcome.One(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType)
+            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TypeProjection)
           )
         )
       ),
@@ -155,7 +161,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
               PsiOutputRoleId.SimpleType,
               PsiOutputRoleId.ParameterizedType,
               PsiOutputRoleId.TupleType,
-              PsiOutputRoleId.WildcardType
+              PsiOutputRoleId.WildcardType,
+              PsiOutputRoleId.TypeProjection
             )
           )
         )

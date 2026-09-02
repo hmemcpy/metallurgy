@@ -17,8 +17,10 @@ import org.jetbrains.plugins.scala.lang.psi.impl.base.patterns.{
   ScGivenPatternImpl,
   Sc3TypedPatternImpl
 }
+import org.jetbrains.plugins.scala.lang.psi.impl.base.ScStableCodeReferenceImpl
 import org.jetbrains.plugins.scala.lang.psi.impl.base.types.{
   ScParameterizedTypeElementImpl,
+  ScSimpleTypeElementImpl,
   ScTypeArgsImpl,
   ScWildcardTypeElementImpl
 }
@@ -314,11 +316,7 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
       """def partial(x: Any): Any = { case y: Box[? <: A] => 1 }""",
       """def catcher(x: Any): Any = try x catch { case y: Box[? <: A] => 1 }""",
       """def gen(xs: List[Any]): List[Any] = for (y: Box[? <: A]) <- xs yield y""",
-      """def quoted(x: Any): Any = '{ case y: Box[? <: A] => 1 }""",
-      """def pending(x: Any): Any = x match
-        |  case y: Box[? <: A] => 1
-        |  case z: p.A => 2
-        |""".stripMargin
+      """def quoted(x: Any): Any = '{ case y: Box[? <: A] => 1 }"""
     )
     sources.zipWithIndex.foreach { case (source, index) =>
       val file    = pendingFile(s"MatchWildcardUnsupported$index.scala", source)
@@ -330,6 +328,24 @@ final class Scala3MatchPatternWildcardTypePsiTest extends Scala3CompatTestCase:
       assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
       assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
     }
+
+  @Test
+  def testWildcardAndStableSelectCoexistAcrossCaseClauses(): Unit =
+    val source    =
+      """def pending(x: Any): Any = x match
+        |  case y: Box[? <: A] => 1
+        |  case z: p.A => 2
+        |""".stripMargin
+    val file      = physical("MatchWildcardStableSelectMix.scala", source)
+    assertEquals(2, descendants[ScCaseClauseImpl](file).size)
+    val wildcards = wildcardTypeElements(file)
+    assertEquals(1, wildcards.size)
+    val dotted    = descendants[ScSimpleTypeElementImpl](file).filter(_.getText.contains("."))
+    assertEquals(Vector("p.A"), dotted.map(_.getText))
+    val reference = descendants[ScStableCodeReferenceImpl](file).find(_.getText == "p.A")
+    assertTrue(reference.isDefined)
+    assertEquals("p.A", reference.get.getText)
+    assertEquals(2, descendants[Sc3TypedPatternImpl](file).size)
 
   @Test
   def testOrdinaryWildcardTypeOwnerStaysUnchangedOutsideMatchScope(): Unit =
