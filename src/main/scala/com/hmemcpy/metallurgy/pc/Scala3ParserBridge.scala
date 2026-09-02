@@ -102,7 +102,8 @@ private[metallurgy] final case class Scala3ParserRequest(
     sourceUri: ParserSourceUri,
     sourceText: String,
     compilerOptions: Vector[String],
-    cancellation: Scala3ParserCancellation = Scala3ParserCancellation.Never
+    cancellation: Scala3ParserCancellation = Scala3ParserCancellation.Never,
+    forceStockParse: Boolean = false
 )
 
 private[metallurgy] opaque type ParserSourceUri = String

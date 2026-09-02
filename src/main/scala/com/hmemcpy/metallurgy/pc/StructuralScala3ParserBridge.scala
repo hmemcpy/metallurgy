@@ -819,7 +819,7 @@ private final class StructuralScala3ParserBridge private (
   private val runtime = new AtomicReference[Option[ParserRuntimeLease]](Some(new ParserRuntimeLease(initialRuntime)))
 
   private val separatorAdmitted: Boolean =
-    initialRuntime.separatorRecorder.exists(recorder => separatorAdmissionProbe(initialRuntime, recorder).isRight)
+    initialRuntime.separatorRecorder.exists(_ => separatorAdmissionProbe(initialRuntime).isRight)
 
   private val separatorStatus: ParserCapabilityStatus =
     if separatorAdmitted then ParserCapabilityStatus.Available
@@ -837,56 +837,35 @@ private final class StructuralScala3ParserBridge private (
     base.copy(separatorProvenance = separatorStatus)
 
   private def separatorAdmissionProbe(
-      active: ParserRuntime,
-      recorder: SeparatorRecorder
+      active: ParserRuntime
   ): Either[String, Unit] =
     try
       withCompilerClassloader(active):
-        configuredContext(
+        val probeText        = "class SeparatorAdmissionProbe { def bound(v: pkg.Outer#T): pkg.Outer#T = v }"
+        val request          = Scala3ParserRequest(
+          ParserSourceUri
+            .from("file:///separator-admission-probe.scala")
+            .getOrElse(throw new IllegalStateException()),
+          probeText,
+          Vector.empty,
+          Scala3ParserCancellation.Never
+        )
+        val stock            = parseSource(
           active,
-          Scala3ParserRequest(
-            ParserSourceUri
-              .from("file:///separator-admission-probe.scala")
-              .getOrElse(throw new IllegalStateException()),
-            "class SeparatorAdmissionProbe { def bound(v: pkg.Outer#T): pkg.Outer#T = v }",
-            Vector.empty,
-            Scala3ParserCancellation.Never
-          )
-        ) match
-          case Left(error)    => Left(error.toString)
-          case Right(context) =>
-            val probeText = "class SeparatorAdmissionProbe { def bound(v: pkg.Outer#T): pkg.Outer#T = v }"
-            val source    = active.sourceFactory.create("probe.scala", probeText)
-            val stockRoot = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue].parse()
-            if stockRoot == null then Left("the stock parser produced no tree")
-            else
-              val stockNodes     = collectNodes(active, stockRoot, context.value, probeText, Scala3ParserCancellation.Never)
-              val sink           = new java.util.ArrayList[AnyRef]
-              val recorderParser =
-                constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue]
-              val recordingRoot  = recorderParser.parse()
-              val recorded       = readRecordedTokens(recorder, sink)
-              if recordingRoot == null || recorded.isEmpty then Left("the recording parse produced no tree or tokens")
-              else
-                val recordingNodes  =
-                  collectNodes(active, recordingRoot, context.value, probeText, Scala3ParserCancellation.Never)
-                val treesEquivalent = (stockNodes, recordingNodes) match
-                  case (Right(left), Right(right)) => left == right
-                  case _                           => false
-                if !treesEquivalent then Left("the recording parse changed the tree inventory")
-                else
-                  val replay             = exactScannerTokens(
-                    active,
-                    source,
-                    context.value,
-                    probeText,
-                    Scala3ParserCancellation.Never
-                  )
-                  val recordedProjection = recorded.map((token, offset, _) => (token, offset))
-                  val replayProjection   = replay.map(token => (token.tokenId, token.range.startOffset))
-                  if recordedProjection.take(replayProjection.size) != replayProjection then
-                    Left("the recording parse diverged from the stock scanner stream")
-                  else Right(())
+          request.copy(forceStockParse = true),
+          configuredContext(active, request).getOrElse {
+            throw new IllegalStateException("admission context setup failed")
+          }
+        )
+        val recordingContext = configuredContext(active, request)
+          .getOrElse(throw new IllegalStateException("admission context setup failed"))
+        val recording        = parseSource(active, request, recordingContext, forceRecording = true)
+        (stock, recording) match
+          case (Right(left), Right(right)) =>
+            val equivalent = left == right.copy(nodeSeparators = Vector.empty)
+            if equivalent then Right(())
+            else Left("the recording parse changed the parser snapshot")
+          case _                           => Left("an admission parse failed")
     catch
       case NonFatal(error) => Left(errorMessage(error))
       case error: LinkageError => Left(errorMessage(error))
@@ -1076,18 +1055,19 @@ private final class StructuralScala3ParserBridge private (
   private def parseSource(
       active: ParserRuntime,
       request: Scala3ParserRequest,
-      context: ParserContext
+      context: ParserContext,
+      forceRecording: Boolean = false
   ): Either[Scala3ParserError, ParserSyntaxSnapshot] =
     request.cancellation.checkCanceled()
     val source                   = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
     val sink                     = new java.util.ArrayList[AnyRef]
     val (parser, recordedStream) = active.separatorRecorder match
-      case Right(recorder) if separatorAdmitted =>
+      case Right(recorder) if forceRecording || (separatorAdmitted && !request.forceStockParse) =>
         (
           constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue],
           Some((recorder, readRecordedTokens(recorder, sink)))
         )
-      case _                                    =>
+      case _                                                                                    =>
         (active.parserFactory.create(source, context.value).asInstanceOf[ParserValue], None)
     val root                     = parser.parse()
     request.cancellation.checkCanceled()
