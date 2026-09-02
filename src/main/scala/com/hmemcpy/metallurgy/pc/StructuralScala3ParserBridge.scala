@@ -863,8 +863,10 @@ private final class StructuralScala3ParserBridge private (
         (stock, recording) match
           case (Right(left), Right(right)) =>
             val equivalent = left == right.copy(nodeSeparators = Vector.empty)
-            if equivalent then Right(())
-            else Left("the recording parse changed the parser snapshot")
+            if !equivalent then Left("the recording parse changed the parser snapshot")
+            else if right.nodeSeparators.isEmpty then
+              Left("the recording parse produced no separator facts for the probe source")
+            else Right(())
           case _                           => Left("an admission parse failed")
     catch
       case NonFatal(error) => Left(errorMessage(error))
