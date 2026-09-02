@@ -33,7 +33,7 @@ final class Scala3DefinitionParserInventoryTest:
         ParserSyntaxSnapshot.evidenceFingerprint(second)
       )
       assertEquals(
-        "9b20c260204155eb6e2842d92ac965e85e147539973711f822afe1d2e5fcdc9e",
+        "6c2057e49c489a71f7a58797a227d9684b2ab449bde9a100814671e7d5e2e19e",
         ParserSyntaxSnapshot.evidenceFingerprint(first)
       )
       assertEquals(DefinitionSource, first.sourceText)
