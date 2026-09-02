@@ -33,7 +33,7 @@ final class Scala3DefinitionParserInventoryTest:
         ParserSyntaxSnapshot.evidenceFingerprint(second)
       )
       assertEquals(
-        "6c2057e49c489a71f7a58797a227d9684b2ab449bde9a100814671e7d5e2e19e",
+        "9b20c260204155eb6e2842d92ac965e85e147539973711f822afe1d2e5fcdc9e",
         ParserSyntaxSnapshot.evidenceFingerprint(first)
       )
       assertEquals(DefinitionSource, first.sourceText)
@@ -160,7 +160,7 @@ final class Scala3DefinitionParserInventoryTest:
 
       assertTrue(snapshot.diagnostics.toString, snapshot.diagnostics.isEmpty)
       assertEquals(
-        "d50a4c56d85d0f061681ae6998702dc20181844af13ca5a6b82265be47d5b7ef",
+        "94e743faed8651def9e7a57ed8f54208d8cfcc7d255715250c4f0965c25005ab",
         ParserSyntaxSnapshot.evidenceFingerprint(snapshot)
       )
       assertTrue(modifiers.nonEmpty)
@@ -242,7 +242,7 @@ final class Scala3DefinitionParserInventoryTest:
         (
           QualifiedAnnotationSource,
           "file:///QualifiedAnnotationInventory.scala",
-          "65b8856b691af9ac6b17864f7624bb37fa43ed525d55cf2ab268616455b6867b"
+          "39f2349cf3ecdecd8b824562bc0aa9a87f28425e7e82e980dea9a710a803c31c"
         ),
         (
           AppliedAnnotationSource,

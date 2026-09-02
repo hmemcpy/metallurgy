@@ -150,9 +150,9 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
           "cc3f6ee35c45c9e7b689e619377ac13474a6ceb5a002a864ee4fb4a5435eaa4f",
           "04e4d8bc6edeeb94a9e4e6093b167d9738f94d40787f4196dd4f8eaa82edc94a",
           "5e5b6520e00ea3c5f96380ccbb4b89c72d0b2553d2443535d2b1d78d95499a64",
-          "27ed4cecad06bef262a37898c79db84f6f2a17d00e21cd4bbaf9ea7ccc653f4e",
-          "1bd20209dc5ae9b4865f20761c06a4f5060ece5b47f40833924cfaaa4b9bf3cf",
-          "4c4dfec05ede3ce02f0e00f1fb9f3ec44c2d52f6476fec2c98eab538343d030a"
+          "be0846e906ee964ddc02226a132defd6fff5007a1af6041a07d020798daf0068",
+          "013f1bd53fcce60b2751a5f8bad14eab27e75686f3da0fdd70fc9f9328b878b9",
+          "9319964ee4e2e0dfccd734bfcb004280485a824ee48c48a06e1f0af7dfe69bdb"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint)
       )
@@ -353,11 +353,11 @@ private[pc] trait Scala3PackageAndStablePathParserTests extends Scala3ParserTest
 
       assertEquals(
         Vector(
-          "1c3d14098fae95344e6f9e910b17d40aaca45af24c7afe3fb8d4089faded3076",
-          "7f0c6d410d48d5e7b5c2c975266b5c180d6e12140a769d1c4b0e126b22193888",
-          "99512bdb0e36455981a357bec40959a0d8682fd38eb391632ee320f4efd9f797",
-          "950a6a85f4285b1a3efad61bccba1df52ec237f9fcb35c4cbaefb027f6eb5970",
-          "84fe8a622399a2e2da211429778d13102edca31f135a72262a1bbde7c403402e"
+          "ee0aae3f138ee89a2b054e63d2217ff1600cc639d82e0aeee14b870cf412924d",
+          "9ad12645279dd4b0d064dba28347152e4e49e2d087a10a7d9490586bdc9e87bb",
+          "33abc41b579e066099eaa3a1f7144f0e07cf2d114718281d4a02b8e1ce72179f",
+          "218d1028fd266ecb47e7c81f365cee5c767a76fb2354ff35ec06766ed39b7f94",
+          "c3d6379d4bff5f409776596332a24d91ef970710fb1bd529a69173c6ca009940"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )

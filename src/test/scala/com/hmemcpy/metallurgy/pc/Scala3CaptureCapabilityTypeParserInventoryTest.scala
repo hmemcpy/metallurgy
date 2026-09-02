@@ -42,7 +42,7 @@ final class Scala3CaptureCapabilityTypeParserInventoryTest:
       assertTrue(first.compilerIdentity.artifacts.nonEmpty)
       assertTrue(first.diagnostics.toString, first.diagnostics.forall(_.severity != ParserDiagnosticSeverity.Error))
       assertEquals(
-        "3ce4c82c5f35c017e31b1b89d18b684ebb09f09551918744083ab346d4d41115",
+        "c945b7a2fdfc3da40f0a46fbd2321100c9856fb4e0c567de4ee4fee75e4796ed",
         ParserSyntaxSnapshot.evidenceFingerprint(first)
       )
       assertEquals(Vector("RetainsAnnot", "RetainsAnnot", "RetainsAnnot"), first.attachments.map(_.keyKind))

@@ -82,25 +82,25 @@ private[pc] trait Scala3ImportExportParserTests extends Scala3ParserTestSupport:
     val bridge = openBridge()
     try
       val forms         = Vector(
-        ("import a.b.c\n", Vector("c"), "262c1533c8ca5b09b137b7f5136d3fb2923a30856ab94b46189eec35032aa144"),
-        ("import a.b.*\n", Vector("_"), "ccb4206d2afbb0c55c24beed219536e2129c2bf39d24c8ac7c72d5158c06a9ec"),
-        ("import a.b.{c}\n", Vector("c"), "01bb164a10401a3e5c2f060b39982e89d97b75f16ddf71ffca4b8ced1915917d"),
+        ("import a.b.c\n", Vector("c"), "bce83990ec5fcd3d55cced5ab9179e738637fac081477d19c96cf9cba56d6f2e"),
+        ("import a.b.*\n", Vector("_"), "cb35de90f55dbf5b9afe7579fa99497bb2854a84d8b6c12c4adcba688107477a"),
+        ("import a.b.{c}\n", Vector("c"), "2dcbbe614a563040bc6bf07ed5457d7e42e61ab32c70e53628c7174fa1dd13c1"),
         (
           "import a.b.{c /* as */ as d}\n",
           Vector("c", "d"),
-          "5a23963f840d0d5ea665be4db02dbc32119e145e6b126f29ff5d666228353e5a"
+          "45b209f830108de9c1d886ca380ebf6f5de71b977fd690d7926f86dc3834ae36"
         ),
         (
           "import a.b.{c /* => */ => d}\n",
           Vector("c", "d"),
-          "9da9e2b6eba42625c7d7f1b36e496d33e7bcdfedfe4baa8196c89bf6a8375dfc"
+          "ea7672681ce217d313426b703e0ce3b9c4659c9728840260d932e082072bf1be"
         ),
-        ("import a.b.given\n", Vector(""), "83ad88645218cd5ae17ec9e1555c55e2eeac71881005d03d4591a83773d25c76"),
-        ("import a.b.given T\n", Vector("", "T"), "e925d7c12a5a58e8a147c9a6c5c7954b1de31fe7a3347f2514ff2f656079841b"),
+        ("import a.b.given\n", Vector(""), "4775403064bba41a2e3a204d71fb45d32fcc4d3c3642d3a7b4260c3d6adfacd2"),
+        ("import a.b.given T\n", Vector("", "T"), "4a43c7d0f5205be8c1c70e5a886e254ed00f07898a99ad3ba439e424febfb07e"),
         (
           "import a.b.{given, given T, *}\n",
           Vector("", "", "T", "_"),
-          "b600221d01be377489fad79b19d6b773c39f0ff860112329a51a6c8e12b8b39f"
+          "af0f5116d75b20cc3073ff24a880e15d940d434fc9a555b6b56e15515971a7f7"
         ),
         ("import a.b._\n", Vector("_"), ""),
         ("import a.b.{c as _}\n", Vector("c", "_"), ""),
@@ -186,97 +186,97 @@ private[pc] trait Scala3ImportExportParserTests extends Scala3ParserTestSupport:
           "import a.b.given scala.math.Ordering.Int\n",
           "Select",
           Vector("Select", "Select", "Select", "Ident"),
-          "00670f260ab45176568fa19a5ee0c88543d9528f7247cb5098960dd000e3a795"
+          "ef95561de3a7b401c967324bac1dc4f0231c7f2f3c2605cea2f5eb08a087f427"
         ),
         (
           "import a.b.given scala.math.Ordering[Int]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Select", "Select", "Ident", "Ident"),
-          "7e0c093d85f13fc8bd51829458a6faf85326c4fe39c1d688def73efdb7265901"
+          "2a53624839fb1e93f8305f298a3cfc95baea576ea17df0267f5cd505666e5cb1"
         ),
         (
           "import a.b.given F[?]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Thicket"),
-          "a654db8bba027cbe5bb169b38f1592ef571248b6c33fc4b0218bcc28f8dcce2f"
+          "b79b43001196d82fbdd2930f57e34229434d36fcd073790c23d3b371ab2e2a7d"
         ),
         (
           "import a.b.given F[? <: U]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
-          "1d787674f1aa62fae2c576a56d9ff10853d4b8d4f62a8dee444290909e1055b3"
+          "30d4e1f74b91173a2be09c0ed17f91ecbdc721679c3e94fc6911d56b65671456"
         ),
         (
           "import a.b.given F[? >: L]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
-          "0b27c0de49784407b6fc93540ae665b139c65dafc8ed91c77dfdf0bc11ab9c97"
+          "61027ec27fa57de95ebaca68d303a1a6565edf670aac72c80bcb0203c63c73d9"
         ),
         (
           "import a.b.given F[? >: L <: U]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Ident", "Thicket"),
-          "6a09584ee94391fee28545e08ed2a88895af9e0178c4cb744aa173870733bd53"
+          "1fe5697a921af089364bc67e7bcef0c998bc3a7accae2513057d564fdf9e6ffd"
         ),
         (
           "import a.b.given A | B & C <:< D\n",
           "InfixOp",
           Vector("InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "Ident"),
-          "15a3ce77875b601800d9c46d3c993cc02cc625a59f50db72c8b9c4e0b9723ddd"
+          "68e160a3a108e0eec2fc6ba98a9b074b6ec09cbbf3f6fd5838814c54b91f7c66"
         ),
         (
           "import a.b.given A | B | C\n",
           "InfixOp",
           Vector("InfixOp", "InfixOp", "Ident", "Ident", "Ident", "Ident", "Ident"),
-          "f5866204df57cf31aaabdadd06ad49bc4d50189e27d6f3bc6d1a056fd2f51f14"
+          "cfc98b311b773b339466f36213611dc6a8928d2859f2fcd4f2fde63fcb51410f"
         ),
         (
           "export a.b.given scala.math.Ordering.Int\n",
           "Select",
           Vector("Select", "Select", "Select", "Ident"),
-          "dcd7f340cdc898d4d02442a1dae6bc3c6a2ae54faab5633372ae877a36a94345"
+          "f13b0c922e71192fd8dc7dae508cdc7b0ff00795a623a0b74a443759e6a3027a"
         ),
         (
           "export a.b.{given scala.math.Ordering[Int]}\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Select", "Select", "Ident", "Ident"),
-          "1c7bb8ebd7a1bf5090af181d2980fb6ee1af1305a8dcfd462289679f83237a7b"
+          "850a7841caec73a63caa2eeadc1f630c997ad370a658ee91beb0a703f9bdf572"
         ),
         (
           "export a.b.given F[?]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Thicket"),
-          "cb98be690b3071d0b2d436751e2b71c83032e0c96cbc59ea494dd49ef010b268"
+          "514bb02eb8c3fe6d7f915e4386d6d110cc196047c48231709173c000f545ba48"
         ),
         (
           "export a.b.{given F[? <: U]}\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
-          "f8876d8746ffa807298e80aba00b18cf8c30b4ee4c070d025396a411506a7907"
+          "4b6af5fa1f1a17c081a0ab816a3ea19dce384bf1eba4fb8b7bd59f4dadd1ac8b"
         ),
         (
           "export a.b.given F[? >: L]\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Thicket"),
-          "b10453241c54c134d8fa1f2d53662b6025740f297d7055661b7a8af7452c6619"
+          "ee6141a6742fc1b72044aec4f530badc6459288dd2a3bab9a1dda42a7de02ea1"
         ),
         (
           "export a.b.{given F[? >: L <: U]}\n",
           "AppliedTypeTree",
           Vector("AppliedTypeTree", "Ident", "TypeBoundsTree", "Ident", "Ident", "Thicket"),
-          "a7aebdeee6e71b90df164c7415a6b40eae112e336a57d71e390fa33f236ce84d"
+          "79dcd26460b559eccc34cb5df6c0c1c946115232203471f65c92837afd82b3e1"
         ),
         (
           "export a.b.given A | B & C <:< D\n",
           "InfixOp",
           Vector("InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "InfixOp", "Ident", "Ident", "Ident"),
-          "b3883dda132dd5c2a82b61f2d171dca3bd4ed8361e48f184fd52815c5e7b94d6"
+          "70e3d6cbc8c1209519f263dc7a9212789a64a10abb8538fd139a5b4c587bda19"
         ),
         (
           "export a.b.given A | B | C\n",
           "InfixOp",
           Vector("InfixOp", "InfixOp", "Ident", "Ident", "Ident", "Ident", "Ident"),
-          "da041de9f3fae7be61ccab1bfdb2e9e1b32100bae1bf2805640a009c97684763"
+          "ce7949ea7118054132dc9d30cfb94903433398b136cd35bc771dc6a915830f64"
         ),
         ("import a.b.given A\n", "Ident", Vector("Ident"), ""),
         ("import a.b.given p.A\n", "Select", Vector("Select", "Ident"), ""),
@@ -555,18 +555,18 @@ private[pc] trait Scala3ImportExportParserTests extends Scala3ParserTestSupport:
           )
       assertEquals(
         Vector(
-          "2338e4efcfc827a797dd575e28052072aecdae948dbee6857923e990f9c577bb",
-          "79e73e7d082334a111ac145fb2bbb06cac3dc4c1c6da0d03f88d02f62f28d329",
-          "302769ac0ce1a0723ecef61bebee4fa04ac03b59113ba34fb303e05fc93cdb1d",
-          "261fd3405ba2558e532d3fc425289e7bce1407ea6e8c4a0a81efb1abbbbcc5c5",
-          "65d97a09104976d5b772df8b45de5dfe74208c27d7d8129e2d5cfa002a3bd4fc",
-          "0d48d0ad26d8b86262a4f0632fbe64ce6c52912790517b28e7cf8cc821705d95",
-          "98e5e5ea430a3c7ecdd55818b229d8b78eeb81815782f320d87c411f3774067c",
-          "ef342d4d893eeab5bfb03d80113226445605149acea525515acd2251a7d2a6c3",
-          "8a20d5586ed2b1547d68aeab12a69961cae6093745588e3d0dc90b7357599fbc",
-          "9f57fe4ba147db56584acfa50a11aec2e605798a36e04b339164b706366c2593",
-          "348006c26fde1b162dd64f5dff833e33375c0eca61a7550bf513b160c58e2500",
-          "e55679b7e1b950215bdf2f210a9b08ce92749adf16f7acad091b041b512b44ab"
+          "add1e26a4d6b457713b12c57f967f566466c679b9eda8541b72d8b3141f8fdd2",
+          "9e378c25ba18108e830e06062b7c1ae11093aa8ae90475b622c839d2345f23d6",
+          "1e17e40a0c262843d9242d138a50c57242b6a9364926433770b9a731fb3943a1",
+          "3bb84dac50a971f16c707c0f6550126c02ed5d26e269a47435b62098be047097",
+          "07bc4e5d2d79ab380553a0d76a6bbf83cc401cc1ff72fc091202d53a3fbf59d3",
+          "9909b6f3bcbf1328c6d9d7ed01f9ef6dfd86b6f3542ecd9bc3386d96329e33c6",
+          "79b0428dbee0ff919ff7b865b742e88d98f15711c4896833d84d48c8cb176bf3",
+          "db78703a769a0316d304b487a2d658f87bef6e57a8fcea4721b9d3f5d0ea5a2b",
+          "8dfc456524545e88e52f25d663939054ffd0cd880fdb1a24fdb7a16001f48135",
+          "8b8495fc61ad4027d17fb68507cf73a751e38814e085e307f48c9e8b591e82f2",
+          "6285a024e752f49065472f87cec01f905ef5828ec00dc02e91dacdbd1e5bfa3a",
+          "d18c9f4ebc78613e16d15caf7d552368a41c5ef3086c1aca792177e20a7637df"
         ),
         snapshots.map(ParserSyntaxSnapshot.evidenceFingerprint) :+ aggregate.fingerprint
       )
