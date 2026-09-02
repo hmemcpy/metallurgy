@@ -862,7 +862,25 @@ private final class StructuralScala3ParserBridge private (
         val recording        = parseSource(active, request, recordingContext, forceRecording = true)
         (stock, recording) match
           case (Right(left), Right(right)) =>
-            val equivalent = left == right.copy(nodeSeparators = Vector.empty)
+            // Capabilities are per-bridge state that admission runs before it is assigned;
+            // normalize the field so every per-parse part of both snapshots compares.
+            val admissionSentinel = Scala3ParserCapabilities(
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison"),
+              ParserCapabilityStatus.Unavailable("admission comparison")
+            )
+            val equivalent        = left.copy(capabilities = admissionSentinel) ==
+              right.copy(nodeSeparators = Vector.empty, capabilities = admissionSentinel)
             if !equivalent then Left("the recording parse changed the parser snapshot")
             else if right.nodeSeparators.isEmpty then
               Left("the recording parse produced no separator facts for the probe source")
