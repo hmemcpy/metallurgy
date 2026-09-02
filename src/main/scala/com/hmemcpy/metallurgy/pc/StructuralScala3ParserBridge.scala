@@ -8,6 +8,7 @@ import java.util.{HashMap, IdentityHashMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.jar.JarFile
 import com.intellij.openapi.diagnostic.ControlFlowException
+import scala.jdk.CollectionConverters.*
 import dotty.tools.tasty.TastyFormat.{
   ANNOTATEDtype,
   APPLIEDtpt,
@@ -91,6 +92,8 @@ private[pc] object StructuralScala3ParserBridge:
       val sourceFactory                = discoverSourceFactory(sourceModule, sourceFileClass)
       val parserFactory                = discoverParserFactory(loader, parserClass, sourceFileClass, contextClass)
       val scannerReader                = discoverScannerReader(loader, scannerClass, sourceFileClass, contextClass)
+      val separatorRecorder            =
+        discoverSeparatorRecorder(loader, parserClass, scannerClass, sourceFileClass, contextClass)
       val reporterFactory              = discoverReporterFactory(storeReporter, reporterClass)
       val diagnosticReader             = discoverDiagnosticReader(storeReporter, contextClass)
       val diagnosticPositionProvenance = discoverDiagnosticPositionProvenance(loader)
@@ -146,6 +149,7 @@ private[pc] object StructuralScala3ParserBridge:
         sourceFactory,
         parserFactory,
         scannerReader,
+        separatorRecorder,
         diagnosticReader,
         diagnosticPositionProvenance,
         treeClass,
@@ -433,6 +437,67 @@ private[pc] object StructuralScala3ParserBridge:
       else Right(reader)
     catch case NonFatal(error) => Left(errorMessage(error))
 
+  private def discoverSeparatorRecorder(
+      loader: Scala3ParserClassLoader,
+      parserClass: Class[?],
+      scannerClass: Class[?],
+      sourceFileClass: Class[?],
+      contextClass: Class[?]
+  ): Either[String, SeparatorRecorder] =
+    try
+      val tokenClass            = loader.defineBridgeClass(
+        "com.hmemcpy.metallurgy.pc.SeparatorRecordingScanner$Token",
+        bridgeClassBytes("com.hmemcpy.metallurgy.pc.SeparatorRecordingScanner$Token")
+      )
+      val scannerBridgeClass    = loader.defineBridgeClass(
+        "com.hmemcpy.metallurgy.pc.SeparatorRecordingScanner",
+        bridgeClassBytes("com.hmemcpy.metallurgy.pc.SeparatorRecordingScanner")
+      )
+      val constructor           = scannerBridgeClass.getConstructors
+        .find(_.getParameterTypes.sameElements(Array(sourceFileClass, contextClass, classOf[java.util.List[?]])))
+        .getOrElse(throw new NoSuchMethodException("SeparatorRecordingScanner exact constructor"))
+      val constructionSinkField = scannerBridgeClass.getField("constructionSink")
+      val inField               = parserClass.getDeclaredFields
+        .find(field => field.getName == "in")
+        .getOrElse(
+          throw new NoSuchFieldException("Parsers.Parser in field")
+        )
+      inField.setAccessible(true)
+      val scannerFinal          = Modifier.isFinal(scannerClass.getModifiers)
+      val nextTokenFinal        = scannerClass.getMethods.exists(method =>
+        method.getName == "nextToken" && method.getParameterCount == 0 && Modifier.isFinal(method.getModifiers)
+      )
+      if scannerFinal || nextTokenFinal then Left("the exact scanner class or its nextToken method is final")
+      else
+        val unsafeClass       = Class.forName("sun.misc.Unsafe")
+        val unsafeField       = unsafeClass.getDeclaredField("theUnsafe")
+        unsafeField.setAccessible(true)
+        val unsafe            = unsafeField.get(null)
+        val objectFieldOffset = unsafeClass.getMethod("objectFieldOffset", classOf[java.lang.reflect.Field])
+        val putObject         = unsafeClass.getMethod("putObject", classOf[Object], java.lang.Long.TYPE, classOf[Object])
+        Right(
+          SeparatorRecorder(
+            constructor,
+            constructionSinkField,
+            tokenClass,
+            tokenClass.getField("token"),
+            tokenClass.getField("offset"),
+            tokenClass.getField("lastOffset"),
+            inField,
+            unsafe,
+            objectFieldOffset,
+            putObject
+          )
+        )
+    catch case NonFatal(error) => Left(errorMessage(error))
+
+  private def bridgeClassBytes(name: String): Array[Byte] =
+    val resource = s"/${name.replace('.', '/')}.class"
+    val stream   = getClass.getResourceAsStream(resource)
+    if stream == null then throw new NoSuchMethodException(s"bridge class resource missing: $resource")
+    try stream.readAllBytes()
+    finally stream.close()
+
   private def discoverReporterFactory(
       storeReporterClass: Class[?],
       reporterClass: Class[?]
@@ -491,7 +556,18 @@ private[pc] object StructuralScala3ParserBridge:
     Option(error.getMessage).filter(_.nonEmpty).getOrElse(error.getClass.getName)
 
   private final class Scala3ParserClassLoader(urls: Array[java.net.URL])
-      extends URLClassLoader(urls, ClassLoader.getPlatformClassLoader)
+      extends URLClassLoader(urls, ClassLoader.getPlatformClassLoader):
+    private val definedBridgeClasses = scala.collection.mutable.HashMap.empty[String, Class[?]]
+
+    /** Defines packaged bridge bytecode inside this isolated compiler loader. */
+    def defineBridgeClass(name: String, bytes: Array[Byte]): Class[?] =
+      synchronized:
+        definedBridgeClasses.getOrElseUpdate(
+          name,
+          findLoadedClass(name) match
+            case null  => defineClass(name, bytes, 0, bytes.length)
+            case found => found
+        )
 
   private final case class ParserRuntime(
       loader: Scala3ParserClassLoader,
@@ -505,6 +581,7 @@ private[pc] object StructuralScala3ParserBridge:
       sourceFactory: SourceFactory,
       parserFactory: ParserFactory,
       scannerReader: ScannerReader,
+      separatorRecorder: Either[String, SeparatorRecorder],
       diagnosticReader: DiagnosticReader,
       diagnosticPositionProvenance: Either[String, DiagnosticPositionProvenanceReader],
       treeClass: Class[?],
@@ -530,6 +607,19 @@ private[pc] object StructuralScala3ParserBridge:
   private final case class NullConstantReader(owner: Class[?], tag: Method, nullTag: Int):
     def isNullConstant(value: AnyRef): Boolean =
       owner.isInstance(value) && tag.invoke(value).asInstanceOf[java.lang.Integer].intValue() == nullTag
+
+  private final case class SeparatorRecorder(
+      scannerConstructor: Constructor[?],
+      constructionSinkField: java.lang.reflect.Field,
+      tokenClass: Class[?],
+      tokenField: java.lang.reflect.Field,
+      offsetField: java.lang.reflect.Field,
+      lastOffsetField: java.lang.reflect.Field,
+      inField: java.lang.reflect.Field,
+      unsafe: AnyRef,
+      objectFieldOffset: java.lang.reflect.Method,
+      putObject: java.lang.reflect.Method
+  )
 
   private final case class RunContextFactory(
       compilerConstructor: Constructor[?],
@@ -726,14 +816,172 @@ private final class StructuralScala3ParserBridge private (
 
   private val runtime = new AtomicReference[Option[ParserRuntimeLease]](Some(new ParserRuntimeLease(initialRuntime)))
 
-  override val capabilities: Scala3ParserCapabilities = availableCapabilities(
-    initialRuntime.endMarkerReader
-      .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available),
-    initialRuntime.diagnosticPositionProvenance.fold(
-      ParserCapabilityStatus.Unavailable.apply,
-      _ => ParserCapabilityStatus.Available
+  private val separatorStatus: ParserCapabilityStatus =
+    initialRuntime.separatorRecorder
+      .flatMap(recorder => separatorAdmissionProbe(initialRuntime, recorder))
+      .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available)
+
+  override val capabilities: Scala3ParserCapabilities =
+    val base = availableCapabilities(
+      initialRuntime.endMarkerReader
+        .fold(ParserCapabilityStatus.Unavailable.apply, _ => ParserCapabilityStatus.Available),
+      initialRuntime.diagnosticPositionProvenance.fold(
+        ParserCapabilityStatus.Unavailable.apply,
+        _ => ParserCapabilityStatus.Available
+      )
     )
-  )
+    base.copy(separatorProvenance = separatorStatus)
+
+  private def separatorAdmissionProbe(
+      active: ParserRuntime,
+      recorder: SeparatorRecorder
+  ): Either[String, Unit] =
+    try
+      withCompilerClassloader(active):
+        configuredContext(
+          active,
+          Scala3ParserRequest(
+            ParserSourceUri
+              .from("file:///separator-admission-probe.scala")
+              .getOrElse(throw new IllegalStateException()),
+            "class SeparatorAdmissionProbe",
+            Vector.empty,
+            Scala3ParserCancellation.Never
+          )
+        ) match
+          case Left(error)    => Left(error.toString)
+          case Right(context) =>
+            val source      = active.sourceFactory.create("probe.scala", "class SeparatorAdmissionProbe")
+            val stockParser = active.parserFactory.create(source, context.value)
+            val stockRoot   = stockParser.getClass.getMethod("parse").invoke(stockParser)
+            if stockRoot == null then Left("the stock parser produced no tree")
+            else
+              val sink           = new java.util.ArrayList[AnyRef]
+              val recorderParser =
+                constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue]
+              val recordingRoot  = recorderParser.parse()
+              val recorded       = readRecordedTokens(recorder, sink)
+              if recordingRoot == null || recorded.isEmpty then Left("the recording parse produced no tree or tokens")
+              else
+                val replay             = exactScannerTokens(
+                  active,
+                  source,
+                  context.value,
+                  "class SeparatorAdmissionProbe",
+                  Scala3ParserCancellation.Never
+                )
+                val recordedProjection = recorded.map((token, offset, _) => (token, offset))
+                val replayProjection   = replay.map(token => (token.tokenId, token.range.startOffset))
+                if recordedProjection.take(replayProjection.size) != replayProjection then
+                  Left("the recording parse diverged from the stock scanner stream")
+                else Right(())
+    catch case NonFatal(error) => Left(errorMessage(error))
+
+  /** Constructs a parser whose scanner records the exact parse's consumed tokens. */
+  private def constructRecordingParser(
+      active: ParserRuntime,
+      recorder: SeparatorRecorder,
+      source: AnyRef,
+      context: ParserContext,
+      sink: java.util.List[AnyRef]
+  ): AnyRef =
+    val constructionSink = recorder.constructionSinkField.get(null).asInstanceOf[ThreadLocal[java.util.List[AnyRef]]]
+    constructionSink.set(sink)
+    try
+      val recordingScanner = recorder.scannerConstructor.newInstance(source, context.value, sink)
+      val parser           = active.parserFactory.create(source, context.value)
+      val fieldOffset      =
+        recorder.objectFieldOffset.invoke(recorder.unsafe, recorder.inField).asInstanceOf[java.lang.Long].longValue()
+      recorder.putObject.invoke(recorder.unsafe, parser, java.lang.Long.valueOf(fieldOffset), recordingScanner)
+      parser
+    finally constructionSink.set(null)
+
+  /** Correlates parser-owned separator evidence to Select nodes: every positioned Select with a positioned qualifier
+    * and a name owns exactly one distinct source-derived Dot or Hash token in the node-bounded interval between the
+    * qualifier end and the proven name start. Repeated visits of the same token identity collapse; conflicting
+    * observations for one identity revoke all evidence. Selects without a proven unique separator receive no evidence
+    * and stay unowned.
+    */
+  private def correlateSeparators(
+      active: ParserRuntime,
+      recorded: Vector[(Int, Int, Int)],
+      sourceText: String,
+      nodes: Vector[ParserSyntaxNode]
+  ): Vector[ParserNodeSeparator] =
+    val distinct = recorded
+      .groupMap((tokenId, offset, _) => (tokenId, offset))(value => value)
+      .map: (_, observations) =>
+        if observations.distinct.size != 1 then None
+        else
+          val (tokenId, offset, lastOffset) = observations.head
+          val runtimeKind                   =
+            active.scannerReader.showTokenDetailed
+              .invoke(active.scannerReader.tokens, Int.box(tokenId))
+              .asInstanceOf[String]
+          val end                           = math.max(offset, lastOffset)
+          val kind                          =
+            scannerTokenKind(runtimeKind, sourceText.substring(offset, math.min(end, sourceText.length)))
+          Some(offset -> (end, kind))
+      .toVector
+    if distinct.exists(_.isEmpty) then Vector.empty
+    else
+      val byOffset = distinct.collect { case Some(entry) => entry }.toMap
+      nodes.flatMap(node => separatorForSelect(byOffset, sourceText, nodes, node))
+
+  private def separatorForSelect(
+      byOffset: Map[Int, (Int, ParserScannerTokenKind)],
+      sourceText: String,
+      nodes: Vector[ParserSyntaxNode],
+      node: ParserSyntaxNode
+  ): Vector[ParserNodeSeparator] =
+    node.position match
+      case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+        val owned =
+          for
+            qualifierId  <- node.fields.collectFirst:
+                              case ParserSyntaxField("qualifier", ParserFieldValue.Node(id), _) => id
+            qualifier    <- nodes.find(_.id == qualifierId)
+            qualifierEnd <- qualifier.position match
+                              case ParserNodePosition.Positioned(
+                                    qualifierRange,
+                                    _,
+                                    ParserPositionProvenance.SourceDerived
+                                  ) =>
+                                Some(qualifierRange.endOffset)
+                              case _ => None
+            name         <- node.fields.collectFirst:
+                              case ParserSyntaxField("name", ParserFieldValue.Name(value), _) => value
+            nameStart     = range.endOffset - name.length
+            if nameStart > qualifierEnd
+            if sourceText.substring(nameStart, range.endOffset) == name
+            candidates    = byOffset.collect:
+                              case (offset, (end, kind))
+                                  if offset >= qualifierEnd && end <= nameStart &&
+                                    (kind == ParserScannerTokenKind.Dot || kind == ParserScannerTokenKind.Hash) =>
+                                (offset, end, kind)
+            separator    <- candidates.toVector match
+                              case Vector(single) => Some(single)
+                              case _              => None
+          yield ParserNodeSeparator(
+            node.id,
+            separator._3,
+            PcSourceRange(separator._1, separator._2),
+            separator._1,
+            ParserPositionProvenance.SourceDerived
+          )
+        owned.toVector
+      case _                                                                               => Vector.empty
+
+  private def readRecordedTokens(
+      recorder: SeparatorRecorder,
+      sink: java.util.List[AnyRef]
+  ): Vector[(Int, Int, Int)] =
+    sink.asScala.toVector.map: token =>
+      (
+        recorder.tokenField.get(token).asInstanceOf[java.lang.Integer].intValue(),
+        recorder.offsetField.get(token).asInstanceOf[java.lang.Integer].intValue(),
+        recorder.lastOffsetField.get(token).asInstanceOf[java.lang.Integer].intValue()
+      )
 
   override def loaderState: Scala3ParserLoaderState =
     if runtime.get().nonEmpty then Scala3ParserLoaderState.Open else Scala3ParserLoaderState.Closed
@@ -798,15 +1046,30 @@ private final class StructuralScala3ParserBridge private (
       context: ParserContext
   ): Either[Scala3ParserError, ParserSyntaxSnapshot] =
     request.cancellation.checkCanceled()
-    val source           = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
-    val parser           = active.parserFactory.create(source, context.value).asInstanceOf[ParserValue]
-    val root             = parser.parse()
+    val source                   = active.sourceFactory.create(request.sourceUri.value, request.sourceText)
+    val sink                     = new java.util.ArrayList[AnyRef]
+    val (parser, recordedStream) = active.separatorRecorder match
+      case Right(recorder) =>
+        (
+          constructRecordingParser(active, recorder, source, context, sink).asInstanceOf[ParserValue],
+          Some((recorder, readRecordedTokens(recorder, sink)))
+        )
+      case Left(_)         =>
+        (active.parserFactory.create(source, context.value).asInstanceOf[ParserValue], None)
+    val root                     = parser.parse()
     request.cancellation.checkCanceled()
-    val nodes            = collectNodes(active, root, context.value, request.sourceText, request.cancellation)
-    val foundDiagnostics = diagnostics(active, context, request.cancellation)
-    val scannerTokens    =
+    val nodes                    = collectNodes(active, root, context.value, request.sourceText, request.cancellation)
+    val foundDiagnostics         = diagnostics(active, context, request.cancellation)
+    val scannerTokens            =
       exactScannerTokens(active, source, context.value, request.sourceText, request.cancellation)
     nodes.map: collected =>
+      val separators = recordedStream.map: (recorder, _) =>
+        correlateSeparators(
+          active,
+          readRecordedTokens(recorder, sink),
+          request.sourceText,
+          collected.nodes
+        )
       ParserSyntaxSnapshot(
         request.sourceUri,
         request.sourceText,
@@ -823,7 +1086,8 @@ private final class StructuralScala3ParserBridge private (
         collected.endMarkers,
         collected.runtimeSupplements,
         collected.attachments,
-        scannerTokens
+        scannerTokens,
+        separators.getOrElse(Vector.empty)
       )
 
   private def exactScannerTokens(

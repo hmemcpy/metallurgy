@@ -136,7 +136,16 @@ private[metallurgy] final case class ParserSyntaxSnapshot(
     endMarkers: Vector[ParserEndMarker],
     runtimeSupplements: Vector[ParserRuntimeSupplement] = Vector.empty,
     attachments: Vector[ParserTreeAttachment] = Vector.empty,
-    scannerTokens: Vector[ParserScannerToken] = Vector.empty
+    scannerTokens: Vector[ParserScannerToken] = Vector.empty,
+    nodeSeparators: Vector[ParserNodeSeparator] = Vector.empty
+)
+
+private[metallurgy] final case class ParserNodeSeparator(
+    ownerNodeId: Long,
+    kind: ParserScannerTokenKind,
+    range: PcSourceRange,
+    point: Int,
+    provenance: ParserPositionProvenance
 )
 
 private[metallurgy] final case class ParserEndMarker(ownerNodeId: Long, designatorRange: PcSourceRange)
@@ -473,7 +482,9 @@ private[metallurgy] final case class Scala3ParserCapabilities(
     positionedSyntax: ParserCapabilityStatus,
     comments: ParserCapabilityStatus,
     endMarkers: ParserCapabilityStatus,
-    scannerTokens: ParserCapabilityStatus = ParserCapabilityStatus.Unavailable("exact scanner tokens are unavailable")
+    scannerTokens: ParserCapabilityStatus = ParserCapabilityStatus.Unavailable("exact scanner tokens are unavailable"),
+    separatorProvenance: ParserCapabilityStatus =
+      ParserCapabilityStatus.Unavailable("parser-owned Select separator provenance is unavailable")
 ):
   def requiredUnavailable: Vector[ParserCapabilityFailure] =
     Vector(

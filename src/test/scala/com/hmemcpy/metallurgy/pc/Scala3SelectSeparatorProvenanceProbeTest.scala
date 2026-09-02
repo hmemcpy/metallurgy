@@ -227,6 +227,44 @@ final class Scala3SelectSeparatorProvenanceProbeTest:
       println(s"[P3] original-parse capture works: ${recorded.size} tokens recorded and equal to the replay stream")
     finally loader.close()
 
+  @Test
+  def productionSnapshotsCarryParserOwnedSeparators(): Unit =
+    ProbedArtifacts.foreach: version =>
+      val bridge = openBridge(version)
+      try
+        assertTrue(
+          s"$version: separator provenance capability must be available",
+          bridge.capabilities.separatorProvenance.isInstanceOf[ParserCapabilityStatus.Available.type] ||
+            bridge.capabilities.separatorProvenance == ParserCapabilityStatus.Available
+        )
+        SelectShapes.foreach: shape =>
+          val source         = wrapMatch(shape.source)
+          val snapshot       = parse(bridge, source, s"file:///ProductionSeparators-$version-${shape.id}.scala")
+          val selects        = snapshot.nodes.count(node => node.production == "Select")
+          val expectedKinds  = Set(ParserScannerTokenKind.Dot, ParserScannerTokenKind.Hash)
+          val rootSeparators = snapshot.nodeSeparators
+          assertTrue(
+            s"$version shape ${shape.id}: separator evidence expected ($selects selects, ${rootSeparators.size} facts)",
+            rootSeparators.nonEmpty &&
+              rootSeparators.forall(fact =>
+                expectedKinds(fact.kind) && fact.provenance == ParserPositionProvenance.SourceDerived
+              )
+          )
+          rootSeparators.foreach: separator =>
+            val select = snapshot.nodes.find(_.id == separator.ownerNodeId)
+            assertTrue(
+              s"$version shape ${shape.id}: separator owner must be a Select",
+              select.exists(_.production == "Select")
+            )
+            select.foreach: node =>
+              node.position match
+                case ParserNodePosition.Positioned(range, _, _) =>
+                  assertTrue(separator.range.startOffset >= range.startOffset)
+                  assertTrue(separator.range.endOffset <= range.endOffset)
+                case other                                      => fail(s"$version shape ${shape.id}: owner not positioned: $other")
+        println(s"[P4/$version] production snapshots carry separators: ${SelectShapes.size} shapes verified")
+      finally bridge.close()
+
   private case class Shape(id: String, source: String)
 
   private val SelectShapes = Vector(
