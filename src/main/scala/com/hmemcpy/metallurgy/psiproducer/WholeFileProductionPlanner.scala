@@ -470,12 +470,9 @@ private[metallurgy] object WholeFileProductionPlanner:
             case _                                                                        => break(Left(WholeFilePlanningFailure.UnsupportedRecovery(instance, production.recovery)))
         production.pattern.occurrences.foreach:
           case CompilerProductionContextPattern(ContextPattern.SeparatorOwned(kind, _), _, _) =>
-            val row       = rows(instance.kind -> instance.valueId)
-            val confirmed = row.separatorRanges.exists:
-              case (factKind, start, end) =>
-                factKind == kind && row.replayTokenRanges.exists:
-                  case (replayKind, replayStart, replayEnd) =>
-                    replayKind == factKind && replayStart == start && replayEnd == end
+            val confirmed = snapshot.nodeSeparators.exists: fact =>
+              fact.ownerNodeId == instance.valueId && fact.kind == kind &&
+                snapshot.scannerTokens.exists(token => token.kind == fact.kind && token.range == fact.range)
             if !confirmed then break(Left(WholeFilePlanningFailure.SeparatorReplayDisagreement(instance, kind)))
           case _                                                                              => ()
       ordered.foreach: instance =>
