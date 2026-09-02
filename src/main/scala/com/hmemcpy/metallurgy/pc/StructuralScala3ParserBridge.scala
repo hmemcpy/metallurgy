@@ -489,7 +489,9 @@ private[pc] object StructuralScala3ParserBridge:
             putObject
           )
         )
-    catch case NonFatal(error) => Left(errorMessage(error))
+    catch
+      case NonFatal(error) => Left(errorMessage(error))
+      case error: LinkageError => Left(errorMessage(error))
 
   private def bridgeClassBytes(name: String): Array[Byte] =
     val resource = s"/${name.replace('.', '/')}.class"
@@ -885,7 +887,9 @@ private final class StructuralScala3ParserBridge private (
                   if recordedProjection.take(replayProjection.size) != replayProjection then
                     Left("the recording parse diverged from the stock scanner stream")
                   else Right(())
-    catch case NonFatal(error) => Left(errorMessage(error))
+    catch
+      case NonFatal(error) => Left(errorMessage(error))
+      case error: LinkageError => Left(errorMessage(error))
 
   /** Constructs a parser whose scanner records the exact parse's consumed tokens. */
   private def constructRecordingParser(
