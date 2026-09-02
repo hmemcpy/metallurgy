@@ -156,12 +156,15 @@ private[metallurgy] object CatalogShapeMatcher:
           ) =>
         true
       case (
-            CatalogValuePattern.ClassifiedNameExcept(expected, excluded),
-            CatalogValuePattern.ClassifiedName(observed)
+            CatalogValuePattern.ClassifiedName(expected),
+            CatalogValuePattern.ClassifiedNameValue(observed, _)
           ) =>
-        expected == observed && excluded != null
-      case (CatalogValuePattern.ClassifiedNameExcept(_, _), CatalogValuePattern.Name)                           =>
-        true
+        expected == observed
+      case (
+            CatalogValuePattern.ClassifiedNameExcept(expected, excluded),
+            CatalogValuePattern.ClassifiedNameValue(observed, value)
+          ) =>
+        expected == observed && value != excluded
       case (CatalogValuePattern.ExactName(_), CatalogValuePattern.Name)                                         =>
         true
       case (CatalogValuePattern.Optional(expectedValue), CatalogValuePattern.Optional(observedValue))           =>
