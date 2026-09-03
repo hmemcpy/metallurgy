@@ -80,7 +80,7 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
     children.foreach(child => assertSame(element.getNode, child.getTreeParent))
 
   @Test
-  def testQuoteCaseBlocksAscriptionsAndDoubleParensStayFailClosedWithoutTuplePsi(): Unit =
+  def testQuoteCaseBlocksAndAscriptionsStayFailClosedWithoutTuplePsi(): Unit =
     val sources = Vector(
       """def quoted(x: Any): Any = '{ case y: (Int, String) => 1 }""",
       """def pending(x: Any): Any = x match
@@ -88,9 +88,6 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
         |""".stripMargin,
       """def pending(x: Any): Any = (x: (Int, String)) match
         |  case _ => 1
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case given ((Int, String)) => 1
         |""".stripMargin
     )
     sources.zipWithIndex.foreach { case (source, index) =>
@@ -274,7 +271,7 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
       PsiDocumentManager.getInstance(getProject).commitDocument(document)
     replace("(Int)")
     assertTrue(tupleTypeElements(file).isEmpty)
-    assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+    assertEquals(1, descendants[Sc3TypedPatternImpl](file).size)
     replace("(Int, String,)")
     assertTrue(tupleTypeElements(file).isEmpty)
     replace("(value: Int, other: String)")
@@ -292,9 +289,6 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
   @Test
   def testMatchScopedTupleTypeFailClosedShapesStayUncoveredWithoutPartialPsi(): Unit =
     val parsableSources = Vector(
-      """def pending(x: Any): Any = x match
-        |  case y: (Int) => "paren"
-        |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case y: (a: Int, b: String) => "named"
         |""".stripMargin,
@@ -330,9 +324,6 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
       assertTrue(descendants[ScNamedTupleTypeElement](file).isEmpty)
     }
     val nonParseSources = Vector(
-      """def pending(x: Any): Any = x match
-        |  case y: ((Int, String)) => "double"
-        |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case y: (Int, String,) => "trailing"
         |""".stripMargin

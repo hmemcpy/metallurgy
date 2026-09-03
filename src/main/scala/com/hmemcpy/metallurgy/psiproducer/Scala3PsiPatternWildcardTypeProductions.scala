@@ -77,7 +77,8 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       ),
       ChildDeclaration(
@@ -90,7 +91,8 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       ),
       ChildDeclaration("alias", "alias", ChildCardinality.ExactlyOne, "template-absent-tree")

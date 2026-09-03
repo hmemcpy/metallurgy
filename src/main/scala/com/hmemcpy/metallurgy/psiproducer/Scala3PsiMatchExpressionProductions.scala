@@ -237,6 +237,7 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
   // The match-owned type positions shared by stable Select and wildcard type productions.
   private[psiproducer] val MatchPatternTypeEdges: Vector[(String, Vector[CatalogPathSegment])] = Vector(
     ("Typed", Vector(CatalogPathSegment.NamedField("tpt"))),
+    ("Parens", Vector(CatalogPathSegment.NamedField("t"))),
     ("AppliedTypeTree", Vector(CatalogPathSegment.NamedField("tpt"))),
     ("AppliedTypeTree", Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)),
     ("Tuple", Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)),
@@ -1259,7 +1260,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
           Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       )
     ),
@@ -1294,7 +1296,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
               PsiOutputRoleId.SimpleType,
               PsiOutputRoleId.ParameterizedType,
               PsiOutputRoleId.TupleType,
-              PsiOutputRoleId.TypeProjection
+              PsiOutputRoleId.TypeProjection,
+              PsiOutputRoleId.ParenthesizedType
             )
           )
         )
@@ -1368,6 +1371,16 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             InventoryKind.Node,
             "Tuple",
             Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "Parens",
+            Vector(CatalogPathSegment.NamedField("t")),
             Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
             Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
           ),
@@ -2054,7 +2067,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
           Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       )
     ),

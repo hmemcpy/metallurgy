@@ -670,9 +670,6 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case s"lit" => "interp"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case v: (Int) => "paren"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
         |  case v: (Int => Int) => "fn"
         |""".stripMargin,
       """def pending(x: Any): Any = x match

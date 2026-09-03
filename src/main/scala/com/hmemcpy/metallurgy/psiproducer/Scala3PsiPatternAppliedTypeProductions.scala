@@ -80,6 +80,16 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
       ),
       SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "Parens",
+        Vector(CatalogPathSegment.NamedField("t")),
+        nestedAppliedTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
     )
   )
 
@@ -108,7 +118,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         Set(
           AppliedTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       ),
       ChildDeclaration(
@@ -121,7 +132,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
           Scala3PsiPatternTupleTypeProductions.MatchTupleTypeProductionId,
           Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       )
     ),
@@ -149,7 +161,12 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
         "constructor",
         ChildRootOutcome.One(
           ChildOutcomeExpectation.OutputRoles(
-            Set(PsiOutputRoleId.SimpleType, PsiOutputRoleId.ParameterizedType, PsiOutputRoleId.TypeProjection)
+            Set(
+              PsiOutputRoleId.SimpleType,
+              PsiOutputRoleId.ParameterizedType,
+              PsiOutputRoleId.TypeProjection,
+              PsiOutputRoleId.ParenthesizedType
+            )
           )
         )
       ),
@@ -162,7 +179,8 @@ private[psiproducer] object Scala3PsiPatternAppliedTypeProductions:
               PsiOutputRoleId.ParameterizedType,
               PsiOutputRoleId.TupleType,
               PsiOutputRoleId.WildcardType,
-              PsiOutputRoleId.TypeProjection
+              PsiOutputRoleId.TypeProjection,
+              PsiOutputRoleId.ParenthesizedType
             )
           )
         )

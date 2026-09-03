@@ -433,7 +433,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiMatchExpressionProductions.MatchParenthesizedSuffixSegment ++
       Scala3PsiPatternTupleTypeProductions.PatternTupleTypeSuffixSegment ++
       Scala3PsiPatternWildcardTypeProductions.PatternWildcardTypeSuffixSegment ++
-      Scala3PsiPatternStableSelectProductions.PatternStableSelectSuffixSegment,
+      Scala3PsiPatternStableSelectProductions.PatternStableSelectSuffixSegment ++
+      Scala3PsiPatternParenthesizedTypeProductions.PatternParenthesizedTypeSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(

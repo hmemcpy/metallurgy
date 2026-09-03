@@ -22,6 +22,11 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
       InventoryKind.Node,
       "AppliedTypeTree",
       Vector(CatalogPathSegment.NamedField("args"), CatalogPathSegment.RepeatedElement)
+    ),
+    InventoryAncestor(
+      InventoryKind.Node,
+      "Parens",
+      Vector(CatalogPathSegment.NamedField("t"))
     )
   )
 
@@ -85,6 +90,16 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
         Scala3PsiMatchExpressionProductions.MatchCasesAncestor
       ),
       SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "Parens",
+        Vector(CatalogPathSegment.NamedField("t")),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+      ),
+      SourceClassification.SourceReachable
     )
   )
 
@@ -117,7 +132,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
           Scala3PsiPatternAppliedTypeProductions.AppliedTypeProductionId,
           MatchTupleTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
-          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId
+          Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
+          "match-pattern-parenthesized-type"
         )
       )
     ),
@@ -219,7 +235,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
               PsiOutputRoleId.SimpleType,
               PsiOutputRoleId.ParameterizedType,
               PsiOutputRoleId.TupleType,
-              PsiOutputRoleId.TypeProjection
+              PsiOutputRoleId.TypeProjection,
+              PsiOutputRoleId.ParenthesizedType
             )
           )
         )
