@@ -37,6 +37,21 @@ private[psiproducer] object Scala3PsiTypeAtomProductions:
   private val literalTypeOccurrences = typeAtomOccurrences.map:
     _.copy(sourceClassification = SourceClassification.Synthetic)
 
+  // Literal values own their node under a match-owned singleton wrapper through the same typed-pattern
+  // entry the wrapper anchors on; the traversal adds the wildcard-bound hop for bound positions.
+  private val matchLiteralValueOccurrences = Vector(
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CatalogPathSegment.NamedField("ref")),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+      ),
+      SourceClassification.SourceReachable
+    )
+  )
+
   private def literalValueProduction(
       id: String,
       scalarKind: String,
@@ -54,7 +69,7 @@ private[psiproducer] object Scala3PsiTypeAtomProductions:
           CatalogValuePattern.Product("", Vector(CompilerFieldPattern("", CatalogValuePattern.Scalar(scalarKind))))
         )
       ),
-      singletonReferenceOccurrences
+      singletonReferenceOccurrences ++ matchLiteralValueOccurrences
     ),
     dispositions = Vector(FieldDisposition("const", FieldDispositionKind.TerminalOrLayout)),
     children = Vector.empty,

@@ -5,6 +5,58 @@ import org.junit.Assert.*
 import org.junit.Test
 
 private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductionCatalogTestSupport:
+  @Test def literalWrapperRetentionIsTheOnlyNewOverlapResolution(): Unit =
+    val alternatives = Scala3PsiProductionCatalog.Reviewed.productionAlternatives
+    assertEquals(
+      Vector(
+        ProductionAlternatives("match-pattern-literal-type", "capture-reference")
+      ),
+      alternatives.filter(alternative =>
+        Set(alternative.candidateId, alternative.fallbackId) ==
+          Set("match-pattern-literal-type", "capture-reference")
+      )
+    )
+
+  @Test def typedPatternConditionalRealizationStaysExactToLiteralWrapper(): Unit =
+    val typed         = Scala3PsiProductionCatalog.Reviewed.productions.find(_.id == "match-pattern-typed").get
+    val realizations  = typed.effectiveOutputRealizations
+    assertEquals(Vector("self", "type-pattern-literal-native"), realizations.map(_.id))
+    val unconditional = realizations.head
+    assertTrue(unconditional.conditions.isEmpty)
+    assertEquals(
+      PositionProvenancePolicy.SourceDerivedOnly,
+      unconditional.template.composites.collectFirst {
+        case output if output.id == "type-pattern" =>
+          output.range.asInstanceOf[OutputRangeDeclaration.BoundaryDerived].startBoundary match
+            case OutputBoundary.ChildStart(_, _, policy) => policy
+            case other                                   => fail(s"unexpected boundary $other")
+      }.get
+    )
+    val conditional   = realizations.last
+    assertEquals(
+      Vector(
+        ChildOutcomeCondition(
+          "tpt",
+          ChildOccurrenceSelector.First,
+          ChildOutcomeExpectation.Production("match-pattern-literal-type")
+        )
+      ),
+      conditional.conditions
+    )
+    assertEquals(
+      PositionProvenancePolicy.PositionedIncludingSynthetic,
+      conditional.template.composites.collectFirst {
+        case output if output.id == "type-pattern" =>
+          output.range.asInstanceOf[OutputRangeDeclaration.BoundaryDerived].startBoundary match
+            case OutputBoundary.ChildStart(_, _, policy) => policy
+            case other                                   => fail(s"unexpected boundary $other")
+      }.get
+    )
+    assertEquals(None, typed.realizationChoice)
+    // The most-specific realization selection picks the conditional realization exactly when the
+    // tpt child is the literal wrapper: it carries the only condition in the production.
+    assertEquals(Vector(0, 1), realizations.map(_.conditions.size))
+
   @Test def reviewedCatalogOwnsClosedGrammarAndOutputRoleInventories(): Unit =
     val catalog  = Scala3PsiProductionCatalog.Reviewed
     val expected = Map(
@@ -96,7 +148,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-pattern-singleton-ident",
         "match-pattern-singleton-select"
       ),
-      GrammarRoleId.LiteralType               -> Set("type-atom-literal"),
+      GrammarRoleId.LiteralType               -> Set("type-atom-literal", "match-pattern-literal-type"),
       GrammarRoleId.ParenthesizedType         -> Set("type-atom-parenthesized", "match-pattern-parenthesized-type"),
       GrammarRoleId.TupleType                 -> Set("ordinary-tuple-type", "match-pattern-tuple-type"),
       GrammarRoleId.NamedTupleType            -> Set("named-tuple-type"),

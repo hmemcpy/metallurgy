@@ -109,6 +109,33 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
       Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)
     )
 
+  private[psiproducer] def tupleTypesTemplate(
+      provenance: PositionProvenancePolicy
+  ): LocalOutputCompositeTemplate = LocalOutputCompositeTemplate(
+    Vector(
+      outputComposite(
+        "tuple",
+        None,
+        OutputRangeDeclaration.CompilerPosition,
+        PsiOutputRoleId.TupleType,
+        TupleTypeSurface,
+        TupleTypeAccessors
+      ),
+      outputComposite(
+        "types",
+        Some("tuple"),
+        OutputRangeDeclaration.BoundaryDerived(
+          OutputBoundary.ChildStart("components", ChildOccurrenceSelector.First, provenance),
+          OutputBoundary.ChildEnd("components", ChildOccurrenceSelector.Last, provenance)
+        ),
+        PsiOutputRoleId.TupleTypes,
+        TupleTypesSurface,
+        TupleTypesAccessors
+      )
+    ),
+    Map("components" -> Some("types"))
+  )
+
   private val matchTupleType = Scala3PsiProduction(
     id = MatchTupleTypeProductionId,
     grammarRoleId = GrammarRoleId.TupleType,
@@ -135,7 +162,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
           Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
-          "match-pattern-singleton-select"
+          "match-pattern-singleton-select",
+          "match-pattern-literal-type"
         )
       )
     ),
@@ -199,32 +227,45 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
     accessors = TupleTypeAccessors,
     persistence = PersistenceObligations.NotApplicable,
     navigation = Some(NavigationObligation.Self),
-    outputTemplate = Some(
-      LocalOutputCompositeTemplate(
+    outputRealizations = Vector(
+      OutputRealization("self", Vector.empty, tupleTypesTemplate(PositionProvenancePolicy.SourceDerivedOnly)),
+      OutputRealization(
+        "tuple-types-literal-last",
         Vector(
-          outputComposite(
-            "tuple",
-            None,
-            OutputRangeDeclaration.CompilerPosition,
-            PsiOutputRoleId.TupleType,
-            TupleTypeSurface,
-            TupleTypeAccessors
-          ),
-          outputComposite(
-            "types",
-            Some("tuple"),
-            OutputRangeDeclaration.BoundaryDerived(
-              OutputBoundary
-                .ChildStart("components", ChildOccurrenceSelector.First, PositionProvenancePolicy.SourceDerivedOnly),
-              OutputBoundary
-                .ChildEnd("components", ChildOccurrenceSelector.Last, PositionProvenancePolicy.SourceDerivedOnly)
-            ),
-            PsiOutputRoleId.TupleTypes,
-            TupleTypesSurface,
-            TupleTypesAccessors
+          ChildOutcomeCondition(
+            "components",
+            ChildOccurrenceSelector.Last,
+            ChildOutcomeExpectation.Production("match-pattern-literal-type")
           )
         ),
-        Map("components" -> Some("types"))
+        tupleTypesTemplate(PositionProvenancePolicy.PositionedIncludingSynthetic)
+      ),
+      OutputRealization(
+        "tuple-types-literal-first",
+        Vector(
+          ChildOutcomeCondition(
+            "components",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production("match-pattern-literal-type")
+          )
+        ),
+        tupleTypesTemplate(PositionProvenancePolicy.PositionedIncludingSynthetic)
+      ),
+      OutputRealization(
+        "tuple-types-literal-both",
+        Vector(
+          ChildOutcomeCondition(
+            "components",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production("match-pattern-literal-type")
+          ),
+          ChildOutcomeCondition(
+            "components",
+            ChildOccurrenceSelector.Last,
+            ChildOutcomeExpectation.Production("match-pattern-literal-type")
+          )
+        ),
+        tupleTypesTemplate(PositionProvenancePolicy.PositionedIncludingSynthetic)
       )
     ),
     outputRoleId = None,
@@ -239,7 +280,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
               PsiOutputRoleId.TupleType,
               PsiOutputRoleId.TypeProjection,
               PsiOutputRoleId.ParenthesizedType,
-              PsiOutputRoleId.SingletonType
+              PsiOutputRoleId.SingletonType,
+              PsiOutputRoleId.LiteralType
             )
           )
         )

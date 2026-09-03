@@ -488,6 +488,25 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     Map("expr" -> Some("typed"), "tpt" -> Some("type-pattern"))
   )
 
+  // The literal singleton wrapper node is synthesized by dotc with the same range as its source-derived
+  // literal child, so only this conditional realization may place the type-pattern range on a synthetic
+  // position; every other typed-pattern child keeps the source-derived boundary above.
+  private val literalTypedPatternTemplate = LocalOutputCompositeTemplate(
+    nativeTypedPatternTemplate.composites.map:
+      case output if output.id == "type-pattern" =>
+        output.copy(range =
+          OutputRangeDeclaration.BoundaryDerived(
+            OutputBoundary
+              .ChildStart("tpt", ChildOccurrenceSelector.First, PositionProvenancePolicy.PositionedIncludingSynthetic),
+            OutputBoundary
+              .ChildEnd("tpt", ChildOccurrenceSelector.Last, PositionProvenancePolicy.PositionedIncludingSynthetic)
+          )
+        )
+      case other                                 => other
+    ,
+    nativeTypedPatternTemplate.childMounts
+  )
+
   private val nativeSimpleTypeTemplate = LocalOutputCompositeTemplate(
     Vector(
       outputComposite(
@@ -1263,7 +1282,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
-          "match-pattern-singleton-select"
+          "match-pattern-singleton-select",
+          "match-pattern-literal-type"
         )
       )
     ),
@@ -1283,7 +1303,20 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     accessors = Sc3TypedPatternAccessors,
     persistence = PersistenceObligations.NotApplicable,
     navigation = Some(NavigationObligation.Self),
-    outputTemplate = Some(nativeTypedPatternTemplate),
+    outputRealizations = Vector(
+      OutputRealization("self", Vector.empty, nativeTypedPatternTemplate),
+      OutputRealization(
+        "type-pattern-literal-native",
+        Vector(
+          ChildOutcomeCondition(
+            "tpt",
+            ChildOccurrenceSelector.First,
+            ChildOutcomeExpectation.Production("match-pattern-literal-type")
+          )
+        ),
+        literalTypedPatternTemplate
+      )
+    ),
     outputRoleId = None,
     nestedChildRequirements = Vector(
       RequiredChildRootOutcome(
@@ -1300,7 +1333,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
               PsiOutputRoleId.TupleType,
               PsiOutputRoleId.TypeProjection,
               PsiOutputRoleId.ParenthesizedType,
-              PsiOutputRoleId.SingletonType
+              PsiOutputRoleId.SingletonType,
+              PsiOutputRoleId.LiteralType
             )
           )
         )
@@ -2073,7 +2107,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
-          "match-pattern-singleton-select"
+          "match-pattern-singleton-select",
+          "match-pattern-literal-type"
         )
       )
     ),

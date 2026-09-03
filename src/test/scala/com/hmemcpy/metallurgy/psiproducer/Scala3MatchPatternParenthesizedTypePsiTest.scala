@@ -313,9 +313,6 @@ final class Scala3MatchPatternParenthesizedTypePsiTest extends Scala3CompatTestC
       """def union(x: Any): Any = x match
         |  case y: (A | B) => 1
         |""".stripMargin,
-      """def literal(x: Any): Any = x match
-        |  case y: (1) => 1
-        |""".stripMargin,
       """def namedTuple(x: Any): Any = x match
         |  case y: ((a: A, b: B)) => 1
         |""".stripMargin

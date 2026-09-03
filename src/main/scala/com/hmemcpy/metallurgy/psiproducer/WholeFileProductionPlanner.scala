@@ -2363,9 +2363,22 @@ private[metallurgy] object WholeFileProductionPlanner:
           compilerChildren
             .getOrElse(instance, Vector.empty)
             .collect:
-              case (`role`, _, child) => position(child)
-            .collect:
-              case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
+              case (`role`, _, child) =>
+                position(child) match
+                  case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                    Some(range)
+                  case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.Synthetic)
+                      if resolvedRealizations
+                        .get(child)
+                        .exists(realization =>
+                          realization.template.composites.exists(output =>
+                            output.parentId.isEmpty && output.range == OutputRangeDeclaration
+                              .CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic)
+                          )
+                        ) =>
+                    Some(range)
+                  case _                                                                               => None
+            .flatten
         (ranges(startRole), ranges(endRole)) match
           case (starts, ends) if starts.nonEmpty && ends.nonEmpty =>
             val start = starts.maxBy(_.endOffset)
@@ -2378,9 +2391,22 @@ private[metallurgy] object WholeFileProductionPlanner:
         compilerChildren
           .getOrElse(instance, Vector.empty)
           .collect:
-            case (`role`, _, child) => position(child)
-          .collect:
-            case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) => range
+            case (`role`, _, child) =>
+              position(child) match
+                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.SourceDerived) =>
+                  Some(range)
+                case ParserNodePosition.Positioned(range, _, ParserPositionProvenance.Synthetic)
+                    if resolvedRealizations
+                      .get(child)
+                      .exists(realization =>
+                        realization.template.composites.exists(output =>
+                          output.parentId.isEmpty && output.range == OutputRangeDeclaration
+                            .CompilerPositionWithPolicy(PositionProvenancePolicy.PositionedIncludingSynthetic)
+                        )
+                      ) =>
+                  Some(range)
+                case _                                                                               => None
+          .flatten
           .sortBy(range => (range.startOffset, range.endOffset))
           .sliding(2)
           .collect:

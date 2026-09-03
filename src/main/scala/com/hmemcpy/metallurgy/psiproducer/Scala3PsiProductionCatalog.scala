@@ -435,7 +435,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiPatternWildcardTypeProductions.PatternWildcardTypeSuffixSegment ++
       Scala3PsiPatternStableSelectProductions.PatternStableSelectSuffixSegment ++
       Scala3PsiPatternParenthesizedTypeProductions.PatternParenthesizedTypeSuffixSegment ++
-      Scala3PsiPatternSingletonTypeProductions.PatternSingletonTypeSuffixSegment,
+      Scala3PsiPatternSingletonTypeProductions.PatternSingletonTypeSuffixSegment ++
+      Scala3PsiPatternLiteralTypeProductions.PatternLiteralTypeSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(
@@ -559,6 +560,10 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(
         Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
         "payload-descendant-select"
+      ),
+      ProductionAlternatives(
+        "match-pattern-literal-type",
+        "capture-reference"
       )
     )
   )

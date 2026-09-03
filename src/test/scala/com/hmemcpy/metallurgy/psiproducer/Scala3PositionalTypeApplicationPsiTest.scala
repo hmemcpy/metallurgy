@@ -146,7 +146,7 @@ final class Scala3PositionalTypeApplicationPsiTest extends Scala3CompatTestCase:
   def testGenericCallsRemainAstOnlyAndPersistenceSchemaIsUnchanged(): Unit =
     assertEquals(15, Scala3DotcFileElementType.SchemaVersion)
     assertEquals(
-      "95041533f2b134954b299076b35b97be15ec3c8a07174004a0cc23f0ac462053",
+      "2f23b108abf74ea05bdf3de86b97dace63c2c72c74589f3921c21a7054c69112",
       Scala3DotcFileElementType.PersistenceSchemaFingerprint
     )
     val source      = "package positional\nval result = source.f[List[String]]\n"
