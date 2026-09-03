@@ -315,6 +315,14 @@ completed in the same packet.
 
 ## Agent resources
 
+- **Amp agent transport:** a persistent runner (`amp --no-tui --runner-id metallurgy`) runs in this directory and
+  executes remotely created threads; keep exactly one alive and never start a duplicate. Submit agent work (oracle
+  consultations, reviews, courier records) by continuing the coordinator thread with a delegation request - the
+  coordinator creates runner-bound subthreads through its internal thread-creation tool (`executor: runner`,
+  `runner_id: metallurgy`) - and read results with `amp threads markdown <subthread-id>`. Never run long agent turns
+  through a foreground `amp --execute`: the blocked CLI times out and orphans the thread. `amp -ox` creates cloud-orb
+  threads on fresh sandboxes that re-fetch sources and toolchains; reserve it for genuinely isolated scenarios. The
+  public `@ampcode/sdk` exposes only `local` and `orb` executors, not runners.
 - **Issue tracker:** GitHub via `gh`; see `docs/agents/issue-tracker.md`.
 - **Continuity:** read the relevant implementation task and epic comments. Do not use AGENTS files as progress logs.
 - **Triage labels:** see `docs/agents/triage-labels.md`.
@@ -332,8 +340,9 @@ completed in the same packet.
   `run-ide-probe.sh sbt -java-home "$JAVA_HOME" -batch -no-colors test` - the sbt launcher script ignores the
   `JAVA_HOME` environment variable, so `-java-home` must select the JBR explicitly - copies the artifacts and test
   reports into `target/test-evidence/`, and
-  writes a completion marker - then launch it with `open -a Terminal <wrapper>` so it runs unattended inside the desktop
-  session, and validate the results from the copied log files and evidence.
+  writes a completion marker, captures the wrapper's own TTY, and closes the launching Terminal window with a detached
+  AppleScript keyed on that TTY so the window does not linger - then launch it with `open -a Terminal <wrapper>` so it
+  runs unattended inside the desktop session, and validate the results from the copied log files and evidence.
 - **Platform sources:** the pinned IntelliJ source archive is under the resolved SDK's `sources/` directory, the pinned
   Scala plugin is under `custom-plugins/Scala`, and ide-probe sources may be checked out under `target/` for comparison.
   Use the upstream IntelliJ Community, intellij-scala, Scala 3, Metals, and ide-probe repositories when local artifacts
