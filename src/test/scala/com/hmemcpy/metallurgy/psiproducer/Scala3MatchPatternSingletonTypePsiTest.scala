@@ -262,6 +262,8 @@ final class Scala3MatchPatternSingletonTypePsiTest extends Scala3CompatTestCase:
     assertTrue(s"mixed singletons must fail the whole file closed: $failure", failure.isDefined)
     assertTrue(singletonTypePsiAbsent(file))
     assertTrue(descendants[Sc3TypedPatternImpl](file).isEmpty)
+    assertTrue(descendants[ScMatchImpl](file).isEmpty)
+    assertTrue(descendants[ScCaseClauseImpl](file).isEmpty)
 
   @Test
   def testMatchOwnedReferenceSingletonsStayAstOnlyAcrossSerializationReloadAndReparse(): Unit =

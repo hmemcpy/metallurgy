@@ -10,7 +10,8 @@ private[psiproducer] object Scala3PsiPatternSingletonTypeProductions:
 
   // Wrapper recursion descends only through type positions below the typed-pattern entry; the
   // Typed.tpt anchor is unreachable from term-pattern nesting, and the reference child stays inside
-  // the P125-J reference machinery, so ordinary stable types keep their owners without retention.
+  // the parser-owned dotted-reference machinery, so ordinary stable types keep their owners without
+  // a retention declaration.
   private[psiproducer] val matchSingletonTypeAnchor: InventoryAncestor =
     InventoryAncestor(InventoryKind.Node, "Typed", Vector(CatalogPathSegment.NamedField("tpt")))
 
