@@ -146,6 +146,22 @@ These goals are the project's reason for existing and take precedence over every
 - Explain command results and blockers in plain English. Work in the sole-writer `idea261.x` checkout without feature
   branches or pull requests.
 
+## Workspace hygiene
+
+`target/` is scratch space, never a record. Regenerable artifacts must not outlive the run or packet that produced
+them; accumulated build leftovers exhaust the disk and block all work.
+
+- A packet is delivered only after its leftovers are cleaned. Fixture-test sandboxes (`idea-test-*`), lane logs, test
+  reports, and stale compilation output are deleted when the run that created them ends, or at the latest when the
+  packet closes.
+- Test-lane evidence under `target/test-evidence/` is retained only for the current packet. Baselines are keyed to the
+  source revision they were recorded against, so a superseded packet's evidence is stale by construction and is
+  deleted at delivery. Preserving per-suite evidence applies to the active packet; it is not a license to accumulate.
+- Evidence for an unresolved failure is kept until the failure is diagnosed and fixed, then follows the same rule.
+- Before push, `target/` holds nothing except the current packet's evidence.
+- `scripts/clean-workspace.sh` enforces this boundary: pass the active packet's prefix with `--keep` to retain current
+  evidence, run it without `--keep` to reach the pre-push state, and use `--dry-run` to preview the plan.
+
 ## Source-code comments
 
 Source code is self-contained. Omit obvious comments. A necessary comment states a non-obvious present-tense constraint
