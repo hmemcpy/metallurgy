@@ -90,7 +90,12 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "match-pattern-type-ident"
       ),
       GrammarRoleId.TypeProjection            -> Set("type-atom-projection", "match-pattern-hash-projection"),
-      GrammarRoleId.SingletonType             -> Set("type-atom-singleton-ident", "type-atom-singleton-select"),
+      GrammarRoleId.SingletonType             -> Set(
+        "type-atom-singleton-ident",
+        "type-atom-singleton-select",
+        "match-pattern-singleton-ident",
+        "match-pattern-singleton-select"
+      ),
       GrammarRoleId.LiteralType               -> Set("type-atom-literal"),
       GrammarRoleId.ParenthesizedType         -> Set("type-atom-parenthesized", "match-pattern-parenthesized-type"),
       GrammarRoleId.TupleType                 -> Set("ordinary-tuple-type", "match-pattern-tuple-type"),

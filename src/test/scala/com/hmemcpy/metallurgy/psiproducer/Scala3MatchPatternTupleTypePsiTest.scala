@@ -300,9 +300,6 @@ final class Scala3MatchPatternTupleTypePsiTest extends Scala3CompatTestCase:
         |""".stripMargin,
       """def pending(x: Any): Any = x match
         |  case y: (Int, String) @unchecked => "annot"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case y: x.type => "singleton"
         |""".stripMargin
     )
     parsableSources.zipWithIndex.foreach { case (source, index) =>

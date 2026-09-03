@@ -27,6 +27,11 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
         InventoryKind.Node,
         "TypeBoundsTree",
         Vector(CatalogPathSegment.NamedField("hi"))
+      ),
+      InventoryAncestor(
+        InventoryKind.Node,
+        "SingletonTypeTree",
+        Vector(CatalogPathSegment.NamedField("ref"))
       )
     )
 
@@ -91,6 +96,16 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
             Scala3PsiMatchExpressionProductions.MatchCasesAncestor
           ),
           SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "SingletonTypeTree",
+            Vector(CatalogPathSegment.NamedField("ref")),
+            matchStableSelectEdges,
+            Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+          ),
+          SourceClassification.SourceReachable
         )
       )
     ),
@@ -134,6 +149,19 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
               InventoryKind.Node,
               "Select",
               Vector(CatalogPathSegment.NamedField("qualifier")),
+              matchStableSelectEdges,
+              Scala3PsiMatchExpressionProductions.MatchCasesAncestor
+            )
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.SeparatorOwned(
+            ParserScannerTokenKind.Dot,
+            ContextPattern.ParentUnderAnchorThrough(
+              InventoryKind.Node,
+              "SingletonTypeTree",
+              Vector(CatalogPathSegment.NamedField("ref")),
               matchStableSelectEdges,
               Scala3PsiMatchExpressionProductions.MatchCasesAncestor
             )

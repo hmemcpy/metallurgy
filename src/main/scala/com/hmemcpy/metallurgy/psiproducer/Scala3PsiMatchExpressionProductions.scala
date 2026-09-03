@@ -1261,7 +1261,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
-          "match-pattern-parenthesized-type"
+          "match-pattern-parenthesized-type",
+          "match-pattern-singleton-ident",
+          "match-pattern-singleton-select"
         )
       )
     ),
@@ -1297,7 +1299,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
               PsiOutputRoleId.ParameterizedType,
               PsiOutputRoleId.TupleType,
               PsiOutputRoleId.TypeProjection,
-              PsiOutputRoleId.ParenthesizedType
+              PsiOutputRoleId.ParenthesizedType,
+              PsiOutputRoleId.SingletonType
             )
           )
         )
@@ -2068,7 +2071,9 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           Scala3PsiPatternWildcardTypeProductions.MatchWildcardTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchDottedTypeProductionId,
           Scala3PsiPatternStableSelectProductions.MatchHashProjectionProductionId,
-          "match-pattern-parenthesized-type"
+          "match-pattern-parenthesized-type",
+          "match-pattern-singleton-ident",
+          "match-pattern-singleton-select"
         )
       )
     ),
