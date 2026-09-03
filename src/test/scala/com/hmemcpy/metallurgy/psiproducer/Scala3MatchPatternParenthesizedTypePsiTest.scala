@@ -8,6 +8,7 @@ import com.intellij.psi.stubs.{PsiFileStub, SerializationManagerEx, StubTree}
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.{PsiDocumentManager, PsiElement, PsiErrorElement, PsiManager}
 import com.intellij.psi.PsiFile
+import com.intellij.psi.stubs.{IndexSink, ObjectStubSerializer, Stub, StubIndexKey}
 import org.jetbrains.plugins.scala.ScalaVersion
 import org.jetbrains.plugins.scala.lang.lexer.ScalaTokenTypes
 import org.jetbrains.plugins.scala.lang.psi.api.base.patterns.ScTypePattern
@@ -148,12 +149,26 @@ final class Scala3MatchPatternParenthesizedTypePsiTest extends Scala3CompatTestC
     assertPhysicalContract(single, source)
 
     // Each nesting level owns only its own delimiters, linked through innerElement/sameTreeParent.
-    val nestedOuter = wrapped.find(_.getText == "((A))").get
-    val nestedInner = nestedOuter.innerElement.get.asInstanceOf[ScParenthesisedTypeElementImpl]
+    // Local first/last delimiter selection is proven per level: the outer wrapper's own leaves are
+    // its tLPARENTHESIS and tRPARENTHESIS even though its inner child contains another pair.
+    val nestedOuter       = wrapped.find(_.getText == "((A))").get
+    val nestedInner       = nestedOuter.innerElement.get.asInstanceOf[ScParenthesisedTypeElementImpl]
     assertEquals("(A)", nestedInner.getText)
     assertSame(nestedOuter, nestedInner.getParent)
     assertSame(nestedOuter, nestedInner.sameTreeParent.get)
     assertEquals("A", nestedInner.innerElement.toVector.map(_.getText).mkString)
+    assertEquals(Vector("(", "(A)", ")"), nestedOuter.getNode.getChildren(null).toVector.map(_.getText))
+    assertEquals(Vector("(", "A", ")"), nestedInner.getNode.getChildren(null).toVector.map(_.getText))
+    val nestedOuterLeaves = nestedOuter.getNode.getChildren(null).toVector.filter(_.getFirstChildNode == null)
+    val nestedInnerLeaves = nestedInner.getNode.getChildren(null).toVector.filter(_.getFirstChildNode == null)
+    assertEquals(ScalaTokenTypes.tLPARENTHESIS, nestedOuterLeaves.head.getElementType)
+    assertEquals(ScalaTokenTypes.tRPARENTHESIS, nestedOuterLeaves.last.getElementType)
+    assertEquals(ScalaTokenTypes.tLPARENTHESIS, nestedInnerLeaves.head.getElementType)
+    assertEquals(ScalaTokenTypes.tRPARENTHESIS, nestedInnerLeaves.last.getElementType)
+    assertSame(nestedOuter.getNode, nestedOuterLeaves.head.getTreeParent)
+    assertSame(nestedOuter.getNode, nestedOuterLeaves.last.getTreeParent)
+    assertSame(nestedInner.getNode, nestedInnerLeaves.head.getTreeParent)
+    assertSame(nestedInner.getNode, nestedInnerLeaves.last.getTreeParent)
 
     // Applied wrapper forms keep the wrapper inside the parameterized element.
     val appliedWrapper = wrapped.find(_.getText == "(F[A])").get
@@ -362,31 +377,56 @@ final class Scala3MatchPatternParenthesizedTypePsiTest extends Scala3CompatTestC
 
   @Test
   def testMatchOwnedParenthesizedTypesStayAstOnlyAcrossSerializationReloadAndReparse(): Unit =
-    val source   =
+    val source       =
       """def persisted(x: Any): Any = x match
         |  case y: (A) => "single"
         |  case y: ((B)) => "nested"
         |""".stripMargin
-    val file     = physical("MatchParenthesizedTypesPersisted.scala", source)
-    val fileInfo = file.asInstanceOf[PsiFileImpl]
-    val stubTree = fileInfo.calcStubTree
-    val stubList = stubTree.getPlainList.asScala.toVector
+    val file         = physical("MatchParenthesizedTypesPersisted.scala", source)
+    val fileInfo     = file.asInstanceOf[PsiFileImpl]
+    val stubTree     = fileInfo.calcStubTree
+    val stubList     = stubTree.getPlainList.asScala.toVector
     assertTrue(
       "parenthesized types must not create stubs",
       stubList.forall(stub => !stub.getClass.getSimpleName.toLowerCase.contains("parenthes"))
     )
-    val output   = new ByteArrayOutputStream
+    val beforeShape  = stubShape(stubList)
+    val beforeIndex  = indexShape(stubList)
+    assertFalse(beforeShape.exists(row => row.toLowerCase.contains("parenthes")))
+    assertFalse(beforeIndex.exists(row => row.toLowerCase.contains("parenthes")))
+    val output       = new ByteArrayOutputStream
     SerializationManagerEx.getInstanceEx.serialize(stubTree.getRoot, output)
-    val restored = new StubTree(
+    val restored     = new StubTree(
       SerializationManagerEx.getInstanceEx
         .deserialize(new ByteArrayInputStream(output.toByteArray))
         .asInstanceOf[PsiFileStub[?]]
     )
-    assertEquals(stubList.map(_.getClass.getName), restored.getPlainList.asScala.toVector.map(_.getClass.getName))
+    val restoredList = restored.getPlainList.asScala.toVector
+    assertEquals(beforeShape, stubShape(restoredList))
+    assertEquals(beforeIndex, indexShape(restoredList))
     fileInfo.setTreeElementPointer(null)
     assertEquals(null, fileInfo.getTreeElement)
-    val reparsed = wrappers(file)
+    val reparsed     = wrappers(file)
     assertEquals(Vector("(A)", "((B))", "(B)"), reparsed.map(_.getText))
+    reparsed.foreach(wrapper => assertSame(wrapper, wrapper.getNavigationElement))
+
+  private def stubShape(stubs: Iterable[Stub]): Vector[String] = stubs.iterator
+    .flatMap(stub =>
+      Option(stub.getStubSerializer).map(serializer => s"${stub.getClass.getName}|${serializer.getExternalId}")
+    )
+    .toVector
+
+  private def indexShape(stubs: Iterable[Stub]): Vector[String] =
+    val result = Vector.newBuilder[String]
+    val sink   = new IndexSink:
+      override def occurrence[Psi <: com.intellij.psi.PsiElement, K](indexKey: StubIndexKey[K, Psi], value: K): Unit =
+        result += s"${indexKey.toString}|${value.toString}"
+    stubs.foreach(stub =>
+      Option(stub.getStubSerializer).foreach(
+        _.asInstanceOf[ObjectStubSerializer[Stub, Stub]].indexStub(stub, sink)
+      )
+    )
+    result.result()
 
   @Test
   def testMatchOwnedParenthesizedTypeEditsTransitionBetweenShapesAndFailClosed(): Unit =
