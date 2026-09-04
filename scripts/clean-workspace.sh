@@ -72,6 +72,22 @@ if [ -L "$target_dir" ]; then
   echo "refusing to clean: $target_dir is a symlink" >&2
   exit 1
 fi
+case $evidence_name in
+  /* | . | .. | *//*)
+    echo "refusing to clean: evidence directory must be a relative name inside target/" >&2
+    exit 1
+    ;;
+esac
+IFS='/' read -r -a evidence_parts <<< "$evidence_name"
+for part in ${evidence_parts[@]+"${evidence_parts[@]}"}; do
+  case $part in
+    '' | ..*)
+      echo "refusing to clean: evidence directory must be a relative name inside target/" >&2
+      exit 1
+      ;;
+  esac
+done
+evidence_dir="$target_dir/$evidence_name"
 if [ -e "$evidence_dir" ] && [ ! -d "$evidence_dir" ]; then
   echo "refusing to clean: $evidence_dir is not a directory" >&2
   exit 1

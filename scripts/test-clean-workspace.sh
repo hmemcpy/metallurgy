@@ -93,6 +93,24 @@ remaining="$(find "$root/target" -mindepth 1 | wc -l | tr -d ' ')"
 [ "$remaining" -eq 0 ] || fail "target not empty after full cleanup: $remaining entries left"
 echo "ok: full cleanup empties target including read-only trees"
 
+# Evidence directory arguments that would escape target/ are refused.
+root="$fixture_root/escape"
+make_fixture "$root"
+outside="$root/outside"
+mkdir -p "$outside"
+: > "$outside/precious.bin"
+if run_clean "$root" --evidence-dir ../outside >/dev/null 2>&1; then
+  fail "cleanup accepted an evidence directory outside target/"
+fi
+assert_exists "$outside/precious.bin"
+if run_clean "$root" --evidence-dir legit/../../outside >/dev/null 2>&1; then
+  fail "cleanup accepted a parent-escaping evidence directory"
+fi
+assert_exists "$outside/precious.bin"
+assert_exists "$root/target/test-evidence/p125m/note.txt"
+assert_exists "$root/target/idea-test-42/sandbox.bin"
+echo "ok: escaping evidence directories are refused without touching their contents"
+
 # A symlinked target directory is refused untouched.
 root="$fixture_root/symlink"
 make_fixture "$root"
