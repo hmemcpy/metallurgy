@@ -9,6 +9,7 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
 
   // TypeBoundsTree bounds descend to the match anchor through applied-type arguments and
   // the typed-pattern entry only; bound edges keep nested applied-type wildcards reachable.
+  // Infix operands are type positions too, so union/intersection recursion stays routable.
   private[psiproducer] val matchWildcardTypeEdges: Vector[InventoryAncestor] =
     Scala3PsiPatternAppliedTypeProductions.nestedAppliedTypeEdges ++ Vector(
       InventoryAncestor(
@@ -20,6 +21,16 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
         InventoryKind.Node,
         "TypeBoundsTree",
         Vector(CatalogPathSegment.NamedField("hi"))
+      ),
+      InventoryAncestor(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("left"))
+      ),
+      InventoryAncestor(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("right"))
       )
     )
 
@@ -81,7 +92,8 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       ),
       ChildDeclaration(
@@ -98,7 +110,8 @@ private[psiproducer] object Scala3PsiPatternWildcardTypeProductions:
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       ),
       ChildDeclaration("alias", "alias", ChildCardinality.ExactlyOne, "template-absent-tree")

@@ -59,7 +59,9 @@ private[psiproducer] object Scala3PsiPatternParenthesizedTypeProductions:
       ),
       nestedOccurrence("Tuple", Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)),
       nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("lo"))),
-      nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi")))
+      nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi"))),
+      nestedOccurrence("InfixOp", Vector(CatalogPathSegment.NamedField("left"))),
+      nestedOccurrence("InfixOp", Vector(CatalogPathSegment.NamedField("right")))
     ).map(parenDelimiterEvidence)
 
   private val matchParenthesizedType = Scala3PsiProduction(
@@ -88,7 +90,8 @@ private[psiproducer] object Scala3PsiPatternParenthesizedTypeProductions:
           MatchParenthesizedTypeProductionId,
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       )
     ),
@@ -153,7 +156,8 @@ private[psiproducer] object Scala3PsiPatternParenthesizedTypeProductions:
               PsiOutputRoleId.TypeProjection,
               PsiOutputRoleId.ParenthesizedType,
               PsiOutputRoleId.SingletonType,
-              PsiOutputRoleId.LiteralType
+              PsiOutputRoleId.LiteralType,
+              PsiOutputRoleId.InfixType
             )
           )
         )

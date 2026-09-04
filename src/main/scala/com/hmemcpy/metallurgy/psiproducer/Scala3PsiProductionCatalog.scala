@@ -436,7 +436,8 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       Scala3PsiPatternStableSelectProductions.PatternStableSelectSuffixSegment ++
       Scala3PsiPatternParenthesizedTypeProductions.PatternParenthesizedTypeSuffixSegment ++
       Scala3PsiPatternSingletonTypeProductions.PatternSingletonTypeSuffixSegment ++
-      Scala3PsiPatternLiteralTypeProductions.PatternLiteralTypeSuffixSegment,
+      Scala3PsiPatternLiteralTypeProductions.PatternLiteralTypeSuffixSegment ++
+      Scala3PsiPatternInfixTypeProductions.PatternInfixTypeSuffixSegment,
     StableRoleInventory.Reviewed,
     Vector(
       ProductionAlternatives(
@@ -564,6 +565,18 @@ private[metallurgy] object Scala3PsiProductionCatalog:
       ProductionAlternatives(
         "match-pattern-literal-type",
         "capture-reference"
+      ),
+      ProductionAlternatives(
+        "match-pattern-infix-operator-union",
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(
+        "match-pattern-infix-operator-intersection",
+        "payload-descendant-ident"
+      ),
+      ProductionAlternatives(
+        "match-pattern-infix-type",
+        "payload-descendant-infix"
       )
     )
   )

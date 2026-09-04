@@ -245,6 +245,13 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
     ("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi")))
   )
 
+  // Infix operands admit the same families one hop from the operator node; kept separate so
+  // builders that own trailing entries preserve their established occurrence indexes.
+  private[psiproducer] val InfixOperandEdges: Vector[(String, Vector[CatalogPathSegment])] = Vector(
+    ("InfixOp", Vector(CatalogPathSegment.NamedField("left"))),
+    ("InfixOp", Vector(CatalogPathSegment.NamedField("right")))
+  )
+
   private[psiproducer] val PatternNestingEdges: Vector[InventoryAncestor] = Vector(
     InventoryAncestor(
       InventoryKind.Node,
@@ -1283,7 +1290,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       )
     ),
@@ -1334,7 +1342,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
               PsiOutputRoleId.TypeProjection,
               PsiOutputRoleId.ParenthesizedType,
               PsiOutputRoleId.SingletonType,
-              PsiOutputRoleId.LiteralType
+              PsiOutputRoleId.LiteralType,
+              PsiOutputRoleId.InfixType
             )
           )
         )
@@ -1418,6 +1427,26 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
             InventoryKind.Node,
             "Parens",
             Vector(CatalogPathSegment.NamedField("t")),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "InfixOp",
+            Vector(CatalogPathSegment.NamedField("left")),
+            Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+            Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+          ),
+          SourceClassification.SourceReachable
+        ),
+        CompilerProductionContextPattern(
+          ContextPattern.ParentUnderAnchorThrough(
+            InventoryKind.Node,
+            "InfixOp",
+            Vector(CatalogPathSegment.NamedField("right")),
             Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
             Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
           ),
@@ -2108,7 +2137,8 @@ private[psiproducer] object Scala3PsiMatchExpressionProductions:
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       )
     ),

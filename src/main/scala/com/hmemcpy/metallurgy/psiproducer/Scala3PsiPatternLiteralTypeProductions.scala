@@ -56,7 +56,9 @@ private[psiproducer] object Scala3PsiPatternLiteralTypeProductions:
       ),
       nestedOccurrence("Tuple", Vector(CatalogPathSegment.NamedField("trees"), CatalogPathSegment.RepeatedElement)),
       nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("lo"))),
-      nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi")))
+      nestedOccurrence("TypeBoundsTree", Vector(CatalogPathSegment.NamedField("hi"))),
+      nestedOccurrence("InfixOp", Vector(CatalogPathSegment.NamedField("left"))),
+      nestedOccurrence("InfixOp", Vector(CatalogPathSegment.NamedField("right")))
     )
 
   private val matchLiteralType = Scala3PsiProduction(

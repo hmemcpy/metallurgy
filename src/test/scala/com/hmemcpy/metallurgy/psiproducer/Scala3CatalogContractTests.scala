@@ -16,6 +16,19 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
           Set("match-pattern-literal-type", "capture-reference")
       )
     )
+    // The infix wrapper and both exact-name operators resolve their overlap with the payload
+    // descendants; the match-side candidates lead and the payload productions stay fallbacks.
+    assertEquals(
+      Vector(
+        ProductionAlternatives("match-pattern-infix-operator-union", "payload-descendant-ident"),
+        ProductionAlternatives("match-pattern-infix-operator-intersection", "payload-descendant-ident"),
+        ProductionAlternatives("match-pattern-infix-type", "payload-descendant-infix")
+      ),
+      alternatives.filter(alternative =>
+        alternative.fallbackId.startsWith("payload-descendant") &&
+          alternative.candidateId.contains("infix")
+      )
+    )
 
   @Test def typedPatternConditionalRealizationStaysExactToLiteralWrapper(): Unit =
     val typed         = Scala3PsiProductionCatalog.Reviewed.productions.find(_.id == "match-pattern-typed").get
@@ -89,6 +102,8 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "annotation-designator-qualifier-select",
         "type-atom-singleton-reference-ident",
         "type-atom-singleton-reference-select",
+        "match-pattern-infix-operator-union",
+        "match-pattern-infix-operator-intersection",
         "capture-reference-ident",
         "atomic-this-qualifier"
       ),
@@ -233,7 +248,7 @@ private[psiproducer] trait Scala3CatalogContractTests extends Scala3PsiProductio
         "ordinary-wildcard-type",
         "match-pattern-wildcard-type"
       ),
-      GrammarRoleId.InfixType                 -> Set("ordinary-infix-type"),
+      GrammarRoleId.InfixType                 -> Set("ordinary-infix-type", "match-pattern-infix-type"),
       GrammarRoleId.MatchType                 -> Set("ordinary-match-type"),
       GrammarRoleId.MatchTypeCase             -> Set("match-type-case"),
       GrammarRoleId.RefinementType            -> Set("ordinary-refinement-type"),

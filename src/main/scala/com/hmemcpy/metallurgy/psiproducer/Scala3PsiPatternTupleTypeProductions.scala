@@ -100,6 +100,26 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
         Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
       ),
       SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("left")),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+      ),
+      SourceClassification.SourceReachable
+    ),
+    CompilerProductionContextPattern(
+      ContextPattern.ParentUnderAnchorThrough(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("right")),
+        Scala3PsiPatternWildcardTypeProductions.matchWildcardTypeEdges,
+        Scala3PsiPatternTupleTypeProductions.matchTupleTypeAnchor
+      ),
+      SourceClassification.SourceReachable
     )
   )
 
@@ -163,7 +183,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
           "match-pattern-parenthesized-type",
           "match-pattern-singleton-ident",
           "match-pattern-singleton-select",
-          "match-pattern-literal-type"
+          "match-pattern-literal-type",
+          "match-pattern-infix-type"
         )
       )
     ),
@@ -281,7 +302,8 @@ private[psiproducer] object Scala3PsiPatternTupleTypeProductions:
               PsiOutputRoleId.TypeProjection,
               PsiOutputRoleId.ParenthesizedType,
               PsiOutputRoleId.SingletonType,
-              PsiOutputRoleId.LiteralType
+              PsiOutputRoleId.LiteralType,
+              PsiOutputRoleId.InfixType
             )
           )
         )

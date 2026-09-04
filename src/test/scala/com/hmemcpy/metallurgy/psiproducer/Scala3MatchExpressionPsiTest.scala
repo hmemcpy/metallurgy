@@ -679,10 +679,7 @@ final class Scala3MatchExpressionPsiTest extends Scala3CompatTestCase:
         |  case v: Int @unchecked => "annot"
         |""".stripMargin,
       """def pending(x: Any): Any = x match
-        |  case v: (Int & String) => "intersect"
-        |""".stripMargin,
-      """def pending(x: Any): Any = x match
-        |  case v: (Int | String) => "union"
+        |  case v: (Int => String) => "co"
         |""".stripMargin
     )
     sources.zipWithIndex.foreach { case (source, index) =>

@@ -32,6 +32,16 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
         InventoryKind.Node,
         "SingletonTypeTree",
         Vector(CatalogPathSegment.NamedField("ref"))
+      ),
+      InventoryAncestor(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("left"))
+      ),
+      InventoryAncestor(
+        InventoryKind.Node,
+        "InfixOp",
+        Vector(CatalogPathSegment.NamedField("right"))
       )
     )
 
@@ -56,9 +66,10 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
     )
 
   private def dottedTypeOccurrences: Vector[CompilerProductionContextPattern] =
-    Scala3PsiMatchExpressionProductions.MatchPatternTypeEdges.map { (owner, path) =>
-      matchEntry(owner, path, ParserScannerTokenKind.Dot)
-    }
+    (Scala3PsiMatchExpressionProductions.MatchPatternTypeEdges ++ Scala3PsiMatchExpressionProductions.InfixOperandEdges)
+      .map { (owner, path) =>
+        matchEntry(owner, path, ParserScannerTokenKind.Dot)
+      }
 
   private def hashProjectionOccurrences: Vector[CompilerProductionContextPattern] =
     Scala3PsiMatchExpressionProductions.MatchPatternTypeEdges.map { (owner, path) =>
@@ -77,7 +88,9 @@ private[psiproducer] object Scala3PsiPatternStableSelectProductions:
         ),
         SourceClassification.SourceReachable
       )
-    )
+    ) ++ Scala3PsiMatchExpressionProductions.InfixOperandEdges.map { (owner, path) =>
+      matchEntry(owner, path, ParserScannerTokenKind.Hash)
+    }
 
   private val dottedReferenceIdent = Scala3PsiProduction(
     id = "match-pattern-dotted-reference-ident",
